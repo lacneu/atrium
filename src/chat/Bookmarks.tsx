@@ -48,6 +48,7 @@ import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import {
   anchorElement,
+  blockFace,
   collectAnchorBlocks,
   nearestBookmarkId,
   nextBookmarkId,
@@ -55,6 +56,7 @@ import {
   previewFromText,
   type BookmarkView,
 } from "./bookmarkView";
+import { blockOffer } from "./quoteBlocks";
 import {
   SHORTCUT_BOOKMARK_NEXT,
   SHORTCUT_BOOKMARK_PREV,
@@ -555,6 +557,8 @@ export function BookmarkNavRail() {
 interface HoverState {
   top: number;
   blockIndex: number;
+  /** The block has text: the reply button quotes it (`blockOffer`). */
+  quotable: boolean;
 }
 
 /** Per-bubble gutter: hover a markdown block -> a toggle appears at its left
@@ -660,19 +664,25 @@ function BookmarkGutterInner({
         raf = 0;
         const blocks = collectAnchorBlocks(body);
         const bodyTop = body.getBoundingClientRect().top;
-        let nearest: { top: number; blockIndex: number } | null = null;
+        let nearest: HoverState | null = null;
         let nearestDist = Infinity;
         for (let i = 0; i < blocks.length; i++) {
+          // What the block offers — the same rule as the ⋯'s lists, so a finger
+          // reaches exactly what a mouse does (lot 21): a rule or an empty block
+          // offers nothing, a block without text no quote.
+          const offer = blockOffer(blockFace(blocks[i]!));
+          if (offer === null) continue;
           const r = blocks[i]!.getBoundingClientRect();
+          const at = { top: r.top - bodyTop, blockIndex: i, quotable: offer.quote !== "" };
           if (e.clientY >= r.top && e.clientY <= r.bottom) {
-            setHover({ top: r.top - bodyTop, blockIndex: i });
+            setHover(at);
             return;
           }
           const d =
             e.clientY < r.top ? r.top - e.clientY : e.clientY - r.bottom;
           if (d < nearestDist) {
             nearestDist = d;
-            nearest = { top: r.top - bodyTop, blockIndex: i };
+            nearest = at;
           }
         }
         // Between blocks / on the button's own overhang: snap to the nearest
@@ -734,7 +744,7 @@ function BookmarkGutterInner({
             // line (a stacked second button would land on the NEXT block's
             // line and read as that block's action — wrong-target trap).
             <span className="oc-bmk-gutterrow" style={{ top: hover.top }}>
-              {onReplyToBlock ? (
+              {onReplyToBlock && hover.quotable ? (
                 // Quote-reply: capture the block's RENDERED text at click time
                 // (the display + prompt truth even if the message later changes).
                 <button

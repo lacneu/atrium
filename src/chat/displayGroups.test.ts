@@ -13,11 +13,30 @@ describe("displayGroupPlaces — a delegation chain reads as one answer", () => 
   test("consecutive members: the first heads, the others follow, the last copies the whole", () => {
     const places = displayGroupPlaces([user("u"), reply("p", "Je délègue.", "p"), reply("a", "Résultat.", "p"), reply("w", "Fini.", "p")]);
     const groupText = "Je délègue.\n\nRésultat.\n\nFini.";
+    const members = [
+      { id: "p", live: false },
+      { id: "a", live: false },
+      { id: "w", live: false },
+    ];
     expect(Object.fromEntries(places)).toEqual({
-      p: { follows: false, continues: true, firstId: "p", groupText },
-      a: { follows: true, continues: true, firstId: "p", groupText },
-      w: { follows: true, continues: false, firstId: "p", groupText },
+      p: { follows: false, continues: true, firstId: "p", groupText, members },
+      a: { follows: true, continues: true, firstId: "p", groupText, members },
+      w: { follows: true, continues: false, firstId: "p", groupText, members },
     });
+  });
+
+  test("each place names every member in order, and which is still being written (lot 21)", () => {
+    const places = displayGroupPlaces([
+      { ...reply("p", "Je délègue.", "p"), status: "complete" },
+      { ...reply("a", "Résultat.", "p"), status: "complete" },
+      { ...reply("w", "Fin", "p"), status: "streaming" },
+    ]);
+    expect(places.get("w")?.members).toEqual([
+      { id: "p", live: false },
+      { id: "a", live: false },
+      { id: "w", live: true },
+    ]);
+    expect(places.get("p")?.members).toBe(places.get("w")?.members);
   });
 
   test("a message in between splits the cache's group: each side reads alone (never spans a message)", () => {
@@ -31,8 +50,26 @@ describe("displayGroupPlaces — a delegation chain reads as one answer", () => 
 
   test("two different groups side by side stay apart", () => {
     const places = displayGroupPlaces([reply("p", "1", "p"), reply("a", "2", "p"), reply("q", "3", "q"), reply("b", "4", "q")]);
-    expect(places.get("a")).toEqual({ follows: true, continues: false, firstId: "p", groupText: "1\n\n2" });
-    expect(places.get("q")).toEqual({ follows: false, continues: true, firstId: "q", groupText: "3\n\n4" });
+    expect(places.get("a")).toEqual({
+      follows: true,
+      continues: false,
+      firstId: "p",
+      groupText: "1\n\n2",
+      members: [
+        { id: "p", live: false },
+        { id: "a", live: false },
+      ],
+    });
+    expect(places.get("q")).toEqual({
+      follows: false,
+      continues: true,
+      firstId: "q",
+      groupText: "3\n\n4",
+      members: [
+        { id: "q", live: false },
+        { id: "b", live: false },
+      ],
+    });
   });
 
   test("an empty member adds nothing to the copied text", () => {

@@ -3,6 +3,11 @@
 // ever show under a mouse. Opened from the reply's "More actions" menu; owned by
 // the message, not by the menu's action bar, which may unmount the moment the
 // pointer leaves the message.
+//
+// A delegation's answer reads as ONE answer across consecutive bubbles, and only
+// its last bubble has a ⋯ (lot 21): the list then holds the blocks of every bubble
+// of the answer, in reading order — the order a screen reader reads them too —,
+// each row naming its own bubble, so a pick quotes or marks THAT bubble's block.
 import { useEffect, useRef, useState } from "react";
 import { Bookmark } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
@@ -15,22 +20,27 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { focusFirst } from "@/lib/focusFallback";
-import { collectAnchorBlocks } from "./bookmarkView";
+import { blockFace, collectAnchorBlocks } from "./bookmarkView";
 import {
+  blockChoices,
+  blockKey,
   pickerFocusOrder,
-  quoteBlockChoices,
+  type BlockChoice,
+  type BlockListKind,
   type PickerFocusCandidate,
-  type QuoteBlockChoice,
 } from "./quoteBlocks";
 
-/** The reply's blocks, read from what is RENDERED (the gutter acts on the same). */
-function readChoices(messageId: string): QuoteBlockChoice[] {
-  const body = document.querySelector(
-    `.oc-msg[data-message-id="${CSS.escape(messageId)}"] .oc-msg__body`,
-  );
-  if (body === null) return [];
-  return quoteBlockChoices(
-    collectAnchorBlocks(body).map((block) => block.textContent ?? ""),
+/** The blocks of the bubbles listed, read from what is RENDERED (the gutter acts on
+ *  the same, through the same `blockOffer`). */
+function readChoices(sources: readonly string[], kind: BlockListKind): BlockChoice[] {
+  return blockChoices(
+    sources.map((messageId) => {
+      const body = document.querySelector(
+        `.oc-msg[data-message-id="${CSS.escape(messageId)}"] .oc-msg__body`,
+      );
+      return { messageId, faces: body === null ? [] : collectAnchorBlocks(body).map(blockFace) };
+    }),
+    kind,
   );
 }
 
@@ -52,7 +62,7 @@ function pickerCandidates(messageId: string, quotePicked: boolean): Array<HTMLEl
 
 /** "quote": the pick goes on to the reply being written. "bookmark": the pick
  *  toggles the block's bookmark — a block already marked loses it. */
-export type BlockPickerKind = "quote" | "bookmark";
+export type BlockPickerKind = BlockListKind;
 
 const TEXT: Record<
   BlockPickerKind,
@@ -74,26 +84,31 @@ export function BlockPicker({
   open,
   onOpenChange,
   messageId,
+  sources,
   kind,
   marked,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The reply whose ⋯ opens the list: where the focus goes back. */
   messageId: string;
+  /** The bubbles whose blocks the list holds, in reading order (`listSources`). */
+  sources: readonly string[];
   kind: BlockPickerKind;
-  /** The blocks already bookmarked (kind "bookmark"), by index: shown set. */
-  marked?: ReadonlySet<number>;
-  onPick: (blockIndex: number, excerpt: string) => void;
+  /** The blocks already bookmarked (kind "bookmark"), by `blockKey`: shown set. */
+  marked?: ReadonlySet<string>;
+  onPick: (choice: BlockChoice) => void;
 }) {
-  const [choices, setChoices] = useState<QuoteBlockChoice[]>([]);
+  const [choices, setChoices] = useState<BlockChoice[]>([]);
   const picked = useRef(false);
+  const sourceKey = sources.join(" ");
   useEffect(() => {
     if (open) {
       picked.current = false;
-      setChoices(readChoices(messageId));
+      setChoices(readChoices(sourceKey === "" ? [] : sourceKey.split(" "), kind));
     }
-  }, [open, messageId]);
+  }, [open, sourceKey, kind]);
   // A PICKED QUOTE GOES ON TO THE REPLY BEING WRITTEN: the composer takes the
   // focus as the pick's outcome, once the list has stopped trapping it (this
   // effect runs after Radix released its trap, in the same commit). As the list
@@ -124,17 +139,21 @@ export function BlockPicker({
         ) : (
           <div className="oc-blockpick__list">
             {choices.map((choice) => {
-              const set = kind === "bookmark" && (marked?.has(choice.blockIndex) ?? false);
+              const set =
+                kind === "bookmark" &&
+                (marked?.has(blockKey(choice.messageId, choice.blockIndex)) ?? false);
               return (
                 <Button
-                  key={choice.blockIndex}
+                  key={blockKey(choice.messageId, choice.blockIndex)}
                   type="button"
                   variant="ghost"
                   className="oc-blockpick__item h-auto w-full justify-start whitespace-normal text-left"
+                  data-message-id={choice.messageId}
+                  data-block-index={choice.blockIndex}
                   aria-pressed={kind === "bookmark" ? set : undefined}
                   onClick={() => {
                     picked.current = true;
-                    onPick(choice.blockIndex, choice.excerpt);
+                    onPick(choice);
                     onOpenChange(false);
                   }}
                 >
@@ -144,7 +163,7 @@ export function BlockPicker({
                       aria-hidden
                     />
                   ) : null}
-                  {choice.excerpt}
+                  {choice.label !== "" ? choice.label : m.block_pick_media_untitled()}
                 </Button>
               );
             })}

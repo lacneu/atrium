@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   anchorElement,
+  blockFace,
   collectAnchorBlocks,
   nearestBookmarkId,
   previewFromText,
@@ -204,5 +205,55 @@ describe("previewFromText", () => {
     expect(out.length).toBeLessThanOrEqual(49);
     expect(out.endsWith("\u2026")).toBe(true);
     expect(out).toBe("Anthropic discuterait avec Samsung pour\u2026");
+  });
+});
+
+describe("blockFace — what a block shows a reader (lot 21)", () => {
+  // The same structural stub idea as above: the APIs blockFace uses are matches(),
+  // querySelector()/querySelectorAll() with a list of TAGS, getAttribute("alt") and
+  // textContent.
+  interface Node {
+    tag: string;
+    alt?: string;
+    text?: string;
+    children?: Node[];
+  }
+  const tags = (sel: string) => sel.split(",").map((t) => t.trim());
+  function fake(node: Node): Element {
+    const all = (n: Node): Node[] => (n.children ?? []).flatMap((c) => [c, ...all(c)]);
+    const text = (n: Node): string => (n.text ?? "") + (n.children ?? []).map(text).join("");
+    return {
+      textContent: text(node),
+      matches: (sel: string) => tags(sel).includes(node.tag),
+      querySelectorAll: (sel: string) => all(node).filter((n) => tags(sel).includes(n.tag)).map(fake),
+      querySelector: (sel: string) => {
+        const hit = all(node).find((n) => tags(sel).includes(n.tag));
+        return hit === undefined ? null : fake(hit);
+      },
+      getAttribute: (name: string) => (name === "alt" ? (node.alt ?? null) : null),
+    } as unknown as Element;
+  }
+
+  it("a text block: its text, no media", () => {
+    expect(blockFace(fake({ tag: "p", text: "Bonjour." }))).toEqual({ text: "Bonjour.", alt: "", media: false });
+  });
+
+  it("a loaded image: no text, its alt text, media", () => {
+    const wrapper = { tag: "div", children: [{ tag: "img", alt: "Schéma du scénario B" }, { tag: "button" }] };
+    expect(blockFace(fake(wrapper))).toEqual({ text: "", alt: "Schéma du scénario B", media: true });
+  });
+
+  it("an image without alt text is still media; an image block itself reads its own alt", () => {
+    expect(blockFace(fake({ tag: "div", children: [{ tag: "img", alt: "" }] }))).toEqual({ text: "", alt: "", media: true });
+    expect(blockFace(fake({ tag: "img", alt: "Logo" }))).toEqual({ text: "", alt: "Logo", media: true });
+  });
+
+  it("several images: their alt texts joined, the empty ones left out", () => {
+    const row = { tag: "p", children: [{ tag: "img", alt: "Un" }, { tag: "img", alt: " " }, { tag: "img", alt: "Deux" }] };
+    expect(blockFace(fake(row)).alt).toBe("Un, Deux");
+  });
+
+  it("a rule shows nothing", () => {
+    expect(blockFace(fake({ tag: "hr" }))).toEqual({ text: "", alt: "", media: false });
   });
 });

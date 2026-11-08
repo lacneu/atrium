@@ -310,6 +310,7 @@ import { measureCloneWidths } from "@/lib/measureClone";
 import { useCoarsePointer, useTouchReveal } from "@/lib/useMediaQuery";
 import { composerAutoFocus, messageActionsAutohide } from "./touchReveal";
 import { BlockPicker } from "./BlockPicker";
+import { blockKey, listSources, type GroupMember } from "./quoteBlocks";
 import { headerFitInput } from "./chatHeaderFit";
 import {
   composerFitLevels,
@@ -2641,7 +2642,8 @@ function AssistantMoreMenu({
   onToggleSource: () => void;
   /** Opens the list of this reply's blocks to quote one ("Reply to a block…"):
    *  the gutter that does it follows the mouse, so a touch screen never sees it.
-   *  Absent when the reply cannot be quoted. */
+   *  Absent when the reply cannot be quoted, or while no bubble it lists is settled
+   *  (an earlier bubble of the answer can be, while the last is being written). */
   onPickBlock?: () => void;
   /** The same list, to bookmark one ("Bookmark a block…"), for the same reason.
    *  Absent when the reply cannot be bookmarked by block. */
@@ -2765,22 +2767,14 @@ function AssistantMoreMenu({
           </ActionBarMoreItem>
         ) : null}
         {onPickBlock ? (
-          <ActionBarMoreItem
-            className={MSG_MENU_ITEM_CLS}
-            disabled={streaming}
-            onSelect={onPickBlock}
-          >
+          <ActionBarMoreItem className={MSG_MENU_ITEM_CLS} onSelect={onPickBlock}>
             <Reply size={14} aria-hidden />
             {m.quote_reply_pick_action()}
           </ActionBarMoreItem>
         ) : null}
         <BookmarkMenuItem />
         {onPickBookmarkBlock ? (
-          <ActionBarMoreItem
-            className={MSG_MENU_ITEM_CLS}
-            disabled={streaming}
-            onSelect={onPickBookmarkBlock}
-          >
+          <ActionBarMoreItem className={MSG_MENU_ITEM_CLS} onSelect={onPickBookmarkBlock}>
             <BookmarkIcon size={14} aria-hidden />
             {m.bookmark_pick_action()}
           </ActionBarMoreItem>
@@ -3920,16 +3914,31 @@ function AssistantMessage() {
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
   const messageId = useMessage((msg) => msg.id);
-  // The reply's blocks that carry a bookmark: set in "Bookmark a block…".
-  const bookmarksHere = bmApi?.byMessage.get(messageId);
+  // The bubbles whose blocks the ⋯'s lists hold (lot 21): a delegation's answer is
+  // ONE answer across consecutive bubbles and only its last one has a ⋯, so its
+  // lists hold every settled bubble of the answer, in reading order.
+  const groupMembers = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { groupMembers?: GroupMember[] | null } | undefined)
+        ?.groupMembers ?? null,
+  );
+  const listLive = useMessage((msg) => msg.status?.type === "running");
+  const sources = useMemo(
+    () => listSources(messageId, listLive, groupMembers),
+    [messageId, listLive, groupMembers],
+  );
+  // The blocks of those bubbles that carry a bookmark: set in "Bookmark a block…".
+  const byMessage = bmApi?.byMessage;
   const bookmarkedBlocks = useMemo(
     () =>
       new Set(
-        (bookmarksHere ?? [])
-          .map((b) => b.blockIndex)
-          .filter((i): i is number => i !== null),
+        sources.flatMap((id) =>
+          (byMessage?.get(id) ?? []).flatMap((b) =>
+            b.blockIndex === null ? [] : [blockKey(id, b.blockIndex)],
+          ),
+        ),
       ),
-    [bookmarksHere],
+    [byMessage, sources],
   );
   // Quote-reply staging target (the CURRENT chat — keyed store, leak-proof).
   const quoteChatId = useContext(QuoteChatIdContext);
@@ -4239,25 +4248,35 @@ function AssistantMessage() {
             />
           ) : null}
         </div>
-        {quoteChatId !== null && !messageId.startsWith("optimistic-") ? (
+        {/* The lists of the ⋯ — a bubble continued below has none (its blocks are
+            listed by the ⋯ of the answer's last bubble). A pick names the bubble its
+            block belongs to: quoting or marking a block of an earlier bubble of the
+            answer targets THAT bubble, never the one whose ⋯ opened the list. */}
+        {quoteChatId !== null && !messageId.startsWith("optimistic-") && !groupContinues ? (
           <BlockPicker
             kind="quote"
             open={quotePickOpen}
             onOpenChange={setQuotePickOpen}
             messageId={messageId}
-            onPick={(blockIndex, excerpt) =>
-              stageQuote(quoteChatId, { messageId, blockIndex, excerpt })
+            sources={sources}
+            onPick={(choice) =>
+              stageQuote(quoteChatId, {
+                messageId: choice.messageId,
+                blockIndex: choice.blockIndex,
+                excerpt: choice.excerpt,
+              })
             }
           />
         ) : null}
-        {bmApi !== null && !messageId.startsWith("optimistic-") ? (
+        {bmApi !== null && !messageId.startsWith("optimistic-") && !groupContinues ? (
           <BlockPicker
             kind="bookmark"
             open={bookmarkPickOpen}
             onOpenChange={setBookmarkPickOpen}
             messageId={messageId}
+            sources={sources}
             marked={bookmarkedBlocks}
-            onPick={(blockIndex) => bmApi.toggle(messageId, blockIndex)}
+            onPick={(choice) => bmApi.toggle(choice.messageId, choice.blockIndex)}
           />
         ) : null}
         <BookmarkGutter
@@ -4295,7 +4314,7 @@ function AssistantMessage() {
             onPickBlock={
               quoteChatId !== null &&
               !messageId.startsWith("optimistic-") &&
-              !quoteRunning &&
+              sources.length > 0 &&
               quoteEffectiveText !== ""
                 ? () => setQuotePickOpen(true)
                 : undefined
@@ -4303,7 +4322,7 @@ function AssistantMessage() {
             onPickBookmarkBlock={
               bmApi !== null &&
               !messageId.startsWith("optimistic-") &&
-              !quoteRunning &&
+              sources.length > 0 &&
               quoteEffectiveText !== ""
                 ? () => setBookmarkPickOpen(true)
                 : undefined

@@ -86,3 +86,102 @@ describe("the block picker gives the focus back by the shared rule", () => {
     expect(keys).toEqual(expect.arrayContaining(["composer", "trigger", "message"]));
   });
 });
+
+// LOT 21: a delegation's answer reads as ONE answer across consecutive bubbles, and
+// only its last bubble has a ⋯. The lists of that ⋯ must hold the blocks of every
+// bubble of the answer, and a pick must name the bubble its block belongs to. The
+// lists' content is pure and composed end to end in quoteBlocks.test.ts (with
+// displayGroupPlaces); here, that the components still go through it.
+const source = (file: string) =>
+  ts.createSourceFile(file, readFileSync(join(process.cwd(), "src/chat", file), "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const CHAT = source("ConvexChat.tsx");
+const GUTTER = source("Bookmarks.tsx");
+const fnNamed = (sf: ts.SourceFile, name: string) => find(sf, ts.isFunctionDeclaration).find((f) => f.name?.text === name);
+const attr = (el: ts.JsxSelfClosingElement | ts.JsxOpeningElement, name: string) =>
+  el.attributes.properties.find((p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText() === name);
+const jsx = (root: ts.Node, tag: string) =>
+  find(root, (n): n is ts.JsxSelfClosingElement | ts.JsxOpeningElement =>
+    (ts.isJsxSelfClosingElement(n) || ts.isJsxOpeningElement(n)) && n.tagName.getText() === tag,
+  );
+
+describe("the lists of a grouped answer's ⋯ hold every bubble's blocks (lot 21)", () => {
+  test("the picker reads the blocks of every bubble it lists, through the gutter's own rule", () => {
+    const read = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "readChoices");
+    expect(read, "no readChoices").toBeDefined();
+    expect(read!.parameters.map((p) => p.name.getText())).toEqual(["sources", "kind"]);
+    const [compose] = callsTo(read!, "blockChoices");
+    expect(compose, "the blocks are not composed by blockChoices").toBeDefined();
+    expect(compose.arguments[0].getText()).toMatch(/^sources\.map\(/);
+    expect(compose.arguments[0].getText()).toMatch(/collectAnchorBlocks\(body\)\.map\(blockFace\)/);
+  });
+
+  test("each row names its bubble and its block, and a pick hands over the whole choice", () => {
+    const [row] = jsx(SF, "Button").filter((b) => attr(b, "className")?.getText().includes("oc-blockpick__item"));
+    expect(attr(row, "data-message-id")?.initializer?.getText()).toBe("{choice.messageId}");
+    expect(attr(row, "data-block-index")?.initializer?.getText()).toBe("{choice.blockIndex}");
+    const [pick] = callsTo(SF, "onPick");
+    expect(pick.arguments.map((a) => a.getText())).toEqual(["choice"]);
+    // A row shows as marked when ITS bubble's block is, not the opener's.
+    const [marked] = callsTo(SF, "has").filter((c) => /marked/.test(c.expression.getText()));
+    expect(marked.arguments.map((a) => a.getText())).toEqual(["blockKey(choice.messageId, choice.blockIndex)"]);
+    // An image without alt text is named by a label, never left blank.
+    const parent = row.parent as ts.JsxElement;
+    expect(parent.getText()).toMatch(/choice\.label !== "" \? choice\.label : m\.block_pick_media_untitled\(\)/);
+  });
+
+  const message = fnNamed(CHAT, "AssistantMessage")!;
+  const pickers = jsx(message, "BlockPicker");
+
+  test("both lists are the ⋯'s: absent on a bubble continued below, fed by listSources", () => {
+    expect(pickers).toHaveLength(2);
+    for (const picker of pickers) {
+      let up: ts.Node = picker;
+      while (!ts.isConditionalExpression(up)) up = up.parent;
+      expect(up.condition.getText(), "a picker on a bubble without a ⋯").toMatch(/!groupContinues/);
+      expect(attr(picker, "sources")?.initializer?.getText()).toBe("{sources}");
+      expect(attr(picker, "messageId")?.initializer?.getText()).toBe("{messageId}");
+    }
+    const [sources] = callsTo(message, "listSources");
+    expect(sources.arguments.map((a) => a.getText())).toEqual(["messageId", "listLive", "groupMembers"]);
+    // The marks the bookmark list shows: every bubble it lists, each block by its key.
+    const marks = find(message, ts.isVariableDeclaration).find((d) => d.name.getText() === "bookmarkedBlocks");
+    expect(marks?.initializer?.getText()).toMatch(/sources\.flatMap\(\(id\) =>[\s\S]*blockKey\(id, b\.blockIndex\)/);
+  });
+
+  test("a pick targets the bubble its block belongs to — never the one whose ⋯ opened the list", () => {
+    const pick = (kind: string) => {
+      const picker = pickers.find((p) => attr(p, "kind")?.initializer?.getText() === `"${kind}"`)!;
+      return attr(picker, "onPick")!.initializer!.getText();
+    };
+    expect(pick("quote")).toMatch(/messageId: choice\.messageId,\s*blockIndex: choice\.blockIndex,/);
+    expect(pick("bookmark")).toMatch(/bmApi\.toggle\(choice\.messageId, choice\.blockIndex\)/);
+    expect(pick("quote") + pick("bookmark")).not.toMatch(/\{ messageId,|toggle\(messageId/);
+  });
+
+  test("the ⋯ offers the lists while a bubble it lists is settled — not only while the last one is", () => {
+    const [menu] = jsx(message, "AssistantMoreMenu");
+    for (const name of ["onPickBlock", "onPickBookmarkBlock"]) {
+      const offered = attr(menu, name)!.initializer!.getText();
+      expect(offered, name).toMatch(/sources\.length > 0/);
+      expect(offered, name).not.toMatch(/quoteRunning/);
+    }
+    const items = jsx(fnNamed(CHAT, "AssistantMoreMenu")!, "ActionBarMoreItem").filter((i) =>
+      /onPick(Bookmark)?Block/.test(attr(i, "onSelect")?.getText() ?? ""),
+    );
+    expect(items).toHaveLength(2);
+    for (const item of items) expect(attr(item, "disabled"), "the last bubble's stream disables the lists").toBeUndefined();
+  });
+
+  test("the gutter offers through the same rule: a block offering nothing gets no row, a block without text no quote", () => {
+    const gutter = fnNamed(GUTTER, "BookmarkGutterInner")!;
+    const offers = callsTo(gutter, "blockOffer");
+    expect(offers).toHaveLength(1);
+    expect(offers[0].arguments[0].getText()).toMatch(/^blockFace\(/);
+    expect(gutter.getText()).toMatch(/if \(offer === null\) continue;/);
+    // The innermost condition around the reply button (pre-order: the outer first).
+    const reply = find(gutter, ts.isConditionalExpression)
+      .filter((c) => /oc-bmk-gutter--reply/.test(c.whenTrue.getText()))
+      .pop();
+    expect(reply?.condition.getText()).toBe("onReplyToBlock && hover.quotable");
+  });
+});

@@ -88,6 +88,25 @@ export function collectAnchorBlocks(bubble: Element): Element[] {
   return blocks;
 }
 
+/** What a block shows a reader (lot 21): its text, and — for a block that shows
+ *  media (an image, a video, a drawing) — the media's alt text. A rule or an empty
+ *  block shows nothing. The gutter and the block lists both read blocks through it. */
+export type BlockFace = { text: string; alt: string; media: boolean };
+
+const MEDIA = "img, picture, video, audio, canvas, svg, iframe";
+
+export function blockFace(block: Element): BlockFace {
+  const images = block.matches("img") ? [block] : [...block.querySelectorAll("img")];
+  return {
+    text: block.textContent ?? "",
+    alt: images
+      .map((img) => img.getAttribute("alt")?.trim() ?? "")
+      .filter((alt) => alt !== "")
+      .join(", "),
+    media: block.matches(MEDIA) || block.querySelector(MEDIA) !== null,
+  };
+}
+
 /**
  * Resolve a bookmark anchor to the DOM element the UI scrolls to / marks:
  * the block at blockIndex, falling back to the BUBBLE when the index is gone
