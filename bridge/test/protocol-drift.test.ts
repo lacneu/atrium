@@ -310,6 +310,92 @@ describe("protocol drift detector", () => {
   });
 });
 
+describe("agent data: phases and keys the inventory never emits", () => {
+  const agentFrame = (stream: string, data: Record<string, unknown>): unknown => ({
+    type: "event",
+    event: "agent",
+    payload: { runId: "r", seq: 1, stream, ts: 1, data },
+  });
+  // The Convex boundary stores a field-drift shape only when it matches its closed grammar
+  // (convex/compat.ts BASE: `agent` and one to three `[A-Za-z0-9_]{1,64}` segments).
+  // Restated here because the bridge cannot import that module; a shape outside it would
+  // be counted at the boundary and never named.
+  const CONVEX_FIELD_GRAMMAR = /^agent(?:\.[A-Za-z0-9_]{1,64}){1,3}$/;
+
+  it("a frame the inventory emits reports nothing", () => {
+    protocolDrift.observe(
+      agentFrame("lifecycle", { phase: "waiting-approval", approvalId: "a1", toolCallId: "t1" }),
+    );
+    protocolDrift.observe(
+      agentFrame("lifecycle", { phase: "error", error: "x", executionSettled: true, startedAt: 1, endedAt: 2 }),
+    );
+    protocolDrift.observe(agentFrame("tool", { phase: "input_delta", name: "edit", toolCallId: "t", diff: "…" }));
+    protocolDrift.observe(agentFrame("usage", { inputTokens: 1, outputTokens: 2 }));
+    protocolDrift.observe(agentFrame("error", { reason: "seq gap", expected: 3, received: 4 }));
+    expect(protocolDrift.report()).toEqual([]);
+  });
+
+  it("an unknown PHASE is counted under its stream, digested — never named", () => {
+    protocolDrift.observe(agentFrame("lifecycle", { phase: "AliceMartin" }));
+    protocolDrift.observe(agentFrame("lifecycle", { phase: "AliceMartin" }));
+    const report = protocolDrift.report();
+    expect(report).toHaveLength(1);
+    expect(report[0]!.count).toBe(2);
+    expect(report[0]!.shape).toMatch(/^agent\.lifecycle\.phase_[0-9a-f]{8}$/);
+    expect(report[0]!.shape.toLowerCase()).not.toContain("alice");
+    expect(report[0]!.shape).toMatch(CONVEX_FIELD_GRAMMAR);
+  });
+
+  it("an unknown KEY is counted by NAME under its stream, never with its value", () => {
+    protocolDrift.observe(agentFrame("tool", { phase: "result", toolCallId: "t", brandNewKey: "secret content" }));
+    const shapes = protocolDrift.report().map((d) => d.shape);
+    expect(shapes).toEqual(["agent.tool.data_brandNewKey"]);
+    expect(JSON.stringify(protocolDrift.report())).not.toContain("secret");
+    expect(shapes[0]).toMatch(CONVEX_FIELD_GRAMMAR);
+  });
+
+  it("a key that is not a plain identifier is digested, not named", () => {
+    protocolDrift.observe(agentFrame("tool", { phase: "result", "alice@example.com": 1 }));
+    const shapes = protocolDrift.report().map((d) => d.shape);
+    expect(shapes).toHaveLength(1);
+    expect(shapes[0]).toMatch(/^agent\.tool\.datakey_[0-9a-f]{8}$/);
+    expect(shapes[0]).toMatch(CONVEX_FIELD_GRAMMAR);
+  });
+
+  it("a stream whose emitters write no phase has no phase VALUE to judge", () => {
+    // `usage` has no phase in the inventory; the `phase` KEY itself is known on every
+    // stream (the unresolved-stream emitters declare it), so nothing is reported — where
+    // a stream with phases (above) digests an unknown one.
+    protocolDrift.observe(agentFrame("usage", { phase: "AliceMartin", outputTokens: 1 }));
+    expect(protocolDrift.report()).toEqual([]);
+  });
+
+  it("keys an unresolved-stream emitter writes are known on every stream", () => {
+    // `pluginId` comes from the plugin SDK's emitter, whose stream is its caller's.
+    protocolDrift.observe(agentFrame("lifecycle", { phase: "start", startedAt: 1, pluginId: "p" }));
+    expect(protocolDrift.report()).toEqual([]);
+  });
+
+  it("dotted (plugin-scoped) streams and unknown streams are not judged further", () => {
+    protocolDrift.observe(agentFrame("acme.provenance", { phase: "whatever", anything: 1 }));
+    protocolDrift.observe(agentFrame("brandnew", { phase: "whatever", anything: 1 }));
+    const shapes = protocolDrift.report().map((d) => d.shape);
+    expect(shapes).toHaveLength(1);
+    expect(shapes[0]).toMatch(/^agent\.stream_[0-9a-f]{8}$/);
+  });
+
+  it("prototype-named phases and keys cannot silence or break the detector", () => {
+    for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+      protocolDrift.resetForTests();
+      protocolDrift.observe(agentFrame("lifecycle", { phase: name }));
+      protocolDrift.observe(agentFrame("lifecycle", JSON.parse(`{"phase":"start","${name}":1}`)));
+      const shapes = protocolDrift.report().map((d) => d.shape);
+      expect(shapes.some((s) => /^agent\.lifecycle\.phase_[0-9a-f]{8}$/.test(s)), name).toBe(true);
+      expect(shapes.some((s) => s.startsWith("«detector-failure»")), name).toBe(false);
+    }
+  });
+});
+
 describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", () => {
   interface Manifest {
     schemas: Record<

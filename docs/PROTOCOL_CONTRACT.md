@@ -110,6 +110,63 @@ stays RED until a human classifies each one (handled / ignored-with-reason /
 gap-with-note). A protocol evolution can no longer arrive silently: **the
 diff between two vendored versions IS the migration checklist.**
 
+**The manifest tells the truth about the code.** `bridge/test/coverage-truth.test.ts`
+holds the manifest to the bridge source in both directions. A `handled` entry under
+the truth ratchet anchors a token present in the comment-stripped source and carries
+a proof. A `gap` or `ignored` entry may not be read where its schema is read:
+`bridge/protocol/openclaw/read-sites.json` names, per schema, the functions that read
+its payload (or build it, for a `*Params` schema), and the test collects, through the
+TypeScript parser, the property names each of those functions touches. A field the
+manifest declares unread and that one of its schema's read sites touches is refused,
+unless the entry declares the reader (`knownReaders`) or the read sites declare the name
+a homonym there, with why. A schema the bridge reads with no read site is refused too;
+the schemas still built inline in multi-purpose functions are listed, with the reason,
+and that list can only shrink.
+
+## The agent channel's emissions
+
+`AgentEventSchema.data` is an open record upstream: no schema says which `stream`
+values exist, which `data.phase` each one moves through, or which `data` keys it
+carries. That surface is derived from the code that emits it.
+
+```
+bridge/protocol/openclaw/<version>/agent-emissions.json   # DERIVED inventory
+bridge/protocol/openclaw/emissions/<version>.json          # its classification
+```
+
+- **The inventory.** `bridge/scripts/lib/derive-agent-emissions.mjs` loads the whole
+  upstream program with its type checker, starts from the one dispatcher that hands an
+  event to the public listeners, and discovers every emitter by following references.
+  Each row is an emission site with its stream, phase and keys; a value it cannot
+  resolve is an opaque row with its reason. It also records the frames the gateway
+  fabricates on the channel, the keys it rewrites after emission, and the chat
+  content-part types its display projection produces. Its completeness is accounted:
+  every identifier spelled like an emitter is classified, and vendoring refuses an
+  inventory that leaves one unaccounted. The vendoring script writes it beside the
+  schemas; `PROVENANCE.json` records its fingerprint (`sha256`), the extractor's full
+  output (`fullSha256`) and the extractor itself (`deriverSha256`), and
+  `vendor-integrity.test.ts` recomputes the fingerprint and the summary.
+- **The diff between two versions** is a readable report:
+  `bridge/scripts/diff-agent-emissions.mjs <old> <new>` lists the streams, pairs and keys
+  added or removed, and the emission rows added, removed, modified or moved.
+- **The classification.** Every (stream, phase) pair, every key an emitter writes and
+  every key a gateway rewrite adds is classified: `handled` (an anchor present in the
+  code and a proof — a golden capture that carries it, checked by opening the file, or a
+  deterministic test that names it), `ignored` (a deliberate exclusion, said why) or
+  `gap` (the identifier of the known defect and its impact).
+  `bridge/test/emissions-coverage.test.ts` refuses the promised version until every
+  emission of its inventory is classified, and refuses an entry for an emission the
+  version no longer has.
+- **The drift detector's known vocabulary** (`agent-emission-vocabulary.ts`: streams,
+  phases per stream, keys per stream, content-part types) is generated from the
+  vendored inventories (`bridge/scripts/emission-vocabulary.mjs --write`) and compared
+  to them element by element. On a known stream, a `data.phase` value outside it is
+  counted digested (`agent.<stream>.phase_<digest>`) and a `data` key outside it by name
+  (`agent.<stream>.data_<key>`) — never a value, never content.
+- **On the live bench**, every captured agent frame must exist in the inventory (a
+  core-stream frame it cannot vouch for means the extractor missed an emitter), and
+  the inventoried pairs no capture shows are listed as the scenarios still to write.
+
 The output is a support matrix carried by the `/compat` payload: what this
 bridge build supports, and what it does not.
 

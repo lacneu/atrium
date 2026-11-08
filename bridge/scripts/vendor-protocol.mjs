@@ -12,13 +12,18 @@
 // tag, plus a sha256 per file. `vendor-integrity.test.ts` recomputes those hashes, so
 // a hand-edited "verbatim" file fails a gate instead of quietly becoming fiction.
 //
+// Beside the schemas it writes the DERIVED artifacts: the session snapshot's field names,
+// the announced and broadcast event catalogues, and the agent channel's emission
+// inventory (`agent-emissions.json`, the input of the emission classification ratchet —
+// diff two versions of it with scripts/diff-agent-emissions.mjs).
+//
 // Usage:
 //   node scripts/vendor-protocol.mjs 2026.7.1 [--src <path to an openclaw checkout>]
 //
 // With no `--src`, a shallow clone of `v<version>` goes to a temp dir. A cached
 // checkout is faster and is what the bench already keeps around.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,6 +37,8 @@ import {
   SNAPSHOT_SOURCE,
   deriveSnapshotFields,
 } from "./lib/derive-snapshot.mjs";
+import { INVENTORY_SCHEMA, ROOT_SOURCE } from "./lib/derive-agent-emissions.mjs";
+import { VENDORED_DROPS, vendoredView } from "./lib/emission-vocabulary.mjs";
 import {
   CATALOGUE_CONST_SOURCE,
   CATALOGUE_SOURCE,
@@ -560,6 +567,64 @@ if (BROADCAST_CONST_SOURCE !== CATALOGUE_CONST_SOURCE) {
 const broadcastConstRaw = catalogueConstRaw;
 const broadcastCatalogue = deriveBroadcastCatalogue(broadcastRaw, broadcastConstRaw, broadcastSource);
 
+// And the EMISSION inventory of the `agent` channel (lib/derive-agent-emissions.mjs).
+// `AgentEventSchema.data` is an open record, so no vendored schema says which streams,
+// phases and `data` keys a frame can carry; the inventory reads them out of the code that
+// emits them, over the whole upstream program. Same rule as the derivations above: it runs
+// BEFORE anything is written, and an inventory that does not account for every identifier
+// it met aborts the vendoring — an inventory one emitter short is a shorter vocabulary the
+// classification ratchet (test/emissions-coverage.test.ts) would then bless.
+//
+// A CHILD process, because the derivation holds ~20k upstream files in memory: the
+// extractor's CLI re-executes itself with a 12 GB heap. Roughly 70 s per version.
+const EMISSIONS_DERIVER = path.join(import.meta.dirname, "lib", "derive-agent-emissions.mjs");
+const upstreamTsconfig = path.join(src, "tsconfig.json");
+if (!fs.existsSync(upstreamTsconfig)) {
+  throw new Error(`upstream has no root tsconfig.json at v${version} — the emission inventory needs its paths`);
+}
+const emissionsTmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-emissions-")), "inventory.json");
+console.error(`[vendor] deriving the agent emission inventory (whole upstream program, ~70 s)…`);
+const derived = spawnSync(
+  process.execPath,
+  [
+    EMISSIONS_DERIVER,
+    "--root", src,
+    "--tsconfig", upstreamTsconfig,
+    "--version", version,
+    "--commit", upstreamSha,
+    "--out", emissionsTmp,
+  ],
+  { stdio: ["ignore", "inherit", "inherit"] },
+);
+if (derived.status !== 0) {
+  throw new Error(`the emission inventory did not derive at v${version} (exit ${derived.status ?? derived.signal})`);
+}
+const emissionsFullText = fs.readFileSync(emissionsTmp, "utf-8");
+fs.rmSync(path.dirname(emissionsTmp), { recursive: true, force: true });
+const emissionsInventory = JSON.parse(emissionsFullText);
+if (emissionsInventory.schema !== INVENTORY_SCHEMA) {
+  throw new Error(`emission inventory schema ${emissionsInventory.schema}, expected ${INVENTORY_SCHEMA}`);
+}
+if (emissionsInventory.upstream?.version !== version || emissionsInventory.upstream?.commit !== upstreamSha) {
+  throw new Error(`emission inventory names ${emissionsInventory.upstream?.version}@${emissionsInventory.upstream?.commit}, not v${version}@${upstreamSha}`);
+}
+const unaccounted = emissionsInventory.completeness?.unaccounted;
+if (unaccounted !== 0) {
+  throw new Error(
+    `the emission inventory leaves ${unaccounted} identifier(s) of the emitter family unaccounted ` +
+      `at v${version} — refusing to vendor an inventory that may be short (see completeness.unaccountedReferences)`,
+  );
+}
+if (!Array.isArray(emissionsInventory.emissions) || emissionsInventory.emissions.length === 0) {
+  throw new Error(`the emission inventory found no emission at v${version}`);
+}
+const emissionsRootRaw = readUpstream(ROOT_SOURCE);
+const emissionsDeriverSha = (() => {
+  const h = createHash("sha256");
+  h.update(fs.readFileSync(EMISSIONS_DERIVER));
+  return h.digest("hex");
+})();
+
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const files = {};
 const { entries: vendorEntries, skipped: vendorSkipped } = resolveVendorEntries(FILES, version);
@@ -733,6 +798,36 @@ const broadcastCatalogueRecord = writeDerivedArtifact({
   body: { events: broadcastCatalogue.events, scopes: broadcastCatalogue.scopes },
 });
 
+// --- DERIVED artifact: the emission inventory of the `agent` channel ------------------
+//
+// Derived from the whole program, so it is attributed to the module the derivation STARTS
+// from (the bus that owns `dispatchAgentEvent`) and pinned twice: `sha256` is the
+// FINGERPRINT of the file written here, which vendor-integrity.test.ts recomputes, and
+// `fullSha256` is the extractor's complete output — the vendored view drops only its
+// identifier-by-identifier audit lists (VENDORED_DROPS), so re-running the extractor on
+// the tag reproduces that hash or names a discrepancy. `deriverSha256` says which
+// extractor produced it.
+const emissionsRecord = writeDerivedArtifact({
+  name: "agent-emissions.json",
+  about:
+    `The emission surface of the gateway's \`agent\` channel at v${version}: every site ` +
+    `that emits an agent event (stream, phase, data keys), the frames the gateway itself ` +
+    `fabricates or rewrites on that channel, and the chat content-part types its display ` +
+    `projection produces. DERIVED from the whole upstream program by ` +
+    `scripts/lib/derive-agent-emissions.mjs, starting from ${ROOT_SOURCE}; the bulky audit ` +
+    `lists of its completeness claim are left out (${VENDORED_DROPS.join(", ")}). Do not ` +
+    `edit by hand: re-run scripts/vendor-protocol.mjs.`,
+  source: ROOT_SOURCE,
+  raw: emissionsRootRaw,
+  countOf: "emissions",
+  body: vendoredView(emissionsInventory),
+});
+emissionsRecord.sha256 = sha256(fs.readFileSync(path.join(OUT_DIR, "agent-emissions.json"), "utf-8"));
+emissionsRecord.fullSha256 = sha256(emissionsFullText);
+emissionsRecord.deriver = "scripts/lib/derive-agent-emissions.mjs";
+emissionsRecord.deriverSha256 = emissionsDeriverSha;
+emissionsRecord.schema = INVENTORY_SCHEMA;
+
 fs.writeFileSync(
   path.join(OUT_DIR, "PROVENANCE.json"),
   `${JSON.stringify(
@@ -750,6 +845,7 @@ fs.writeFileSync(
         "session-event-snapshot.json": snapshotRecord,
         "event-catalogue.json": eventCatalogueRecord,
         "broadcast-catalogue.json": broadcastCatalogueRecord,
+        "agent-emissions.json": emissionsRecord,
       },
     },
     null,

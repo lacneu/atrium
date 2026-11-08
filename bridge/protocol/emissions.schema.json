@@ -1,0 +1,59 @@
+{
+  "$comment": "Meta-schema of the emission classification registries (bridge/protocol/openclaw/emissions/<version>.json). This file DOCUMENTS the shape; test/emissions-coverage.test.ts ENFORCES it (the enums below are asserted equal to the test's own constants). The registry classifies the emission inventory of the same version (protocol/openclaw/<version>/agent-emissions.json): every (stream, phase) pair under `streams.<stream>.phases`, every data key an emission row (or a gateway-fabricated frame) writes under `streams.<stream>.keys`, and every key a gateway rewrite adds after emission under `rewrites` (`<scope>:<function>:<key>`). Text forms are the inventory's: `-` = no phase key, `<opaque>` = a value the derivation could not resolve. Statuses: handled = Atrium reads it, with an `anchor` present in the comment-stripped bridge source (the coverage-truth rule) and a `proof` (a golden-corpus scenario that carries it, or a deterministic test that names it, with the reason the corpus cannot); gap = a known defect, named by its identifier (`gap`, e.g. F1) with its impact (`note`); ignored = a deliberate exclusion (`why`) — a why that describes a breakage is a gap.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["version", "streams", "rewrites"],
+  "properties": {
+    "$comment": { "type": "string" },
+    "version": { "type": "string", "minLength": 1 },
+    "streams": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["phases", "keys"],
+        "properties": {
+          "phases": { "type": "object", "additionalProperties": { "$ref": "#/$defs/entry" } },
+          "keys": { "type": "object", "additionalProperties": { "$ref": "#/$defs/entry" } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rewrites": { "type": "object", "additionalProperties": { "$ref": "#/$defs/entry" } }
+  },
+  "$defs": {
+    "status": { "enum": ["handled", "ignored", "gap"] },
+    "proofKind": { "enum": ["golden-corpus", "deterministic-test"] },
+    "entry": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "by": { "type": "string" },
+        "why": { "type": "string" },
+        "note": { "type": "string" },
+        "gap": { "type": "string", "pattern": "^[A-Z]{1,2}[0-9]{1,3}$" },
+        "anchor": {
+          "type": "object",
+          "required": ["file", "token"],
+          "properties": {
+            "file": { "type": "string", "pattern": "^src/[A-Za-z0-9_./-]+\\.ts$" },
+            "token": { "type": "string", "minLength": 3 }
+          },
+          "additionalProperties": false
+        },
+        "proof": {
+          "$comment": "golden-corpus: `ref` is a scenario of this version's corpus, or `<version>/<scenario>` of another vendored corpus; the test checks the capture carries the pair or key. deterministic-test: `ref` is a bridge test file that names the phase or key, `note` says why no capture shows it.",
+          "type": "object",
+          "required": ["kind", "ref"],
+          "properties": {
+            "kind": { "$ref": "#/$defs/proofKind" },
+            "ref": { "type": "string", "minLength": 3 },
+            "note": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

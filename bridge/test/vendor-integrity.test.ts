@@ -34,8 +34,12 @@
 // bench keeps one), and says so out loud when it is not, rather than reporting a
 // success it has not earned.
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { vendoredVersions } from "./helpers/vendored.js";
@@ -45,6 +49,18 @@ import { SNAPSHOT_SITES, deriveSnapshotFields } from "../scripts/lib/derive-snap
 import { deriveEventCatalogue } from "../scripts/lib/derive-event-catalogue.mjs";
 // @ts-expect-error — plain .mjs helper, no types
 import { deriveBroadcastCatalogue } from "../scripts/lib/derive-broadcast-catalogue.mjs";
+// @ts-expect-error — plain .mjs helper, no types
+import { INVENTORY_SCHEMA, ROOT_SOURCE, summarize } from "../scripts/lib/derive-agent-emissions.mjs";
+// @ts-expect-error — plain .mjs helper, no types
+import { VENDORED_DROPS, vendoredView } from "../scripts/lib/emission-vocabulary.mjs";
+
+const EMISSIONS_DERIVER = new URL("../scripts/lib/derive-agent-emissions.mjs", import.meta.url);
+
+/** The emission inventory: derived from the WHOLE upstream program rather than one
+ *  module, so it is attributed to the module its derivation starts from and pinned by
+ *  its own fingerprint (`sha256` of the vendored file) plus the extractor's full output
+ *  (`fullSha256`). */
+const EMISSIONS_ARTIFACT = "agent-emissions.json";
 
 /** Derived artifacts that read (source + constants module) and yield a NAME list,
  *  keyed by artifact file name. An artifact absent here has no re-derivation and FAILS
@@ -103,6 +119,14 @@ interface Provenance {
       events?: number;
       constantsPath?: string;
       constants?: string;
+      /** The emission inventory only: rows, its fingerprint, the extractor's full output
+       *  and which extractor produced it. */
+      emissions?: number;
+      sha256?: string;
+      fullSha256?: string;
+      deriver?: string;
+      deriverSha256?: string;
+      schema?: string;
     }
   >;
 }
@@ -345,17 +369,78 @@ describe("vendored protocol integrity", () => {
           const body = JSON.parse(
             readFileSync(new URL(`${version}/${name}`, PROTOCOL), "utf-8"),
           ) as Record<string, unknown>;
-          const countKeys = (["fields", "events"] as const).filter(
+          const countKeys = (["fields", "events", "emissions"] as const).filter(
             (k) => typeof rec[k] === "number",
           );
           expect(countKeys, `${name}: exactly one count key expected`).toHaveLength(1);
-          const key = countKeys[0] as "fields" | "events";
+          const key = countKeys[0] as "fields" | "events" | "emissions";
           expect(rec[key], `${name} derived an empty list`).toBeGreaterThan(0);
           // The artifact must AGREE with its record, so a hand-edited list is caught
           // without needing a checkout.
           expect(body.derivedFrom, name).toBe(rec.upstreamPath);
           expect(body.derivedFromSha256, name).toBe(rec.upstream);
           expect((body[key] as unknown[] | undefined)?.length, name).toBe(rec[key]);
+          // The emission count key belongs to the inventory and to nothing else.
+          expect(key === "emissions", `${name}: the emissions count is the inventory's`).toBe(
+            name === EMISSIONS_ARTIFACT,
+          );
+        }
+      });
+
+      it("the EMISSION inventory is the fingerprint its record names, and is whole", () => {
+        // The inventory cannot be re-derived here (the whole upstream program, ~12 GB and
+        // ~70 s), so what this checks without a checkout is everything a hand edit or a
+        // stale copy breaks: the bytes against the recorded FINGERPRINT, the record's
+        // attribution against the directory's, the summary against the rows it
+        // summarizes, and the completeness claim the vendoring refused to drop.
+        if (prov === null) return;
+        const rec = prov.derived?.[EMISSIONS_ARTIFACT];
+        const file = new URL(`${version}/${EMISSIONS_ARTIFACT}`, PROTOCOL);
+        if (rec === undefined) {
+          // Versions vendored before the inventory existed: absent on disk AND in the
+          // record, which the attribution test above already holds together.
+          expect(existsSync(file), `${EMISSIONS_ARTIFACT} on disk with no record`).toBe(false);
+          return;
+        }
+        const text = readFileSync(file, "utf-8");
+        expect(sha256(text), "hand-edited emission inventory — re-run the vendoring script").toBe(
+          rec.sha256,
+        );
+        expect(rec.fullSha256, "the extractor's full output is not pinned").toMatch(/^[0-9a-f]{64}$/);
+        expect(rec.deriverSha256, "the extractor is not named").toMatch(/^[0-9a-f]{64}$/);
+        expect(rec.deriver).toBe("scripts/lib/derive-agent-emissions.mjs");
+        expect(rec.upstreamPath).toBe(ROOT_SOURCE);
+        const body = JSON.parse(text) as {
+          schema: string;
+          upstream: { version: string; commit: string };
+          completeness: { unaccounted: number; identifiers: number; matched: number; homonyms: number };
+          emissions: unknown[];
+          summary: unknown;
+        } & Record<string, unknown>;
+        expect(body.schema).toBe(INVENTORY_SCHEMA);
+        expect(rec.schema).toBe(INVENTORY_SCHEMA);
+        expect(body.upstream.version, "the inventory names another version").toBe(version);
+        expect(body.upstream.commit, "the inventory was derived from another commit").toBe(
+          prov.upstreamSha,
+        );
+        // The claim the vendoring refuses to vendor without: every identifier spelled like
+        // an emitter is accounted for — and the arithmetic of that claim holds.
+        expect(body.completeness.unaccounted).toBe(0);
+        expect(body.completeness.matched + body.completeness.homonyms).toBe(
+          body.completeness.identifiers,
+        );
+        // The summary is a function of the rows; an edited row with a stale summary (or
+        // the reverse) is caught by recomputing it.
+        expect(JSON.stringify(summarize(body)), "summary disagrees with the rows").toBe(
+          JSON.stringify(body.summary),
+        );
+        // The documented view: the dropped audit lists are absent.
+        for (const dotted of VENDORED_DROPS as string[]) {
+          let node: unknown = body;
+          for (const part of dotted.split(".")) {
+            node = node !== null && typeof node === "object" ? (node as Record<string, unknown>)[part] : undefined;
+          }
+          expect(node, `${dotted} is vendored although the view drops it`).toBeUndefined();
         }
       });
 
@@ -424,6 +509,47 @@ describe("vendored protocol integrity", () => {
               ) => string[]
             )(raw, { fnName: site.fn, sourceLabel: site.source });
             stored = body.fields ?? [];
+          } else if (name === EMISSIONS_ARTIFACT) {
+            // The WHOLE program, not one file: ~12 GB and ~70 s, which no routine test run
+            // should pay. Re-derived on request only; otherwise the gap is SAID, like the
+            // missing-checkout case above. The vendoring script runs the same derivation, so
+            // `vendor-protocol.mjs <version> --src <checkout> && git diff --exit-code` is the
+            // same check by hand.
+            if (process.env.ATRIUM_REDERIVE_EMISSIONS !== "1") {
+              console.warn(
+                `[vendor-integrity] ${version}: ${name} NOT re-derived (whole upstream ` +
+                  `program, ~12 GB / ~70 s) — set ATRIUM_REDERIVE_EMISSIONS=1 to re-derive it ` +
+                  `against ${root}.`,
+              );
+              continue;
+            }
+            const out = join(mkdtempSync(join(tmpdir(), "agent-emissions-")), "inventory.json");
+            const run = spawnSync(
+              process.execPath,
+              [
+                fileURLToPath(EMISSIONS_DERIVER),
+                "--root", root,
+                "--tsconfig", `${root}/tsconfig.json`,
+                "--version", version,
+                "--commit", prov.upstreamSha,
+                "--out", out,
+              ],
+              { stdio: "inherit" },
+            );
+            if (run.status !== 0) {
+              wrong.push(`${name}: the extractor failed on the checkout (exit ${run.status})`);
+              continue;
+            }
+            const full = readFileSync(out, "utf-8");
+            rmSync(dirname(out), { recursive: true, force: true });
+            if (sha256(full) !== rec.fullSha256) {
+              wrong.push(`${name}: the checkout's full inventory is not the one recorded (fullSha256)`);
+              continue;
+            }
+            const { _about: _a, derivedFrom: _f, derivedFromSha256: _s, ...vendoredBody } =
+              body as Record<string, unknown>;
+            rederived = vendoredView(JSON.parse(full));
+            stored = vendoredBody;
           } else if (name in CONSTANT_BACKED_DERIVERS) {
             // The two catalogues resolve names from the same constants module, and the
             // same sha rule applies to both — ONE block, or a hardening reaches only one.
@@ -458,7 +584,8 @@ describe("vendored protocol integrity", () => {
           wrong,
           `a derived artifact does not match v${version}'s real source: ${wrong.join(", ")}`,
         ).toEqual([]);
-      });
+        // The emission re-derivation, when asked for, runs the whole upstream program.
+      }, process.env.ATRIUM_REDERIVE_EMISSIONS === "1" ? 900_000 : undefined);
 
       it("records every schema file present in the directory", () => {
         if (prov === null) return;

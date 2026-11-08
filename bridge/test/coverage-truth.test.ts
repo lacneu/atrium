@@ -28,7 +28,9 @@ import { describe, expect, it } from "vitest";
 import { COMPAT_MANIFEST } from "../src/compat.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { stripComments } from "../scripts/lib/derive-event-catalogue.mjs";
-import { vendoredVersions } from "./helpers/vendored.js";
+// @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
+import { touchedNames } from "../scripts/lib/touched-names.mjs";
+import { promisedVersion, vendoredVersions } from "./helpers/vendored.js";
 
 interface FieldEntry {
   status: "handled" | "ignored" | "gap";
@@ -387,6 +389,205 @@ describe("coverage-truth — the manifest may not lie about the code", () => {
           if (!r.note || r.note.length < 10) {
             bad.push(`${where}: a knownReader must SAY why the flow does not happen`);
           }
+        }
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// V3 — a field declared UNREAD may not be read at the schema's own read sites (2026-11-08).
+//
+// THE DEFECT THIS GUARDS. V1/V2 enforce truth on the ratchet's fields only; outside it a
+// `gap` or `ignored` was never confronted with the code, and 2026.9.36's manifest carried
+// the result: `HelloOk.server/policy/auth/features` and `ShutdownEvent.reason/
+// restartExpectedMs` declared "not yet instructed" while the bridge read them, the
+// `AgentActivityItem` fields the delivery cards are built from declared gaps, the
+// `inFlightRun` reread called unread. A whole-bridge textual sweep cannot judge a generic
+// name (`status` is read everywhere, for other objects) — so the question is asked where
+// the answer is unambiguous: inside the functions that read THAT schema's payload
+// (protocol/openclaw/read-sites.json), through the parser (scripts/lib/touched-names.mjs).
+// Scope: the PROMISED version's manifest — the contract the bridge is judged against.
+// ---------------------------------------------------------------------------------------
+
+interface ReadSite {
+  file: string;
+  fn: string | null;
+}
+interface ReadSiteGroup {
+  name: string;
+  schemas: string[];
+  sites: ReadSite[];
+  homonyms: Record<string, string>;
+}
+interface ReadSites {
+  groups: ReadSiteGroup[];
+  unscoped: Record<string, string>;
+  emissionStreams: Record<string, string>;
+}
+type Touched = { reads: Set<string>; writes: Set<string> };
+
+/** Schemas the bridge reads without a declared read site yet. A COPY, like the truth
+ *  floor: the JSON list may shrink freely, but growing it — reading a schema nobody
+ *  scoped — means editing this list, which a reviewer sees. */
+const FROZEN_UNSCOPED: string[] = [
+  // Built or read INLINE in multi-purpose functions (2026-11-08): the backlog that
+  // extracting each builder into a function of its own pays down.
+  "ChatSendParams",
+  "SessionsPatchParams",
+  "CronGetParams",
+  "CronListParams",
+  "CronRemoveParams",
+  "CronRunParams",
+  "CronRunsParams",
+  "CronUpdateParams",
+  "ModelsListParams",
+  "TalkClientCreateResult",
+  "TalkClientToolCallResult",
+  "AgentsFilesSetParams",
+];
+
+const READ_SITES = JSON.parse(
+  readFileSync(new URL("../protocol/openclaw/read-sites.json", import.meta.url), "utf-8"),
+) as ReadSites;
+
+const TOUCHED = new Map<string, { functions: Map<string, Touched>; file: Touched }>();
+function touchedAt(site: ReadSite): Touched | null {
+  if (!/^src\/[A-Za-z0-9_./-]+\.ts$/.test(site.file) || site.file.includes("%") || site.file.includes("..")) {
+    return null;
+  }
+  const at = new URL(`../${site.file}`, import.meta.url);
+  if (!existsSync(at)) return null;
+  let t = TOUCHED.get(site.file);
+  if (t === undefined) {
+    t = touchedNames(readFileSync(at, "utf-8"), site.file) as { functions: Map<string, Touched>; file: Touched };
+    TOUCHED.set(site.file, t);
+  }
+  return site.fn === null ? t.file : (t.functions.get(site.fn) ?? null);
+}
+
+/** The names a group's sites touch for one schema, with where: reads, plus the
+ *  object-literal keys when the schema is one the bridge SENDS (`*Params`). */
+function touchedFor(group: ReadSiteGroup, schema: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const site of group.sites) {
+    const t = touchedAt(site);
+    if (t === null) continue;
+    const names = schema.endsWith("Params") ? [...t.reads, ...t.writes] : [...t.reads];
+    for (const n of names) out.set(n, [...(out.get(n) ?? []), `${site.file}${site.fn ? `#${site.fn}` : ""}`]);
+  }
+  return out;
+}
+
+describe("coverage-truth V3 — a field declared unread is not read at its schema's read sites", () => {
+  const PROMISED = promisedVersion();
+  const manifest = manifestOf(PROMISED);
+  const scoped = new Map<string, ReadSiteGroup>();
+  for (const g of READ_SITES.groups) for (const s of g.schemas) scoped.set(s, g);
+
+  it("every read site exists — a site that names nothing scopes nothing", () => {
+    const bad: string[] = [];
+    for (const g of READ_SITES.groups) {
+      if (g.sites.length === 0) bad.push(`${g.name}: no site`);
+      for (const site of g.sites) {
+        if (touchedAt(site) === null) bad.push(`${g.name}: ${site.file}${site.fn ? `#${site.fn}` : ""} not found`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("every scoped schema exists in the promised manifest, in one group only", () => {
+    const bad: string[] = [];
+    const seen = new Set<string>();
+    for (const g of READ_SITES.groups) {
+      for (const s of g.schemas) {
+        if (manifest.schemas[s] === undefined) bad.push(`${g.name}: ${s} is not a schema of ${PROMISED}`);
+        if (seen.has(s)) bad.push(`${s} is scoped twice`);
+        seen.add(s);
+        if (READ_SITES.unscoped[s] !== undefined) bad.push(`${s} is both scoped and unscoped`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("COMPLETE: every schema the bridge reads is scoped, or unscoped with a reason — and that list only shrinks", () => {
+    // A schema with a handled field is one the bridge reads; if it also declares fields
+    // unread, those declarations are only checkable at its read sites.
+    const missing: string[] = [];
+    for (const [name, entry] of Object.entries(manifest.schemas)) {
+      const fields = Object.values(entry.fields ?? {});
+      const reads = fields.some((f) => f.status === "handled");
+      const unread = fields.some((f) => f.status !== "handled" && (f.knownReaders ?? []).length === 0);
+      // A schema of agent `data` is checked against the emission registry instead (below).
+      const checked = scoped.has(name) || READ_SITES.emissionStreams[name] !== undefined;
+      if (reads && unread && !checked && READ_SITES.unscoped[name] === undefined) missing.push(name);
+    }
+    expect(missing, "read by the bridge, but no read site declared — add a group (read-sites.json)").toEqual([]);
+    const bad = Object.entries(READ_SITES.unscoped)
+      .filter(([, why]) => (why ?? "").trim().length < 10)
+      .map(([s]) => s);
+    expect(bad, "an unscoped schema says why").toEqual([]);
+    const grown = Object.keys(READ_SITES.unscoped).filter((s) => !FROZEN_UNSCOPED.includes(s));
+    expect(grown, "the unscoped list grew — scope the schema instead (or edit FROZEN_UNSCOPED, a review event)").toEqual([]);
+  });
+
+  it("TRUTH: no gap/ignored field is touched at its schema's read sites", () => {
+    const bad: string[] = [];
+    for (const g of READ_SITES.groups) {
+      for (const schema of g.schemas) {
+        const touched = touchedFor(g, schema);
+        for (const [field, e] of Object.entries(manifest.schemas[schema]?.fields ?? {})) {
+          if (e.status === "handled") continue;
+          const at = touched.get(field);
+          if (at === undefined) continue;
+          if (g.homonyms[`${schema}.${field}`] !== undefined) continue;
+          const declared = new Set((e.knownReaders ?? []).map((r) => r.file));
+          const undeclared = at.filter((where) => !declared.has(`bridge/${where.split("#")[0]}`));
+          if (undeclared.length === 0) continue;
+          bad.push(
+            `${PROMISED} ${schema}.${field}: declared ${e.status} but ${[...new Set(undeclared)].join(", ")} reads it — ` +
+              `correct the status, declare the reader (knownReaders), or declare the name a homonym at that site`,
+          );
+        }
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("every homonym declaration is real: the name is touched there, declared unread, and explained", () => {
+    const bad: string[] = [];
+    for (const g of READ_SITES.groups) {
+      for (const [path, why] of Object.entries(g.homonyms)) {
+        const [schema, field] = path.split(".") as [string, string];
+        if (!g.schemas.includes(schema)) {
+          bad.push(`${g.name}: homonym ${path} names a schema outside the group`);
+          continue;
+        }
+        const e = manifest.schemas[schema]?.fields?.[field];
+        if (e === undefined || e.status === "handled") bad.push(`${g.name}: homonym ${path} is not a gap/ignored field`);
+        if (!touchedFor(g, schema).has(field)) bad.push(`${g.name}: homonym ${path} is not touched by the group's sites (stale)`);
+        if ((why ?? "").trim().length < 10) bad.push(`${g.name}: homonym ${path} says why`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("a schema describing agent `data` does not contradict the emission registry", () => {
+    // The emission registry classifies each `data` key of a stream with an anchor and a
+    // VERIFIED proof; the coverage schema of that stream's data must not call a key it
+    // classifies as read unread, or read what it classifies as unread.
+    const registry = JSON.parse(
+      readFileSync(new URL(`../protocol/openclaw/emissions/${PROMISED}.json`, import.meta.url), "utf-8"),
+    ) as { streams: Record<string, { keys: Record<string, { status: string }> }> };
+    const bad: string[] = [];
+    for (const [schema, stream] of Object.entries(READ_SITES.emissionStreams)) {
+      const keys = registry.streams[stream]?.keys ?? {};
+      for (const [field, e] of Object.entries(manifest.schemas[schema]?.fields ?? {})) {
+        const r = keys[field];
+        if (r === undefined) continue;
+        if ((r.status === "handled") !== (e.status === "handled")) {
+          bad.push(`${schema}.${field} is ${e.status} but the emission registry has ${stream}.${field} ${r.status}`);
         }
       }
     }

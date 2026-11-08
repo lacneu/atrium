@@ -1,5 +1,16 @@
 import { randomBytes } from "node:crypto";
 import { ConvexIngestError } from "../../convex-writer.js";
+import {
+  KNOWN_AGENT_ANY_STREAM_DATA_KEYS,
+  KNOWN_AGENT_DATA_KEYS_BY_STREAM,
+  KNOWN_AGENT_PHASES_BY_STREAM,
+  KNOWN_AGENT_STREAMS,
+  KNOWN_CHAT_CONTENT_PART_TYPES,
+} from "./agent-emission-vocabulary.js";
+
+// The agent channel's known vocabulary is DERIVED from the vendored emission inventories
+// (agent-emission-vocabulary.ts); re-exported so readers of this module keep one import.
+export { KNOWN_AGENT_STREAMS, KNOWN_CHAT_CONTENT_PART_TYPES };
 
 // Protocol DRIFT detector (Inc 2 of docs/PROTOCOL_CONTRACT.md).
 //
@@ -444,10 +455,23 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 356,
-  ignored: 813,
-  gaps: 918,
+  handled: 395,
+  ignored: 804,
+  gaps: 888,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  TRUTH GUARD V3 (2026-11-08): the coverage-truth guard now asks the bridge's own read
+   *  sites (protocol/openclaw/read-sites.json) whether a field declared unread is read.
+   *  Forty declarations of this manifest were false. Twenty-nine gaps and ten ignored
+   *  entries became handled — `HelloOk.server/policy/features/auth`, every `ConnectParams`
+   *  field the connect request sends, `ShutdownEvent.reason`, the `AgentActivityItem` keys the
+   *  delivery cards are built from, the session meta `parseSessionMeta` publishes,
+   *  `AgentDatabaseAdmissionRefusal.reason`, the job-level cron fallbacks, `inFlightRun` on a
+   *  tail page, `nextBefore`, `isHeartbeat`, `ChatDeltaEvent.agentId` — and `ShutdownEvent.
+   *  restartExpectedMs` stays a gap, now naming its reader and its defect (S1). Six other
+   *  names it met at a read site are another object's there (declared homonyms); for the
+   *  four `agentId` of the other chat states the stated reason was false all the same and is
+   *  rewritten, `ChatStatusEvent.agentId` moving from gap to ignored like its siblings.
    *
    *  CAPPED ROWS (0.101.3): `chat.message.get` is called — the full message of a row
    *  `chat.history` capped for display — so `ChatMessageGetParams` (sessionKey, messageId,
@@ -543,23 +567,14 @@ export const COVERAGE_SUMMARY = {
     "AgentActivityItem.approvalSlug",
     "AgentActivityItem.commandBearing",
     "AgentActivityItem.endedAt",
-    "AgentActivityItem.error",
     "AgentActivityItem.hideFromChannelProgress",
-    "AgentActivityItem.itemId",
-    "AgentActivityItem.kind",
-    "AgentActivityItem.meta",
-    "AgentActivityItem.name",
-    "AgentActivityItem.progressText",
     "AgentActivityItem.startedAt",
-    "AgentActivityItem.status",
     "AgentActivityItem.summary",
     "AgentActivityItem.suppressChannelProgress",
     "AgentActivityItem.title",
-    "AgentActivityItem.toolCallId",
     "AgentDatabaseAdmissionRefusal.agentId",
     "AgentDatabaseAdmissionRefusal.embeddedOwnerId",
     "AgentDatabaseAdmissionRefusal.paths",
-    "AgentDatabaseAdmissionRefusal.reason",
     "AgentDatabaseAdmissionRefusal.repairHint",
     "AgentKind",
     "AgentSummary.admissionRefusal",
@@ -589,26 +604,16 @@ export const COVERAGE_SUMMARY = {
     "ChatSendParams.replyToId",
     "ChatSendParams.toolBindings",
     "ChatSendParams.workContext",
-    "ChatStatusEvent.agentId",
     "ChatStatusEvent.phase",
     "ChatToolTitlesParams.agentId",
     "ChatToolTitlesParams.items",
     "ChatToolTitlesParams.sessionKey",
     "ChatToolTitlesResult.disabled",
     "ChatToolTitlesResult.titles",
-    "ConnectParams.auth",
-    "ConnectParams.client",
     "ConnectParams.commands",
-    "ConnectParams.device",
-    "ConnectParams.locale",
-    "ConnectParams.maxProtocol",
-    "ConnectParams.minProtocol",
     "ConnectParams.modelCatalog",
     "ConnectParams.pathEnv",
     "ConnectParams.permissions",
-    "ConnectParams.role",
-    "ConnectParams.scopes",
-    "ConnectParams.userAgent",
     "ControlUiLinkReaderDescriptor.icon",
     "ControlUiLinkReaderDescriptor.id",
     "ControlUiLinkReaderDescriptor.label",
@@ -798,15 +803,11 @@ export const COVERAGE_SUMMARY = {
     "GatewaySuspension.phase",
     "GatewayThinkingLevelOption.id",
     "GatewayThinkingLevelOption.label",
-    "HelloOk.auth",
     "HelloOk.controlUiLinkReaders",
     "HelloOk.controlUiTabs",
     "HelloOk.controlUiWidgetKinds",
-    "HelloOk.features",
     "HelloOk.pluginSurfaceUrls",
-    "HelloOk.policy",
     "HelloOk.protocol",
-    "HelloOk.server",
     "HelloOk.snapshot",
     "HelloOk.type",
     "HumanMention.end",
@@ -1162,13 +1163,11 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.channel",
     "SessionRow.chatType",
     "SessionRow.childSessions",
-    "SessionRow.contextTokens",
     "SessionRow.controlOwnerSessionKey",
     "SessionRow.createdAt",
     "SessionRow.createdVia",
     "SessionRow.derivedTitle",
     "SessionRow.displayName",
-    "SessionRow.estimatedCostUsd",
     "SessionRow.execCwd",
     "SessionRow.execNode",
     "SessionRow.expandedParticipants",
@@ -1186,8 +1185,6 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.lastMessagePreview",
     "SessionRow.lastReadAt",
     "SessionRow.lastRunError",
-    "SessionRow.model",
-    "SessionRow.modelProvider",
     "SessionRow.nativeRuntimeConsent",
     "SessionRow.outputTokens",
     "SessionRow.parentSessionId",
@@ -1211,8 +1208,6 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.subagentRole",
     "SessionRow.swarm",
     "SessionRow.swarmGroupId",
-    "SessionRow.totalTokens",
-    "SessionRow.totalTokensFresh",
     "SessionRow.unread",
     "SessionRow.updatedAt",
     "SessionRow.workspaceDir",
@@ -1331,7 +1326,6 @@ export const COVERAGE_SUMMARY = {
     "SessionsStorageParams",
     "SessionsStorageStatusResult.agents",
     "SessionsStorageStatusResult.maintenance",
-    "ShutdownEvent.reason",
     "ShutdownEvent.restartExpectedMs",
     "SkillCuratorLiveEntry.archivedReason",
     "SkillCuratorLiveEntry.createdAtMs",
@@ -1607,41 +1601,10 @@ export type ExceptionSite =
  *  NEVER logged, never reported, never persisted. */
 const UNKNOWN_STATE_SALT = randomBytes(16).toString("hex");
 
-/** Chat `message.content[].type` values the gateway's display projection emits
- *  (v2026.9.6 src/gateway/chat-display-projection*.ts). `canvas` is the inline-widget
- *  preview (providers/openclaw/widgets.ts); the others are read as text or ignored. */
-export const KNOWN_CHAT_CONTENT_PART_TYPES: ReadonlySet<string> = new Set([
-  "text",
-  "canvas",
-  "image",
-  "audio",
-  "video",
-  "attachment",
-  "thinking",
-  "redacted_thinking",
-  "reasoning",
-  "toolCall",
-  "toolResult",
-]);
-
-/** Agent event `stream` values: upstream `AgentEventStream` (v2026.9.6
- *  src/infra/agent-events.ts) plus `run_status`, which the gateway emits under the
- *  open `string` arm (captured live on 2026.9.6). */
-export const KNOWN_AGENT_STREAMS: ReadonlySet<string> = new Set([
-  "lifecycle",
-  "tool",
-  "assistant",
-  "usage",
-  "error",
-  "item",
-  "plan",
-  "approval",
-  "command_output",
-  "patch",
-  "compaction",
-  "thinking",
-  "run_status",
-]);
+/** A `data` key is a NAME, and named like a payload field is — when it is a plain
+ *  identifier the Convex grammar can store (convex/compat.ts SEGMENT, `data_` included).
+ *  Anything else is digested: a key that is not an identifier is not vocabulary. */
+const PLAIN_DATA_KEY = /^[A-Za-z][A-Za-z0-9_]{0,58}$/;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -1860,7 +1823,8 @@ class ProtocolDriftRegistry {
         this.bump(`${prefix}.${key}`);
       }
       // One level INSIDE the two fields the key check above calls "known": a chat
-      // message's content-part `type` and an agent event's `stream`. Both are open
+      // message's content-part `type` and an agent event's `stream` — and, on a known
+      // stream, its `data.phase` and `data` keys (observeAgentData). All are open
       // vocabularies the normalizer reads by value, so a new value is dropped unread —
       // the silence the `canvas` part lived in until widgets were instructed.
       // Digested like an unknown state: a wire value nobody has vouched for.
@@ -1878,12 +1842,12 @@ class ProtocolDriftRegistry {
         const stream = p.stream;
         // A plugin stream is `<pluginId>.<suffix>` — plugin-scoped, and only its
         // `.provenance` suffix is contract; anything else of it is the plugin's own.
-        if (
-          typeof stream === "string" &&
-          !stream.includes(".") &&
-          !KNOWN_AGENT_STREAMS.has(stream)
-        ) {
-          this.bump(`agent.stream_${shortDigest(stream)}`);
+        if (typeof stream === "string" && !stream.includes(".")) {
+          if (!KNOWN_AGENT_STREAMS.has(stream)) {
+            this.bump(`agent.stream_${shortDigest(stream)}`);
+          } else if (isRecord(p.data)) {
+            this.observeAgentData(stream, p.data);
+          }
         }
       }
     } catch (err) {
@@ -1900,6 +1864,34 @@ class ProtocolDriftRegistry {
       } catch {
         // Truly nothing left to do: the detector must not be able to break the feed.
       }
+    }
+  }
+
+  /** One level inside a KNOWN stream's `data`, against the vendored emission inventories
+   *  (agent-emission-vocabulary.ts): a `phase` value no emitter of that stream writes, and
+   *  a key none of them writes. The phase is a wire VALUE — digested, like a stream or a
+   *  state; a key is a NAME — named like a payload field, or digested when it is not a
+   *  plain identifier. Never the value of either. */
+  private observeAgentData(stream: string, data: Record<string, unknown>): void {
+    const phases = Object.hasOwn(KNOWN_AGENT_PHASES_BY_STREAM, stream)
+      ? KNOWN_AGENT_PHASES_BY_STREAM[stream]
+      : undefined;
+    // A stream whose emitters write no phase has none to judge: an unexpected `phase`
+    // there is an unknown KEY, reported once below rather than twice.
+    const phase = data.phase;
+    if (typeof phase === "string" && phases !== undefined && phases.size > 0 && !phases.has(phase)) {
+      this.bump(`agent.${stream}.phase_${shortDigest(phase)}`);
+    }
+    const keys = Object.hasOwn(KNOWN_AGENT_DATA_KEYS_BY_STREAM, stream)
+      ? KNOWN_AGENT_DATA_KEYS_BY_STREAM[stream]
+      : undefined;
+    for (const key of Object.keys(data)) {
+      if (keys?.has(key) || KNOWN_AGENT_ANY_STREAM_DATA_KEYS.has(key)) continue;
+      this.bump(
+        PLAIN_DATA_KEY.test(key)
+          ? `agent.${stream}.data_${key}`
+          : `agent.${stream}.datakey_${shortDigest(key)}`,
+      );
     }
   }
 
