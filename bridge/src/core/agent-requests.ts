@@ -163,6 +163,10 @@ export interface AgentRequestSettle {
   decision?: ApprovalDecision;
 }
 
+/** What Convex did with a settle (convex/agentRequests.ts settleFromBridge): closed the
+ *  card, kept the verdict for a card not recorded yet, or nothing. */
+export type AgentRequestSettleOutcome = "settled" | "kept" | "none";
+
 type Obj = Record<string, unknown>;
 
 function obj(v: unknown): Obj | null {

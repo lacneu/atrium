@@ -442,6 +442,17 @@ export const upsertFromBridge = internalMutation({
     }
     messageId ??= await latestAssistantMessage(ctx, args.chatId);
 
+    // Already decided: its settle reached Convex before this creation (keepResolution).
+    // The card is recorded SETTLED, as it would stand had it been created first — the
+    // conversation keeps its record of the ask and the outcome, folded to that outcome —
+    // never `pending`, and nobody is notified of a request nobody can answer any more.
+    const resolution =
+      args.source.startsWith("openclaw.") &&
+      incomingFamily === "approval" &&
+      typeof args.providerCreatedAt === "number"
+        ? await takeResolution(ctx, args.chatId, args.boundInstanceName, providerRequestId, args.providerCreatedAt)
+        : null;
+
     const now = Date.now();
     const id = await ctx.db.insert("agentRequests", {
       chatId: args.chatId,
@@ -472,11 +483,31 @@ export const upsertFromBridge = internalMutation({
       ...(kind === "credential"
         ? { credential: boundCredential(args.credential, args.source) }
         : {}),
-      status: "pending",
+      ...(resolution === null
+        ? { status: "pending" as const }
+        : {
+            status: resolution.status,
+            resolvedAt: now,
+            // Decided by someone, and not through this card (it did not exist).
+            ...(resolution.status === "allowed" || resolution.status === "denied"
+              ? {
+                  resolvedElsewhere: true,
+                  ...(resolution.decision !== undefined ? { decision: resolution.decision } : {}),
+                }
+              : {}),
+          }),
       createdAt: now,
       expiresAt: boundedDeadline(now, args.expiresAt),
       updatedAt: now,
     });
+    if (resolution !== null) {
+      await trace(ctx, args.chatId, {
+        phase: "requested-settled",
+        source: args.source,
+        status: resolution.status,
+      });
+      return { id, created: true };
+    }
     await notifyUser(ctx, {
       userId: chat.userId,
       kind: "agent_request",
@@ -529,7 +560,7 @@ export const settleFromBridge = internalMutation({
     answersUnreadable: v.optional(v.boolean()),
     decision: v.optional(approvalDecisionValidator),
   },
-  handler: async (ctx, args): Promise<{ settled: boolean }> => {
+  handler: async (ctx, args): Promise<{ settled: boolean; outcome: SettleOutcome }> => {
     if (!(await chatAllowsInstance(ctx, args.chatId, args.boundInstanceName))) {
       throw new Error("forbidden: cross-instance agent request target");
     }
@@ -570,7 +601,10 @@ export const settleFromBridge = internalMutation({
       sameShape.length > 1 && seenSeq !== undefined
         ? (sameShape.find((g) => g.providerSeenSeq === undefined || g.providerSeenSeq <= seenSeq) ?? null)
         : (sameShape[0] ?? null);
-    if (row === null || !isOpenStatus(row.status)) return { settled: false };
+    // No card of this generation (yet): an approval's verdict is kept for the creation
+    // that may still be on its way (keepResolution). A card already closed: nothing.
+    if (row === null) return { settled: false, outcome: await keepResolution(ctx, args) };
+    if (!isOpenStatus(row.status)) return { settled: false, outcome: "none" };
     const now = Date.now();
     // Ours in flight: the gateway's broadcast of OUR answer can beat the action's
     // own settle. It is still our answer, not someone else's.
@@ -579,7 +613,7 @@ export const settleFromBridge = internalMutation({
     // a prompt the person has just answered. The action knows what the gateway
     // replied; it settles the row, not this.
     if (ours && (args.status === "expired" || args.status === "cancelled")) {
-      return { settled: false };
+      return { settled: false, outcome: "none" };
     }
     const patch: Partial<Doc<"agentRequests">> = {
       status: args.status,
@@ -634,9 +668,97 @@ export const settleFromBridge = internalMutation({
       elsewhere,
       waitedMs: now - row.createdAt,
     });
-    return { settled: true };
+    return { settled: true, outcome: "settled" };
   },
 });
+
+/** What a settle did: closed the card (`settled`), kept the verdict for a card not
+ *  recorded yet (`kept`), or nothing — the card was already closed, the answer on the wire
+ *  is Atrium's own, or there is neither a card nor a verdict that can be kept (`none`). */
+type SettleOutcome = "settled" | "kept" | "none";
+
+/** How long a kept verdict waits for its card: past any creation still in flight — the
+ *  bridge's writes retry for seconds, and two bridge processes overlap for minutes during
+ *  a rolling deploy. */
+const RESOLUTION_KEEP_MS = 60 * 60_000;
+
+/**
+ * A settle that found no card of its generation. An approval's verdict is KEPT
+ * (agentRequestResolutions): the card's creation may still be on its way — an older
+ * socket's write in flight while the new socket read the request already decided — and
+ * must then record the card settled (upsertFromBridge). Idempotent: the first verdict kept
+ * stands. Kept only with a generation, without which it could not tell which request it
+ * settles, and never for a question: only the socket that recorded a question settles it,
+ * after its creation.
+ */
+async function keepResolution(
+  ctx: MutationCtx,
+  args: {
+    chatId: Id<"chats">;
+    boundInstanceName: string;
+    providerRequestId: string;
+    providerCreatedAt?: number;
+    family?: "question" | "approval";
+    status: "answered" | "allowed" | "denied" | "expired" | "cancelled";
+    decision?: ApprovalDecision;
+  },
+): Promise<SettleOutcome> {
+  const generation = args.providerCreatedAt;
+  const status = args.status;
+  if (
+    args.family !== "approval" ||
+    typeof generation !== "number" ||
+    !Number.isFinite(generation) ||
+    status === "answered"
+  ) {
+    return "none";
+  }
+  const kept = await ctx.db
+    .query("agentRequestResolutions")
+    .withIndex("by_chat_instance_provider_request", (q) =>
+      q
+        .eq("chatId", args.chatId)
+        .eq("instanceName", args.boundInstanceName)
+        .eq("providerRequestId", args.providerRequestId),
+    )
+    .take(MAX_GENERATIONS_READ);
+  if (kept.some((k) => k.providerCreatedAt === generation)) return "kept";
+  const now = Date.now();
+  await ctx.db.insert("agentRequestResolutions", {
+    chatId: args.chatId,
+    instanceName: args.boundInstanceName,
+    providerRequestId: args.providerRequestId,
+    providerCreatedAt: generation,
+    status,
+    ...((status === "allowed" || status === "denied") && args.decision !== undefined
+      ? { decision: args.decision }
+      : {}),
+    createdAt: now,
+    expiresAt: now + RESOLUTION_KEEP_MS,
+  });
+  await trace(ctx, args.chatId, { phase: "settle-kept", status });
+  return "kept";
+}
+
+/** The verdict kept for THIS generation of an approval, taken (deleted) by the creation
+ *  it was waiting for. */
+async function takeResolution(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  instanceName: string,
+  providerRequestId: string,
+  generation: number,
+): Promise<Doc<"agentRequestResolutions"> | null> {
+  const kept = await ctx.db
+    .query("agentRequestResolutions")
+    .withIndex("by_chat_instance_provider_request", (q) =>
+      q.eq("chatId", chatId).eq("instanceName", instanceName).eq("providerRequestId", providerRequestId),
+    )
+    .take(MAX_GENERATIONS_READ);
+  const found = kept.find((k) => k.providerCreatedAt === generation) ?? null;
+  if (found !== null) await ctx.db.delete(found._id);
+  return found;
+}
 
 // ── Person → gateway ───────────────────────────────────────────────────────────
 
@@ -1279,14 +1401,20 @@ export const pendingByChat = query({
 /**
  * Settle what nothing else will: an open request past its deadline (the provider's
  * own expiry normally arrives first — this is the net for a restarted bridge), and
- * a `submitting` row whose action was lost.
+ * a `submitting` row whose action was lost. And forget a kept verdict whose card never
+ * came (agentRequestResolutions).
  */
 export const reapExpired = internalMutation({
   args: {},
-  handler: async (ctx): Promise<{ expired: number; unstuck: number }> => {
+  handler: async (ctx): Promise<{ expired: number; unstuck: number; resolutionsPurged: number }> => {
     const now = Date.now();
     let expired = 0;
     let unstuck = 0;
+    const lapsed = await ctx.db
+      .query("agentRequestResolutions")
+      .withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
+      .take(100);
+    for (const kept of lapsed) await ctx.db.delete(kept._id);
     for (const status of ["pending", "submitting"] as const) {
       const rows = await ctx.db
         .query("agentRequests")
@@ -1317,7 +1445,7 @@ export const reapExpired = internalMutation({
       });
       unstuck += 1;
     }
-    return { expired, unstuck };
+    return { expired, unstuck, resolutionsPurged: lapsed.length };
   },
 });
 

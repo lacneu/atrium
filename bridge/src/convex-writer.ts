@@ -91,7 +91,11 @@ import type { CronPart } from "./core/cron-part.js";
 // The plan part shape lives in core/plan-part.ts (pure contract module).
 export type { PlanPart } from "./core/plan-part.js";
 import type { PlanPart } from "./core/plan-part.js";
-import type { AgentRequestRecord, AgentRequestSettle } from "./core/agent-requests.js";
+import type {
+  AgentRequestRecord,
+  AgentRequestSettle,
+  AgentRequestSettleOutcome,
+} from "./core/agent-requests.js";
 import { errForLog } from "./core/log-safe-error.js";
 import type { SnapshotSource } from "./core/snapshot-source.js";
 
@@ -891,8 +895,11 @@ export interface ConvexWriter {
   /** `recorded: false` = Convex answered and REFUSED it (`id: null`: the chat is gone, the
    *  request unreadable…) — no card exists. Void from writers that cannot tell. */
   upsertAgentRequest?(record: AgentRequestRecord): Promise<void | { recorded: boolean }>;
-  /** The provider settled a request (answered here or elsewhere, expired, cancelled). */
-  settleAgentRequest?(settle: AgentRequestSettle): Promise<void>;
+  /** The provider settled a request (answered here or elsewhere, expired, cancelled), and
+   *  what Convex did with it: closed the card (`settled`), kept the verdict for a card not
+   *  recorded yet (`kept`), or nothing (`none`: already closed, or nothing to keep). Void
+   *  from writers that cannot tell. */
+  settleAgentRequest?(settle: AgentRequestSettle): Promise<void | { outcome: AgentRequestSettleOutcome }>;
   /**
    * Re-hydration DECISION trace (content-free reconstruction record) -> an
    * `openclaw.rehydrate` trace keyed `chatId:outboxId`. Emitted once per dispatch at
@@ -1631,7 +1638,8 @@ export class HttpConvexWriter implements ConvexWriter {
     "clearPlan",
     // AGENT REQUESTS: idempotent by construction in Convex — a creation is keyed by
     // (chat, providerRequestId) and a replay returns the existing row; a settle acts
-    // only on an OPEN row, so one that landed leaves nothing for its replay to change.
+    // only on an OPEN row, so one that landed leaves nothing for its replay to change,
+    // and the verdict it keeps for a card not recorded yet is kept once.
     // Not retrying LOST the request for good (codex P1): its broadcast is not repeated,
     // and the agent waited on a card nobody could see.
     "upsertAgentRequest",
@@ -3113,8 +3121,15 @@ export class HttpConvexWriter implements ConvexWriter {
     return { recorded: typeof res?.id === "string" && res.id !== "" };
   }
 
-  async settleAgentRequest(settle: AgentRequestSettle): Promise<void> {
-    await this.doPostWithRetry({ op: "settleAgentRequest", ...settle });
+  async settleAgentRequest(settle: AgentRequestSettle): Promise<{ outcome: AgentRequestSettleOutcome }> {
+    const res = await this.doPostWithRetry<{ settled?: unknown; outcome?: unknown } | null>({
+      op: "settleAgentRequest",
+      ...settle,
+    });
+    const outcome = res?.outcome;
+    if (outcome === "settled" || outcome === "kept" || outcome === "none") return { outcome };
+    // A Convex that predates the outcome says `settled` only.
+    return { outcome: res?.settled === true ? "settled" : "none" };
   }
 
   async applyTranscript(

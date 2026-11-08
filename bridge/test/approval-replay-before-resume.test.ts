@@ -12,7 +12,7 @@
 //
 // Real RunManager and observer, wired as session.ts wires them; the list entry and the
 // `approval.get` answer are the captured 2026.9.36 shapes (helpers/approval-frames-2026.9.36.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
 import { OpenClawAgentRequestObserver } from "../src/providers/openclaw/agent-request-observer.js";
@@ -82,19 +82,28 @@ class FakeWriter implements ConvexWriter {
   emitRehydrateTrace(): void {}
 }
 
-/** The conversation's observer, wired to `rm` as session.ts wires it. */
-function observerFor(rm: RunManager, clock: () => number, pending: ApprovalIds[]) {
+/** The conversation's observer, wired to `rm` as session.ts wires it. `listGate` holds the
+ *  exec list's answer; `failApprovalGet` makes every `approval.get` fail. */
+function observerFor(
+  rm: RunManager,
+  clock: () => number,
+  pending: ApprovalIds[],
+  gw: { listGate?: Promise<void>; failApprovalGet?: boolean; methods?: string[] } = {},
+) {
   return new OpenClawAgentRequestObserver({
     chatId: "c1",
     sessionKey: KEY,
     agentId: "alice",
     gateway: {
       request: async (method: string, params: Record<string, unknown>) => {
+        gw.methods?.push(method);
         let payload: unknown = null;
         if (method === "approval.get") {
+          if (gw.failApprovalGet === true) throw new Error("request timed out");
           const ids = pending.find((x) => x.approvalId === params.id);
           payload = ids === undefined ? null : pendingApprovalGet(ids);
         } else if (method === "exec.approval.list") {
+          await gw.listGate;
           payload = pending.map(execApprovalRequestedPayload);
         } else if (method === "plugin.approval.list" || method === "openclaw.approval.list") {
           payload = [];
@@ -105,7 +114,8 @@ function observerFor(rm: RunManager, clock: () => number, pending: ApprovalIds[]
       },
     },
     upsert: async () => ({ recorded: true }),
-    settle: async () => {},
+    // The card the closed socket recorded, open: closed by it.
+    settle: async () => ({ outcome: "settled" }),
     currentMessageId: () => (rm.turnActive ? rm.currentMessageId : null),
     noteQuestion: (id, expiresInSec) => rm.noteHumanQuestion(id, expiresInSec, clock()),
     noteQuestionSettled: (id) => rm.noteHumanQuestionSettled(id, clock()),
@@ -162,6 +172,61 @@ describe("a resumed turn is held by its run's approval, though the replay listed
     now += BASE_RECV_TIMEOUT + 1;
     await rm.tick(now);
     expect(rm.takeRecvSilence(), "an ordinary silence, nothing waits on a person").toBe(true);
+  });
+
+  it("an approval decided while the replay's list was on the wire is never held again — not by that list, nor by the resume, its read failing", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const w = new FakeWriter();
+      const rm = new RunManager("c1", KEY, w);
+      let now = 1_000;
+      let answerList: () => void = () => {};
+      const listGate = new Promise<void>((r) => (answerList = r));
+      const methods: string[] = [];
+      const obs = observerFor(rm, () => now, [waiting], { listGate, failApprovalGet: true, methods });
+      // The reconnection's replay asks for the lists; the gateway is slow to answer.
+      const replay = obs.replayPending();
+      await vi.advanceTimersByTimeAsync(0);
+      // Meanwhile the approval is decided: its one resolution reaches this socket first.
+      await obs.observe(execApprovalResolvedFrame(waiting));
+      await vi.advanceTimersByTimeAsync(0);
+      // The list, read before the decision, answers now — still naming it pending…
+      answerList();
+      await replay;
+      // …and `approval.get` fails, every attempt, the retry of the card write included.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(methods.filter((m) => m === "approval.get").length).toBeGreaterThan(0);
+      // `/resume` puts the run's turn back: nothing waits on a person.
+      await rm.resumeTurn(now, "bubbleA", "runA");
+      expect(w.phases).not.toContainEqual(["bubbleA", "awaiting_approval"]);
+      now += BASE_RECV_TIMEOUT + 1;
+      await rm.tick(now);
+      expect(rm.takeRecvSilence(), "an ordinary silence at 241 s, not a held turn").toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("…nor by that list while a turn is active", async () => {
+    const w = new FakeWriter();
+    const rm = new RunManager("c1", KEY, w);
+    let now = 1_000;
+    let answerList: () => void = () => {};
+    const listGate = new Promise<void>((r) => (answerList = r));
+    const obs = observerFor(rm, () => now, [waiting], { listGate, failApprovalGet: true });
+    await rm.resumeTurn(now, "bubbleA", "runA");
+    const replay = obs.replayPending();
+    await flush();
+    await obs.observe(execApprovalResolvedFrame(waiting));
+    await flush();
+    answerList();
+    await replay;
+    await flush();
+    expect(w.phases).not.toContainEqual(["bubbleA", "awaiting_approval"]);
+    now += BASE_RECV_TIMEOUT + 1;
+    await rm.tick(now);
+    expect(rm.takeRecvSilence()).toBe(true);
   });
 
   it("another run's approval does not hold the turn resumed for this run", async () => {

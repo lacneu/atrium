@@ -3784,6 +3784,32 @@ export default defineSchema({
     // The expiry sweep's range: open rows past their deadline.
     .index("by_status_and_expires", ["status", "expiresAt"]),
 
+  // The provider's VERDICT on an approval whose card this chat does not hold yet. The
+  // bridge's settle can reach Convex before the card's own creation (an older socket's
+  // write still in flight after a reconnection, while the new socket reads the request
+  // already decided): kept here, so that creation records the card settled, never
+  // `pending` (agentRequests.upsertFromBridge). One per (chat, instance, id, generation),
+  // the first verdict kept; a bounded life (`expiresAt`), purged by
+  // agentRequests.reapExpired.
+  agentRequestResolutions: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    providerRequestId: v.string(),
+    /** The generation settled (the provider's creation time): another one is not touched. */
+    providerCreatedAt: v.number(),
+    status: v.union(
+      v.literal("allowed"),
+      v.literal("denied"),
+      v.literal("expired"),
+      v.literal("cancelled"),
+    ),
+    decision: v.optional(approvalDecisionValidator),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_chat_instance_provider_request", ["chatId", "instanceName", "providerRequestId"])
+    .index("by_expiresAt", ["expiresAt"]),
+
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy
   // `loadChatView` reads the `messages` docs (NOT this table), so it no longer

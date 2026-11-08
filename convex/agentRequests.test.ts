@@ -353,10 +353,10 @@ describe("the bridge records what an agent asked", () => {
         status: "cancelled",
       });
     // A's settle, late: about the generation seen by seq 10 — A, already closed.
-    expect(await settle(10)).toEqual({ settled: false });
+    expect(await settle(10)).toEqual({ settled: false, outcome: "none" });
     expect((await t.run((ctx) => ctx.db.get(b.id!)))!.status).toBe("pending");
     // B's own settle closes B.
-    expect(await settle(20)).toEqual({ settled: true });
+    expect(await settle(20)).toEqual({ settled: true, outcome: "settled" });
   });
 
   test("a late settle closes the generation it is ABOUT when two share a creation time (codex, 0.21.5 pass 21)", async () => {
@@ -379,7 +379,7 @@ describe("the bridge records what an agent asked", () => {
       status: "answered",
       answers: [{ id: "confirm", values: ["Yes"] }],
     });
-    expect(late).toEqual({ settled: false }); // the staging row was already closed
+    expect(late).toEqual({ settled: false, outcome: "none" }); // the staging row was already closed
     const row = (await t.run((ctx) => ctx.db.get(production.id!)))!;
     expect(row.status).toBe("pending");
     expect(row.answers).toBeUndefined();
@@ -394,7 +394,7 @@ describe("the bridge records what an agent asked", () => {
       questionShape: questionShape(q("Delete production data?"))!,
       status: "cancelled",
     });
-    expect(own).toEqual({ settled: true });
+    expect(own).toEqual({ settled: true, outcome: "settled" });
   });
 
   test("a LATE write of a request that has since settled raises no phantom card (codex, 0.21.5 pass 20)", async () => {
@@ -1855,5 +1855,131 @@ describe("settled elsewhere, swept, deleted", () => {
       status: "expired",
     });
     expect(await as.query(api.agentRequests.pendingByChat, {})).toEqual([]);
+  });
+});
+
+// An approval's verdict can reach Convex BEFORE its card: an older socket's write still in
+// flight while the new socket read the request already decided (agent-request-observer's
+// terminal snapshot). The verdict is kept for the card, which is then recorded in it.
+describe("a verdict that reaches Convex before its card", () => {
+  const EXEC = {
+    source: "openclaw.exec" as const,
+    providerRequestId: "ap_early",
+    providerCreatedAt: 100,
+    approvalKind: "exec" as const,
+    sessionKey: "agent:denis:atrium:chat:alice:c1",
+    approval: { command: "rm -rf build", decisions: ["allow-once", "allow-always", "deny"] },
+  };
+  type T = ReturnType<typeof convexTest>;
+  const settleEarly = (t: T, chatId: Id<"chats">, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.agentRequests.settleFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      providerRequestId: EXEC.providerRequestId,
+      providerCreatedAt: EXEC.providerCreatedAt,
+      family: "approval" as const,
+      status: "allowed" as const,
+      decision: "allow-once" as const,
+      ...over,
+    });
+  const record = (t: T, chatId: Id<"chats">, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...EXEC,
+      expiresAt: Date.now() + 15 * 60_000,
+      ...over,
+    });
+  const keptVerdicts = (t: T) => t.run((ctx) => ctx.db.query("agentRequestResolutions").collect());
+  const agentRequestNotes = async (t: T) =>
+    (await t.run((ctx) => ctx.db.query("notifications").collect())).filter((n) => n.kind === "agent_request");
+
+  test("it is kept, and the card created late is recorded in it — never pending, nobody notified", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    expect(await keptVerdicts(t)).toMatchObject([
+      { chatId, instanceName: INSTANCE, providerRequestId: "ap_early", providerCreatedAt: 100, status: "allowed", decision: "allow-once" },
+    ]);
+    const res = await record(t, chatId);
+    expect(res.created).toBe(true);
+    const row = await t.run((ctx) => ctx.db.get(res.id!));
+    expect(row).toMatchObject({ kind: "approval", status: "allowed", resolvedElsewhere: true, decision: "allow-once" });
+    expect(row!.resolvedAt).toBeTypeOf("number");
+    expect(row!.resolvedByUserId).toBeUndefined();
+    // Taken by the creation it waited for.
+    expect(await keptVerdicts(t)).toEqual([]);
+    expect(await agentRequestNotes(t)).toEqual([]);
+    expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
+    // A replay of the creation is that same settled card.
+    expect(await record(t, chatId)).toEqual({ id: res.id, created: false });
+  });
+
+  test("an expiry kept is the card's outcome, decided by nobody", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    expect(await settleEarly(t, chatId, { status: "expired", decision: undefined })).toEqual({ settled: false, outcome: "kept" });
+    const row = await t.run(async (ctx) => ctx.db.get((await record(t, chatId)).id!));
+    expect(row).toMatchObject({ status: "expired" });
+    expect(row!.resolvedElsewhere).toBeUndefined();
+    expect(row!.decision).toBeUndefined();
+  });
+
+  test("a second settle changes nothing: the first verdict is kept once, and nothing once the card is closed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    // Even another verdict for that generation: the first stands, as on a closed card.
+    expect(await settleEarly(t, chatId, { status: "denied", decision: "deny" })).toEqual({ settled: false, outcome: "kept" });
+    expect(await keptVerdicts(t)).toMatchObject([{ status: "allowed", decision: "allow-once" }]);
+    const res = await record(t, chatId);
+    expect(await settleEarly(t, chatId, { status: "denied", decision: "deny" })).toEqual({ settled: false, outcome: "none" });
+    expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({ status: "allowed", decision: "allow-once" });
+    // Nothing kept by a settle that found its card closed.
+    expect(await keptVerdicts(t)).toEqual([]);
+  });
+
+  test("another generation under the same id is not touched", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const open = await record(t, chatId, { providerSeenSeq: 10 });
+    // The verdict of a LATER request reusing the id: not this card's.
+    expect(await settleEarly(t, chatId, { providerCreatedAt: 200 })).toEqual({ settled: false, outcome: "kept" });
+    expect((await t.run((ctx) => ctx.db.get(open.id!)))!.status).toBe("pending");
+    // The open card's replay neither takes it nor changes.
+    expect(await record(t, chatId, { providerSeenSeq: 10 })).toEqual({ id: open.id, created: false });
+    expect((await t.run((ctx) => ctx.db.get(open.id!)))!.status).toBe("pending");
+    expect(await keptVerdicts(t)).toMatchObject([{ providerCreatedAt: 200, status: "allowed" }]);
+    // …and neither does a card of yet another generation.
+    const third = await record(t, chatId, { providerCreatedAt: 300, providerSeenSeq: 30 });
+    expect((await t.run((ctx) => ctx.db.get(third.id!)))!.status).toBe("pending");
+    expect(await keptVerdicts(t)).toHaveLength(1);
+  });
+
+  test("nothing is kept for a question, nor without a generation or a family", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    expect(await settleEarly(t, chatId, { family: "question", status: "cancelled", decision: undefined })).toEqual({ settled: false, outcome: "none" });
+    expect(await settleEarly(t, chatId, { providerCreatedAt: undefined })).toEqual({ settled: false, outcome: "none" });
+    expect(await settleEarly(t, chatId, { family: undefined })).toEqual({ settled: false, outcome: "none" });
+    expect(await keptVerdicts(t)).toEqual([]);
+    const res = await record(t, chatId);
+    expect((await t.run((ctx) => ctx.db.get(res.id!)))!.status).toBe("pending");
+  });
+
+  test("the sweep forgets a verdict whose card never came, and only once it has lapsed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    await settleEarly(t, chatId);
+    expect((await t.mutation(internal.agentRequests.reapExpired, {})).resolutionsPurged).toBe(0);
+    expect(await keptVerdicts(t)).toHaveLength(1);
+    await t.run(async (ctx) => {
+      for (const k of await ctx.db.query("agentRequestResolutions").collect()) {
+        await ctx.db.patch(k._id, { expiresAt: Date.now() - 1 });
+      }
+    });
+    expect((await t.mutation(internal.agentRequests.reapExpired, {})).resolutionsPurged).toBe(1);
+    expect(await keptVerdicts(t)).toEqual([]);
   });
 });

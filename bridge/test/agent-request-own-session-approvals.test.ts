@@ -92,6 +92,53 @@ function terminalApprovalGet(ids: ApprovalIds, end: Terminal): Record<string, un
   };
 }
 
+/**
+ * Convex's side of the cards, as convex/agentRequests.ts keeps it (upsertFromBridge,
+ * settleFromBridge — pinned by convex/agentRequests.test.ts « a verdict that reaches Convex
+ * before its card » and the ingest route's « says what a settle did »): one card per id and
+ * generation; a replay of a creation is that card. A settle closes an OPEN card (`settled`),
+ * does nothing to a closed one (`none`), and — no card yet — keeps the FIRST verdict of an
+ * approval that names its generation (`kept`), which the card's creation then takes: it is
+ * recorded in that verdict, never `pending`. Nothing else is kept (`none`).
+ */
+class FakeConvex {
+  readonly cards = new Map<string, { status: string; decision?: string }>();
+  readonly kept = new Map<string, { status: string; decision?: string }>();
+  upsert(r: AgentRequestRecord): { recorded: boolean } {
+    const key = `${r.providerRequestId}@${String(r.providerCreatedAt)}`;
+    if (!this.cards.has(key)) {
+      const verdict = this.kept.get(key);
+      this.kept.delete(key);
+      this.cards.set(key, verdict ?? { status: "pending" });
+    }
+    return { recorded: true };
+  }
+  settle(s: AgentRequestSettle): { outcome: "settled" | "kept" | "none" } {
+    const ofId = [...this.cards.entries()].filter(([k]) => k.startsWith(`${s.providerRequestId}@`));
+    // That generation's card, or — none named — the newest of the id.
+    const card =
+      s.providerCreatedAt !== undefined
+        ? this.cards.get(`${s.providerRequestId}@${String(s.providerCreatedAt)}`)
+        : ofId.at(-1)?.[1];
+    if (card !== undefined) {
+      if (card.status !== "pending") return { outcome: "none" };
+      card.status = s.status;
+      if (s.decision !== undefined) card.decision = s.decision;
+      return { outcome: "settled" };
+    }
+    if (s.family !== "approval" || typeof s.providerCreatedAt !== "number") return { outcome: "none" };
+    const key = `${s.providerRequestId}@${String(s.providerCreatedAt)}`;
+    if (!this.kept.has(key)) {
+      this.kept.set(key, { status: s.status, ...(s.decision !== undefined ? { decision: s.decision } : {}) });
+    }
+    return { outcome: "kept" };
+  }
+  /** The card of `id` (its only generation in these tests). */
+  card(id: string): { status: string; decision?: string } | undefined {
+    return [...this.cards.entries()].find(([k]) => k.startsWith(`${id}@`))?.[1];
+  }
+}
+
 interface Setup {
   pending?: { exec?: ApprovalIds[]; plugin?: unknown[]; openclaw?: unknown[] };
   /** Methods the gateway refuses, with the message it refuses with. */
@@ -100,6 +147,9 @@ interface Setup {
   snapshots?: Record<string, Record<string, unknown> | null>;
   /** How many settle writes Convex refuses first (the writer's own retries spent). */
   failSettles?: number;
+  /** Convex's cards, shared by the observers of one conversation. Without it, a settle
+   *  finds the card an earlier socket recorded, open, and closes it. */
+  convex?: FakeConvex;
 }
 
 function setup(opts: Setup = {}) {
@@ -113,6 +163,8 @@ function setup(opts: Setup = {}) {
   const released: string[] = [];
   const rpcs: Array<[string, unknown]> = [];
   let approvalGate: Promise<void> = Promise.resolve();
+  let upsertGate: Promise<void> = Promise.resolve();
+  let socketClosed = false;
   const all = [own, child, other];
   const obs = new OpenClawAgentRequestObserver({
     chatId: "c1",
@@ -121,6 +173,7 @@ function setup(opts: Setup = {}) {
     gateway: {
       request: async (method: string, params: Record<string, unknown>) => {
         rpcs.push([method, params]);
+        if (socketClosed) throw new Error("gateway socket closed");
         if (opts.refuse?.[method] !== undefined) throw new Error(opts.refuse[method]);
         let payload: unknown = null;
         if (method === "approval.get") {
@@ -146,7 +199,9 @@ function setup(opts: Setup = {}) {
       },
     },
     upsert: async (r) => {
+      await upsertGate;
       upserts.push(r);
+      return opts.convex?.upsert(r);
     },
     settle: async (s) => {
       settleAttempts.push(s);
@@ -155,6 +210,7 @@ function setup(opts: Setup = {}) {
         throw new Error("ingest refused the settle");
       }
       settles.push(s);
+      return opts.convex?.settle(s) ?? { outcome: "settled" };
     },
     currentMessageId: () => "msg-live",
     noteQuestion: async () => true,
@@ -190,6 +246,18 @@ function setup(opts: Setup = {}) {
     answerApprovalGet: (id: string, got: Record<string, unknown> | null) => {
       opts.snapshots = { ...(opts.snapshots ?? {}), [id]: got };
     },
+    /** Hold every card write until opened (it is on the wire). */
+    holdUpserts: () => {
+      let open: () => void = () => {};
+      upsertGate = new Promise<void>((r) => (open = r));
+      return () => open();
+    },
+    /** Every gateway call fails from now on, as on a socket that closed. */
+    closeSocket: () => {
+      socketClosed = true;
+    },
+    /** How many `approval.get` reads were sent. */
+    approvalReads: () => rpcs.filter(([m]) => m === "approval.get").length,
   };
 }
 
@@ -389,7 +457,7 @@ describe("a TERMINAL snapshot settles this conversation's card, once", () => {
     }
   });
 
-  it("…and without a resolution, the failed write's deferred retry settles it — once, a late resolution included", async () => {
+  it("…and without a resolution, the verdict already read is written again on its own back-off — no new gateway read — once, a late resolution included", async () => {
     vi.useFakeTimers();
     try {
       vi.spyOn(console, "error").mockImplementation(() => {});
@@ -401,15 +469,144 @@ describe("a TERMINAL snapshot settles this conversation's card, once", () => {
       await t.obs.replayPending();
       await vi.advanceTimersByTimeAsync(0);
       expect(t.settles).toEqual([]);
-      // The one deferred retry of a write that failed (15 s).
-      await vi.advanceTimersByTimeAsync(20_000);
+      const reads = t.approvalReads();
+      // Its own back-off (2 s): the verdict the snapshot gave, not a new read of it.
+      await vi.advanceTimersByTimeAsync(2_000);
       expect(t.settles).toEqual([
         { chatId: "c1", providerRequestId: own.approvalId, family: "approval", providerCreatedAt: CREATED, status: "allowed", decision: "allow-once" },
       ]);
+      // Past every later back-off: nothing more is written, nothing more is read.
+      await vi.advanceTimersByTimeAsync(300_000);
       // A resolution broadcast arriving after that finds nothing left to settle.
       await t.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
       await vi.advanceTimersByTimeAsync(0);
       expect(t.settles).toHaveLength(1);
+      expect(t.settleAttempts).toHaveLength(2);
+      expect(t.approvalReads()).toBe(reads);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Convex refusing the snapshot's settle, then the socket closing: once Convex is back the verdict lands, once — without reading the gateway again", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const t = setup({
+        pending: { exec: [own] },
+        snapshots: { [own.approvalId]: terminalApprovalGet(own, { status: "allowed", decision: "allow-once" }) },
+        failSettles: 2,
+      });
+      await t.obs.replayPending();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.settleAttempts, "the snapshot's settle, refused").toHaveLength(1);
+      // The socket closes after that first failure: the gateway answers nothing any more.
+      t.closeSocket();
+      const reads = t.approvalReads();
+      // Convex refuses once more (2 s), then takes it (10 s later).
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(t.settles).toEqual([]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(t.settles).toEqual([
+        { chatId: "c1", providerRequestId: own.approvalId, family: "approval", providerCreatedAt: CREATED, status: "allowed", decision: "allow-once" },
+      ]);
+      // Past every back-off: once, and never a gateway read.
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(t.settleAttempts).toHaveLength(3);
+      expect(t.settles).toHaveLength(1);
+      expect(t.approvalReads()).toBe(reads);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the memory of a held verdict only saves work", () => {
+  it("a card write that failed is not retried once its verdict is held — no gateway read for it", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const refuse: Record<string, string> = { "approval.get": "request timed out" };
+      const t = setup({ pending: { exec: [own] }, refuse });
+      await t.obs.replayPending();
+      // Every read fails (now, 1 s, 3 s): the card write's one retry waits 15 s.
+      await vi.advanceTimersByTimeAsync(5_000);
+      const reads = t.approvalReads();
+      expect(reads).toBe(3);
+      // Its resolution: Convex closes the card the closed socket recorded.
+      await t.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.settles).toHaveLength(1);
+      delete refuse["approval.get"];
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(t.approvalReads(), "nothing left to write for it").toBe(reads);
+      expect(t.settles).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the terminal state does not depend on the order of two sockets' writes", () => {
+  it("the closed socket's card write lands AFTER the new socket settled it: the card ends in the gateway's terminal state", async () => {
+    const convex = new FakeConvex();
+    // The socket that closes: it saw the request, and its card write is still on the wire.
+    const before = setup({ convex });
+    const openWrite = before.holdUpserts();
+    await before.obs.observe(execApprovalRequestedFrame(own));
+    await before.flush();
+    expect(convex.card(own.approvalId), "not recorded yet").toBeUndefined();
+    // The new socket lists it, already decided: its snapshot's settle reaches Convex first…
+    const after = setup({
+      convex,
+      pending: { exec: [own] },
+      snapshots: { [own.approvalId]: terminalApprovalGet(own, { status: "allowed", decision: "allow-once" }) },
+    });
+    await after.obs.replayPending();
+    await after.flush();
+    expect(after.settles).toEqual([
+      { chatId: "c1", providerRequestId: own.approvalId, family: "approval", providerCreatedAt: CREATED, status: "allowed", decision: "allow-once" },
+    ]);
+    // …and the old write, landing now, records the card in that verdict — never pending.
+    openWrite();
+    await before.flush();
+    expect(before.upserts.map((u) => [u.providerRequestId, u.providerCreatedAt])).toEqual([[own.approvalId, CREATED]]);
+    expect(convex.card(own.approvalId)).toEqual({ status: "allowed", decision: "allow-once" });
+    // Its resolution reaching the new socket afterwards changes nothing.
+    await after.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
+    await after.flush();
+    expect(convex.card(own.approvalId)).toEqual({ status: "allowed", decision: "allow-once" });
+  });
+
+  it("a resolution Convex could not hold — no card yet, its generation unknown on this socket — is not taken as held: the card write's retry settles the card", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const convex = new FakeConvex();
+      const before = setup({ convex });
+      const openWrite = before.holdUpserts();
+      await before.obs.observe(execApprovalRequestedFrame(own));
+      await vi.advanceTimersByTimeAsync(0);
+      // The new socket lists it; its `approval.get` fails, every attempt (now, 1 s, 3 s)…
+      const refuse: Record<string, string> = { "approval.get": "request timed out" };
+      const after = setup({ convex, pending: { exec: [own] }, refuse });
+      await after.obs.replayPending();
+      await vi.advanceTimersByTimeAsync(5_000);
+      // …and the resolution reaches it then: no card yet, and no generation to keep it by.
+      await after.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(after.settles.map((x) => x.providerCreatedAt)).toEqual([undefined]);
+      expect(convex.kept.size).toBe(0);
+      // The old write lands: a pending card…
+      openWrite();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(convex.card(own.approvalId)?.status).toBe("pending");
+      // …which the new socket's one retry of its card write (15 s) settles, from the snapshot
+      // the gateway gives again.
+      delete refuse["approval.get"];
+      after.answerApprovalGet(own.approvalId, terminalApprovalGet(own, { status: "allowed", decision: "allow-once" }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(convex.card(own.approvalId)).toEqual({ status: "allowed", decision: "allow-once" });
     } finally {
       vi.useRealTimers();
     }

@@ -945,9 +945,10 @@ export class RunManager {
     // The approvals of THIS run noted before the turn came back — a reconnection's replay
     // lists them while `/resume` still reads the session — hold it now, each until its own
     // deadline: the run's `waiting-approval` went to the socket that closed, and the
-    // observer notes each request once.
+    // observer notes each request once. Only what still waits: a request seen resolved is
+    // never held again.
     for (const [approvalId, kept] of [...this.approvalsWithoutTurn]) {
-      if (kept.runId !== runId) continue;
+      if (kept.runId !== runId || this.approvalsResolved.has(approvalId)) continue;
       await this.applyOrdered(() =>
         this.normalizer.noteApprovalRequested(
           approvalId,
@@ -960,6 +961,21 @@ export class RunManager {
           now,
         ),
       );
+    }
+  }
+
+  /** This session's approvals seen RESOLVED (their broadcast, a terminal snapshot, an answer
+   *  given here), by id, with or without a turn: never held again — not from a list read
+   *  before they were decided and answered after, nor when a turn resumes. Bounded like the
+   *  normalizer's deadlines. */
+  private readonly approvalsResolved = new Set<string>();
+  private noteApprovalResolved(approvalId: string): void {
+    this.approvalsResolved.delete(approvalId);
+    this.approvalsResolved.add(approvalId);
+    while (this.approvalsResolved.size > RunManager.MAX_APPROVALS_WITHOUT_TURN) {
+      const oldest = this.approvalsResolved.values().next().value;
+      if (oldest === undefined) break;
+      this.approvalsResolved.delete(oldest);
     }
   }
 
@@ -1059,6 +1075,8 @@ export class RunManager {
     },
     now: number,
   ): Promise<void> {
+    // Already decided: a list read before the decision and answered after it is stale.
+    if (this.approvalsResolved.has(approvalId)) return;
     if (!this.sink.active) {
       this.keepApprovalWithoutTurn(approvalId, facts, now);
       return;
@@ -1069,7 +1087,8 @@ export class RunManager {
   /** An approval of this turn was settled outside its frames (see
    *  Normalizer.noteApprovalSettled). */
   async noteApprovalSettled(approvalId: string, now: number): Promise<void> {
-    // Decided: no turn resumed later is held by it.
+    // Decided: never held again, by this turn or one resumed later.
+    this.noteApprovalResolved(approvalId);
     this.approvalsWithoutTurn.delete(approvalId);
     if (!this.sink.active) return;
     await this.applyOrdered(() =>

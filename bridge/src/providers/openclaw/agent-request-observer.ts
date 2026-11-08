@@ -59,7 +59,8 @@ export interface AgentRequestObserverDeps {
    *  scope ratchet (test/rpc-scope.test.ts) sees every method this observer sends. */
   gateway: GatewayRpc;
   upsert: ((record: AgentRequestRecord) => Promise<unknown>) | undefined;
-  settle: ((settle: AgentRequestSettle) => Promise<void>) | undefined;
+  /** Resolves with what Convex did (`{ outcome }`, convex-writer.ts), or nothing. */
+  settle: ((settle: AgentRequestSettle) => Promise<unknown>) | undefined;
   /** The active turn's bubble, when this chat is driving one. */
   currentMessageId: () => string | null;
   noteQuestion: (id: string, expiresInSec: number | null) => Promise<boolean>;
@@ -122,6 +123,10 @@ const APPROVAL_READ_RETRY_MS = [1_000, 3_000];
 const APPROVAL_RETRY_LATER_MS = 15_000;
 /** Wait before re-reading pending questions after a card could not be recorded. */
 const QUESTION_REPLAY_LATER_MS = 15_000;
+/** Waits before writing an approval's verdict to Convex again when it could not take it
+ *  (the writer's own retries spent). Bounded: past the last, an open card is left to
+ *  Convex's expiry sweep. */
+const SETTLE_RETRY_MS = [2_000, 10_000, 30_000, 120_000];
 /** What an approval's write ends in when its `approval.get` answered a TERMINAL snapshot:
  *  the request was settled from it (recordApproval), and its resolution has nothing left
  *  to settle. */
@@ -382,8 +387,10 @@ export class OpenClawAgentRequestObserver {
 
   /** Approvals already given their one deferred retry. */
   private readonly retriedApprovals = new Set<string>();
-  /** Approvals whose settle LANDED here (from the snapshot or from the resolution): a
-   *  deferred retry of a write that failed before has nothing left to do. Bounded. */
+  /** Approvals whose verdict Convex HOLDS from this socket (settleDurably: the card closed,
+   *  or the verdict kept for it): a later write of it — a retry of that settle, the deferred
+   *  retry of a card write that failed, the resolution after the snapshot — is saved. An
+   *  economy only: Convex's settle is idempotent. Bounded. */
   private readonly settledApprovals = new Set<string>();
   private noteSettledHere(id: string): void {
     this.settledApprovals.delete(id);
@@ -572,14 +579,15 @@ export class OpenClawAgentRequestObserver {
         // (sent once, `dropIfSlow`; a replay lists what was pending a moment ago), and the
         // card an earlier socket recorded would then stand `pending`. Settled from the
         // gateway's own record, as that resolution would have settled it. A snapshot still
-        // pending (one we cannot show) or unreadable settles nothing. A settle that FAILS
-        // fails the write like any other step: forgotten, retried once later, and the
-        // resolution that may still come writes its own settle (no marker until it lands).
+        // pending (one we cannot show) or unreadable settles nothing. The verdict read is
+        // written durably (settleDurably): again on its own back-off if Convex cannot take
+        // it now, never by reading the gateway again. The marker says only that Convex holds
+        // it; otherwise the resolution that may still come writes it too (idempotent).
         const terminal = readOpenClawApprovalTerminal(got);
         if (terminal === null) return;
         await this.deps.noteApprovalSettled(a.id);
         this.deps.wake();
-        await this.deps.settle?.({
+        const landed = await this.settleDurably({
           chatId: this.deps.chatId,
           providerRequestId: a.id,
           family: "approval",
@@ -587,8 +595,7 @@ export class OpenClawAgentRequestObserver {
           status: terminal.status,
           ...(terminal.decision !== undefined ? { decision: terminal.decision } : {}),
         });
-        this.noteSettledHere(a.id);
-        return SETTLED_FROM_SNAPSHOT;
+        return landed ? SETTLED_FROM_SNAPSHOT : undefined;
       }
       const expiresAt = presented.expiresAtMs ?? a.expiresAtMs;
       // The snapshot's deadline is the record's own; the broadcast's was a copy of it.
@@ -672,12 +679,12 @@ export class OpenClawAgentRequestObserver {
     this.deps.wake();
     void this.afterWrite(aKey(r.id))
       .then(async (written) => {
-        // Its `approval.get` already answered the terminal snapshot and settled it from
-        // there (recordApproval): once is enough.
-        if (written === SETTLED_FROM_SNAPSHOT) return;
+        // Its verdict already LANDED (the terminal snapshot's settle, or an earlier write):
+        // a write saved — Convex's settle is idempotent either way.
+        if (written === SETTLED_FROM_SNAPSHOT || this.settledApprovals.has(r.id)) return;
         const verdict = r.denyUnconfirmed ? await this.confirmDeny(r.id, r.resolvedBy ?? null) : null;
         const status = verdict ?? r.status;
-        await this.deps.settle?.({
+        await this.settleDurably({
           chatId: this.deps.chatId,
           providerRequestId: r.id,
           family: "approval",
@@ -690,7 +697,6 @@ export class OpenClawAgentRequestObserver {
             ? { decision: r.decision }
             : {}),
         });
-        this.noteSettledHere(r.id);
       })
       .catch((err) =>
         console.error(
@@ -698,6 +704,48 @@ export class OpenClawAgentRequestObserver {
           errForLog(err),
         ),
       );
+  }
+
+  /**
+   * Write an approval's verdict to Convex: once now, then — if Convex cannot take it — on
+   * a bounded back-off (SETTLE_RETRY_MS), with the verdict already read: never a gateway
+   * read, whatever becomes of this socket. Convex's settle is idempotent (a verdict that
+   * lands twice changes nothing; one that finds no card yet is kept for it), so the memory
+   * of a held verdict (`settledApprovals`) only saves writes. Resolves whether Convex now
+   * HOLDS it, as it says (convex/agentRequests.ts settleFromBridge): the card closed
+   * (`settled`) or the verdict kept for a card not recorded yet (`kept`). Its `none` — a card
+   * already closed, or no card and a verdict without the generation that would let it be
+   * kept — is not taken as held: a later sighting writes it again, at no cost.
+   */
+  private async settleDurably(settle: AgentRequestSettle, attempt = 0): Promise<boolean> {
+    if (this.deps.settle === undefined) return false;
+    let res: unknown;
+    try {
+      res = await this.deps.settle(settle);
+    } catch (err) {
+      const wait = SETTLE_RETRY_MS[attempt];
+      if (wait !== undefined) {
+        const timer = setTimeout(() => {
+          if (this.settledApprovals.has(settle.providerRequestId)) return;
+          void this.settleDurably(settle, attempt + 1);
+        }, wait);
+        (timer as { unref?: () => void }).unref?.();
+      }
+      console.error(
+        `[agent-request] approval settle failed chat=${this.deps.chatId} attempt=${attempt + 1}:`,
+        errForLog(err),
+      );
+      return false;
+    }
+    const outcome = (res as { outcome?: unknown } | undefined)?.outcome;
+    if (outcome !== "settled" && outcome !== "kept") return false;
+    if (outcome === "kept") {
+      console.log(
+        `[agent-request] approval settle chat=${this.deps.chatId}: kept for a card not recorded yet`,
+      );
+    }
+    this.noteSettledHere(settle.providerRequestId);
+    return true;
   }
 }
 
