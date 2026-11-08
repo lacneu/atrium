@@ -942,6 +942,74 @@ export class RunManager {
     this.frameSampled.clear();
     this.tallyDumped = false;
     await this.sink.resumeTurn(messageId, runId);
+    // The approvals of THIS run noted before the turn came back — a reconnection's replay
+    // lists them while `/resume` still reads the session — hold it now, each until its own
+    // deadline: the run's `waiting-approval` went to the socket that closed, and the
+    // observer notes each request once.
+    for (const [approvalId, kept] of [...this.approvalsWithoutTurn]) {
+      if (kept.runId !== runId) continue;
+      await this.applyOrdered(() =>
+        this.normalizer.noteApprovalRequested(
+          approvalId,
+          {
+            kind: kept.kind,
+            runId: kept.runId,
+            toolCallId: kept.toolCallId,
+            expiresInSec: kept.deadline === null ? null : Math.max(0, kept.deadline - now),
+          },
+          now,
+        ),
+      );
+    }
+  }
+
+  /** This session's approval requests noted while no turn was active, by approval id, each
+   *  with its own deadline on this clock (null: none known): re-applied to the turn that
+   *  resumes their run (resumeTurn), forgotten once settled. Kept apart from the observer's
+   *  memory of the cards, which notes each request once. Bounded like the normalizer's
+   *  deadlines. */
+  private readonly approvalsWithoutTurn = new Map<
+    string,
+    {
+      kind: "exec" | "plugin" | "system-agent";
+      runId: string | null;
+      toolCallId: string | null;
+      deadline: number | null;
+    }
+  >();
+  private static readonly MAX_APPROVALS_WITHOUT_TURN = 64;
+
+  private keepApprovalWithoutTurn(
+    approvalId: string,
+    facts: {
+      kind: "exec" | "plugin" | "system-agent";
+      runId: string | null;
+      toolCallId: string | null;
+      expiresInSec: number | null;
+      hold?: boolean;
+    },
+    now: number,
+  ): void {
+    const left = facts.expiresInSec;
+    const deadline = left !== null && Number.isFinite(left) && left >= 0 ? now + left : null;
+    const kept = this.approvalsWithoutTurn.get(approvalId);
+    if (facts.hold === false) {
+      // A deadline update only (the record's snapshot): never a reason to keep a request.
+      if (kept !== undefined && deadline !== null) kept.deadline = deadline;
+      return;
+    }
+    this.approvalsWithoutTurn.delete(approvalId);
+    this.approvalsWithoutTurn.set(approvalId, {
+      kind: facts.kind,
+      runId: facts.runId,
+      toolCallId: facts.toolCallId,
+      deadline: deadline ?? kept?.deadline ?? null,
+    });
+    while (this.approvalsWithoutTurn.size > RunManager.MAX_APPROVALS_WITHOUT_TURN) {
+      const oldest = this.approvalsWithoutTurn.keys().next().value;
+      if (oldest === undefined) break;
+      this.approvalsWithoutTurn.delete(oldest);
+    }
   }
 
   /** A user /abort RPC targeted this chat's active run — see TurnSink. */
@@ -978,7 +1046,8 @@ export class RunManager {
 
   /** An approval request of THIS session (its broadcast or the pending list): its own
    *  deadline bounds the turn's approval wait, and an exec one naming the turn's run
-   *  holds it (see Normalizer.noteApprovalRequested). */
+   *  holds it (see Normalizer.noteApprovalRequested). With no turn active it is KEPT,
+   *  for the turn that resumes its run (resumeTurn). */
   async noteApprovalRequested(
     approvalId: string,
     facts: {
@@ -990,13 +1059,18 @@ export class RunManager {
     },
     now: number,
   ): Promise<void> {
-    if (!this.sink.active) return;
+    if (!this.sink.active) {
+      this.keepApprovalWithoutTurn(approvalId, facts, now);
+      return;
+    }
     await this.applyOrdered(() => this.normalizer.noteApprovalRequested(approvalId, facts, now));
   }
 
   /** An approval of this turn was settled outside its frames (see
    *  Normalizer.noteApprovalSettled). */
   async noteApprovalSettled(approvalId: string, now: number): Promise<void> {
+    // Decided: no turn resumed later is held by it.
+    this.approvalsWithoutTurn.delete(approvalId);
     if (!this.sink.active) return;
     await this.applyOrdered(() =>
       this.normalizer.noteApprovalSettled(approvalId, now),

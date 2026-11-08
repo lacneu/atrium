@@ -382,6 +382,18 @@ export class OpenClawAgentRequestObserver {
 
   /** Approvals already given their one deferred retry. */
   private readonly retriedApprovals = new Set<string>();
+  /** Approvals whose settle LANDED here (from the snapshot or from the resolution): a
+   *  deferred retry of a write that failed before has nothing left to do. Bounded. */
+  private readonly settledApprovals = new Set<string>();
+  private noteSettledHere(id: string): void {
+    this.settledApprovals.delete(id);
+    this.settledApprovals.add(id);
+    while (this.settledApprovals.size > MAX_KNOWN) {
+      const oldest = this.settledApprovals.values().next().value;
+      if (oldest === undefined) break;
+      this.settledApprovals.delete(oldest);
+    }
+  }
 
   /** Each request's creation, so its settle is posted AFTER it: an unordered settle
    *  finds no row, and the late creation then stands `pending` for a request that is
@@ -560,26 +572,22 @@ export class OpenClawAgentRequestObserver {
         // (sent once, `dropIfSlow`; a replay lists what was pending a moment ago), and the
         // card an earlier socket recorded would then stand `pending`. Settled from the
         // gateway's own record, as that resolution would have settled it. A snapshot still
-        // pending (one we cannot show) or unreadable settles nothing.
+        // pending (one we cannot show) or unreadable settles nothing. A settle that FAILS
+        // fails the write like any other step: forgotten, retried once later, and the
+        // resolution that may still come writes its own settle (no marker until it lands).
         const terminal = readOpenClawApprovalTerminal(got);
         if (terminal === null) return;
         await this.deps.noteApprovalSettled(a.id);
         this.deps.wake();
-        try {
-          await this.deps.settle?.({
-            chatId: this.deps.chatId,
-            providerRequestId: a.id,
-            family: "approval",
-            ...(terminal.createdAtMs !== null ? { providerCreatedAt: terminal.createdAtMs } : {}),
-            status: terminal.status,
-            ...(terminal.decision !== undefined ? { decision: terminal.decision } : {}),
-          });
-        } catch (err) {
-          console.error(
-            `[agent-request] approval settle failed chat=${this.deps.chatId}:`,
-            errForLog(err),
-          );
-        }
+        await this.deps.settle?.({
+          chatId: this.deps.chatId,
+          providerRequestId: a.id,
+          family: "approval",
+          ...(terminal.createdAtMs !== null ? { providerCreatedAt: terminal.createdAtMs } : {}),
+          status: terminal.status,
+          ...(terminal.decision !== undefined ? { decision: terminal.decision } : {}),
+        });
+        this.noteSettledHere(a.id);
         return SETTLED_FROM_SNAPSHOT;
       }
       const expiresAt = presented.expiresAtMs ?? a.expiresAtMs;
@@ -620,6 +628,8 @@ export class OpenClawAgentRequestObserver {
       if (!this.retriedApprovals.has(a.id)) {
         this.retriedApprovals.add(a.id);
         const timer = setTimeout(() => {
+          // Its resolution settled it in the meantime: nothing left to write.
+          if (this.settledApprovals.has(a.id)) return;
           void this.onApproval(event, payload).catch(() => undefined);
         }, APPROVAL_RETRY_LATER_MS);
         (timer as { unref?: () => void }).unref?.();
@@ -667,7 +677,7 @@ export class OpenClawAgentRequestObserver {
         if (written === SETTLED_FROM_SNAPSHOT) return;
         const verdict = r.denyUnconfirmed ? await this.confirmDeny(r.id, r.resolvedBy ?? null) : null;
         const status = verdict ?? r.status;
-        return this.deps.settle?.({
+        await this.deps.settle?.({
           chatId: this.deps.chatId,
           providerRequestId: r.id,
           family: "approval",
@@ -680,6 +690,7 @@ export class OpenClawAgentRequestObserver {
             ? { decision: r.decision }
             : {}),
         });
+        this.noteSettledHere(r.id);
       })
       .catch((err) =>
         console.error(

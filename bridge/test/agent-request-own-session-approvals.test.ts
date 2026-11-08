@@ -98,11 +98,17 @@ interface Setup {
   refuse?: Record<string, string>;
   /** What `approval.get` answers for an id, when not its pending snapshot. */
   snapshots?: Record<string, Record<string, unknown> | null>;
+  /** How many settle writes Convex refuses first (the writer's own retries spent). */
+  failSettles?: number;
 }
 
 function setup(opts: Setup = {}) {
   const upserts: AgentRequestRecord[] = [];
+  /** The settles that LANDED. */
   const settles: AgentRequestSettle[] = [];
+  /** Every settle write tried, landed or not. */
+  const settleAttempts: AgentRequestSettle[] = [];
+  let failSettles = opts.failSettles ?? 0;
   const requested: Array<[string, Record<string, unknown>]> = [];
   const released: string[] = [];
   const rpcs: Array<[string, unknown]> = [];
@@ -143,6 +149,11 @@ function setup(opts: Setup = {}) {
       upserts.push(r);
     },
     settle: async (s) => {
+      settleAttempts.push(s);
+      if (failSettles > 0) {
+        failSettles -= 1;
+        throw new Error("ingest refused the settle");
+      }
       settles.push(s);
     },
     currentMessageId: () => "msg-live",
@@ -164,6 +175,7 @@ function setup(opts: Setup = {}) {
     obs,
     upserts,
     settles,
+    settleAttempts,
     requested,
     released,
     rpcs,
@@ -349,5 +361,57 @@ describe("a TERMINAL snapshot settles this conversation's card, once", () => {
       { chatId: "c1", providerRequestId: own.approvalId, family: "approval", providerCreatedAt: CREATED, status: "denied", decision: "deny" },
     ]);
     expect(t.released).toContain(own.approvalId);
+  });
+
+  it("a snapshot's settle that FAILS is not taken as done: the resolution that follows retries it, and it lands once", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const t = setup({
+        pending: { exec: [own] },
+        snapshots: { [own.approvalId]: terminalApprovalGet(own, { status: "allowed", decision: "allow-once" }) },
+        failSettles: 1,
+      });
+      await t.obs.replayPending();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.settleAttempts, "the snapshot's settle was tried…").toHaveLength(1);
+      expect(t.settles, "…and refused").toEqual([]);
+      // Its resolution broadcast: the settle is written again, and lands.
+      await t.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
+      await vi.advanceTimersByTimeAsync(0);
+      // Past the failed write's deferred retry: nothing is settled twice.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(t.settles).toEqual([
+        { chatId: "c1", providerRequestId: own.approvalId, family: "approval", status: "allowed", decision: "allow-once" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("…and without a resolution, the failed write's deferred retry settles it — once, a late resolution included", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const t = setup({
+        pending: { exec: [own] },
+        snapshots: { [own.approvalId]: terminalApprovalGet(own, { status: "allowed", decision: "allow-once" }) },
+        failSettles: 1,
+      });
+      await t.obs.replayPending();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.settles).toEqual([]);
+      // The one deferred retry of a write that failed (15 s).
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(t.settles).toEqual([
+        { chatId: "c1", providerRequestId: own.approvalId, family: "approval", providerCreatedAt: CREATED, status: "allowed", decision: "allow-once" },
+      ]);
+      // A resolution broadcast arriving after that finds nothing left to settle.
+      await t.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.settles).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
