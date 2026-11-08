@@ -284,6 +284,100 @@ describe("a claim is proven by the gateway naming its creator, not by existence"
   });
 });
 
+describe("a session the probe sees is never created again", () => {
+  // `sessions.create` on a key that exists adopts it upstream (no new row, no creator
+  // re-stamped) and still publishes an uncertified `create`, which advances the
+  // gateway-wide access revision: every approval pending on the gateway then fails
+  // `approval-request-failed` although the person allowed it (OpenClaw 2026.9.36,
+  // reproduced on the live bench). The claim ran on the first send of EVERY
+  // connection — after a reconnection, the idle eviction, a bridge restart.
+  const human = (id: string) => ({ type: "human", id, identity: { type: "profile", id }, label: id });
+  const self = { "users.self": { payload: { profile: { id: "p-owner" } } } };
+  const writer = {
+    startAssistant: async () => "msg-1",
+    appendDelta: async () => {},
+    setSnapshot: async () => true,
+    addToolPart: async () => {},
+    addMedia: async () => {},
+    finalize: async () => {},
+    reportSessionMeta: async () => {},
+    recordGatewayPressure: async () => {},
+    clearSessionState: async () => {},
+    getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
+    emitRehydrateTrace: () => {},
+  } as unknown as ConvexWriter;
+  const firstSendOnNewConnection = async (gw: FakeGateway) => {
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => gw as never);
+    const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
+    const session = await reg.acquire(ROUTING);
+    await sleep(5);
+    await performSend(session, body, writer, null, null, null, Date.now(), config).catch(() => {});
+    return session.connection as unknown as { sessionClaimed?: boolean };
+  };
+
+  it("created by this socket's profile: not created again, and the claim is proven", async () => {
+    const gw = fakeGateway({
+      describe: [{ sessionId: "s-1", systemSent: true, createdActor: human("p-owner") }],
+      answers: self,
+    });
+    const conn = await firstSendOnNewConnection(gw);
+    expect(gw.countOf("sessions.create")).toBe(0);
+    expect(conn.sessionClaimed).toBe(true);
+    // …and the turn still goes out.
+    expect(gw.countOf("chat.send")).toBe(1);
+  });
+
+  it("created by another profile: not created again, and the claim stays unproven", async () => {
+    const gw = fakeGateway({
+      describe: [{ sessionId: "s-1", systemSent: true, createdActor: human("p-bob") }],
+      answers: self,
+    });
+    const conn = await firstSendOnNewConnection(gw);
+    expect(gw.countOf("sessions.create")).toBe(0);
+    expect(conn.sessionClaimed).not.toBe(true);
+    expect(gw.countOf("chat.send")).toBe(1);
+  });
+
+  it("no creator shown: not created again, and the claim stays unproven", async () => {
+    const gw = fakeGateway({ describe: [{ sessionId: "s-1", systemSent: true }], answers: self });
+    const conn = await firstSendOnNewConnection(gw);
+    expect(gw.countOf("sessions.create")).toBe(0);
+    expect(conn.sessionClaimed).not.toBe(true);
+  });
+
+  it("a knob set on an existing session does not create it again either", async () => {
+    const gw = fakeGateway({
+      describe: [{ sessionId: "s-1", systemSent: true, createdActor: human("p-owner") }],
+      answers: self,
+    });
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => gw as never);
+    const w = { reportSessionMeta: async () => {}, clearSessionState: async () => {} } as unknown as ConvexWriter;
+    const reg = new SessionRegistry(servedMap(config, w), () => 1000);
+    const session = await reg.acquire(ROUTING);
+    await sleep(5);
+    await performPatch(
+      session,
+      { ...ROUTING, sessionSettings: { thinkingLevel: "high", model: null } } as unknown as Parameters<
+        typeof performPatch
+      >[1],
+      w,
+      config,
+    ).catch(() => {});
+    expect(gw.countOf("sessions.create")).toBe(0);
+    expect(gw.countOf("sessions.patch")).toBeGreaterThan(0);
+  });
+
+  it("control: a key the probe does not see is created, once, and proven by its creator", async () => {
+    const gw = fakeGateway({
+      describe: [null, { sessionId: "s-1", systemSent: true, createdActor: human("p-owner") }],
+      answers: self,
+    });
+    const conn = await firstSendOnNewConnection(gw);
+    expect(gw.countOf("sessions.create")).toBe(1);
+    expect(conn.sessionClaimed).toBe(true);
+  });
+});
+
 describe("the claim's probe has three states", () => {
   const human = (id: string) => ({ type: "human", id, identity: { type: "profile", id }, label: id });
   const self = { "users.self": { payload: { profile: { id: "p-owner" } } } };

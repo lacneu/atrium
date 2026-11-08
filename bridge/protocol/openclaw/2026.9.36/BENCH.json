@@ -6,137 +6,154 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "agent-request-subagent-approval",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "agent-request-approval-replay",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
+    },
+    {
+      "id": "approval-wait-vs-utility-job",
+      "ok": true,
+      "chat": "0d7918d5093c6981"
+    },
+    {
+      "id": "approval-wait-vs-existing-session-claim",
+      "ok": true,
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "9452bdb183d057ab"
+      "chat": "0d7918d5093c6981"
+    },
+    {
+      "id": "utility-hold-frames",
+      "ok": true,
+      "chat": "0d7918d5093c6981"
     }
   ],
   "verdict": "GO",
-  "at": "2026-11-07T18:39:46.215Z",
+  "at": "2026-11-08T02:28:10.942Z",
   "scenarios": [
     "agent-request-approval-replay",
     "agent-request-exec-approval",
     "agent-request-question",
     "agent-request-subagent-approval",
     "announce-reverse-hold",
+    "approval-wait-vs-existing-session-claim",
+    "approval-wait-vs-utility-job",
     "async-task",
     "basic-turn",
     "cron-tool",
@@ -157,6 +174,7 @@
     "tool-exec",
     "transcript-files-replay",
     "update-plan",
+    "utility-hold-frames",
     "widget-inline",
     "widget-off",
     "yield-settle-media",
@@ -185,21 +203,24 @@
     "agent-request-exec-approval": "openclaw",
     "agent-request-subagent-approval": "openclaw",
     "agent-request-approval-replay": "openclaw",
+    "approval-wait-vs-utility-job": "openclaw",
+    "approval-wait-vs-existing-session-claim": "openclaw",
     "widget-inline": "openclaw",
     "widget-off": "openclaw",
     "hermes-basic-turn": "hermes",
     "hermes-cron-list": "hermes",
     "hermes-clarify": "hermes",
     "hermes-clarify-skip": "hermes",
-    "transcript-files-replay": "openclaw"
+    "transcript-files-replay": "openclaw",
+    "utility-hold-frames": "openclaw"
   },
   "flags": [],
-  "atriumSha": "c49dac12cf56721a29ccd6f54b192969fb67ffa6",
+  "atriumSha": "659cd6b83a80d6834dddd7f66a3e70577b7b312b",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "955a6abdf5cc3b54fa67fbe25b18def9af85c01d9ae247a742fca5b1b1fa4883"
+    "deltaSha256": "6d19a259ae90ade872641d1ba75e3a1e84a08c4b1ac051a6a0fab1a3131b1455"
   },
-  "supportDigest": "4e646e129aafc2d936d160bc1900652a901511fbe824ee3cc7cb330ba79cd7ed",
+  "supportDigest": "d88c71f37bd0450aa8f8143d38db3a27a39e0545ee1a955785742d030760f9e0",
   "authMode": "token",
   "bridgeVersion": "0.103.4",
   "vendoredSha256": "dd3bf6d34c96dbdc0229aab143ef422b1d466349a0a964788473efcc6bdc640a"

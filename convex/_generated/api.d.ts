@@ -178,6 +178,7 @@ import type * as lib_trash from "../lib/trash.js";
 import type * as lib_turnAuthors from "../lib/turnAuthors.js";
 import type * as lib_turnDifficulty from "../lib/turnDifficulty.js";
 import type * as lib_uiPrefs from "../lib/uiPrefs.js";
+import type * as lib_utilityHold from "../lib/utilityHold.js";
 import type * as lib_viewReconcile from "../lib/viewReconcile.js";
 import type * as lib_widgetDescriptor from "../lib/widgetDescriptor.js";
 import type * as lib_widgetView from "../lib/widgetView.js";
@@ -391,6 +392,7 @@ declare const fullApi: ApiFromModules<{
   "lib/turnAuthors": typeof lib_turnAuthors;
   "lib/turnDifficulty": typeof lib_turnDifficulty;
   "lib/uiPrefs": typeof lib_uiPrefs;
+  "lib/utilityHold": typeof lib_utilityHold;
   "lib/viewReconcile": typeof lib_viewReconcile;
   "lib/widgetDescriptor": typeof lib_widgetDescriptor;
   "lib/widgetView": typeof lib_widgetView;

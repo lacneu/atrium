@@ -1,12 +1,13 @@
 # Changelog
 
-## [0.103.5] — Approvals from sub-agents, after a reconnection, and past ten minutes
+## [0.103.5] — Approvals from sub-agents, after a reconnection and past ten minutes, safe from Atrium's background work
 
-Patch release. The bridge changes; the frontend and the schema do not, and nothing needs
-migrating. In Convex only the development-only probes the live bench reads change (they refuse
-to run outside a development deployment), so redeploying the Convex functions is optional.
-Deploy the new bridge image. Validated on the live bench on OpenClaw 2026.9.36, with Hermes
-0.21.7.
+Patch release. The bridge and the Convex functions change; the frontend does not. The schema
+gains an index (`agentRequests.by_instance_and_status`) and two optional fields
+(`outbox.utilityHoldSince`, `fileRenditions.dispatchHeldAt`); nothing needs migrating. Deploy
+**Convex first, then the bridge image**: either half works with the other half of 0.103.4
+during the rollout. Validated on the live bench on OpenClaw 2026.9.36, with Hermes 0.21.7, in
+token and in trusted-proxy authentication.
 
 - **A sub-agent's approval is shown in the conversation that started it.** When an agent
   delegated work to a sub-agent and that sub-agent needed your approval to run a command, the
@@ -40,18 +41,43 @@ Deploy the new bridge image. Validated on the live bench on OpenClaw 2026.9.36, 
   final — the rule the gateway itself applies — and otherwise on the gateway's own end of the
   run. Agents on the default runtime already mark every such report as final, so nothing changes
   for them. The protection against a turn that never ends is unchanged.
+- **A command you allow is no longer refused because of Atrium's own background work.**
+  OpenClaw abandons an approval waiting for your decision as soon as a session is created on the
+  gateway, and each of Atrium's background jobs starts one: a conversation's summary, the fetch
+  of the documents a reply cites, an agent-file curation, the PDF preview of an Office file. A
+  command you had allowed could then end refused as `approval-request-failed`. These jobs now
+  wait while an approval is pending on the same OpenClaw instance, and a summary also waits
+  while the conversation it summarizes is still working (an answer in progress, a sub-agent
+  running). They start on their own once nothing holds them, and at the latest 35 minutes after
+  they began waiting — so a preview or a document fetch asked for during an approval can take
+  that much longer to appear. The messages of your conversations are never held, and Hermes
+  instances are not concerned. A held job is traced once, as an `openclaw.dispatch` event with
+  `dispatchStatus: "deferred"` and its reason (`approval_pending` or `source_busy`).
+- **With trusted-proxy authentication, a new connection no longer breaks a pending approval.**
+  On the first message of each gateway connection — a new conversation, a reconnection, the
+  bridge restarting, a conversation left idle for 15 minutes — the bridge claimed the
+  conversation's session for its owner by asking the gateway to create it, even when it already
+  existed. The gateway counts that request as a session creation, so any approval pending on the
+  gateway failed the same way. The bridge now creates the session only when the gateway does not
+  have it, and reads who owns an existing one from the gateway, as before. Token authentication
+  never sent this request.
 
 **Known issue, not new in this release.** An approval you grant can still end with the command
-refused as `approval-request-failed` when a session is created on the same gateway while the
-approval is pending — another conversation's first message, a conversation summary, a sub-agent
-being started, or a new session in the OpenClaw Control UI. The gateway treats any new session as
-a change of access rights and abandons the pending wait, even though you allowed the command. It
-applies to every command approval, a sub-agent's included. This is an OpenClaw defect, reported
-upstream; Atrium cannot prevent it on its own.
+refused as `approval-request-failed` when something other than Atrium's background work creates a
+session on the same gateway while the approval is pending: the first message of another
+conversation, in Atrium or in another client; a new session in the OpenClaw Control UI; a
+sub-agent being started; a scheduled task running. The gateway treats any new session as a change
+of access rights and abandons the pending wait, even though you allowed the command. It applies to
+every command approval, a sub-agent's included. This is an OpenClaw defect, reported upstream;
+Atrium cannot prevent it on its own.
 
-**Rollback:** redeploy the 0.103.4 bridge image. No data changes in either direction. After a
-rollback, sub-agent approvals are not shown, a missed card does not come back, the approval wait
-stops at 10 minutes, and a retried failure shows an error again.
+**Rollback:** redeploy the 0.103.4 bridge image and keep Convex on 0.103.5: its schema only adds an
+index and optional fields, and its functions accept every call a 0.103.4 bridge makes. Nothing to
+migrate in either direction. After a rollback, sub-agent approvals are not shown, a missed card
+does not come back, the approval wait stops at 10 minutes, a retried failure shows an error again,
+and with trusted-proxy authentication a new connection can again break a pending approval. Do
+**not** redeploy Convex 0.103.4 once 0.103.5 has held a job: its schema rejects the documents
+that carry the new fields, so that deploy fails.
 
 ## [0.103.4] — A long conversation of heavy turns opens again
 

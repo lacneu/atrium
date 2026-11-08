@@ -5,13 +5,15 @@
   "hermesVersion": "0.21.7",
   "gatewayVersion": "2026.9.36",
   "verdict": "GO",
-  "at": "2026-11-07T18:39:46.215Z",
+  "at": "2026-11-08T02:28:10.942Z",
   "scenarios": [
     "agent-request-approval-replay",
     "agent-request-exec-approval",
     "agent-request-question",
     "agent-request-subagent-approval",
     "announce-reverse-hold",
+    "approval-wait-vs-existing-session-claim",
+    "approval-wait-vs-utility-job",
     "async-task",
     "basic-turn",
     "cron-tool",
@@ -32,6 +34,7 @@
     "tool-exec",
     "transcript-files-replay",
     "update-plan",
+    "utility-hold-frames",
     "widget-inline",
     "widget-off",
     "yield-settle-media",
@@ -44,11 +47,11 @@
     "hermes-cron-list"
   ],
   "flags": [],
-  "atriumSha": "c49dac12cf56721a29ccd6f54b192969fb67ffa6",
+  "atriumSha": "659cd6b83a80d6834dddd7f66a3e70577b7b312b",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "f7983f2449b5148b79eed7f7c74e6eed719e08e23c8c2571253dd81956c686a6"
+    "deltaSha256": "ed1205b85b3752ff53eb79583e8d6e9560e4ec7fb554a19cc87e7a06e7596acd"
   },
-  "supportDigest": "4e646e129aafc2d936d160bc1900652a901511fbe824ee3cc7cb330ba79cd7ed",
+  "supportDigest": "d88c71f37bd0450aa8f8143d38db3a27a39e0545ee1a955785742d030760f9e0",
   "bridgeVersion": "0.103.4"
 }

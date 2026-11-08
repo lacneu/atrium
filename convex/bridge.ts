@@ -103,6 +103,12 @@ import {
   isChatBusy,
 } from "./lib/outboxQueue";
 import {
+  UTILITY_CHAT_KINDS,
+  UTILITY_HOLD_MAX_MS,
+  utilitySessionHold,
+  type UtilityHoldReason,
+} from "./lib/utilityHold";
+import {
   blockingCallForTurn,
   scheduleCallWindowDrain,
 } from "./lib/talkFreeze";
@@ -157,7 +163,9 @@ async function traceDispatch(
      *  that fails before the chat is read. See the counting rule in `anomalies.ts`:
      *  ABSENT deliberately counts as user-facing. */
     chatKind?: string | null;
-    dispatchStatus: "sent" | "failed";
+    /** `deferred`: a utility job's dispatch held by the utility hold (lib/utilityHold.ts),
+     *  written once per job, on its first hold, with the hold's `reason`. */
+    dispatchStatus: "sent" | "failed" | "deferred";
     target?: { instanceName?: string; agentId?: string };
     /** How the instance authenticates to its gateway. Says whether the gateway saw
      *  a NAMED person behind this turn or the single shared operator — the first
@@ -1965,6 +1973,73 @@ export const reparkIfBusy = internalMutation({
   handler: async (ctx, { outboxId }): Promise<boolean> => reparkRowIfBusy(ctx, outboxId),
 });
 
+/** What the utility hold decided for one dispatch attempt (see holdUtilityDispatch). */
+type UtilityDispatchVerdict =
+  | { kind: "send" }
+  | { kind: "gone" }
+  | { kind: "held"; reason: UtilityHoldReason; retryAt: number; first: boolean };
+
+/** Pending renditions of one user re-armed per hold — the user's conversions run one at
+ *  a time on a single converter chat, so a handful at most are ever waiting. */
+const HELD_RENDITIONS_REARMED = 50;
+
+/**
+ * THE UTILITY HOLD at dispatch (lib/utilityHold.ts): a hidden utility job's session is
+ * not created while a person decides an approval on the same OpenClaw instance, nor,
+ * for a summary, while the conversation it summarizes is still working.
+ *
+ * A held row stays `pending` — the job keeps its lock and its nonce, so the correlation
+ * of its reply is untouched — and its dispatch is scheduled again at `retryAt`. Its
+ * `pendingSince` is re-stamped so the stalled-dispatch reconciler
+ * (outboxReconcile.STALLED_PENDING_MS) does not take a deliberate wait for a dead
+ * dispatch; the conversions waiting on the user's converter chat are re-armed the same
+ * way for the rendition timeout. Past UTILITY_HOLD_MAX_MS from the first hold the job is
+ * sent: the approval it waited for has expired upstream.
+ */
+export const holdUtilityDispatch = internalMutation({
+  args: { outboxId: v.id("outbox"), instanceName: v.string() },
+  handler: async (ctx, { outboxId, instanceName }): Promise<UtilityDispatchVerdict> => {
+    const row = await ctx.db.get(outboxId);
+    if (row === null || row.status !== "pending") return { kind: "gone" };
+    const chat = await ctx.db.get(row.chatId);
+    if (chat === null || chat.kind === undefined || !UTILITY_CHAT_KINDS.has(chat.kind)) {
+      return { kind: "send" };
+    }
+    const now = Date.now();
+    if (row.utilityHoldSince !== undefined && now - row.utilityHoldSince >= UTILITY_HOLD_MAX_MS) {
+      return { kind: "send" };
+    }
+    const sourceChatId =
+      chat.kind === "summarizer" ? chat.pendingSummarize?.targetChatId : undefined;
+    const hold = await utilitySessionHold(
+      ctx,
+      { instanceName, ...(sourceChatId === undefined ? {} : { sourceChatId }) },
+      now,
+    );
+    if (hold === null) return { kind: "send" };
+    await ctx.db.patch(outboxId, {
+      pendingSince: now,
+      ...(row.utilityHoldSince === undefined ? { utilityHoldSince: now } : {}),
+    });
+    if (chat.kind === "converter") {
+      const waiting = await ctx.db
+        .query("fileRenditions")
+        .withIndex("by_user_status", (q) => q.eq("userId", chat.userId).eq("status", "pending"))
+        .take(HELD_RENDITIONS_REARMED);
+      for (const rendition of waiting) {
+        await ctx.db.patch(rendition._id, { dispatchHeldAt: now });
+      }
+    }
+    await ctx.scheduler.runAt(hold.retryAt, internal.bridge.dispatch, { outboxId });
+    return {
+      kind: "held",
+      reason: hold.reason,
+      retryAt: hold.retryAt,
+      first: row.utilityHoldSince === undefined,
+    };
+  },
+});
+
 async function reparkRowIfBusy(ctx: MutationCtx, outboxId: Id<"outbox">): Promise<boolean> {
   const row = await ctx.db.get(outboxId);
   if (row === null || row.status !== "pending") return false;
@@ -2751,6 +2826,43 @@ export const dispatch = internalAction({
         errorCode: "NOT_CONFIGURED",
       });
       return;
+    }
+
+    // THE UTILITY HOLD (lib/utilityHold.ts): a hidden job's dispatch creates a fresh
+    // gateway session, and on OpenClaw any session created while a person decides an
+    // approval makes the allowed command fail. Asked here — the target is known, nothing
+    // is loaded or sent yet — and only for Atrium's own hidden jobs on OpenClaw: a
+    // conversation's turn is never held behind someone else's approval, and Hermes has
+    // no such wait.
+    if (
+      routing.provider === "openclaw" &&
+      routing.chatKind !== null &&
+      UTILITY_CHAT_KINDS.has(routing.chatKind)
+    ) {
+      const held: UtilityDispatchVerdict = await ctx.runMutation(
+        internal.bridge.holdUtilityDispatch,
+        { outboxId, instanceName: routing.target.instanceName },
+      );
+      if (held.kind === "gone") return;
+      if (held.kind === "held") {
+        // Traced once per job (its first hold), not at every re-check: a job held for
+        // the length of an approval would otherwise write a row every 15 s.
+        if (held.first) {
+          await traceDispatch(ctx, {
+            outboxId,
+            chatId: row.chatId,
+            chatKind: routing.chatKind,
+            dispatchStatus: "deferred",
+            reason: held.reason,
+            target: {
+              instanceName: routing.target.instanceName,
+              agentId: routing.target.agentId,
+            },
+            authMode: routing.authMode,
+          });
+        }
+        return;
+      }
     }
 
     // Persist a re-bind (legacy/unbound chat resolved to the default, or the bound

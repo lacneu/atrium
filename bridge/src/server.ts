@@ -4299,7 +4299,8 @@ export async function sendAsSpeaker(
  * session). Called from BOTH entry points that can be the first to touch a session:
  * a send, and a `/patch` from someone setting a knob before typing anything.
  *
- * PROBES FIRST, and remembers the answer. `sessions.create` PERSISTS a row, so a
+ * PROBES FIRST, remembers the answer, and creates only a session the probe did not
+ * see. `sessions.create` PERSISTS a row, so a
  * claim sent blindly re-creates a session the gateway had pruned — and the freshness
  * rule, which reads "no session" as "re-hydrate", would then see a brand-new empty
  * session and call it warm. The user would keep their whole thread on screen while
@@ -4402,15 +4403,28 @@ async function claimSessionForOwner(
   // NOT reset: a doubt raised by an earlier claim on this socket (a `/patch` before
   // the first send) stays until a send's describe settles it — a probe that now
   // SEES the session is exactly the case where only its creator can say it is new.
-  try {
-    await conn.request("sessions.create", { key: sessionKey, agentId }, 10_000);
-    created = true;
-  } catch (err) {
-    console.error(
-      `[identity] could not claim session ${sessionKey} for its owner: ${
-        errForLog(err)
-      }`,
-    );
+  //
+  // CREATED ONLY WHEN THE PROBE DID NOT SEE IT. On a key that exists, `sessions.create`
+  // adopts it — no new row, no creator re-stamped (upstream
+  // src/gateway/session-create-service.ts:765-767 at v2026.9.36) — so it can prove
+  // nothing the probe's own read of `createdActor` does not. But it still publishes
+  // an uncertified `create` (server-methods/sessions-create.ts:670-674), which
+  // advances the gateway-wide access revision (session-change-event.ts:409-410), and
+  // every approval pending on the gateway then fails `approval-request-failed` after
+  // the person allowed it (approval-request-authority.ts:116-118). It went out on the
+  // first send of every connection: after the idle-socket eviction, a bridge restart,
+  // any reconnection.
+  if (!existedBeforeClaim) {
+    try {
+      await conn.request("sessions.create", { key: sessionKey, agentId }, 10_000);
+      created = true;
+    } catch (err) {
+      console.error(
+        `[identity] could not claim session ${sessionKey} for its owner: ${
+          errForLog(err)
+        }`,
+      );
+    }
   }
   // What the probe saw predates the create: a session it did not see (absent, or
   // hidden from this socket) is read again — whether or not the create ANSWERED. A

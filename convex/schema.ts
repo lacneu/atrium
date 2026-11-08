@@ -3782,7 +3782,10 @@ export default defineSchema({
       "seq",
     ])
     // The expiry sweep's range: open rows past their deadline.
-    .index("by_status_and_expires", ["status", "expiresAt"]),
+    .index("by_status_and_expires", ["status", "expiresAt"])
+    // "Is a person deciding an approval on this gateway right now?" — the utility
+    // hold (lib/utilityHold.ts) asks it before a background job creates a session.
+    .index("by_instance_and_status", ["instanceName", "status"]),
 
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy
@@ -4325,6 +4328,12 @@ export default defineSchema({
     // a live dispatch from a lock nobody will ever release. Optional: rows written
     // before this field exists fall back to a deliberately huge age threshold.
     pendingSince: v.optional(v.number()),
+    // A hidden utility job's dispatch (summary, documentary fetch, curation,
+    // conversion) HELD because creating its gateway session now would break an
+    // approval a person is deciding (lib/utilityHold.ts): when the hold began. Bounds
+    // the hold; `pendingSince` is re-stamped at every re-check so the reconciler does
+    // not read a deliberate wait as a stalled dispatch.
+    utilityHoldSince: v.optional(v.number()),
     // The EPHEMERAL routing segment this dispatch used (beginTurnRouting's returned
     // `segment`), remembered ONLY so a dispatch whose ack was lost can still be
     // CONFIRMED later: the normal path calls `confirmTurnRouting` right after the
@@ -4461,6 +4470,10 @@ export default defineSchema({
     converterAgentId: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
+    // The last time the user's conversion turn was deliberately HELD (the utility
+    // hold, lib/utilityHold.ts). The timeout watchdog counts from the later of this
+    // and `createdAt`: a rendition waiting on a held dispatch is not stalled.
+    dispatchHeldAt: v.optional(v.number()),
   })
     // Read/idempotency: THE row for a source blob (the cache key).
     .index("by_source", ["sourceStorageId"])

@@ -110,6 +110,12 @@ export function pickDeliveredPdf<
 /** How long a `pending` rendition may sit before the watchdog fails it. */
 export const RENDITION_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Where a pending rendition's timeout counts from: its request, or the last time its
+ *  conversion turn was deliberately held (schema.fileRenditions.dispatchHeldAt). */
+export function renditionClockStart(r: { createdAt: number; dispatchHeldAt?: number }): number {
+  return Math.max(r.createdAt, r.dispatchHeldAt ?? 0);
+}
+
 const CONVERSION_PROMPT: Record<string, string> = {
   fr:
     "Convertis en PDF le fichier joint, en préservant fidèlement la mise en page, " +
@@ -563,7 +569,12 @@ export const timeoutStaleRenditions = internalMutation({
     /** Rows this page kept pending for an upload in flight (projection `on` only). */
     let deferred = 0;
     for (const r of stale) {
-      if (r.createdAt >= cutoff) continue; // still within the grace window
+      // The clock starts at the LATER of the request and the last deliberate hold of
+      // the user's conversion turn (bridge.holdUtilityDispatch): a conversion held while
+      // a person decides an approval has not stalled, and gets its whole window once
+      // its turn leaves.
+      const since = renditionClockStart(r);
+      if (since >= cutoff) continue; // still within the grace window
       // The converter chat that may still be locked on THIS rendition (the one read
       // this loop always made; read first now, so the projection's wait can be asked).
       const chat = await ctx.db
@@ -580,7 +591,7 @@ export const timeoutStaleRenditions = internalMutation({
         chat !== null &&
         chat.pendingConvert?.renditionId === r._id &&
         transcriptStoredText(chat) &&
-        now - r.createdAt < RENDITION_TIMEOUT_MS + FILE_JOB_MAX_DEFER_MS &&
+        now - since < RENDITION_TIMEOUT_MS + FILE_JOB_MAX_DEFER_MS &&
         (await uploadInFlightIn(ctx, chat._id, now))
       ) {
         deferred++;
