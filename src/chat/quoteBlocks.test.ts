@@ -2,7 +2,7 @@
 // quotes, and which anchor it points back to.
 import { describe, expect, test } from "vitest";
 import { QUOTE_EXCERPT_CLIENT_MAX } from "./pendingQuote";
-import { pickerCloseFocus, quoteBlockChoices } from "./quoteBlocks";
+import { pickerFocusOrder, quoteBlockChoices } from "./quoteBlocks";
 
 describe("the blocks a reply offers to quote", () => {
   test("one choice per block with text, in reading order", () => {
@@ -29,24 +29,17 @@ describe("the blocks a reply offers to quote", () => {
   });
 });
 
-describe("where the focus goes when a block picker closes (lot 11)", () => {
-  const all = { composer: true, trigger: true, message: true };
-
-  test("a quote picked goes on to the reply being written", () => {
-    expect(pickerCloseFocus({ ...all, quotePicked: true })).toBe("composer");
+describe("the one fallback both block pickers give the focus back by (lot 12)", () => {
+  test("the reply's ⋯, the reply itself, then the composer", () => {
+    expect(pickerFocusOrder(false)).toEqual(["trigger", "message", "composer"]);
   });
 
-  test("anything else goes back to the reply's ⋯", () => {
-    expect(pickerCloseFocus({ ...all, quotePicked: false })).toBe("trigger");
+  test("a quote picked asks the composer first, then the same fallback", () => {
+    expect(pickerFocusOrder(true)).toEqual(["composer", ...pickerFocusOrder(false)]);
   });
 
-  test("an older reply's ⋯ gone with its action bar: the reply itself", () => {
-    expect(pickerCloseFocus({ ...all, quotePicked: false, trigger: false })).toBe("message");
-  });
-
-  test("nothing of the reply left: the composer, never the page", () => {
-    expect(
-      pickerCloseFocus({ quotePicked: false, composer: true, trigger: false, message: false }),
-    ).toBe("composer");
+  test("the reply before the composer: a composer can be disabled, the reply cannot", () => {
+    const order = pickerFocusOrder(false);
+    expect(order.indexOf("message")).toBeLessThan(order.indexOf("composer"));
   });
 });

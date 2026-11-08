@@ -56,10 +56,81 @@ export function naturalWidthOf(lines: Iterable<{ scrollWidth: number }>): number
   return width;
 }
 
+/** What `createTargetWatch` needs of a ResizeObserver and of a MutationObserver. */
+export interface ResizeWatcher {
+  observe(target: Element): void;
+  disconnect(): void;
+}
+export interface MutationWatcher {
+  observe(target: Node, options: MutationObserverInit): void;
+  disconnect(): void;
+}
+
+/**
+ * Keeps the observers on EXACTLY the elements `sync` was last given (lot 12). An
+ * observed element that is unmounted and mounted again — the same role, a new
+ * node, the hook's dependencies unchanged — is observed afresh and measured at
+ * once; the node it replaced is dropped. Subscribing only when the dependencies
+ * changed left the observers on a detached node: the composer recovered from a
+ * detached draft kept the level of the window it had left.
+ */
+export function createTargetWatch(
+  onChange: () => void,
+  content: boolean,
+  makeResize: (cb: () => void) => ResizeWatcher = (cb) => new ResizeObserver(cb),
+  makeMutation: (cb: () => void) => MutationWatcher = (cb) => new MutationObserver(cb),
+) {
+  let targets: Element[] = [];
+  let observers: Array<ResizeWatcher | MutationWatcher> = [];
+  const stop = () => {
+    for (const o of observers) o.disconnect();
+    observers = [];
+  };
+  return {
+    /** The elements to observe NOW; returns whether the subscription changed. */
+    sync(next: ReadonlyArray<Element | null | undefined>): boolean {
+      const els = next.filter((el): el is Element => el !== null && el !== undefined);
+      if (els.length === targets.length && els.every((el, i) => el === targets[i])) {
+        return false;
+      }
+      stop();
+      targets = els;
+      if (els.length > 0) {
+        const ro = makeResize(onChange);
+        for (const el of els) ro.observe(el);
+        observers.push(ro);
+        // Attributes are left out on purpose: the caller writes the chosen level
+        // onto the observed element as attributes, and must not hear its own write.
+        if (content) {
+          const mo = makeMutation(onChange);
+          for (const el of els) {
+            mo.observe(el, { childList: true, characterData: true, subtree: true });
+          }
+          observers.push(mo);
+        }
+      }
+      // A new node is measured at once, not at its first resize.
+      onChange();
+      return true;
+    },
+    dispose() {
+      stop();
+      targets = [];
+    },
+  };
+}
+
 /** The fitting level, re-decided whenever an observed element changes size or a
- *  `deps` value changes (a localized label, a badge…). `measure` returns null when
- *  the DOM cannot be read yet: the current level then stays — no verdict on a
- *  half-mounted tree. Starts at the most detailed level (0).
+ *  `deps` value changes (a localized label, a badge…), and whenever an observed
+ *  element is a NEW node — compared after every commit, not only when `deps`
+ *  change (`createTargetWatch`). `measure` returns null when the DOM cannot be
+ *  read yet: the current level then stays — no verdict on a half-mounted tree.
+ *  Starts at the most detailed level (0).
+ *
+ *  The comparison runs after the commits of the component that calls the hook,
+ *  so the observed elements are rendered by THAT component: a child remounting
+ *  its own element would only be seen at the caller's next commit (held for
+ *  every caller by fitTargetsWiring.test.ts).
  *
  *  `content: true` also re-decides when the observed elements' CONTENT changes
  *  (children added or removed, text edited): a bar whose controls render their own
@@ -78,42 +149,45 @@ export function useFitLevel(
   const content = options.content === true;
   const hysteresis = options.hysteresis ?? 0;
   const [level, setLevel] = useState(0);
-  // Read through refs: the effect subscribes once per `deps` change, while the
-  // closures it calls always come from the latest render.
+  // Read through refs: the observers live across renders, while the closures they
+  // call always come from the latest render.
   const measureRef = useRef(measure);
   measureRef.current = measure;
   const observedRef = useRef(observed);
   observedRef.current = observed;
+  const hysteresisRef = useRef(hysteresis);
+  hysteresisRef.current = hysteresis;
+  const runRef = useRef(() => {
+    const input = measureRef.current();
+    if (input === null) return;
+    setLevel((prev) => {
+      const next = pickFitLevel(input, prev, hysteresisRef.current);
+      return prev === next ? prev : next;
+    });
+  });
+  const watchRef = useRef<ReturnType<typeof createTargetWatch> | null>(null);
+  // AFTER EVERY COMMIT: the observed elements as they are now. A remounted one
+  // (unmounted, mounted again, `deps` unchanged) is observed and measured afresh.
   useLayoutEffect(() => {
-    const run = () => {
-      const input = measureRef.current();
-      if (input === null) return;
-      setLevel((prev) => {
-        const next = pickFitLevel(input, prev, hysteresis);
-        return prev === next ? prev : next;
-      });
-    };
-    run();
-    const targets = observedRef
-      .current()
-      .filter((el): el is Element => el !== null && el !== undefined);
-    if (targets.length === 0) return;
-    const ro = new ResizeObserver(run);
-    for (const el of targets) ro.observe(el);
-    // Attributes are left out on purpose: the caller writes the chosen level onto
-    // the observed element as attributes, and must not hear its own write.
-    const mo = content ? new MutationObserver(run) : null;
-    if (mo !== null) {
-      for (const el of targets) {
-        mo.observe(el, { childList: true, characterData: true, subtree: true });
-      }
+    if (watchRef.current === null) {
+      watchRef.current = createTargetWatch(() => runRef.current(), content);
     }
-    return () => {
-      ro.disconnect();
-      mo?.disconnect();
-    };
+    watchRef.current.sync(observedRef.current());
+  });
+  // A dependency of the measure changed: decide again.
+  useLayoutEffect(() => {
+    runRef.current();
     // `deps` IS the contract: the caller lists what changes a measured width.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, content, hysteresis]);
+  }, [...deps, hysteresis]);
+  // `content` changes which observers there are: a new watch, made by the next
+  // commit; the last one goes on unmount.
+  useLayoutEffect(
+    () => () => {
+      watchRef.current?.dispose();
+      watchRef.current = null;
+    },
+    [content],
+  );
   return level;
 }

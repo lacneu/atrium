@@ -26,24 +26,33 @@ export function quoteBlockChoices(texts: readonly string[]): QuoteBlockChoice[] 
   return choices;
 }
 
-/** Where the focus goes when a block picker closes (BlockPicker). */
-export type PickerFocus = "composer" | "trigger" | "message" | null;
+/** Who may take the focus back when a block picker closes (BlockPicker). */
+export type PickerFocusCandidate = "composer" | "trigger" | "message";
 
 /**
- * A quote goes on to the reply being written: the composer. Anything else goes
- * back where it came from: the reply's ⋯. On a computer, though, an older reply's
- * action bar unmounts as soon as the pointer leaves the message — the ⋯ is gone by
- * the time the list closes, and Radix then drops the focus on the page (lot 11):
- * the reply itself takes it, and failing that the composer.
+ * The ONE fallback both pickers ("Bookmark a block…", "Reply to a block…") give
+ * the focus back by, in this order: the reply's ⋯ — where the list came from —,
+ * the reply itself, then the composer. On a computer an older reply's action bar
+ * unmounts as soon as the pointer leaves the message, so the ⋯ is often gone by
+ * the time the list closes (lot 11). The reply is the resort that is always
+ * safe: it is on the page whatever the chat's state, and takes the focus for this
+ * one time. The composer comes after it, asked only when the reply cannot take
+ * the focus: a read-only chat or an unavailable bridge disables the field, and a
+ * disabled field never takes it (lot 12).
  */
-export function pickerCloseFocus(o: {
-  quotePicked: boolean;
-  composer: boolean;
-  trigger: boolean;
-  message: boolean;
-}): PickerFocus {
-  if (o.quotePicked && o.composer) return "composer";
-  if (o.trigger) return "trigger";
-  if (o.message) return "message";
-  return o.composer ? "composer" : null;
+const PICKER_FOCUS_FALLBACK: readonly PickerFocusCandidate[] = [
+  "trigger",
+  "message",
+  "composer",
+];
+
+/**
+ * The candidates in the order they are offered the focus (`focusFirst`). A quote
+ * picked goes on to the reply being written: the composer is asked first — and
+ * when it cannot take the focus, the same fallback as any other close follows.
+ */
+export function pickerFocusOrder(quotePicked: boolean): PickerFocusCandidate[] {
+  return quotePicked
+    ? ["composer", ...PICKER_FOCUS_FALLBACK]
+    : [...PICKER_FOCUS_FALLBACK];
 }

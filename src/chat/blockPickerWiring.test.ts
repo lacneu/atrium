@@ -1,11 +1,12 @@
-// WIRING of the block picker's focus on close (lot 11).
+// WIRING of the block picker's focus on close (lots 11 and 12).
 //
-// The choice is pure and tested in quoteBlocks.test.ts (pickerCloseFocus). What
-// that test cannot see is whether the picker still ASKS it, and still takes the
-// focus off Radix — which, left alone, drops it on the page once an older reply's
-// action bar has unmounted. The picker needs Radix and the DOM to render, so the
-// wiring is read from the SYNTAX TREE (TypeScript's parser: comments and strings
-// cannot fake a call).
+// The order is pure and tested in quoteBlocks.test.ts (pickerFocusOrder), the walk
+// that offers the focus in that order in src/lib/focusFallback.test.ts
+// (focusFirst). What those tests cannot see is whether the picker still goes
+// through them — the one fallback, for both kinds — and takes the focus off Radix
+// only when the walk placed it. The picker needs Radix and the DOM to render, so
+// the wiring is read from the SYNTAX TREE (TypeScript's parser: comments and
+// strings cannot fake a call).
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,28 +41,34 @@ const callsTo = (root: ts.Node, name: string) =>
   });
 
 describe("the block picker gives the focus back somewhere real", () => {
-  test("on close it asks where, and takes the focus off Radix", () => {
-    const attr = find(SF, ts.isJsxAttribute).find((a) => a.name.getText() === "onCloseAutoFocus");
-    expect(attr, "no onCloseAutoFocus").toBeDefined();
-    expect(callsTo(attr!, "closeFocusTarget")).toHaveLength(1);
-    expect(callsTo(attr!, "preventDefault")).toHaveLength(1);
-    expect(callsTo(attr!, "focus")).toHaveLength(1);
+  test("one close handler, for both kinds: it restores the focus, and only then takes it off Radix", () => {
+    const attrs = find(SF, ts.isJsxAttribute).filter((a) => a.name.getText() === "onCloseAutoFocus");
+    expect(attrs, "one onCloseAutoFocus for both kinds").toHaveLength(1);
+    const [attr] = attrs;
+    const [restore] = callsTo(attr, "restoreFocus");
+    expect(restore, "onCloseAutoFocus no longer calls restoreFocus").toBeDefined();
+    const prevent = callsTo(attr, "preventDefault");
+    expect(prevent).toHaveLength(1);
+    // preventDefault is under an `if` whose condition IS the restore: when no
+    // candidate took the focus, Radix keeps its own default.
+    const guard = find(attr, ts.isIfStatement).find((i) => i.expression === restore);
+    expect(guard, "preventDefault is not conditioned on restoreFocus").toBeDefined();
+    expect(guard!.thenStatement.getText()).toContain("preventDefault");
   });
 
-  test("the answer comes from pickerCloseFocus, told whether the ⋯ is still there", () => {
-    const fn = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "closeFocusTarget");
-    expect(fn, "no closeFocusTarget").toBeDefined();
-    const [ask] = callsTo(fn!, "pickerCloseFocus");
-    expect(ask, "closeFocusTarget no longer asks pickerCloseFocus").toBeDefined();
-    const arg = ask.arguments[0];
-    expect(ts.isObjectLiteralExpression(arg)).toBe(true);
-    const keys = (arg as ts.ObjectLiteralExpression).properties.map((p) => p.name?.getText());
-    expect(keys).toEqual(expect.arrayContaining(["quotePicked", "composer", "trigger", "message"]));
+  test("the focus only moves through the shared walk: focusFirst, over pickerFocusOrder", () => {
+    const fn = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "restoreFocus");
+    expect(fn, "no restoreFocus").toBeDefined();
+    const [walk] = callsTo(fn!, "focusFirst");
+    expect(walk, "restoreFocus no longer walks with focusFirst").toBeDefined();
+    expect(callsTo(walk.arguments[0], "pickerFocusOrder")).toHaveLength(1);
+    expect(callsTo(SF, "focus"), "a direct .focus() call bypasses the walk").toHaveLength(0);
   });
 
-  test("the reply, not focusable by itself, is made so for that focus", () => {
-    const fn = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "closeFocusTarget")!;
-    const set = callsTo(fn, "setAttribute").map((c) => c.arguments.map((a) => a.getText()));
-    expect(set).toContainEqual(['"tabindex"', '"-1"']);
+  test("every candidate of the order is resolved: the ⋯, the reply, the composer", () => {
+    const fn = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "restoreFocus")!;
+    const table = find(fn, ts.isObjectLiteralExpression)[0];
+    const keys = table.properties.map((p) => p.name?.getText());
+    expect(keys).toEqual(expect.arrayContaining(["composer", "trigger", "message"]));
   });
 });

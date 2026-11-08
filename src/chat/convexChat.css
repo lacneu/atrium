@@ -10472,26 +10472,46 @@ button.oc-perm__opt:disabled {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+/* THE ACTION BAR IS ALWAYS VISIBLE (lot 12). The panel is laid out from the BOTTOM
+   of the visible area — above the iOS keyboard (`--oc-kb`), with a 5dvh gap while
+   there is room for one — so its foot, where the bar is, can never sink under the
+   keyboard. Inside, a column: the bar never shrinks; the field shrinks to nothing
+   and scrolls; the header folds away when the panel is very short. When even the
+   bar and its paddings do not fit (a keyboard over a phone held sideways), the
+   panel keeps that floor and overflows at the TOP of the screen, the bar still in
+   view. Twice the keyboard defeated a centred panel with a fixed field (lots 11,
+   12): nothing here is centred or fixed in height any more. */
 .oc-composer--expanded {
   position: fixed;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  top: auto;
+  transform: translateX(-50%);
   z-index: var(--oc-layer-focus-panel);
   /* A GENEROUS workspace on big screens (dictation comfort), still bounded for
      line readability. Fills most of the height so a long dictated prompt is
      visible at once; small screens fall back to the viewport and scroll. */
   width: min(94vw, 1040px);
   max-width: none;
-  height: calc(90dvh - var(--oc-kb, 0px));
-  max-height: calc(90dvh - var(--oc-kb, 0px));
+  /* The floor: what the column cannot give up — the bar (44 px on touch), the
+     field's own padding, the column's gap, the smallest paddings and the border
+     (72 px, measured in the browser with the field at its smallest). */
+  --oc-exp-floor: 4.5rem;
+  --oc-exp-gap: max(
+    0px,
+    min(5dvh, calc((100dvh - var(--oc-kb, 0px) - var(--oc-exp-floor)) / 2))
+  );
+  bottom: calc(var(--oc-kb, 0px) + var(--oc-exp-gap));
+  height: max(
+    var(--oc-exp-floor),
+    calc(100dvh - var(--oc-kb, 0px) - 2 * var(--oc-exp-gap))
+  );
+  max-height: none;
   margin: 0;
-  /* Lifted by half the keyboard, like a dialog (lot 8): centred on the visible
-     area, not on the screen the keyboard covers. AFTER the reset above — the
-     shorthand set first zeroed it, and the panel's action bar sank under the
-     keyboard (lot 11). */
-  margin-top: calc(var(--oc-kb, 0px) / -2);
-  padding: 0.9rem 1.15rem 0.8rem;
+  /* Paddings give way with the visible height (0.25 to 0.9 rem). */
+  --oc-exp-pad: clamp(0.25rem, calc((100dvh - var(--oc-kb, 0px)) / 20), 0.9rem);
+  padding: var(--oc-exp-pad) 1.15rem calc(var(--oc-exp-pad) * 0.9);
+  /* The panel's own height decides what folds (the header, below). */
+  container: oc-exp / size;
   border-radius: 1.25rem;
   border: 1px solid var(--input);
   background: var(--card);
@@ -10502,8 +10522,25 @@ button.oc-perm__opt:disabled {
   animation: oc-expand-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes oc-expand-in {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.97); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; transform: translateX(-50%) scale(0.97); }
+  to { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+/* The column: the bar and the header keep their height, the field and the
+   attachments give theirs up (scrolling inside). */
+.oc-composer--expanded > .oc-composer__bar,
+.oc-composer--expanded > .oc-composer__exphead {
+  flex-shrink: 0;
+}
+.oc-composer--expanded > .oc-attachrow {
+  flex-shrink: 1;
+  min-height: 0;
+}
+/* A panel too short for its header (a keyboard over a phone held sideways): the
+   header folds — the backdrop still closes the panel. */
+@container oc-exp (max-height: 10.5rem) {
+  .oc-composer--expanded > .oc-composer__exphead {
+    display: none;
+  }
 }
 .oc-composer--expanded.oc-composer--dictation {
   border-color: color-mix(in srgb, var(--voice) 55%, var(--input));
@@ -10553,12 +10590,12 @@ button.oc-perm__opt:disabled {
   visibility: hidden;
   pointer-events: none;
 }
-/* The workspace fills the panel: a generous minimum so it's roomy from the
-   start, growing to fill the flex space, scrolling beyond. The bar below
-   stays visible because the panel height is fixed (90dvh flex column). */
+/* The workspace fills the panel's free height and scrolls beyond it. No minimum
+   of its own: it is the part that gives way when the keyboard leaves little room
+   (lot 12 — its former 30dvh floor pushed the bar out of the panel). */
 .oc-composer--expanded .oc-composer__input {
   flex: 1 1 auto;
-  min-height: 30dvh;
+  min-height: 0;
   max-height: none;
   overflow-y: auto;
   font-size: 1.02rem;
