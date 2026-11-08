@@ -59,7 +59,12 @@ import { TimezoneCombobox } from "./TimezoneCombobox";
 import { DateTimePicker } from "./DateTimePicker";
 import "./confTabs.css";
 import { useTableLayout } from "./useTableLayout";
-import { CalendarView, type CalendarCursor, type CalendarMode } from "./CalendarView";
+import {
+  CalendarView,
+  calendarReturnFocus,
+  type CalendarCursor,
+  type CalendarMode,
+} from "./CalendarView";
 import { monthWindow, yearWindow, type CalendarEvent } from "./calendarData";
 import {
   cronEventsInWindow,
@@ -261,9 +266,13 @@ export function ScheduledTab() {
     () => cronEventsInWindow(calendarJobs, calWindow.startMs, calWindow.endMs),
     [calendarJobs, calWindow],
   );
+  // The occurrence the editor was opened from, if any: the calendar may swap its
+  // button for another (month <-> agenda) while the editor is open.
+  const editFromEvent = useRef<string | null>(null);
   const onCalendarEventClick = (ev: CalendarEvent) => {
     const entry = calendar.byItemId.get(ev.itemId);
     if (entry === undefined || !entry.canEdit || entry.job.id === null) return;
+    editFromEvent.current = ev.id;
     void openEdit(entry.instanceName, entry.job);
   };
 
@@ -333,6 +342,11 @@ export function ScheduledTab() {
   // let the FIRST request's completion overwrite (or close) the second.
   const historyGen = useRef(0);
   const editGen = useRef(0);
+  // Closing the editor opened from an occurrence whose button the calendar has
+  // replaced meanwhile: the same occurrence in the view now shown, then the
+  // calendar's toolbar (the dialog tries its opener first).
+  const editReturnFocus = () =>
+    editFromEvent.current === null ? [] : calendarReturnFocus(editFromEvent.current);
   const openHistory = async (instanceName: string, job: CronJob) => {
     if (job.id === null) return;
     const gen = ++historyGen.current;
@@ -906,7 +920,10 @@ export function ScheduledTab() {
                                   title={m.cron_action_edit()}
                                   aria-label={m.cron_action_edit()}
                                   disabled={busyJob !== null}
-                                  onClick={() => void openEdit(g.instanceName, j)}
+                                  onClick={() => {
+                                    editFromEvent.current = null;
+                                    void openEdit(g.instanceName, j);
+                                  }}
                                 >
                                   <Pencil size={14} aria-hidden />
                                 </Button>
@@ -1079,7 +1096,7 @@ export function ScheduledTab() {
           }
         }}
       >
-        <DialogContent className="oc-cronedit">
+        <DialogContent className="oc-cronedit" returnFocus={editReturnFocus}>
           <DialogHeader>
             <DialogTitle>{m.cron_edit_title()}</DialogTitle>
             <DialogDescription>{m.cron_edit_desc()}</DialogDescription>

@@ -5,6 +5,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useFocusReturn, type ReturnFocus } from "@/lib/returnFocus"
 import { Button } from "@/components/ui/button"
 import { m } from "@/paraglide/messages.js"
 
@@ -66,10 +67,19 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  returnFocus,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  /** Where the focus goes as the dialog closes if the control that opened it is
+   *  gone or hidden by then — controls of the view that stay, in order. */
+  returnFocus?: ReturnFocus
 }) {
+  // No dialog has a Radix trigger, the only place Radix gives the focus back to:
+  // the focus goes back where the dialog was opened from (lib/returnFocus).
+  const focus = useFocusReturn(returnFocus, onOpenAutoFocus, onCloseAutoFocus)
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -77,6 +87,8 @@ function DialogContent({
         data-slot="dialog-content"
         className={cn("z-50", dialogContentClassName, className)}
         {...props}
+        onOpenAutoFocus={focus.onOpenAutoFocus}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
       >
         {children}
         {showCloseButton && (

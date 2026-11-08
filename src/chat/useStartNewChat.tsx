@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { AgentPickerDialog, type PickableAgent } from "./AgentPicker";
+import type { ReturnFocus } from "@/lib/returnFocus";
 
 // New-chat orchestration, extracted from ChatSidebar so it can live in the
 // PERSISTENT chrome (always mounted) rather than the sidebar (which unmounts when
@@ -17,8 +18,13 @@ import { AgentPickerDialog, type PickableAgent } from "./AgentPicker";
 /**
  * @param onCreated called with the new chat id once it is bound to an agent, so
  *   the caller can navigate to it.
+ * @param returnFocus where the focus goes when the agent picker closes if the
+ *   control that opened it is gone or hidden by then — read when it closes.
  */
-export function useStartNewChat(onCreated: (id: Id<"chats">) => void): {
+export function useStartNewChat(
+  onCreated: (id: Id<"chats">) => void,
+  returnFocus?: ReturnFocus,
+): {
   startNewChat: (opts?: { projectId?: Id<"projects"> }) => Promise<void>;
   picker: ReactNode;
 } {
@@ -71,6 +77,7 @@ export function useStartNewChat(onCreated: (id: Id<"chats">) => void): {
     <AgentPickerDialog
       open={pickerOpen}
       onOpenChange={setPickerOpen}
+      returnFocus={returnFocus}
       agents={myAgents}
       onPick={(instanceName, agentId) => {
         setPickerOpen(false);

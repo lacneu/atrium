@@ -210,6 +210,31 @@ export function CalendarView({
   );
 }
 
+/**
+ * Where the focus goes back when a dialog opened from an occurrence closes, once
+ * the button it was opened from is gone: month and agenda render each occurrence
+ * as a different button (`data-cal-event`), and the calendar swaps them by itself
+ * when its width crosses the grid's need. The same occurrence in the view now
+ * shown, then the toolbar's current mode — a control that stays.
+ */
+export function calendarReturnFocus(
+  eventId: string | null,
+  doc: Pick<Document, "querySelector"> = document,
+): Array<HTMLElement | null> {
+  const root = doc.querySelector<HTMLElement>(".oc-cal");
+  if (root === null) return [];
+  const same =
+    eventId === null
+      ? null
+      : (Array.from(root.querySelectorAll<HTMLElement>("[data-cal-event]")).find(
+          (el) => el.getAttribute("data-cal-event") === eventId,
+        ) ?? null);
+  const mode =
+    root.querySelector<HTMLElement>('.oc-cal__modes [aria-pressed="true"]') ??
+    root.querySelector<HTMLElement>(".oc-cal__head button");
+  return [same, mode];
+}
+
 /** Scrolls the nearest scrolling ancestor of `target` — that one only:
  *  scrollIntoView would move clipped ancestors too — so it sits right under the
  *  calendar's sticky head, whose band ends with its own padding. */
@@ -329,6 +354,7 @@ function AgendaList({
                   type="button"
                   variant="ghost"
                   key={ev.id}
+                  data-cal-event={ev.id}
                   className={`${className} h-auto min-h-11 w-full justify-start font-normal`}
                   style={style}
                   onClick={() => onEventClick(ev)}
@@ -391,6 +417,7 @@ function MonthGrid({
               <button
                 type="button"
                 key={ev.id}
+                data-cal-event={ev.id}
                 className={
                   "oc-cal__event" +
                   (ev.muted ? " oc-cal__event--muted" : "") +

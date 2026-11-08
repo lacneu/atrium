@@ -7,16 +7,35 @@ import { cn } from "@/lib/utils"
 // NOT close on inner activation — required for the session-knob segmented
 // controls, which are adjusted repeatedly without reopening the surface.
 
+// A popover's content and its trigger carry the same pair (`data-popover-of` ↔
+// `data-popover-trigger`): a dialog opened from inside the popover gives the focus
+// back to that trigger once the popover is gone (lib/returnFocus). Radix links
+// them only while the popover is open (`aria-controls`), and it closes as the
+// dialog opens.
+const PopoverPair = React.createContext<string | undefined>(undefined)
+
 function Popover({
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
-  return <PopoverPrimitive.Root data-slot="popover" {...props} />
+  const pair = React.useId()
+  return (
+    <PopoverPair.Provider value={pair}>
+      <PopoverPrimitive.Root data-slot="popover" {...props} />
+    </PopoverPair.Provider>
+  )
 }
 
 function PopoverTrigger({
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Trigger>) {
-  return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
+  const pair = React.useContext(PopoverPair)
+  return (
+    <PopoverPrimitive.Trigger
+      data-slot="popover-trigger"
+      data-popover-trigger={pair}
+      {...props}
+    />
+  )
 }
 
 // NEVER TALLER THAN THE SCREEN ALLOWS. Radix publishes the room left on the
@@ -40,10 +59,12 @@ function PopoverContent({
   collisionPadding = OVERLAY_COLLISION_PADDING,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+  const pair = React.useContext(PopoverPair)
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
         data-slot="popover-content"
+        data-popover-of={pair}
         align={align}
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}

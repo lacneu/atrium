@@ -300,8 +300,14 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
     [page.chats, reads],
   );
 
-  const { startNewChat, picker } = useStartNewChat((id) =>
-    void navigate({ to: "/chat/$chatId", params: { chatId: id } }),
+  // The page's ⋯ menu: where the two new-item actions go when the bar has no room
+  // for them — and so where the focus goes back if their dialog outlives their
+  // button (the window narrowed while it was open).
+  const pageMenuRef = useRef<HTMLButtonElement>(null);
+  const backToPageMenu = () => [pageMenuRef.current];
+  const { startNewChat, picker } = useStartNewChat(
+    (id) => void navigate({ to: "/chat/$chatId", params: { chatId: id } }),
+    backToPageMenu,
   );
   // The bar's two new-item actions, shared by their buttons and — once the bar
   // has no room for them — by their entries in the ⋯ menu.
@@ -312,6 +318,7 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
       label: m.sidebar_project_name_label(),
       placeholder: m.sidebar_project_name_placeholder(),
       confirmLabel: m.sidebar_create(),
+      returnFocus: backToPageMenu,
     });
     if (name) {
       await createProject({ name, parentId: page.project._id });
@@ -703,6 +710,7 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
+                ref={pageMenuRef}
                 variant="ghost"
                 size="icon-sm"
                 aria-label={m.sidebar_project_actions()}

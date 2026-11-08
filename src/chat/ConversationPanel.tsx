@@ -83,6 +83,7 @@ import { dockFocus, dockOffsets, dockScales } from "./presenceDock";
 import type { SessionMetaView, SessionSettingsView } from "./sessionKnobs";
 import type { ChatRouting } from "./useConvexChatRuntime";
 import { isAgentPurgePending } from "./admin/groupManageView";
+import { barControl, composerAround } from "./composerFocus";
 
 import "./chatParticipants.css";
 
@@ -408,9 +409,21 @@ export function ConversationPanel({
   );
   const viewer = room?.viewerRoomRole;
   const agentCount = room ? room.agents.length + (room.primary ? 1 : 0) : 0;
+  // Opened from the composer's bar — its room chevron, or an item of the More
+  // menu — whose controls move into More and back with the width: when the opener
+  // is gone by the time the panel closes, the chevron (back in the bar), More,
+  // then the field.
+  const returnFocus = () => {
+    const { bar, more, field } = composerAround(null);
+    return [barControl(bar, "room-settings"), more, field];
+  };
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="oc-spanel oc-convpanel">
+      <SheetContent
+        side="right"
+        className="oc-spanel oc-convpanel"
+        returnFocus={returnFocus}
+      >
         <SheetHeader>
           <SheetTitle>{m.conversation_title()}</SheetTitle>
           <SheetDescription>

@@ -4,6 +4,7 @@ import * as React from "react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useFocusReturn, type ReturnFocus } from "@/lib/returnFocus"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
 import { m } from "@/paraglide/messages.js"
@@ -52,13 +53,22 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  returnFocus,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
   /** Classes for this sheet's own overlay (its layer, its dimming). */
   overlayClassName?: string
+  /** Where the focus goes as the sheet closes if the control that opened it is
+   *  gone or hidden by then — controls of the view that stay, in order. */
+  returnFocus?: ReturnFocus
 }) {
+  // No sheet has a Radix trigger, the only place Radix gives the focus back to:
+  // the focus goes back where the sheet was opened from (lib/returnFocus).
+  const focus = useFocusReturn(returnFocus, onOpenAutoFocus, onCloseAutoFocus)
   return (
     <SheetPortal>
       <SheetOverlay className={overlayClassName} />
@@ -70,6 +80,8 @@ function SheetContent({
           className
         )}
         {...props}
+        onOpenAutoFocus={focus.onOpenAutoFocus}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
       >
         {children}
         {showCloseButton && (

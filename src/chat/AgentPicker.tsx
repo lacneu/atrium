@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Star, Server, Bot } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
+import type { ReturnFocus } from "@/lib/returnFocus";
 
 // One agent the current user may open a chat on (shape of api.agents.listMyAgents).
 export interface PickableAgent {
@@ -93,11 +94,15 @@ export function filterAgents(
 export function AgentPickerDialog({
   open,
   onOpenChange,
+  returnFocus,
   agents,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Where the focus goes when the picker closes if the control that opened it
+   *  is gone or hidden by then (a page's "New chat" moved into its ⋯ menu). */
+  returnFocus?: ReturnFocus;
   agents: PickableAgent[] | undefined;
   onPick: (instanceName: string, agentId: string) => void;
 }) {
@@ -109,7 +114,7 @@ export function AgentPickerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="oc-agentpicker">
+      <DialogContent className="oc-agentpicker" returnFocus={returnFocus}>
         <DialogHeader>
           <DialogTitle>{m.agentpicker_dialog_title()}</DialogTitle>
           <DialogDescription>
