@@ -2,6 +2,7 @@ import * as React from "react"
 import { Popover as PopoverPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useLayerFocus, type ReturnFocus } from "@/lib/returnFocus"
 
 // Minimal shadcn-style Popover (CONF-4). Unlike DropdownMenu, a Popover does
 // NOT close on inner activation — required for the session-knob segmented
@@ -57,9 +58,18 @@ function PopoverContent({
   align = "center",
   sideOffset = 4,
   collisionPadding = OVERLAY_COLLISION_PADDING,
+  returnFocus,
+  onInteractOutside,
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: Omit<React.ComponentProps<typeof PopoverPrimitive.Content>, "onCloseAutoFocus" | "ref"> & {
+  /** Where the focus goes as the popover closes if its trigger is gone or hidden
+   *  by then — controls of the view that stay, in order. */
+  returnFocus?: ReturnFocus
+}) {
   const pair = React.useContext(PopoverPair)
+  // The focus goes back to the trigger by the one rule of lib/returnFocus — a view
+  // only adds fallbacks (`returnFocus`).
+  const focus = useLayerFocus("popover", returnFocus, onInteractOutside)
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
@@ -70,6 +80,9 @@ function PopoverContent({
         collisionPadding={collisionPadding}
         className={cn("z-50", popoverContentClassName, className)}
         {...props}
+        ref={focus.ref}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
+        onInteractOutside={focus.onInteractOutside}
       />
     </PopoverPrimitive.Portal>
   )

@@ -136,6 +136,18 @@ describe("calendar: the cron editor falls back to the same occurrence, then the 
   });
 });
 
+describe("mobile drawer: back to its toggle when its opener is gone (lot 16)", () => {
+  test("the toggle is a fallback of the rule, not a handler that ran before its guard", () => {
+    const sf = parse("router.tsx");
+    const content = openings(sf).find(
+      (o) => o.tagName.getText() === "SheetContent" && /oc-drawer/.test(attrText(o, "className") ?? ""),
+    );
+    expect(content, "no drawer").toBeDefined();
+    expect(attr(content!, "onCloseAutoFocus")).toBeUndefined();
+    expect(attrText(content!, "returnFocus")).toBe("{() => [sidebarToggleRef.current]}");
+  });
+});
+
 describe("conversation panel: back to the composer's chevron, More, the field", () => {
   test("the sheet names them, in that order", () => {
     const sf = parse("chat/ConversationPanel.tsx");

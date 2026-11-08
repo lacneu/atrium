@@ -27,7 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/toast";
-import { composerAround, restoreComposerFocus } from "./composerFocus";
+import { composerAround } from "./composerFocus";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import type { ConvexId } from "./convexTypes";
@@ -247,10 +247,10 @@ export function PermissionModePicker({
         className="oc-perm__menu w-80"
         onKeyDown={onKeyDown}
         // Its button may have gone into the composer's More menu meanwhile (the
-        // bar narrowed): the focus then goes there, else to the field (lot 14).
-        onCloseAutoFocus={(e) => {
+        // bar narrowed): the focus then goes there, else to the field.
+        returnFocus={() => {
           const { more, field } = composerAround(triggerRef.current);
-          if (restoreComposerFocus([triggerRef.current, more, field])) e.preventDefault();
+          return [more, field];
         }}
       >
         <Heading />

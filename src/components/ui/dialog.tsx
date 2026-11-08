@@ -5,7 +5,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { useFocusReturn, type ReturnFocus } from "@/lib/returnFocus"
+import { useLayerFocus, type ReturnFocus } from "@/lib/returnFocus"
 import { Button } from "@/components/ui/button"
 import { m } from "@/paraglide/messages.js"
 
@@ -68,18 +68,17 @@ function DialogContent({
   children,
   showCloseButton = true,
   returnFocus,
-  onOpenAutoFocus,
-  onCloseAutoFocus,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+}: Omit<React.ComponentProps<typeof DialogPrimitive.Content>, "onCloseAutoFocus" | "ref"> & {
   showCloseButton?: boolean
   /** Where the focus goes as the dialog closes if the control that opened it is
    *  gone or hidden by then — controls of the view that stay, in order. */
   returnFocus?: ReturnFocus
 }) {
-  // No dialog has a Radix trigger, the only place Radix gives the focus back to:
-  // the focus goes back where the dialog was opened from (lib/returnFocus).
-  const focus = useFocusReturn(returnFocus, onOpenAutoFocus, onCloseAutoFocus)
+  // The focus goes back where the dialog was opened from, by the one rule of
+  // lib/returnFocus — a view only adds fallbacks (`returnFocus`): it cannot pass
+  // its own `onCloseAutoFocus`, which would run before the guard.
+  const focus = useLayerFocus("dialog", returnFocus)
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -87,7 +86,7 @@ function DialogContent({
         data-slot="dialog-content"
         className={cn("z-50", dialogContentClassName, className)}
         {...props}
-        onOpenAutoFocus={focus.onOpenAutoFocus}
+        ref={focus.ref}
         onCloseAutoFocus={focus.onCloseAutoFocus}
       >
         {children}

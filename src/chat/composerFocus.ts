@@ -40,10 +40,12 @@ export function barControl(bar: Element | null, key: string | null): HTMLElement
 }
 
 /**
- * The focus was LOST as an overlay of the bar closed or shed an item: hands it to
- * the first candidate that really takes it (`focusFirst`), and says whether one
- * did — the caller then keeps Radix from moving it again. A focus the user already
- * placed somewhere (a click in the field) is left alone.
+ * The focus was LOST as the More menu shed the item that held it (its control went
+ * back to the bar): hands it to the first candidate that really takes it
+ * (`focusFirst`), and says whether one did. A focus the user already placed
+ * somewhere (a click in the field) is left alone. An overlay that CLOSES goes
+ * through the shared rule instead (lib/returnFocus): these candidates are its
+ * fallbacks (`returnFocus`).
  */
 export function restoreComposerFocus(
   candidates: ReadonlyArray<HTMLElement | null>,

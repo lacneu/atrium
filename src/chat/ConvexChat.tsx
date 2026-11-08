@@ -311,7 +311,7 @@ import {
   levelAt,
   movableControls,
 } from "./composerFit";
-import { composerAround, restoreComposerFocus } from "./composerFocus";
+import { composerAround } from "./composerFocus";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { MediaPart } from "./MediaPart";
 import { MarkdownText, AgentMarkdown } from "./MarkdownText";
@@ -5278,10 +5278,10 @@ function ComposerAgentSelect({
             align="end"
             className="oc-roommenu"
             // The chevron may have gone into the composer's More menu meanwhile:
-            // the focus then goes there, else to the field (lot 14).
-            onCloseAutoFocus={(e) => {
+            // the focus then goes there, else to the field.
+            returnFocus={() => {
               const { more, field } = composerAround(settingsTriggerRef.current);
-              if (restoreComposerFocus([settingsTriggerRef.current, more, field])) e.preventDefault();
+              return [more, field];
             }}
           >
             <DropdownMenuItem onSelect={() => onManage("agents", null)}>

@@ -3,6 +3,7 @@ import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 import { CheckIcon, CircleIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useLayerFocus, type ReturnFocus } from "@/lib/returnFocus"
 import { OVERLAY_COLLISION_PADDING } from "@/components/ui/popover"
 
 function DropdownMenu(
@@ -23,8 +24,16 @@ function DropdownMenuContent({
   className,
   sideOffset = 4,
   collisionPadding = OVERLAY_COLLISION_PADDING,
+  returnFocus,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+}: Omit<React.ComponentProps<typeof DropdownMenuPrimitive.Content>, "onCloseAutoFocus" | "ref"> & {
+  /** Where the focus goes as the menu closes if its trigger is gone or hidden by
+   *  then — controls of the view that stay, in order. */
+  returnFocus?: ReturnFocus
+}) {
+  // The focus goes back to the trigger by the one rule of lib/returnFocus — a view
+  // only adds fallbacks (`returnFocus`).
+  const focus = useLayerFocus("menu", returnFocus)
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
@@ -36,6 +45,8 @@ function DropdownMenuContent({
           className
         )}
         {...props}
+        ref={focus.ref}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
       />
     </DropdownMenuPrimitive.Portal>
   )

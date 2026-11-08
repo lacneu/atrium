@@ -59,6 +59,7 @@ export function ComposerMoreMenu({
   const focusedKey = useRef<string | null>(null);
   useEffect(() => {
     if (!open) return;
+    focusedKey.current = null;
     const note = (el: EventTarget | null) => {
       const key =
         el instanceof Element
@@ -218,11 +219,14 @@ export function ComposerMoreMenu({
         align="end"
         side="top"
         className="oc-composer__more-pop w-80 p-1"
-        onCloseAutoFocus={(e) => {
+        // Closing: back to More (the popover's trigger) by the shared rule; when
+        // More is hidden — every control came back to the bar —, the control that
+        // took the focused item's place, then the field.
+        returnFocus={() => {
           const { bar, field } = composerAround(triggerRef.current);
           const back = barControl(bar, focusedKey.current);
           focusedKey.current = null;
-          if (restoreComposerFocus([triggerRef.current, back, field])) e.preventDefault();
+          return [back, field];
         }}
       >
         {MORE_MENU_ORDER.filter((key) => moved.has(key)).map(item)}

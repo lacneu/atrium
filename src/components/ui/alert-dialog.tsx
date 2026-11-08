@@ -4,7 +4,7 @@ import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { useFocusReturn, type ReturnFocus } from "@/lib/returnFocus"
+import { useLayerFocus, type ReturnFocus } from "@/lib/returnFocus"
 import { buttonVariants } from "@/components/ui/button"
 
 // Confirmation dialog (shadcn convention) for destructive / irreversible
@@ -53,17 +53,15 @@ function AlertDialogOverlay({
 function AlertDialogContent({
   className,
   returnFocus,
-  onOpenAutoFocus,
-  onCloseAutoFocus,
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
+}: Omit<React.ComponentProps<typeof AlertDialogPrimitive.Content>, "onCloseAutoFocus" | "ref"> & {
   /** Where the focus goes as the dialog closes if the control that opened it is
    *  gone or hidden by then — controls of the view that stay, in order. */
   returnFocus?: ReturnFocus
 }) {
-  // No dialog has a Radix trigger, the only place Radix gives the focus back to:
-  // the focus goes back where the dialog was opened from (lib/returnFocus).
-  const focus = useFocusReturn(returnFocus, onOpenAutoFocus, onCloseAutoFocus)
+  // The focus goes back where the dialog was opened from, by the one rule of
+  // lib/returnFocus — a view only adds fallbacks (`returnFocus`).
+  const focus = useLayerFocus("dialog", returnFocus)
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
@@ -74,7 +72,7 @@ function AlertDialogContent({
           className
         )}
         {...props}
-        onOpenAutoFocus={focus.onOpenAutoFocus}
+        ref={focus.ref}
         onCloseAutoFocus={focus.onCloseAutoFocus}
       />
     </AlertDialogPortal>

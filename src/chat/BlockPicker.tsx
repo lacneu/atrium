@@ -34,10 +34,10 @@ function readChoices(messageId: string): QuoteBlockChoice[] {
   );
 }
 
-/** Gives the focus back when the list closes: to the first candidate, in the
- *  order of `pickerFocusOrder`, that really takes it (`focusFirst`). False when
- *  none did — the focus is then Radix's to place. */
-function restoreFocus(messageId: string, quotePicked: boolean): boolean {
+/** The candidates of `pickerFocusOrder` as they are on the page now: the reply's
+ *  ⋯ (often a new one: the action bar unmounts when the pointer leaves the
+ *  reply), the reply itself, the composer. */
+function pickerCandidates(messageId: string, quotePicked: boolean): Array<HTMLElement | null> {
   const message = document.querySelector<HTMLElement>(
     `.oc-msg[data-message-id="${CSS.escape(messageId)}"]`,
   );
@@ -47,7 +47,7 @@ function restoreFocus(messageId: string, quotePicked: boolean): boolean {
       message?.querySelector<HTMLElement>('.oc-msg__actions [aria-haspopup="menu"]') ?? null,
     message,
   };
-  return focusFirst(pickerFocusOrder(quotePicked).map((c) => candidates[c])) !== null;
+  return pickerFocusOrder(quotePicked).map((c) => candidates[c]);
 }
 
 /** "quote": the pick goes on to the reply being written. "bookmark": the pick
@@ -94,18 +94,26 @@ export function BlockPicker({
       setChoices(readChoices(messageId));
     }
   }, [open, messageId]);
+  // A PICKED QUOTE GOES ON TO THE REPLY BEING WRITTEN: the composer takes the
+  // focus as the pick's outcome, once the list has stopped trapping it (this
+  // effect runs after Radix released its trap, in the same commit). As the list
+  // then closes, the shared rule finds the focus placed and leaves it there; a
+  // disabled composer takes nothing, and the rule's fallbacks follow.
+  useEffect(() => {
+    if (open || !picked.current || kind !== "quote") return;
+    const [composer] = pickerCandidates(messageId, true);
+    focusFirst([composer]);
+  }, [open, kind, messageId]);
   const text = TEXT[kind];
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="oc-blockpick"
-        // Opened from a menu, not from a trigger of its own: Radix would hand the
-        // focus back to the page. Both kinds give it back by the same fallback —
-        // the reply's ⋯, the reply itself, then the composer —, a picked quote
-        // asking the composer first (`pickerFocusOrder`).
-        onCloseAutoFocus={(e) => {
-          if (restoreFocus(messageId, picked.current && kind === "quote")) e.preventDefault();
-        }}
+        // Opened from the reply's ⋯ menu: the shared rule gives the focus back to
+        // that ⋯ (the menu's trigger). It may be gone by then — the action bar
+        // unmounts when the pointer leaves the reply —: the fallback of both
+        // kinds follows, the reply's ⋯ as it is now, the reply, the composer.
+        returnFocus={() => pickerCandidates(messageId, picked.current && kind === "quote")}
       >
         <DialogHeader>
           <DialogTitle>{text.title()}</DialogTitle>

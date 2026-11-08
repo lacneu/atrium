@@ -1,32 +1,49 @@
-// Where a dialog gives the focus back when it closes (lot 15).
+// Where the focus goes when a layer closes (lots 15-16).
 //
-// No dialog of the app has a Radix trigger, and Radix only ever tries that trigger:
-// the focus fell on the page as every dialog closed — measured in the browser on
-// the shared prompt, the cron editor, a menu's dialog, a delete confirmation —, and
-// so also once the view had hidden or replaced the opener meanwhile. The rule is
-// tested here on a small fake page: its focus() fails silently where the browser's
-// does (an element gone, hidden, disabled), and its active element falls back to
-// the body when the focused element leaves the page, as the browser's does.
+// Two defects shaped this rule, both measured in a browser before they were fixed:
+//   - lot 15: no dialog of the app has a Radix trigger, the only place Radix gives
+//     the focus back to — every dialog dropped it on the page as it closed;
+//   - lot 16: the opener was read from Radix's `onOpenAutoFocus`, which Radix skips
+//     when an `autoFocus` field already took the focus (the agent picker's search):
+//     the opener was lost. And a view's own close handler ran before the guard: the
+//     drawer and the block picker took back a focus the user had just moved.
+// So the opener is read from the page's focus history, whatever the dialog's own
+// fields did, and the guard comes before everything — the views only add
+// fallbacks. Tested here on a small fake page: its focus() fails silently where
+// the browser's does (an element gone, hidden, disabled), and its active element
+// falls back to the body when the focused element leaves the page.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
   captureOpening,
-  closeAutoFocus,
-  giveFocusBack,
+  closeLayerFocus,
+  closeLayerOfKind,
+  createFocusHistory,
+  focusPlaced,
+  installFocusHistory,
   nearestSurvivingControl,
-  openAutoFocus,
+  openerFor,
   openerOf,
   regionsOf,
   returnFocusOrder,
+  triggerOpening,
+  type FocusHistory,
+  type FocusSource,
   type Opening,
 } from "./returnFocus";
 
 const NATURAL = new Set(["button", "input", "select", "textarea"]);
 
+type Listener = (event: FocusEvent) => void;
+
 class FakeDoc {
   readonly documentElement: FakeEl;
   readonly body: FakeEl;
   activeElement: FakeEl | null;
+  readonly listeners = new Map<string, Listener[]>();
   constructor() {
     this.documentElement = new FakeEl(this, "html");
     this.body = this.documentElement.add("body");
@@ -37,6 +54,15 @@ class FakeDoc {
   }
   querySelectorAll(selectors: string): FakeEl[] {
     return this.documentElement.querySelectorAll(selectors);
+  }
+  addEventListener(type: string, listener: Listener): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+  removeEventListener(type: string, listener: Listener): void {
+    this.listeners.set(type, (this.listeners.get(type) ?? []).filter((l) => l !== listener));
+  }
+  fire(type: "focusin" | "focusout", target: FakeEl, relatedTarget: FakeEl | null): void {
+    for (const l of this.listeners.get(type) ?? []) l({ target, relatedTarget } as unknown as FocusEvent);
   }
 }
 
@@ -105,6 +131,12 @@ class FakeEl {
     switch (selector) {
       case '[role="menu"]':
         return this.attrs.get("role") === "menu";
+      case '[role="alertdialog"]':
+        return this.attrs.get("role") === "alertdialog";
+      case '[role="dialog"]':
+        return this.attrs.get("role") === "dialog";
+      case '[role="dialog"]:not([data-popover-of])':
+        return this.attrs.get("role") === "dialog" && !this.attrs.has("data-popover-of");
       case "[data-popover-of]":
       case "[data-popover-trigger]":
         return this.attrs.has(selector.slice(1, -1));
@@ -178,31 +210,37 @@ class FakeEl {
 const asDoc = (d: FakeDoc) => d as unknown as Document;
 const asEl = (e: FakeEl | null) => e as unknown as HTMLElement | null;
 const asEls = (...es: (FakeEl | null)[]) => es as unknown as (HTMLElement | null)[];
+const asEntries = (...es: (FakeEl | null)[]) => es as unknown as (Element | null)[];
 
-/** The project page of the defect, in the routed `main`: a bar with "New
- *  subfolder" and its ⋯, a list; the sidebar beside it. */
-function projectPage() {
+/** A page: the sidebar and its "New chat"; the routed view in `main` — a bar with
+ *  "New subfolder" and its ⋯ (a menu trigger), a list; the composer's field. */
+function page() {
   const doc = new FakeDoc();
   const sidebar = doc.body.add("aside");
-  const sidebarRow = sidebar.add("button");
+  const newChat = sidebar.add("button");
   const main = doc.body.add("main");
-  const page = main.add("div");
-  const bar = page.add("div");
+  const view = main.add("div");
+  const bar = view.add("div");
   const subfolder = bar.add("button");
   const pageMenu = bar.add("button", { id: "page-menu", "aria-haspopup": "menu" });
-  const list = page.add("div");
+  const list = view.add("div");
   const row = list.add("button");
-  return { doc, sidebar, sidebarRow, main, page, bar, subfolder, pageMenu, list, row };
+  const field = view.add("textarea");
+  return { doc, sidebar, newChat, main, view, bar, subfolder, pageMenu, list, row, field };
 }
 
-/** A dialog takes the focus (its field), then leaves the page: the focus is on the body. */
-function openAndClose(doc: FakeDoc): void {
-  const content = doc.body.add("div", { role: "dialog" });
-  const field = content.add("input");
-  field.focus();
-  expect(doc.activeElement).toBe(field);
-  content.remove();
-  expect(doc.activeElement).toBe(doc.body);
+/** A dialog's content, mounted on the body (a portal), with its own field. */
+function dialog(doc: FakeDoc, attrs: Record<string, string> = {}) {
+  const content = doc.body.add("div", { role: "dialog", "data-state": "open", ...attrs });
+  const input = content.add("input");
+  return { content, input };
+}
+
+/** The history a page's focus moves leave, newest last. */
+function historyOf(...entries: (FakeEl | null)[]): FocusHistory {
+  const h = createFocusHistory();
+  for (const e of entries) h.record(e as unknown as Element | null);
+  return h;
 }
 
 class FakeEvent {
@@ -212,265 +250,358 @@ class FakeEvent {
   }
 }
 
-describe("the focus goes back where the dialog was opened from", () => {
-  test("témoin: the opener still there takes it back", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    expect(opening.origin).toBe(asEl(p.subfolder));
-    openAndClose(p.doc);
-    expect(giveFocusBack(opening, asEls(p.pageMenu), asDoc(p.doc))).toBe(true);
+describe("the focus history (installed once for the page, main.tsx)", () => {
+  function installed() {
+    const p = page();
+    const history = createFocusHistory();
+    const tasks: Array<() => void> = [];
+    const uninstall = installFocusHistory(p.doc as unknown as FocusSource, history, (t) => tasks.push(t));
+    const flush = () => tasks.splice(0).forEach((t) => t());
+    return { ...p, history, uninstall, flush };
+  }
+
+  test("every element that takes the focus, in order", () => {
+    const p = installed();
+    p.doc.fire("focusin", p.newChat, null);
+    p.doc.fire("focusin", p.row, p.newChat);
+    expect(p.history.entries()).toEqual([p.newChat, p.row]);
+  });
+
+  test("a focus that leaves for nowhere — a click on the page's background", () => {
+    const p = installed();
+    p.doc.fire("focusin", p.row, null);
+    p.doc.activeElement = p.doc.body;
+    p.doc.fire("focusout", p.row, null);
+    p.flush();
+    expect(p.history.entries()).toEqual([p.row, null]);
+  });
+
+  test("an element leaving the page while focused is not a choice: not recorded", () => {
+    const p = installed();
+    p.doc.fire("focusin", p.row, null);
+    p.doc.fire("focusout", p.row, null);
+    p.row.remove();
+    p.flush();
+    expect(p.history.entries()).toEqual([p.row]);
+  });
+
+  test("the window losing the focus is not either: the page keeps its active element", () => {
+    const p = installed();
+    p.doc.fire("focusin", p.row, null);
+    p.doc.activeElement = p.row;
+    p.doc.fire("focusout", p.row, null);
+    p.flush();
+    expect(p.history.entries()).toEqual([p.row]);
+  });
+
+  test("a focus moving to another element is its focusin, nothing else", () => {
+    const p = installed();
+    p.doc.fire("focusout", p.row, p.field);
+    p.flush();
+    expect(p.history.entries()).toEqual([]);
+  });
+
+  test("uninstalled, it records nothing; it keeps only the newest moves", () => {
+    const p = installed();
+    p.uninstall();
+    p.doc.fire("focusin", p.row, null);
+    expect(p.history.entries()).toEqual([]);
+    const h = createFocusHistory(3);
+    for (const e of [p.row, p.field, p.newChat, p.subfolder]) h.record(e as unknown as Element);
+    expect(h.entries()).toEqual([p.field, p.newChat, p.subfolder]);
+  });
+});
+
+describe("a dialog's opener, read from the history as its content mounts", () => {
+  test("its own autoFocus field took the focus first: passed over — the button is the opener", () => {
+    const p = page();
+    const d = dialog(p.doc);
+    // React focuses the field during its commit, before Radix looks — and before or
+    // after the content's ref: the order does not matter, the field is inside.
+    expect(openerFor(d.content as unknown as Element, asEntries(p.newChat, d.input), asDoc(p.doc))).toBe(p.newChat);
+    expect(openerFor(d.content as unknown as Element, asEntries(p.newChat), asDoc(p.doc))).toBe(p.newChat);
+  });
+
+  test("the focus was nowhere when it opened: no opener", () => {
+    const p = page();
+    const d = dialog(p.doc);
+    expect(openerFor(d.content as unknown as Element, asEntries(p.row, null, d.input), asDoc(p.doc))).toBeNull();
+  });
+
+  test("an item of a menu stands for the menu's trigger, even once the menu left the page", () => {
+    const p = page();
+    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
+    const item = menu.add("div", { role: "menuitem", tabindex: "-1" });
+    const d = dialog(p.doc);
+    menu.remove();
+    expect(openerFor(d.content as unknown as Element, asEntries(p.pageMenu, menu, item, d.input), asDoc(p.doc))).toBe(p.pageMenu);
+  });
+
+  test("an item of a popover stands for the popover's trigger (the shared Popover's pair)", () => {
+    const p = page();
+    const chip = p.bar.add("button", { "data-popover-trigger": "«r7»" });
+    // The popover closes as the sheet opens (Radix marks it closed), and its trigger
+    // may never have held the focus (a pointer that did not focus it): the item is
+    // still read as that trigger, not passed over as a closing dialog.
+    const popover = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«r7»", "data-state": "closed" });
+    const footer = popover.add("button");
+    const sheet = dialog(p.doc);
+    expect(openerFor(sheet.content as unknown as Element, asEntries(p.row, footer, sheet.input), asDoc(p.doc))).toBe(chip);
+  });
+
+  test("opened from inside another dialog still open: that dialog's control", () => {
+    const p = page();
+    const outer = dialog(p.doc);
+    const remove = outer.content.add("button");
+    const confirm = dialog(p.doc, { role: "alertdialog" });
+    expect(
+      openerFor(confirm.content as unknown as Element, asEntries(p.newChat, outer.input, remove, confirm.input), asDoc(p.doc)),
+    ).toBe(remove);
+  });
+
+  test("opened as another dialog closes: that dialog's moves are passed over, its opener is this one's", () => {
+    const p = page();
+    const first = dialog(p.doc);
+    const next = first.content.add("button");
+    first.content.attrs.set("data-state", "closed");
+    const second = dialog(p.doc);
+    expect(openerFor(second.content as unknown as Element, asEntries(p.row, first.input, next, second.input), asDoc(p.doc))).toBe(p.row);
+    first.content.remove();
+    expect(openerFor(second.content as unknown as Element, asEntries(p.row, first.input, next, second.input), asDoc(p.doc))).toBe(p.row);
+  });
+
+  test("the newest control gone since: no opener (not an older, stale one)", () => {
+    const p = page();
+    const d = dialog(p.doc);
+    p.row.remove();
+    expect(openerFor(d.content as unknown as Element, asEntries(p.newChat, p.row), asDoc(p.doc))).toBeNull();
+  });
+
+  test("the opening keeps the page around the opener", () => {
+    const p = page();
+    const d = dialog(p.doc);
+    const opening = captureOpening(d.content as unknown as Element, historyOf(p.subfolder, d.input), asDoc(p.doc));
+    expect(opening).toEqual({ origin: p.subfolder, regions: [p.bar, p.view] });
+  });
+});
+
+describe("closing: the guard comes first — then the rule", () => {
+  function opened() {
+    const p = page();
+    const d = dialog(p.doc);
+    const opening = captureOpening(d.content as unknown as Element, historyOf(p.subfolder, d.input), asDoc(p.doc));
+    d.input.focus();
+    return { ...p, d, opening };
+  }
+
+  test("a focus moved outside the layer during its exit stays — the view's fallbacks are not even read", () => {
+    const p = opened();
+    p.field.focus();
+    p.d.content.remove();
+    let read = 0;
+    const event = new FakeEvent();
+    closeLayerFocus(event, p.d.content as unknown as Element, p.opening, () => {
+      read += 1;
+      return asEls(p.pageMenu);
+    }, asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.field);
+    expect(event.defaultPrevented).toBe(true);
+    expect(read).toBe(0);
+    expect(p.subfolder.focusCalls).toBe(0);
+  });
+
+  test("témoin: the focus left with the layer — back to the opener", () => {
+    const p = opened();
+    p.d.content.remove();
+    const event = new FakeEvent();
+    closeLayerFocus(event, p.d.content as unknown as Element, p.opening, () => asEls(p.pageMenu), asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.subfolder);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  test("a focus still inside the closing layer is not placed: the rule runs", () => {
+    const p = opened();
+    expect(focusPlaced(p.d.content as unknown as Element, asDoc(p.doc))).toBe(false);
+    const event = new FakeEvent();
+    closeLayerFocus(event, p.d.content as unknown as Element, p.opening, undefined, asDoc(p.doc));
     expect(p.doc.activeElement).toBe(p.subfolder);
   });
 
-  test("the opener hidden meanwhile (the action went into ⋯): the view's ⋯", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
+  test("the opener hidden meanwhile (into ⋯): the view's fallbacks, in order, past those that cannot", () => {
+    const p = opened();
+    p.d.content.remove();
     p.subfolder.displayed = false;
-    expect(giveFocusBack(opening, asEls(p.pageMenu), asDoc(p.doc))).toBe(true);
+    p.row.disabled = true;
+    const event = new FakeEvent();
+    closeLayerFocus(event, p.d.content as unknown as Element, p.opening, () => asEls(null, p.row, p.pageMenu), asDoc(p.doc));
     expect(p.doc.activeElement).toBe(p.pageMenu);
   });
 
-  test("the fallbacks are offered in their order, past those that cannot take it", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
+  test("the opener gone, no fallback: the first control left in its part of the view", () => {
+    const p = opened();
+    p.d.content.remove();
     p.subfolder.remove();
-    p.pageMenu.disabled = true;
-    expect(giveFocusBack(opening, asEls(null, p.pageMenu, p.row), asDoc(p.doc))).toBe(true);
-    expect(p.doc.activeElement).toBe(p.row);
-  });
-
-  test("the opener gone, no fallback: the first control left in its part of the page", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    p.subfolder.remove();
-    expect(giveFocusBack(opening, [], asDoc(p.doc))).toBe(true);
+    closeLayerFocus(new FakeEvent(), p.d.content as unknown as Element, p.opening, undefined, asDoc(p.doc));
     expect(p.doc.activeElement).toBe(p.pageMenu);
   });
 
-  test("its whole part gone: the nearest part around it still there", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    p.bar.remove();
-    expect(giveFocusBack(opening, [], asDoc(p.doc))).toBe(true);
-    expect(p.doc.activeElement).toBe(p.row);
-  });
-
-  test("nothing left that takes it: false — Radix's own default stays", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    p.page.remove();
-    expect(giveFocusBack(opening, asEls(p.pageMenu), asDoc(p.doc))).toBe(false);
-    expect(p.doc.activeElement).toBe(p.doc.body);
-  });
-
-  test("never into another view: the routed page replaced, its main is not searched", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    p.page.remove();
+  test("never into another view: the routed view replaced, its main is not searched", () => {
+    const p = opened();
+    p.d.content.remove();
+    p.view.remove();
     const next = p.main.add("div").add("button");
-    expect(giveFocusBack(opening, [], asDoc(p.doc))).toBe(false);
+    const event = new FakeEvent();
+    closeLayerFocus(event, p.d.content as unknown as Element, p.opening, undefined, asDoc(p.doc));
+    expect(event.defaultPrevented).toBe(false);
     expect(p.doc.activeElement).toBe(p.doc.body);
     expect(next.focusCalls).toBe(0);
-    expect(p.sidebarRow.focusCalls).toBe(0);
-  });
-
-  test("a focus the view placed elsewhere as the dialog closed is left there", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    p.row.focus();
-    const calls = p.subfolder.focusCalls;
-    expect(giveFocusBack(opening, asEls(p.pageMenu), asDoc(p.doc))).toBe(true);
-    expect(p.doc.activeElement).toBe(p.row);
-    expect(p.subfolder.focusCalls).toBe(calls);
-  });
-
-  test("the focus nowhere when it opened (a shortcut): only the view's fallbacks", () => {
-    const p = projectPage();
-    const opening = captureOpening(asDoc(p.doc));
-    expect(opening).toEqual({ origin: null, regions: [] });
-    openAndClose(p.doc);
-    expect(giveFocusBack(opening, asEls(p.pageMenu), asDoc(p.doc))).toBe(true);
-    expect(p.doc.activeElement).toBe(p.pageMenu);
+    expect(p.newChat.focusCalls).toBe(0);
   });
 
   test("the order: the opener, the view's fallbacks, then the nearest surviving control", () => {
-    const p = projectPage();
-    const opening: Opening = {
-      origin: asEl(p.subfolder),
-      regions: regionsOf(asEl(p.subfolder)),
-    };
+    const p = page();
+    const opening: Opening = { origin: asEl(p.subfolder), regions: regionsOf(asEl(p.subfolder)) };
     expect(returnFocusOrder(opening, asEls(p.row))).toEqual(asEls(p.subfolder, p.row, p.subfolder));
     expect(returnFocusOrder(null, asEls(p.row))).toEqual(asEls(p.row));
   });
 });
 
-describe("a menu or popover item stands for its trigger — the item leaves with its layer", () => {
-  function withMenu() {
-    const p = projectPage();
+describe("popovers and menus: their trigger is the opener", () => {
+  test("a menu's trigger, by the label Radix gives it — read after the menu left", () => {
+    const p = page();
     const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
-    const item = menu.add("div", { role: "menuitem", tabindex: "-1" });
-    return { ...p, menu, item };
-  }
-
-  test("the opening is the trigger, and the focus goes back to it", () => {
-    const m = withMenu();
-    m.item.focus();
-    const opening = captureOpening(asDoc(m.doc));
-    expect(opening.origin).toBe(asEl(m.pageMenu));
-    expect(opening.regions[0]).toBe(m.bar);
-    m.menu.remove();
-    openAndClose(m.doc);
-    expect(giveFocusBack(opening, [], asDoc(m.doc))).toBe(true);
-    expect(m.doc.activeElement).toBe(m.pageMenu);
+    menu.remove();
+    expect(triggerOpening(menu as unknown as Element, asDoc(p.doc)).origin).toBe(p.pageMenu);
   });
 
-  test("up through a submenu, to the trigger of the first menu", () => {
-    const m = withMenu();
-    const sub = m.menu.add("div", { role: "menuitem", id: "sub-trigger", tabindex: "-1" });
-    const submenu = m.doc.body.add("div", { role: "menu", "aria-labelledby": "sub-trigger" });
-    const deep = submenu.add("div", { role: "menuitem", tabindex: "-1" });
-    expect(sub.isConnected).toBe(true);
-    expect(openerOf(deep as unknown as Element, asDoc(m.doc))).toBe(m.pageMenu);
+  test("a menu closes with the focus lost: back to its trigger; hidden, to the view's fallbacks", () => {
+    const p = page();
+    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
+    menu.remove();
+    const event = new FakeEvent();
+    closeLayerOfKind("menu", event, menu as unknown as Element, null, false, () => asEls(p.field), asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.pageMenu);
+    p.doc.activeElement = p.doc.body;
+    p.pageMenu.displayed = false;
+    closeLayerOfKind("menu", new FakeEvent(), menu as unknown as Element, null, false, () => asEls(p.field), asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.field);
   });
 
-  test("a menu labelled by nothing outside it: the item stands for itself", () => {
-    const m = withMenu();
-    m.menu.attrs.set("aria-labelledby", "nowhere");
-    expect(openerOf(m.item as unknown as Element, asDoc(m.doc))).toBe(m.item);
-    const label = m.menu.add("span", { id: "inner-label" });
-    m.menu.attrs.set("aria-labelledby", "inner-label");
-    expect(label.isConnected).toBe(true);
-    expect(openerOf(m.item as unknown as Element, asDoc(m.doc))).toBe(m.item);
+  test("a menu closes with the focus moved to the composer: it stays (Radix kept from its trigger)", () => {
+    const p = page();
+    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
+    p.field.focus();
+    menu.remove();
+    const event = new FakeEvent();
+    closeLayerOfKind("menu", event, menu as unknown as Element, null, false, () => asEls(p.row), asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.field);
+    expect(event.defaultPrevented).toBe(true);
+    expect(p.pageMenu.focusCalls).toBe(0);
   });
 
-  test("a popover's item stands for the popover's trigger, by the pair the shared Popover stamps", () => {
-    const p = projectPage();
+  test("a popover's trigger, by its pair", () => {
+    const p = page();
     const chip = p.bar.add("button", { "data-popover-trigger": "«r7»" });
-    p.bar.add("button", { "data-popover-trigger": "«r8»" });
     const popover = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«r7»" });
-    const footer = popover.add("button");
-    footer.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    expect(opening.origin).toBe(asEl(chip));
     popover.remove();
-    openAndClose(p.doc);
-    expect(giveFocusBack(opening, [], asDoc(p.doc))).toBe(true);
+    closeLayerOfKind("popover", new FakeEvent(), popover as unknown as Element, null, false, undefined, asDoc(p.doc));
     expect(p.doc.activeElement).toBe(chip);
   });
 
-  test("a menu inside a popover: up to the popover's trigger", () => {
-    const p = projectPage();
-    const chip = p.bar.add("button", { "data-popover-trigger": "«r9»" });
-    const popover = p.doc.body.add("div", { "data-popover-of": "«r9»" });
-    popover.add("button", { id: "inner-menu-trigger" });
-    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "inner-menu-trigger" });
-    const item = menu.add("div", { role: "menuitem", tabindex: "-1" });
-    expect(openerOf(item as unknown as Element, asDoc(p.doc))).toBe(chip);
+  test("a popover dismissed by an interaction outside leaves the focus where it went", () => {
+    const p = page();
+    const chip = p.bar.add("button", { "data-popover-trigger": "«r7»" });
+    const popover = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«r7»" });
+    popover.remove();
+    const nowhere = new FakeEvent();
+    closeLayerOfKind("popover", nowhere, popover as unknown as Element, null, true, () => asEls(p.field), asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.doc.body);
+    expect(nowhere.defaultPrevented).toBe(false);
+    expect(chip.focusCalls).toBe(0);
+    p.row.focus();
+    const elsewhere = new FakeEvent();
+    closeLayerOfKind("popover", elsewhere, popover as unknown as Element, null, true, undefined, asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.row);
+    expect(elsewhere.defaultPrevented).toBe(true);
   });
 
-  test("a popover whose trigger is not on the page: the item stands for itself", () => {
-    const p = projectPage();
-    const popover = p.doc.body.add("div", { "data-popover-of": "«gone»" });
-    const footer = popover.add("button");
-    expect(openerOf(footer as unknown as Element, asDoc(p.doc))).toBe(footer);
-  });
-
-  test("an element outside any menu stands for itself", () => {
-    const p = projectPage();
-    expect(openerOf(p.row as unknown as Element, asDoc(p.doc))).toBe(p.row);
-    expect(openerOf(null, asDoc(p.doc))).toBeNull();
+  test("a dialog gives the focus back from its captured opening, not from a trigger", () => {
+    const p = page();
+    const d = dialog(p.doc, { "aria-labelledby": "page-menu" });
+    const opening = captureOpening(d.content as unknown as Element, historyOf(p.newChat, d.input), asDoc(p.doc));
+    d.content.remove();
+    closeLayerOfKind("dialog", new FakeEvent(), d.content as unknown as Element, opening, true, undefined, asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.newChat);
   });
 });
 
 describe("the parts of the page around the opener", () => {
   test("nearest first, up to — not including — the view's main, a sidebar, the body", () => {
-    const p = projectPage();
-    expect(regionsOf(asEl(p.subfolder))).toEqual([p.bar, p.page]);
-    expect(regionsOf(asEl(p.sidebarRow))).toEqual([]);
+    const p = page();
+    expect(regionsOf(asEl(p.subfolder))).toEqual([p.bar, p.view]);
+    expect(regionsOf(asEl(p.newChat))).toEqual([]);
     const portal = p.doc.body.add("div").add("div");
     const inPortal = portal.add("button");
     expect(regionsOf(asEl(inPortal))).toEqual([portal, portal.parentElement]);
     expect(regionsOf(null)).toEqual([]);
   });
 
-  test("a part gone is passed over; a hidden control in a part still there too", () => {
-    const p = projectPage();
+  test("a part gone is passed over; a hidden or disabled control in a part still there too", () => {
+    const p = page();
     const regions = regionsOf(asEl(p.subfolder));
     p.subfolder.displayed = false;
     expect(nearestSurvivingControl(regions)).toBe(p.pageMenu);
     p.bar.remove();
     expect(nearestSurvivingControl(regions)).toBe(p.row);
     p.row.disabled = true;
-    expect(nearestSurvivingControl(regions)).toBeNull();
+    expect(nearestSurvivingControl(regions)).toBe(p.field);
+  });
+
+  test("an element outside any menu stands for itself; a submenu chain goes up to the first trigger", () => {
+    const p = page();
+    expect(openerOf(p.row as unknown as Element, asDoc(p.doc))).toBe(p.row);
+    expect(openerOf(null, asDoc(p.doc))).toBeNull();
+    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
+    menu.add("div", { role: "menuitem", id: "sub-trigger", tabindex: "-1" });
+    const submenu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "sub-trigger" });
+    const deep = submenu.add("div", { role: "menuitem", tabindex: "-1" });
+    expect(openerOf(deep as unknown as Element, asDoc(p.doc))).toBe(p.pageMenu);
+    const label = menu.add("span", { id: "inner-label" });
+    menu.attrs.set("aria-labelledby", "inner-label");
+    expect(label.isConnected).toBe(true);
+    const item = menu.add("div", { role: "menuitem" });
+    expect(openerOf(item as unknown as Element, asDoc(p.doc))).toBe(item);
   });
 });
 
-describe("the auto-focus handlers of the shared dialog contents", () => {
-  test("opening: read before the view's own handler moves the focus", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const field = p.doc.body.add("input");
-    const opening = openAutoFocus(new FakeEvent(), () => field.focus(), asDoc(p.doc));
-    expect(opening.origin).toBe(asEl(p.subfolder));
-    expect(p.doc.activeElement).toBe(field);
+describe("the hook the shared contents use (read from the syntax tree: it needs React)", () => {
+  const file = join(process.cwd(), "src/lib/returnFocus.ts");
+  const sf = ts.createSourceFile(file, readFileSync(file, "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const hook = (() => {
+    let found: ts.FunctionDeclaration | undefined;
+    const visit = (n: ts.Node) => {
+      if (ts.isFunctionDeclaration(n) && n.name?.text === "useLayerFocus") found = n;
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    return found!;
+  })();
+  const text = (n: ts.Node) => n.getText(sf);
+
+  test("its ref reads a dialog's opening as the content mounts — once per content", () => {
+    const body = text(hook);
+    expect(body).toMatch(/if \(el === null \|\| el === node\.current\) return;/);
+    expect(body).toMatch(/opening\.current = kind === "dialog" \? captureOpening\(el\) : null;/);
   });
 
-  test("closing: a view handler that placed the focus itself is not overridden", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    const event = new FakeEvent();
-    closeAutoFocus(event, opening, (e) => e.preventDefault(), undefined, asDoc(p.doc));
-    expect(event.defaultPrevented).toBe(true);
-    expect(p.doc.activeElement).toBe(p.doc.body);
-  });
-
-  test("closing: otherwise the rule, and Radix kept from moving it again", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    p.subfolder.displayed = false;
-    const event = new FakeEvent();
-    let ownCalled = false;
-    closeAutoFocus(
-      event,
-      opening,
-      () => {
-        ownCalled = true;
-      },
-      () => asEls(p.pageMenu),
-      asDoc(p.doc),
+  test("its close runs the rule of its kind with what it noted, then forgets it", () => {
+    const body = text(hook);
+    expect(body).toMatch(
+      /closeLayerOfKind\(kind, event, node\.current, opening\.current, outside\.current, returnFocus\);\s*node\.current = null;\s*opening\.current = null;\s*outside\.current = false;/,
     );
-    expect(ownCalled).toBe(true);
-    expect(p.doc.activeElement).toBe(p.pageMenu);
-    expect(event.defaultPrevented).toBe(true);
   });
 
-  test("closing: nothing took it — Radix's default is left to run", () => {
-    const p = projectPage();
-    p.subfolder.focus();
-    const opening = captureOpening(asDoc(p.doc));
-    openAndClose(p.doc);
-    p.page.remove();
-    const event = new FakeEvent();
-    closeAutoFocus(event, opening, undefined, () => asEls(p.pageMenu), asDoc(p.doc));
-    expect(event.defaultPrevented).toBe(false);
+  test("an interaction outside counts once the view's own handler let it through", () => {
+    expect(text(hook)).toMatch(/onInteractOutside\?\.\(event\);\s*if \(!event\.defaultPrevented\) outside\.current = true;/);
   });
 });

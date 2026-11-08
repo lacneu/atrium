@@ -1,12 +1,15 @@
-// WIRING of the block picker's focus on close (lots 11 and 12).
+// WIRING of the block picker's focus on close (lots 11, 12 and 16).
 //
 // The order is pure and tested in quoteBlocks.test.ts (pickerFocusOrder), the walk
 // that offers the focus in that order in src/lib/focusFallback.test.ts
-// (focusFirst). What those tests cannot see is whether the picker still goes
-// through them — the one fallback, for both kinds — and takes the focus off Radix
-// only when the walk placed it. The picker needs Radix and the DOM to render, so
-// the wiring is read from the SYNTAX TREE (TypeScript's parser: comments and
-// strings cannot fake a call).
+// (focusFirst), the shared rule in src/lib/returnFocus.test.ts. What those tests
+// cannot see is whether the picker still goes through them. Since lot 16 it has no
+// close handler of its own — one ran before the guard and took back a focus the
+// user had moved to the composer during the exit —: it names its fallbacks to the
+// shared rule, and a picked quote sends the focus to the composer as the pick's
+// outcome, which the rule's guard then keeps. The picker needs Radix and the DOM
+// to render, so the wiring is read from the SYNTAX TREE (TypeScript's parser:
+// comments and strings cannot fake a call).
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,34 +43,45 @@ const callsTo = (root: ts.Node, name: string) =>
     );
   });
 
-describe("the block picker gives the focus back somewhere real", () => {
-  test("one close handler, for both kinds: it restores the focus, and only then takes it off Radix", () => {
-    const attrs = find(SF, ts.isJsxAttribute).filter((a) => a.name.getText() === "onCloseAutoFocus");
-    expect(attrs, "one onCloseAutoFocus for both kinds").toHaveLength(1);
-    const [attr] = attrs;
-    const [restore] = callsTo(attr, "restoreFocus");
-    expect(restore, "onCloseAutoFocus no longer calls restoreFocus").toBeDefined();
-    const prevent = callsTo(attr, "preventDefault");
-    expect(prevent).toHaveLength(1);
-    // preventDefault is under an `if` whose condition IS the restore: when no
-    // candidate took the focus, Radix keeps its own default.
-    const guard = find(attr, ts.isIfStatement).find((i) => i.expression === restore);
-    expect(guard, "preventDefault is not conditioned on restoreFocus").toBeDefined();
-    expect(guard!.thenStatement.getText()).toContain("preventDefault");
+const candidatesFn = () =>
+  find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "pickerCandidates");
+
+describe("the block picker gives the focus back by the shared rule", () => {
+  test("no close handler of its own: its fallbacks go to the rule, for both kinds", () => {
+    const own = find(SF, ts.isJsxAttribute).filter((a) => a.name.getText() === "onCloseAutoFocus");
+    expect(own, "an own onCloseAutoFocus runs before the guard").toHaveLength(0);
+    const fallbacks = find(SF, ts.isJsxAttribute).filter((a) => a.name.getText() === "returnFocus");
+    expect(fallbacks).toHaveLength(1);
+    const [call] = callsTo(fallbacks[0], "pickerCandidates");
+    expect(call, "returnFocus no longer reads pickerCandidates").toBeDefined();
+    expect(call.arguments.map((a) => a.getText())).toEqual([
+      "messageId",
+      'picked.current && kind === "quote"',
+    ]);
   });
 
-  test("the focus only moves through the shared walk: focusFirst, over pickerFocusOrder", () => {
-    const fn = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "restoreFocus");
-    expect(fn, "no restoreFocus").toBeDefined();
-    const [walk] = callsTo(fn!, "focusFirst");
-    expect(walk, "restoreFocus no longer walks with focusFirst").toBeDefined();
-    expect(callsTo(walk.arguments[0], "pickerFocusOrder")).toHaveLength(1);
+  test("a picked quote: the composer takes the focus as the outcome, once the picker is closed", () => {
+    const effect = callsTo(SF, "useEffect").find((c) => /picked\.current/.test(c.getText()) && /focusFirst/.test(c.getText()));
+    expect(effect, "no outcome effect").toBeDefined();
+    const body = effect!.arguments[0].getText();
+    // Only after the close (`open` false), only for a picked quote, only the composer.
+    expect(body).toMatch(/if \(open \|\| !picked\.current \|\| kind !== "quote"\) return;/);
+    const [walk] = callsTo(effect!, "focusFirst");
+    expect(walk.arguments[0].getText()).toBe("[composer]");
+    const [read] = callsTo(effect!, "pickerCandidates");
+    expect(read.arguments.map((a) => a.getText())).toEqual(["messageId", "true"]);
+    expect(effect!.arguments[1]?.getText()).toBe("[open, kind, messageId]");
+  });
+
+  test("the focus only moves through the shared walk: no direct .focus() call", () => {
     expect(callsTo(SF, "focus"), "a direct .focus() call bypasses the walk").toHaveLength(0);
+    const fn = candidatesFn();
+    expect(fn, "no pickerCandidates").toBeDefined();
+    expect(callsTo(fn!, "pickerFocusOrder")).toHaveLength(1);
   });
 
   test("every candidate of the order is resolved: the ⋯, the reply, the composer", () => {
-    const fn = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "restoreFocus")!;
-    const table = find(fn, ts.isObjectLiteralExpression)[0];
+    const table = find(candidatesFn()!, ts.isObjectLiteralExpression)[0];
     const keys = table.properties.map((p) => p.name?.getText());
     expect(keys).toEqual(expect.arrayContaining(["composer", "trigger", "message"]));
   });

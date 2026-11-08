@@ -17,7 +17,7 @@ import { createPortal } from "react-dom";
 import { useAction, useQuery } from "convex/react";
 import { AudioLines, ChevronDown, Mic, MicOff, PhoneOff } from "lucide-react";
 import * as m from "@/paraglide/messages.js";
-import { composerAround, restoreComposerFocus } from "./composerFocus";
+import { composerAround } from "./composerFocus";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { useToast } from "@/components/ui/toast";
@@ -668,10 +668,10 @@ export function TalkControl({
               align="end"
               className="oc-talk__settings"
               // The chevron may have gone into the composer's More menu meanwhile:
-              // the focus then goes there, else to the field (lot 14).
-              onCloseAutoFocus={(e) => {
+              // the focus then goes there, else to the field.
+              returnFocus={() => {
                 const { more, field } = composerAround(settingsTriggerRef.current);
-                if (restoreComposerFocus([settingsTriggerRef.current, more, field])) e.preventDefault();
+                return [more, field];
               }}
             >
               <TalkSettingsFields voice={voice} vad={vad} onVoice={onVoice} onVad={onVad} />

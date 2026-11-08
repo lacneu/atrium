@@ -903,10 +903,10 @@ function AuthenticatedChrome({
               overlayClassName="oc-drawer-overlay"
               showCloseButton={false}
               aria-describedby={undefined}
-              onCloseAutoFocus={(e) => {
-                e.preventDefault();
-                sidebarToggleRef.current?.focus();
-              }}
+              // Back to where the drawer was opened from — its toggle, as a rule;
+              // the toggle is the fallback when that control is gone. A focus the
+              // user moved meanwhile (the composer) stays (lib/returnFocus).
+              returnFocus={() => [sidebarToggleRef.current]}
             >
               <div className="oc-drawer__head">
                 <SheetTitle className="sr-only">{m.app_drawer_title()}</SheetTitle>

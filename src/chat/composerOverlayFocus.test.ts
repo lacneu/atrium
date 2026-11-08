@@ -1,12 +1,15 @@
-// THE FOCUS NEVER FALLS ON THE PAGE WHEN A BAR OVERLAY LOSES ITS TRIGGER (lot 14).
+// THE FOCUS NEVER FALLS ON THE PAGE WHEN A BAR OVERLAY LOSES ITS TRIGGER (lots 14, 16).
 //
 // The composer's measured bar moves its controls into the "More" menu and back. A
 // menu or popover anchored on one of them can close — or shed the item that held
 // the focus — when its trigger has just become `display: none`: Radix then tried
 // that hidden trigger and the focus fell on the page. Every overlay anchored on a
-// movable bar control, and the More menu itself, gives the focus back through
-// `restoreComposerFocus` — read from the syntax tree, for every such overlay in
-// src/chat; the helper's own choices are tested on fakes below.
+// movable bar control, and the More menu itself, names the controls that stay as
+// fallbacks of the shared rule (lib/returnFocus: its trigger first, then these) —
+// since lot 16 never as a close handler of its own, which yielded to Radix's
+// default and took back a focus the user had just moved to the field. Read from
+// the syntax tree, for every such overlay in src/chat; the helper's own choices
+// are tested on fakes below.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -71,29 +74,34 @@ describe("every overlay anchored in the composer's bar gives the focus back safe
 
   test.each(OVERLAYS.map((o) => [o.trigger, o] as const))("%s", (_name, o) => {
     expect(o.content, `${o.where}: no content`).toBeDefined();
-    const close = attr(o.content!.openingElement, "onCloseAutoFocus");
-    expect(close, `${o.where}: no onCloseAutoFocus`).toBeDefined();
-    const calls = find(close!, ts.isCallExpression);
-    const restore = calls.find((c) => c.expression.getText() === "restoreComposerFocus");
-    expect(restore, `${o.where}: the close does not go through restoreComposerFocus`).toBeDefined();
-    // Its own trigger first (Radix's default while it is there), then the fallbacks.
-    const list = restore!.arguments[0];
-    expect(ts.isArrayLiteralExpression(list)).toBe(true);
-    const order = (list as ts.ArrayLiteralExpression).elements.map((e) => e.getText());
-    expect(order[0]).toMatch(/[Tt]riggerRef\.current/);
-    expect(order[order.length - 1]).toBe("field");
-    expect(order.length).toBe(3);
-    // …and Radix kept from moving it again only when one candidate took it.
-    const guarded = find(close!, ts.isIfStatement).some(
-      (i) => i.expression === restore && /preventDefault/.test(i.thenStatement.getText()),
-    );
-    expect(guarded, `${o.where}: preventDefault not conditioned on the restore`).toBe(true);
+    expect(attr(o.content!.openingElement, "onCloseAutoFocus"), `${o.where}: an own close handler`).toBeUndefined();
+    const fallbacks = attr(o.content!.openingElement, "returnFocus");
+    expect(fallbacks, `${o.where}: no returnFocus`).toBeDefined();
+    // The trigger is the rule's own first candidate; the overlay names what stays
+    // once it is hidden: More (or the control that took a More item's place),
+    // then the field.
+    const lists = find(fallbacks!, ts.isReturnStatement)
+      .map((r) => r.expression)
+      .filter((e): e is ts.ArrayLiteralExpression => e !== undefined && ts.isArrayLiteralExpression(e));
+    expect(lists).toHaveLength(1);
+    const order = lists[0].elements.map((e) => e.getText());
+    expect(order).toEqual([o.trigger === "more" ? "back" : "more", "field"]);
   });
 });
 
 describe("the More menu follows a control back to the bar (lot 14)", () => {
   const file = join(CHAT, "ComposerMoreMenu.tsx");
   const sf = ts.createSourceFile(file, readFileSync(file, "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+
+  test("the item noted for the focus is forgotten as the menu opens again", () => {
+    // Its control would otherwise take the focus at a later resize, the menu closed.
+    const effect = find(sf, ts.isCallExpression).find(
+      (c) => c.expression.getText() === "useEffect" && /focusin/.test(c.getText()),
+    );
+    expect(effect, "no focus-noting effect").toBeDefined();
+    const body = effect!.arguments[0].getText();
+    expect(body).toMatch(/if \(!open\) return;\s*focusedKey\.current = null;/);
+  });
 
   test("every item carries the key of the control it stands for", () => {
     const fn = find(sf, ts.isArrowFunction).find(

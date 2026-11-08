@@ -1,16 +1,19 @@
-// EVERY DIALOG GIVES THE FOCUS BACK WHERE IT WAS OPENED FROM (lot 15).
+// EVERY LAYER GIVES THE FOCUS BACK BY ONE RULE, ITS GUARD FIRST (lots 15-16).
 //
-// No dialog of the app has a Radix trigger, the only place Radix gives the focus
-// back to as a dialog closes: the focus fell on the page — measured in the browser
-// on the shared prompt, the cron editor, a menu's dialog and a delete confirmation,
-// with the opener still there or not. The rule (lib/returnFocus) is applied once,
-// by the three shared contents every dialog is built from; read here from the
-// syntax tree: each content routes BOTH auto-focus events through it, after the
-// caller's props so none can bypass it unknowingly, and no dialog of the app is
-// built from the Radix primitives directly. A dialog opened from an item of a
-// menu or a popover finds the layer's trigger; Radix labels a menu by its trigger,
-// and the shared Popover pairs its content with its trigger — every popover of the
-// app is that one.
+// The rule lives in lib/returnFocus. It holds for the whole class only if every
+// layer of the app reaches it, and nothing reaches the focus before it:
+//   - every layer — dialog, alert dialog, sheet, popover, menu — is built from the
+//     shared contents here, never from the Radix primitives (a primitive closes
+//     with Radix's own default, which takes back a focus the user moved);
+//   - each content routes its close through the rule, after the caller's props,
+//     and its props do not even accept a view's own `onCloseAutoFocus`: a view
+//     names fallbacks (`returnFocus`), it cannot run before the guard;
+//   - a dialog reads its opener from the page's focus history as its content
+//     mounts (its `ref`), not from Radix's first focus event, which an `autoFocus`
+//     field suppresses — the history is installed once, by main.tsx;
+//   - a popover's content and trigger carry the same pair: its items' dialogs
+//     find their opener by it.
+// Read here from the syntax tree.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -46,61 +49,83 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+const openings = (root: ts.Node) =>
+  find(root, (n): n is ts.JsxOpeningLikeElement => ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n));
+
 const CONTENTS = [
-  ["dialog.tsx", "DialogContent", "DialogPrimitive.Content"],
-  ["alert-dialog.tsx", "AlertDialogContent", "AlertDialogPrimitive.Content"],
-  ["sheet.tsx", "SheetContent", "SheetPrimitive.Content"],
+  ["dialog.tsx", "DialogContent", "DialogPrimitive.Content", "dialog"],
+  ["alert-dialog.tsx", "AlertDialogContent", "AlertDialogPrimitive.Content", "dialog"],
+  ["sheet.tsx", "SheetContent", "SheetPrimitive.Content", "dialog"],
+  ["popover.tsx", "PopoverContent", "PopoverPrimitive.Content", "popover"],
+  ["dropdown-menu.tsx", "DropdownMenuContent", "DropdownMenuPrimitive.Content", "menu"],
 ] as const;
 
-describe("the shared dialog contents give the focus back by one rule (lot 15)", () => {
-  test.each(CONTENTS)("%s — %s", (file, name, primitive) => {
+describe("the shared layer contents close by the one rule (lots 15-16)", () => {
+  test.each(CONTENTS)("%s — %s", (file, name, primitive, kind) => {
     const sf = parse(join(UI, file));
     const fn = find(sf, ts.isFunctionDeclaration).find((f) => f.name?.getText() === name);
     expect(fn, `${file}: no ${name}`).toBeDefined();
 
-    // The view's own handlers and fallbacks are taken out of the props…
-    const pattern = fn!.parameters[0]?.name;
-    expect(pattern !== undefined && ts.isObjectBindingPattern(pattern)).toBe(true);
+    // A view cannot hand its own close handler (nor a ref that would replace the
+    // opening's) — the props type leaves them out.
+    const param = fn!.parameters[0];
+    const typeText = param.type?.getText() ?? "";
+    expect(typeText).toMatch(/Omit<React\.ComponentProps<typeof \w+\.Content>, "onCloseAutoFocus" \| "ref">/);
+    const pattern = param.name;
+    expect(ts.isObjectBindingPattern(pattern)).toBe(true);
     const taken = (pattern as ts.ObjectBindingPattern).elements.map((e) => e.name.getText());
-    expect(taken).toEqual(expect.arrayContaining(["returnFocus", "onOpenAutoFocus", "onCloseAutoFocus"]));
+    expect(taken).toContain("returnFocus");
 
-    // …handed to the rule…
-    const call = find(fn!, ts.isCallExpression).find((c) => c.expression.getText() === "useFocusReturn");
-    expect(call, `${file}: ${name} does not call useFocusReturn`).toBeDefined();
-    expect(call!.arguments.map((a) => a.getText())).toEqual([
-      "returnFocus",
-      "onOpenAutoFocus",
-      "onCloseAutoFocus",
-    ]);
+    // The rule, for its kind of layer.
+    const call = find(fn!, ts.isCallExpression).find((c) => c.expression.getText() === "useLayerFocus");
+    expect(call, `${file}: ${name} does not call useLayerFocus`).toBeDefined();
+    const args = call!.arguments.map((a) => a.getText());
+    expect(args[0]).toBe(`"${kind}"`);
+    expect(args[1]).toBe("returnFocus");
     const holder = call!.parent;
     expect(ts.isVariableDeclaration(holder)).toBe(true);
     const focus = (holder as ts.VariableDeclaration).name.getText();
 
-    // …and the primitive gets both of its handlers, AFTER the props spread.
-    const opening = find(fn!, (n): n is ts.JsxOpeningLikeElement =>
-      ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n),
-    ).find((o) => o.tagName.getText() === primitive);
-    expect(opening, `${file}: no ${primitive}`).toBeDefined();
-    const props = opening!.attributes.properties;
+    // The primitive gets the opening's ref and the close handler, AFTER the spread.
+    const el = openings(fn!).find((o) => o.tagName.getText() === primitive);
+    expect(el, `${file}: no ${primitive}`).toBeDefined();
+    const props = el!.attributes.properties;
     const spread = props.findIndex((p) => ts.isJsxSpreadAttribute(p));
     expect(spread).toBeGreaterThanOrEqual(0);
-    for (const handler of ["onOpenAutoFocus", "onCloseAutoFocus"]) {
+    const wired = kind === "popover" ? ["ref", "onCloseAutoFocus", "onInteractOutside"] : ["ref", "onCloseAutoFocus"];
+    for (const handler of wired) {
       const at = props.findIndex((p) => ts.isJsxAttribute(p) && p.name.getText() === handler);
       expect(at, `${file}: ${handler} missing`).toBeGreaterThanOrEqual(0);
       expect(at, `${file}: ${handler} before the props spread`).toBeGreaterThan(spread);
-      const value = (props[at] as ts.JsxAttribute).initializer?.getText();
-      expect(value).toBe(`{${focus}.${handler}}`);
+      expect((props[at] as ts.JsxAttribute).initializer?.getText()).toBe(`{${focus}.${handler}}`);
+    }
+    if (kind === "popover") {
+      expect(taken).toContain("onInteractOutside");
+      expect(args[2]).toBe("onInteractOutside");
     }
   });
 
-  test("no dialog of the app is built from the Radix primitives directly", () => {
+  test("no view of the app hands a layer its own close handler", () => {
+    const offenders: string[] = [];
+    for (const file of walk(SRC)) {
+      if (file.startsWith(UI) || !file.endsWith(".tsx")) continue;
+      for (const a of find(parse(file), ts.isJsxAttribute)) {
+        if (a.name.getText() === "onCloseAutoFocus") {
+          offenders.push(`${relative(process.cwd(), file)}: ${a.parent.parent.getText().slice(0, 60)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("no layer of the app is built from the Radix primitives directly", () => {
+    const LAYERS = new Set(["Dialog", "AlertDialog", "Popover", "DropdownMenu"]);
     const offenders: string[] = [];
     for (const file of walk(SRC)) {
       if (file.startsWith(UI)) continue;
-      const sf = parse(file);
-      for (const imp of find(sf, ts.isImportDeclaration)) {
+      for (const imp of find(parse(file), ts.isImportDeclaration)) {
         const from = (imp.moduleSpecifier as ts.StringLiteral).text;
-        if (/^@radix-ui\/react-(alert-)?dialog$/.test(from)) {
+        if (/^@radix-ui\/react-(alert-dialog|dialog|popover|dropdown-menu)$/.test(from)) {
           offenders.push(`${relative(process.cwd(), file)}: ${from}`);
           continue;
         }
@@ -109,13 +134,23 @@ describe("the shared dialog contents give the focus back by one rule (lot 15)", 
         if (named === undefined || !ts.isNamedImports(named)) continue;
         for (const el of named.elements) {
           const imported = (el.propertyName ?? el.name).getText();
-          if (imported === "Dialog" || imported === "AlertDialog") {
-            offenders.push(`${relative(process.cwd(), file)}: ${imported} from radix-ui`);
-          }
+          if (LAYERS.has(imported)) offenders.push(`${relative(process.cwd(), file)}: ${imported} from radix-ui`);
         }
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  test("the focus history is installed once, at the page's start (main.tsx)", () => {
+    const sf = parse(join(SRC, "main.tsx"));
+    const calls = find(sf, ts.isCallExpression).filter((c) => c.expression.getText() === "installFocusHistory");
+    expect(calls).toHaveLength(1);
+    // A statement of the module itself — not inside a component that could mount twice.
+    expect(ts.isExpressionStatement(calls[0].parent) && calls[0].parent.parent === sf).toBe(true);
+    const elsewhere = walk(SRC).filter(
+      (f) => !f.endsWith("main.tsx") && !f.endsWith("returnFocus.ts") && /\binstallFocusHistory\(/.test(readFileSync(f, "utf-8")),
+    );
+    expect(elsewhere).toEqual([]);
   });
 
   test("a popover's content and trigger carry the same pair, from the shared Popover", () => {
@@ -134,9 +169,7 @@ describe("the shared dialog contents give the focus back by one rule (lot 15)", 
       const read = f && find(f, ts.isCallExpression).find((c) => c.getText() === "React.useContext(PopoverPair)");
       expect(read, `${name} reads no pair`).toBeDefined();
       const held = (read!.parent as ts.VariableDeclaration).name.getText();
-      const el = find(f!, (n): n is ts.JsxOpeningLikeElement =>
-        ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n),
-      ).find((o) => o.tagName.getText() === primitive);
+      const el = openings(f!).find((o) => o.tagName.getText() === primitive);
       const a = el?.attributes.properties.find(
         (p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText() === stamp,
       );
@@ -144,41 +177,13 @@ describe("the shared dialog contents give the focus back by one rule (lot 15)", 
     }
   });
 
-  test("every popover of the app is the shared one — its items open dialogs that must find it", () => {
-    // The time-range filter builds its own (a date form, it opens no dialog).
-    const ALLOWED = new Set(["src/chat/admin/filters/TimeRangePicker.tsx"]);
-    const offenders: string[] = [];
-    for (const file of walk(SRC)) {
-      if (file.startsWith(UI)) continue;
-      const where = relative(process.cwd(), file);
-      for (const imp of find(parse(file), ts.isImportDeclaration)) {
-        const from = (imp.moduleSpecifier as ts.StringLiteral).text;
-        const named = imp.importClause?.namedBindings;
-        const popover =
-          from === "@radix-ui/react-popover" ||
-          (from === "radix-ui" &&
-            named !== undefined &&
-            ts.isNamedImports(named) &&
-            named.elements.some((e) => (e.propertyName ?? e.name).getText() === "Popover"));
-        if (popover && !ALLOWED.has(where)) offenders.push(where);
-      }
-    }
-    expect(offenders).toEqual([]);
-    for (const allowed of ALLOWED) {
-      expect(readFileSync(join(process.cwd(), allowed), "utf-8")).not.toMatch(/\b(Dialog|Sheet|confirm|prompt)\b/);
-    }
-  });
-
-  test("the guard reads the imports it means to forbid", () => {
-    // The walk must actually reach the three wrappers' kind of import: they are the
-    // only files allowed to have it.
-    const wrappers = CONTENTS.map(([file]) => parse(join(UI, file)));
-    for (const sf of wrappers) {
-      const imp = find(sf, ts.isImportDeclaration).find(
+  test("the guards read the files they mean to", () => {
+    for (const [file] of CONTENTS) {
+      const imp = find(parse(join(UI, file)), ts.isImportDeclaration).find(
         (i) => (i.moduleSpecifier as ts.StringLiteral).text === "radix-ui",
       );
-      expect(imp?.importClause?.namedBindings?.getText()).toMatch(/\b(Alert)?Dialog as /);
+      expect(imp?.importClause?.namedBindings?.getText()).toMatch(/\b(AlertDialog|Dialog|Popover|DropdownMenu) as /);
     }
-    expect(walk(SRC).filter((f) => f.startsWith(UI)).length).toBeGreaterThanOrEqual(3);
+    expect(walk(SRC).filter((f) => f.endsWith(".tsx") && !f.startsWith(UI)).length).toBeGreaterThan(50);
   });
 });
