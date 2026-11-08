@@ -11872,41 +11872,26 @@ button.oc-perm__opt:disabled {
   overflow-wrap: anywhere;
 }
 
-/* 16 PX FIELDS WHERE A FINGER TYPES (lot 7, G4). Below 16 px, iOS and iPadOS zoom
-   the whole page on focus and leave it zoomed: the injection editors (13.1 px),
-   the agent-file editor and the charter import (12.8 px), a request's answer field
-   (14.1 px), the traces filter and the shared `Input` from 768 px up (14 px). The
-   element rule carries no weight (`:where`), so a field styled larger keeps its
-   size; the classes below are the fields styled smaller, raised by name (doubled
-   so they win whatever file defines them). Last in the file on purpose.
-   Zoomed, the page also stops fitting its layers to the keyboard: past a scale of
-   1.01 the visual viewport is read as the reader zooming (lib/virtualKeyboard) —
-   the search field (15.2 px, lot 19) zoomed it by 1.053 and its palette went back
-   under the keyboard. touchType.test.ts finds every field by the syntax tree and
-   computes the cascade each one gets. */
+/* 16 PX FIELDS WHERE A FINGER TYPES (lot 7, G4; lot 20). Below 16 px, iOS and
+   iPadOS zoom the whole page on focus and leave it zoomed — and zoomed, the page
+   stops fitting its layers to the keyboard: past a scale of 1.01 the visual
+   viewport is read as the reader zooming (lib/virtualKeyboard).
+   The floor is IMPORTANT, so no normal declaration can beat it: not a heavier
+   selector, not a later file, not a `font: inherit`, not a rem under a small text
+   scale. A floor of no weight with a list of classes raised by name (lots 7-19)
+   lost to every rule outside the list: the room picker's search took its
+   popover's 14 px through `font: inherit`, and at the "sm" text scale (a 14 px
+   root) the composer fell to 14 px, the full-page composer's 1.02rem to 14.28 px.
+   `max(16px, 1em)` is the size of the text around the field, never under 16 px:
+   a field drawn larger than its surroundings comes back to them (the full-page
+   composer's 2 %). touchType.test.ts computes each field's cascade under each of
+   the six text scales: only an important declaration could still win, and any
+   that reaches a field is evaluated too. */
 @media (hover: none), (any-pointer: coarse) {
-  :where(
-    input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"]),
-    textarea,
-    select,
-    [contenteditable="true"]
-  ),
-  .oc-injcard__text.oc-injcard__text,
-  .oc-chart-import__textarea.oc-chart-import__textarea,
-  .oc-areq__input.oc-areq__input,
-  .oc-afiles__source.oc-afiles__source,
-  .oc-afiles__reject-textarea.oc-afiles__reject-textarea,
-  .oc-agentcard__desc.oc-agentcard__desc,
-  .oc-cronedit__textarea.oc-cronedit__textarea,
-  .oc-devsw__select.oc-devsw__select,
-  .oc-docviewer__editarea.oc-docviewer__editarea,
-  .oc-docviewer__zoom.oc-docviewer__zoom,
-  .oc-feedback__textarea.oc-feedback__textarea,
-  .oc-notif__close-input.oc-notif__close-input,
-  .oc-search-palette__field.oc-search-palette__field,
-  .oc-spanel__select.oc-spanel__select,
-  .oc-subpanel__prompt-input.oc-subpanel__prompt-input,
-  .oc-summary-dialog__edit.oc-summary-dialog__edit {
-    font-size: max(16px, 1em);
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"], [type="hidden"]),
+  textarea,
+  select,
+  [contenteditable]:not([contenteditable="false"]) {
+    font-size: max(16px, 1em) !important;
   }
 }
