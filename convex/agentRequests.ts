@@ -74,8 +74,10 @@ import {
 } from "./lib/agentRequests";
 
 /** How long the answer POST may take. The gateway answers a resolve in
- *  milliseconds; this bounds a hung bridge, not a slow agent. */
-const ANSWER_POST_TIMEOUT_MS = 45_000;
+ *  milliseconds; this bounds a hung bridge, not a slow agent. Far below SUBMIT_STALL_MS:
+ *  the answer settles or reverts its card well before the stall reaper may take its
+ *  action for dead (agentRequests.test.ts holds the two apart). */
+export const ANSWER_POST_TIMEOUT_MS = 45_000;
 /** How many rows a conversation's request list returns (newest first). */
 /** Longest provider request id kept (bridge core/agent-requests.ts MAX_PROVIDER_ID_CHARS). */
 const MAX_PROVIDER_REQUEST_ID = 512;
@@ -89,8 +91,10 @@ const LIST_LIMIT = 100;
  *  created by an agent's tool call, so hundreds open at once is not a conversation. */
 const OPEN_LIST_LIMIT = 500;
 /** A `submitting` row older than this lost its action (a platform kill between the
- *  click and the settle) and goes back to `pending` so the person can try again. */
-const SUBMIT_STALL_MS = 3 * 60_000;
+ *  click and the settle) and goes back to `pending` so the person can try again — or is
+ *  closed with the gateway's word kept meanwhile. No reply of that answer can follow: its
+ *  POST is bounded by ANSWER_POST_TIMEOUT_MS. */
+export const SUBMIT_STALL_MS = 3 * 60_000;
 
 const terminalStatusValidator = v.union(
   v.literal("answered"),
@@ -1638,6 +1642,9 @@ export const reapExpired = internalMutation({
     for (const row of stuck) {
       if (now - row.updatedAt < SUBMIT_STALL_MS) continue;
       // The gateway's word kept while the answer was on the wire closes it (revertAnswer).
+      // Final: an action silent this long is dead (its POST is bounded far below this, see
+      // ANSWER_POST_TIMEOUT_MS), so no reply of that answer can come to correct it (codex,
+      // integrated review of 0.103.5, pass 5).
       const kept = await verdictKeptForCard(ctx, row);
       if (kept !== null) {
         await closeWithKeptVerdict(ctx, row, kept, now);

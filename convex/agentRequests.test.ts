@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { deleteMessageAgentRequests } from "./agentRequests";
+import { ANSWER_POST_TIMEOUT_MS, deleteMessageAgentRequests, SUBMIT_STALL_MS } from "./agentRequests";
 import { DEFAULT_REQUEST_TTL_MS, EXPIRY_SWEEP_GRACE_MS, questionShape } from "./lib/agentRequests";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -2194,6 +2194,11 @@ describe("only the gateway's word closes a card for good", () => {
     });
     expect(await answer(t, userId, id!)).toMatchObject({ ok: true });
     expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "allowed", resolvedByUserId: userId });
+  });
+
+  test("the stall reaper only ever meets a dead answer: its POST is bounded far below the stall, so no reply can follow a closure (codex, integrated review of 0.103.5, pass 5)", () => {
+    // Twice the POST bound leaves room for the body read and both mutations of the action.
+    expect(2 * ANSWER_POST_TIMEOUT_MS).toBeLessThan(SUBMIT_STALL_MS);
   });
 
   test("an answer stalled on the wire after the gateway's word: the reaper closes it with that word, not back to pending", async () => {
