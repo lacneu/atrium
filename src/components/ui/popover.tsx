@@ -47,11 +47,14 @@ function PopoverTrigger({
 // room is measured on the visual viewport: the iOS keyboard is already out of it.
 // A caller's own `overflow-*` still wins (tailwind-merge); its height cap never
 // does — a view that wants less writes `min(its cap, this room)` in its stylesheet
-// (safeAreas.test.ts). The z-index
+// (safeAreas.test.ts). NOR WIDER (lot 25): the width Radix measured on the same
+// visual viewport (`--radix-popover-content-available-width`) caps it, so a view's
+// `w-*` gets the smaller of the two — `min(its width, this room)` — and a view never
+// writes its own `max-w-*`, which would replace the cap. The z-index
 // utility stays on the element, after its `data-slot`: overlayLayer.test.ts pairs
 // the two by position to prove the surface is raised by the app's layer rule.
 export const popoverContentClassName =
-  "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 w-72 max-h-(--radix-popover-content-available-height) origin-(--radix-popover-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-4 shadow-md outline-hidden"
+  "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 w-72 max-w-(--radix-popover-content-available-width) max-h-(--radix-popover-content-available-height) origin-(--radix-popover-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-4 shadow-md outline-hidden"
 
 /** Keeps floating content off the screen's edge (it touched it on a phone). */
 export const OVERLAY_COLLISION_PADDING = 8

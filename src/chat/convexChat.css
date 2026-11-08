@@ -731,10 +731,41 @@
   bottom: max(env(safe-area-inset-bottom), var(--oc-kb, 0px));
 }
 [data-slot="sheet-content"][data-side="left"] {
-  left: env(safe-area-inset-left);
+  left: calc(var(--oc-vv-left, 0px) + env(safe-area-inset-left));
 }
 [data-slot="sheet-content"][data-side="right"] {
-  right: env(safe-area-inset-right);
+  right: max(
+    env(safe-area-inset-right),
+    calc(100% - 100vw - var(--oc-vv-left, 0px) + env(safe-area-inset-right))
+  );
+}
+/* EVERY LAYER STAYS IN THE VISIBLE WIDTH TOO (lot 25). THE BOUND IS ONE VARIABLE,
+   `--oc-layer-width`: the width shown, less the safe areas (the notch and the rounded
+   corners, at the sides in landscape). The width SHOWN: on a phone `100vw` is the
+   screen's width even when the page runs wider — its layout viewport then grows, and
+   a fixed layer's `50%` and `right: 0` with it (the chat page did from the text scale
+   xl at 360 px) —; on a computer `100%` leaves the scrollbar out. WHERE it is shown:
+   such a page can be panned sideways; `--oc-vv-left` (lib/virtualKeyboard.ts) is how
+   far right what is shown begins, and a dialog or a sheet is placed from it. A
+   floating layer is bounded by the width Floating UI measured for it on the visual
+   viewport (`--radix-<kind>-content-available-width`), which its shared content takes
+   as its cap. A view gives a layer a width only as `min(its width, the bound)` — a
+   width alone would replace the bound: safeAreas.test.ts reads every rule that sizes
+   one. */
+:root {
+  --oc-layer-width: calc(min(100%, 100vw) - env(safe-area-inset-left) - env(safe-area-inset-right));
+}
+[data-slot="sheet-content"][data-side="left"],
+[data-slot="sheet-content"][data-side="right"] {
+  width: min(75%, var(--oc-layer-width));
+}
+[data-slot="sheet-content"][data-side="top"],
+[data-slot="sheet-content"][data-side="bottom"] {
+  left: calc(var(--oc-vv-left, 0px) + env(safe-area-inset-left));
+  right: max(
+    env(safe-area-inset-right),
+    calc(100% - 100vw - var(--oc-vv-left, 0px) + env(safe-area-inset-right))
+  );
 }
 /* A dialog — and a confirmation, which used to escape this — stays clear of the
    safe areas, and between the visible top and the iOS keyboard: shorter by what
@@ -744,6 +775,13 @@
 [data-slot="dialog-content"],
 [data-slot="alert-dialog-content"] {
   max-height: calc(var(--oc-layer-room) - 2rem);
+  /* As wide as what is shown less a margin, narrowed by its own `max-width`, and
+     centred between the safe areas of what is shown (lot 25). */
+  width: calc(var(--oc-layer-width) - 2rem);
+  left: calc(
+    var(--oc-vv-left, 0px) + min(50%, 50vw) +
+      (env(safe-area-inset-left) - env(safe-area-inset-right)) / 2
+  );
 }
 [data-slot="dialog-content"]:not(.oc-search-palette),
 [data-slot="alert-dialog-content"] {
@@ -1568,8 +1606,7 @@
   text-align: center;
 }
 .oc-notif {
-  width: 360px;
-  max-width: 92vw;
+  width: min(360px, var(--radix-dropdown-menu-content-available-width));
   padding: 0;
   max-height: min(70dvh, var(--radix-dropdown-menu-content-available-height, 70dvh));
   overflow: hidden;
@@ -2156,7 +2193,7 @@
 }
 /* Rename/delete popover */
 .oc-bmk-pop {
-  width: 15rem;
+  width: min(15rem, var(--radix-popover-content-available-width));
   padding: 0.6rem;
 }
 .oc-bmk-pop__form {
@@ -2200,7 +2237,7 @@
 }
 /* Bookmark list (click the rail counter): name or block excerpt per entry. */
 .oc-bmk-menu {
-  width: 17rem;
+  width: min(17rem, var(--radix-dropdown-menu-content-available-width));
 }
 .oc-bmk-menu__flag {
   flex-shrink: 0;
@@ -4701,6 +4738,15 @@ button.oc-bmk-rail__count:hover {
   flex-direction: column;
   gap: 0.125rem;
 }
+/* A row wraps its label rather than run past the menu: at 360 px under the largest
+   text scale a label is wider than the room the menu has (lot 25). The shared
+   button keeps its single line everywhere else. */
+.oc-composer__more-pop .oc-composer__more-item {
+  height: auto;
+  min-height: 2rem;
+  white-space: normal;
+  text-align: start;
+}
 .oc-composer__more-section {
   padding: 0.25rem 0;
   border-top: 1px solid var(--border);
@@ -6310,7 +6356,7 @@ button.oc-perm__opt:disabled {
    (overlay layer). */
 .oc-drawer[data-slot="sheet-content"] {
   z-index: var(--oc-layer-sidebar-drawer);
-  width: min(86vw, 320px);
+  width: min(86vw, 320px, var(--oc-layer-width));
   max-width: none;
   gap: 0;
   padding: 0;
@@ -7567,7 +7613,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-compat__versions-pop {
   width: auto;
-  max-width: 22rem;
+  max-width: min(22rem, var(--radix-popover-content-available-width));
   padding: 0.75rem;
 }
 .oc-compat__versions-title {
@@ -7693,6 +7739,16 @@ button.oc-perm__opt:disabled {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* --- Shared admin components (src/chat/admin/) ------------------------- */
+/* A field's help (admin FieldLabel): a sentence or two, never past the room (lot 25). */
+.oc-fieldhelp {
+  max-width: min(20rem, var(--radix-popover-content-available-width));
+}
+/* The admin's entity sheet: four fifths of the width shown (lot 25). */
+.oc-entity-sheet[data-slot="sheet-content"][data-side] {
+  width: min(80%, var(--oc-layer-width));
+}
+
 /* --- Reusable filter primitives (src/chat/admin/filters/) --------------- */
 /* FilterBar: a row above the table — search + quick selects + time picker +
    reset. Wraps gracefully on narrow widths. Tokens only. */
@@ -7728,7 +7784,7 @@ button.oc-perm__opt:disabled {
 /* TimeRangePicker: Grafana-style popover. Trigger shows the human label; the
    panel mirrors SelectContent's popover styling (already token-styled inline). */
 .oc-timerange__trigger { font-weight: 500; }
-.oc-timerange__panel { padding: 0.75rem; width: min(34rem, 92vw); }
+.oc-timerange__panel { padding: 0.75rem; width: min(34rem, var(--radix-popover-content-available-width)); }
 .oc-timerange__cols {
   display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem;
 }
@@ -7859,7 +7915,6 @@ button.oc-perm__opt:disabled {
    dialog more room (responsive cap) so nothing clips and the tab labels fit. The
    doubled class beats shadcn's `sm:max-w-lg` utility without !important. */
 .oc-access.oc-access {
-  width: 100%;
   max-width: min(44rem, calc(100vw - 2rem));
 }
 /* Compact manager toggle / indicator (shield): ONE control replaces a long text
@@ -7966,8 +8021,7 @@ button.oc-perm__opt:disabled {
 /* Type-catalogue popover: each type = a checkbox + label + DESCRIPTION (so an admin
    understands it). Scrollable so a growing catalogue (10+ types) stays usable. */
 .oc-agenttypes-pop {
-  width: 22rem;
-  max-width: calc(100vw - 2rem);
+  width: min(22rem, var(--radix-popover-content-available-width));
 }
 .oc-agenttypes-pop__title {
   font-weight: 600;
@@ -8272,7 +8326,6 @@ button.oc-perm__opt:disabled {
 .oc-spanel-pop {
   display: flex;
   flex-direction: column;
-  max-width: calc(100vw - 1rem);
 }
 .oc-spanel-pop__all {
   display: flex;
@@ -8441,7 +8494,7 @@ button.oc-perm__opt:disabled {
    !important needed to beat the sheet primitive's width utilities (same
    specificity, earlier in the cascade is not guaranteed). */
 .oc-spanel[data-slot="sheet-content"] {
-  width: min(26rem, 100vw) !important;
+  width: min(26rem, var(--oc-layer-width)) !important;
   max-width: 100vw !important;
 }
 .oc-spanel__body {
@@ -8542,7 +8595,7 @@ button.oc-perm__opt:disabled {
 }
 /* Mobile host = a right Sheet; let the inner panel fill it (it owns the padding). */
 .oc-sources-panel-sheet[data-slot="sheet-content"] {
-  width: min(92vw, 30rem);
+  width: min(92vw, 30rem, var(--oc-layer-width));
   max-width: 30rem;
   padding: 0;
   gap: 0;
@@ -9312,7 +9365,7 @@ button.oc-perm__opt:disabled {
    row — a hash that wraps mid-column cannot be compared by eye, and comparing it is
    the only reason to show one. */
 .oc-filemeta {
-  width: min(22rem, calc(100vw - 2rem));
+  width: min(22rem, var(--radix-popover-content-available-width));
   font-size: 0.8rem;
 }
 .oc-filemeta__title {
@@ -9578,7 +9631,6 @@ button.oc-perm__opt:disabled {
 [data-slot="dialog-content"].oc-afiles__review {
   display: flex;
   flex-direction: column;
-  width: calc(100vw - 2rem);
   max-width: 96rem;
   height: calc(var(--oc-layer-room) - 2rem);
 }
@@ -11131,7 +11183,7 @@ button.oc-perm__opt:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
-  width: 240px;
+  width: min(240px, var(--radix-popover-content-available-width));
 }
 .oc-talk__setting {
   display: flex;
@@ -11793,7 +11845,7 @@ button.oc-perm__opt:disabled {
 .oc-areq-panel {
   display: flex;
   flex-direction: column;
-  width: min(30rem, 100vw);
+  width: min(30rem, var(--oc-layer-width));
   max-width: 100vw;
 }
 .oc-areq-panel__filters {

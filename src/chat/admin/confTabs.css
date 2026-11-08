@@ -109,7 +109,6 @@
 [data-slot="dialog-content"].oc-afiles__editor {
   display: flex;
   flex-direction: column;
-  width: calc(100vw - 2rem);
   max-width: 72rem;
   height: calc(var(--oc-layer-room) - 2rem);
 }
@@ -600,7 +599,7 @@
   color: var(--muted-foreground);
 }
 .oc-dtp__pop {
-  width: 300px;
+  width: min(300px, var(--radix-popover-content-available-width));
 }
 .oc-dtp__head {
   display: flex;

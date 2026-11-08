@@ -57,11 +57,13 @@ function DialogOverlay({
 // in landscape). Capped at the dynamic viewport height minus the same 1rem margin
 // it keeps at the sides, it scrolls inside instead. A caller's own `max-h-*` /
 // `overflow-*` still wins (tailwind-merge; unlayered CSS on its class wins too).
+// Its width and its place across are the stylesheet's (lot 25): what is shown less
+// its safe areas, centred on it, never the layout viewport (convexChat.css).
 // The z-index utility stays on the element, after its `data-slot`:
 // overlayLayer.test.ts pairs the two by position to prove the surface is raised
 // by the app's layer rule.
 export const dialogContentClassName =
-  "fixed top-1/2 left-1/2 grid w-[calc(100%-2rem)] max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+  "fixed top-1/2 grid max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
 
 function DialogContent({
   className,

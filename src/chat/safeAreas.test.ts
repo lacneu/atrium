@@ -849,3 +849,257 @@ describe("dvh everywhere", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// ---- EVERY LAYER STAYS IN THE VISIBLE WIDTH (lot 25) ---------------------------
+//
+// The width side of lots 17-19. At 360 px under the largest text scale (a 24 px
+// root), the composer's "More" menu was `w-80`: 480 px, 128 px past the screen's
+// right edge — its help link and the permission states out of reach —, while Radix
+// published the 344 px it had (`--radix-popover-content-available-width`) and
+// nothing applied it. The bound is the screen as shown: for a floating layer, the
+// width Floating UI measured for it on the visual viewport; for a dialog or a sheet,
+// `--oc-layer-width` — the width shown less the safe areas. A width written in rem
+// or as a `w-*` on a layer goes through `min(its value, the bound)`. The browser
+// proof (lot 25) renders every layer the app has under the six text scales at
+// 360×740 and 740×360 and reads its box.
+
+/** The width bound of a layer of `slot`. */
+const widthBoundOf = (slot: string) =>
+  FLOATING.includes(slot) ? `var(--radix-${slot.replace(/-content$/, "")}-content-available-width` : "var(--oc-layer-width)";
+
+describe("every layer stays in the visible width (lot 25)", () => {
+  test("the width of a layer is the width shown, less both safe areas — never a page wider than the screen", () => {
+    // On a phone `100vw` is the screen's width even when the page runs wider (its
+    // layout viewport grows with it, and `100%` with it); on a computer `100%`
+    // leaves the scrollbar out. The smaller of the two is what is shown.
+    const width = /--oc-layer-width:\s*calc\(([^;]+)\);/.exec(declarationsFor(":root"))?.[1] ?? "";
+    expect(width.replace(/\s+/g, " ").trim()).toBe(
+      "min(100%, 100vw) - env(safe-area-inset-left) - env(safe-area-inset-right)",
+    );
+  });
+
+  test.each(FLOATING)("%s: capped by its shared content at the width Floating UI measured, its floor too", (slot) => {
+    const name = slot.replace(/-content$/, "");
+    const owners = walk(join(SRC, "components/ui"), [".tsx"]).filter((f) =>
+      readFileSync(f, "utf-8").includes(`data-slot="${slot}"`),
+    );
+    expect(owners.length).toBeGreaterThan(0);
+    for (const file of owners) {
+      // The classes of the element that IS the layer (its `data-slot`), not its children's.
+      const sf = ts.createSourceFile(file, readFileSync(file, "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      // The file's string constants, which a className may name (popoverContentClassName).
+      const consts = new Map<string, string>();
+      const collect = (n: ts.Node) => {
+        if (ts.isVariableDeclaration(n) && n.initializer && ts.isStringLiteralLike(n.initializer)) consts.set(n.name.getText(sf), n.initializer.text);
+        ts.forEachChild(n, collect);
+      };
+      collect(sf);
+      const classes: string[] = [];
+      const visit = (n: ts.Node) => {
+        if (ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) {
+          const attrs = n.attributes.properties.filter((p): p is ts.JsxAttribute => ts.isJsxAttribute(p));
+          if (attrs.some((a) => a.name.getText(sf) === "data-slot" && a.initializer?.getText(sf) === `"${slot}"`)) {
+            const text = attrs.find((a) => a.name.getText(sf) === "className")?.initializer?.getText(sf) ?? "";
+            const named = [...text.matchAll(/\b([A-Za-z_]\w*)\b/g)].map((m) => consts.get(m[1])).filter((v) => v !== undefined);
+            classes.push([text, ...named.map((v) => ` "${v}" `)].join(" "));
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+      expect(classes.length, file).toBeGreaterThan(0);
+      for (const cls of classes) {
+        expect(cls, file).toContain(`max-w-(--radix-${name}-content-available-width)`);
+        // A floor above the room would win over the cap (min-width beats max-width).
+        for (const m of cls.matchAll(/(?<=["\s])min-w-(\[[^\]]*\]|[^\s"]+)/g)) {
+          expect(m[0], file).toMatch(new RegExp(`^min-w-\\[min\\([\\w.]+,var\\(--radix-${name}-content-available-width\\)\\)\\]$`));
+        }
+      }
+    }
+    // …and no rule of the stylesheet lifts it.
+    const ownRules = cssRules().filter((r) => r.selectors.some((sel) => sel.includes(`[data-slot="${slot}"]`)));
+    for (const r of ownRules) expect(r.body, r.selectors.join(", ")).not.toMatch(/(^|[;\s])(max-|min-)?width\s*:/);
+  });
+
+  // Capped, a layer's content must shrink to it: at 360 px under the largest text
+  // scale two rows of the composer's "More" menu were wider than the 344 px it has
+  // (the shared button keeps one line) — their ends cut off. They wrap.
+  test("inside a capped layer the content shrinks: the More menu's rows wrap their labels", () => {
+    const own = declarationsFor(".oc-composer__more-pop .oc-composer__more-item");
+    expect(own).toContain("white-space: normal");
+    expect(own).toContain("height: auto");
+  });
+
+  test("a tooltip too: never wider than the width Floating UI measured for it", () => {
+    const tooltip = readFileSync(join(SRC, "components/ui/tooltip.tsx"), "utf-8");
+    expect(tooltip).toContain("max-w-[min(20rem,var(--radix-tooltip-content-available-width))]");
+    expect(tooltip).not.toMatch(/\bmax-w-xs\b/);
+  });
+
+  test.each(CENTRED)("%s: as wide as the width shown less a margin, centred in it", (slot) => {
+    const own = declarationsFor(`[data-slot="${slot}"]`);
+    expect(own).toMatch(/width:\s*calc\(var\(--oc-layer-width\) - 2rem\);/);
+    // Centred on what is shown, between the safe areas — not on a layout viewport
+    // the page made wider than the screen, panned or not.
+    expect(own.replace(/\s+/g, " ")).toContain(
+      "left: calc( var(--oc-vv-left, 0px) + min(50%, 50vw) + (env(safe-area-inset-left) - env(safe-area-inset-right)) / 2 );",
+    );
+    // The shared class no longer sizes or places it across: the stylesheet does.
+    const owner = walk(join(SRC, "components/ui"), [".tsx"]).find((f) => readFileSync(f, "utf-8").includes(`data-slot="${slot}"`))!;
+    expect(readFileSync(owner, "utf-8")).not.toMatch(/["\s]w-\[calc\(100%-2rem\)\]|["\s]left-1\/2/);
+  });
+
+  test("sheets: no wider than the width shown, their edge at the safe area of what is shown", () => {
+    for (const side of ["left", "right"]) {
+      expect(declarationsFor(`[data-slot="sheet-content"][data-side="${side}"]`), side).toMatch(
+        /width:\s*min\(75%, var\(--oc-layer-width\)\);/,
+      );
+    }
+    const LEFT = "left: calc(var(--oc-vv-left, 0px) + env(safe-area-inset-left))";
+    // `right: 0` is the layout viewport's edge: past the screen when the page runs wider.
+    const RIGHT = "right: max( env(safe-area-inset-right), calc(100% - 100vw - var(--oc-vv-left, 0px) + env(safe-area-inset-right)) )";
+    const flat = (sel: string) => declarationsFor(sel).replace(/\s+/g, " ");
+    expect(flat('[data-slot="sheet-content"][data-side="left"]')).toContain(LEFT);
+    expect(flat('[data-slot="sheet-content"][data-side="right"]')).toContain(RIGHT);
+    for (const side of ["top", "bottom"]) {
+      const own = flat(`[data-slot="sheet-content"][data-side="${side}"]`);
+      expect(own, side).toContain(LEFT);
+      expect(own, side).toContain(RIGHT);
+    }
+    const sheet = readFileSync(join(SRC, "components/ui/sheet.tsx"), "utf-8");
+    expect(sheet).not.toMatch(/data-\[side=(left|right)\]:w-/);
+  });
+
+  const uses = layerUses();
+  const viewClasses = new Map<string, Set<string>>();
+  for (const u of uses) {
+    for (const c of u.classes.filter((c) => c.startsWith("oc-"))) {
+      viewClasses.set(c, (viewClasses.get(c) ?? new Set()).add(u.slot));
+    }
+  }
+  const sizing = appCssRules().flatMap((r) =>
+    r.selectors.flatMap((sel) => {
+      const subject = sel.split(/\s*[>+~]\s*|\s+/).filter(Boolean).pop() ?? "";
+      const slots = new Set<string>();
+      for (const m of subject.matchAll(/\.(oc-[\w-]+)/g)) for (const sl of viewClasses.get(m[1]) ?? []) slots.add(sl);
+      return slots.size === 0 ? [] : [{ ...r, selector: sel, slots: [...slots] }];
+    }),
+  );
+
+  test("every width a view gives one of its layers is bounded by that layer's width bound", () => {
+    const offenders: string[] = [];
+    for (const r of sizing) {
+      for (const [prop, value] of ruleDeclarations(r.body)) {
+        const where = `${r.file} ${r.selector} { ${prop}: ${value} }`;
+        const bounds = r.slots.map(widthBoundOf);
+        const bounded = bounds.every((b) => value.includes(b));
+        if (/^max-(width|inline-size)$/.test(prop)) {
+          // A floating layer's cap IS a max-width: a view's own would replace it. A
+          // dialog's or a sheet's bound is its width: a max-width only narrows it.
+          const floating = r.slots.some((sl) => FLOATING.includes(sl));
+          if (floating && !(value.startsWith("min(") && bounded) && !(bounds.length === 1 && value.startsWith(bounds[0]))) offenders.push(where);
+        } else if (/^(width|inline-size)$/.test(prop)) {
+          if (!bounded && !/^(auto|fit-content|max-content|min-content)$/.test(value)) offenders.push(where);
+        } else if (/^min-(width|inline-size)$/.test(prop)) {
+          if (!/^(0|0px|auto)$/.test(value) && !(value.startsWith("min(") && bounded)) offenders.push(where);
+        } else if (/^(left|right|inset|inset-inline|inset-inline-start|inset-inline-end)$/.test(prop) && r.slots.some((sl) => !FLOATING.includes(sl))) {
+          // A dialog or a sheet is placed across by the shared rules, from the width shown.
+          offenders.push(where);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("no layer's className lifts its width bound: no max-/min- width, no size, no horizontal placement — a dialog's or a sheet's width is the stylesheet's", () => {
+    // A floating layer may take a `w-*`: its shared content's cap (`max-w-(…available-width)`)
+    // bounds it — CSS keeps the smaller, `min(its value, the room)`. A `max-w-*` of the
+    // view would REPLACE that cap (tailwind-merge); a `min-w-*` would win over it.
+    const ACROSS = /^(?:[\w[\]=-]+:)*!?-?(?:min-w|size|left|right|start|end|translate-x|inset-x)-/;
+    const offenders = uses.flatMap((u) =>
+      u.classes
+        .filter((c) => ACROSS.test(c) || (FLOATING.includes(u.slot) && /^(?:[\w[\]=-]+:)*!?max-w-/.test(c)) || (!FLOATING.includes(u.slot) && /^(?:[\w[\]=-]+:)*!?w-/.test(c)))
+        .map((c) => `${u.at} (${u.slot}): ${c}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+});
+
+// ---- THE BOX ON EVERY SCREEN (lot 25) -------------------------------------------
+//
+// A desktop browser emulates neither a notch nor a page panned sideways: the
+// formulas of the shared rules are computed here, on the screens that matter, and
+// each box must lie inside what is shown — from `--oc-vv-left`, the visible width
+// wide, less the safe areas.
+
+/** A screen, in px: the layout viewport's width (`100%` of a fixed layer: wider than
+ *  the screen when the page is), the screen's (`100vw`), how far it is panned
+ *  (`--oc-vv-left`), the safe areas, the root font size. */
+type Across = { layout: number; vw: number; left: number; safeL: number; safeR: number; rem: number };
+
+/** A width or a position of the shared rules, in px on `env`. */
+function across(expr: string, env: Across): number {
+  const rootDecls = new Map(ruleDeclarations(declarationsFor(":root")));
+  let src = expr;
+  for (let round = 0; /var\(/.test(src); round++) {
+    expect(round, `unresolved var() in ${expr}`).toBeLessThan(10);
+    src = src.replace(/var\((--[\w-]+)(?:,\s*([^()]*))?\)/g, (_, name: string, fallback?: string) => {
+      if (name === "--oc-vv-left") return `${env.left}px`;
+      const own = rootDecls.get(name);
+      if (own !== undefined) return `(${own})`;
+      expect(fallback, `no value for ${name}`).toBeDefined();
+      return fallback!;
+    });
+  }
+  src = src
+    .replace(/env\(safe-area-inset-left\)/g, `${env.safeL}px`)
+    .replace(/env\(safe-area-inset-right\)/g, `${env.safeR}px`)
+    .replace(/(\d*\.?\d+)%/g, (_, n: string) => `${(Number(n) / 100) * env.layout}`)
+    .replace(/(\d*\.?\d+)vw/g, (_, n: string) => `${(Number(n) / 100) * env.vw}`)
+    .replace(/(\d*\.?\d+)rem/g, (_, n: string) => `${Number(n) * env.rem}`)
+    .replace(/(\d*\.?\d+)px/g, "$1")
+    .replace(/\bcalc\(/g, "(")
+    .replace(/\bmin\(/g, "Math.min(")
+    .replace(/\bmax\(/g, "Math.max(");
+  expect(src.replace(/Math\.(min|max)/g, ""), `unread characters in ${expr}`).toMatch(/^[\d.\s()+\-*/,]*$/);
+  return Function(`"use strict"; return (${src});`)() as number;
+}
+
+const decl = (selector: string, prop: string) =>
+  new Map(ruleDeclarations(declarationsFor(selector))).get(prop) ?? "";
+
+describe("every dialog and sheet lies inside what is shown, on every screen (lot 25)", () => {
+  const SCREENS: Array<[string, Across]> = [
+    ["a phone, the page wider than the screen (442 px laid out, 360 shown, root 24 px)", { layout: 442, vw: 360, left: 0, safeL: 0, safeR: 0, rem: 24 }],
+    ["the same, panned 48 px to the right", { layout: 442, vw: 360, left: 48, safeL: 0, safeR: 0, rem: 24 }],
+    ["a phone in landscape, its notch and corners (47 px each side)", { layout: 740, vw: 740, left: 0, safeL: 47, safeR: 47, rem: 16 }],
+    ["one notch only (47 px on the left)", { layout: 740, vw: 740, left: 0, safeL: 47, safeR: 0, rem: 16 }],
+    ["a computer with a 15 px scrollbar", { layout: 1265, vw: 1280, left: 0, safeL: 0, safeR: 0, rem: 16 }],
+  ];
+  /** What is shown, less the safe areas: [from, to]. */
+  const shown = (e: Across) => [e.left + e.safeL, e.left + Math.min(e.layout, e.vw) - e.safeR];
+
+  test.each(SCREENS)("a dialog — %s", (_name, env) => {
+    const width = across(decl('[data-slot="dialog-content"]', "width"), env);
+    const centre = across(decl('[data-slot="dialog-content"]', "left"), env);
+    const [from, to] = shown(env);
+    expect(centre - width / 2).toBeGreaterThanOrEqual(from - 0.5);
+    expect(centre + width / 2).toBeLessThanOrEqual(to + 0.5);
+  });
+
+  test.each(SCREENS)("a sheet on the right — %s", (_name, env) => {
+    const width = across(decl('[data-slot="sheet-content"][data-side="right"]', "width"), env);
+    const right = across(decl('[data-slot="sheet-content"][data-side="right"]', "right"), env);
+    const [from, to] = shown(env);
+    expect(env.layout - right).toBeLessThanOrEqual(to + 0.5);
+    expect(env.layout - right - width).toBeGreaterThanOrEqual(from - 0.5);
+  });
+
+  test.each(SCREENS)("a sheet on the left — %s", (_name, env) => {
+    const width = across(decl('[data-slot="sheet-content"][data-side="left"]', "width"), env);
+    const left = across(decl('[data-slot="sheet-content"][data-side="left"]', "left"), env);
+    const [from, to] = shown(env);
+    expect(left).toBeGreaterThanOrEqual(from - 0.5);
+    expect(left + width).toBeLessThanOrEqual(to + 0.5);
+  });
+});

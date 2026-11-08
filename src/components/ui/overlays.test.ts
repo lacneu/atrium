@@ -133,13 +133,19 @@ describe("sheet content: scrolls inside its bounded height", () => {
 describe("the reply's menu (assistant-ui): capped like every menu", () => {
   test("its wrapper caps it to the room Radix measured, and it keeps its scroll", () => {
     const wrapper = readFileSync(join(process.cwd(), "src/components/ui/action-bar-more.tsx"), "utf-8");
-    const cap = /cn\("([^"]+)", className\)/.exec(wrapper)?.[1] ?? "";
-    expect(cap).toBe("max-h-(--radix-dropdown-menu-content-available-height)");
+    const cap = /cn\(\s*"([^"]+)",\s*className,?\s*\)/.exec(wrapper)?.[1] ?? "";
+    // Never taller (lot 17) nor wider (lot 25) than the room Radix measured, its floor
+    // under that room too.
+    expect(cap.split(" ")).toEqual([
+      "max-h-(--radix-dropdown-menu-content-available-height)",
+      "max-w-(--radix-dropdown-menu-content-available-width)",
+      "min-w-[min(8rem,var(--radix-dropdown-menu-content-available-width))]",
+    ]);
     expect(wrapper).toContain('data-slot="dropdown-menu-content"');
     const chat = readFileSync(join(process.cwd(), "src/chat/ConvexChat.tsx"), "utf-8");
     const own = /const MSG_MENU_CONTENT_CLS =\s*"([^"]+)"/.exec(chat)?.[1] ?? "";
     const out = classes(cap, own);
-    expect(out).toContain(cap);
+    for (const c of cap.split(" ")) expect(out).toContain(c);
     expect(out).toContain("overflow-y-auto");
   });
 });

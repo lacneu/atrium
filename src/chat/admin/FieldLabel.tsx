@@ -25,7 +25,7 @@ export function FieldHelp({ text }: { text: string }) {
             <HelpCircle aria-hidden />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-auto max-w-xs p-3 text-sm text-pretty">
+        <PopoverContent className="oc-fieldhelp w-auto p-3 text-sm text-pretty">
           {text}
         </PopoverContent>
       </Popover>

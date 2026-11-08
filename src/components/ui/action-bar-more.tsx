@@ -29,12 +29,15 @@ function ActionBarMoreContent({
 }) {
   const focus = useLayerFocus("menu", returnFocus)
   // The shared menu's slot: the layer, the reduced motion and the room left above
-  // the keyboard of every menu apply to it (convexChat.css); never taller than the
-  // room Radix measured.
+  // the keyboard of every menu apply to it (convexChat.css); never taller nor wider
+  // than the room Radix measured, its floor included (lot 25).
   return (
     <ActionBarMorePrimitive.Content
       data-slot="dropdown-menu-content"
-      className={cn("max-h-(--radix-dropdown-menu-content-available-height)", className)}
+      className={cn(
+        "max-h-(--radix-dropdown-menu-content-available-height) max-w-(--radix-dropdown-menu-content-available-width) min-w-[min(8rem,var(--radix-dropdown-menu-content-available-width))]",
+        className,
+      )}
       {...props}
       ref={focus.ref}
       onCloseAutoFocus={focus.onCloseAutoFocus}

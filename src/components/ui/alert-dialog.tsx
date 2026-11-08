@@ -54,11 +54,12 @@ function AlertDialogOverlay({
 // used to keep its natural height, centred on the layout viewport — the iOS
 // keyboard opened by its type-to-confirm field covered its buttons, and a short
 // landscape screen cut it. Capped like the dialog, it scrolls inside; the
-// stylesheet subtracts the keyboard and the safe areas, lifts it, and keeps its
-// actions in view (convexChat.css, safeAreas.test.ts). The z-index utility stays
+// stylesheet subtracts the keyboard and the safe areas, lifts it, keeps its
+// actions in view, and sizes and centres it across what is shown (lot 25;
+// convexChat.css, safeAreas.test.ts). The z-index utility stays
 // on the element, after its `data-slot` (overlayLayer.test.ts).
 export const alertDialogContentClassName =
-  "fixed top-1/2 left-1/2 grid w-[calc(100%-2rem)] max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+  "fixed top-1/2 grid max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
 
 function AlertDialogContent({
   className,

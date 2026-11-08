@@ -1,7 +1,7 @@
 // The height the iOS keyboard covers (virtualKeyboard.ts) — what the shell, the
 // full-page prompt and the dialogs subtract so their bottom stays in sight.
 import { describe, expect, test } from "vitest";
-import { installKeyboardInset, keyboardInset, visibleTopInset } from "./virtualKeyboard";
+import { installKeyboardInset, keyboardInset, visibleLeftInset, visibleTopInset } from "./virtualKeyboard";
 
 describe("keyboardInset", () => {
   test("iOS, keyboard open: the layout keeps its height, the visual one shrinks", () => {
@@ -42,6 +42,23 @@ describe("visibleTopInset", () => {
   });
 });
 
+// Lot 25: the left edge too — a page wider than the screen (the chat page from the
+// text scale xl at 360 px) is panned sideways, and a dialog centred on the layout
+// viewport would sit off what is shown.
+describe("visibleLeftInset", () => {
+  test("a page panned sideways: its offset is the left inset", () => {
+    expect(visibleLeftInset(48, 1)).toBe(48);
+    expect(visibleLeftInset(47.6, 1)).toBe(48);
+  });
+  test("not panned, or rounding below zero: nothing hidden on the left", () => {
+    expect(visibleLeftInset(0, 1)).toBe(0);
+    expect(visibleLeftInset(-0.4, 1)).toBe(0);
+  });
+  test("a pinch-zoomed page: the reader pans, nothing to fit — 0, like the top", () => {
+    expect(visibleLeftInset(200, 2)).toBe(0);
+  });
+});
+
 describe("installKeyboardInset", () => {
   test("writes --oc-kb from the visual viewport and follows its resizes", () => {
     const listeners: Record<string, () => void> = {};
@@ -49,6 +66,7 @@ describe("installKeyboardInset", () => {
     const vv = {
       height: 844,
       offsetTop: 0,
+      offsetLeft: 0,
       scale: 1,
       addEventListener: (k: string, f: () => void) => (listeners[k] = f),
       removeEventListener: (k: string) => delete listeners[k],
@@ -82,9 +100,16 @@ describe("installKeyboardInset", () => {
     listeners.scroll();
     expect(props.get("--oc-kb")).toBe("216px");
     expect(props.get("--oc-vv-top")).toBe("200px");
+    expect(props.get("--oc-vv-left")).toBe("0px");
+    // A page wider than the screen, panned sideways: only the left edge moves.
+    vv.offsetLeft = 48;
+    listeners.scroll();
+    expect(props.get("--oc-vv-left")).toBe("48px");
+    expect(props.get("--oc-vv-top")).toBe("200px");
     undo();
     expect(props.has("--oc-kb")).toBe(false);
     expect(props.has("--oc-vv-top")).toBe(false);
+    expect(props.has("--oc-vv-left")).toBe(false);
     expect(Object.keys(listeners)).toEqual([]);
   });
   test("no visualViewport (old browser): nothing installed", () => {
