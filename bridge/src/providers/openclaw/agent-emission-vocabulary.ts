@@ -15,9 +15,9 @@ export const AGENT_EMISSION_VOCABULARY_VERSIONS: readonly string[] = ["2026.9.36
 /** Every literal `stream` the inventories name (dotted plugin-scoped ones included). */
 export const KNOWN_AGENT_STREAMS: ReadonlySet<string> = new Set([
   "acp", "approval", "assistant", "codex_app_server.guardian", "codex_app_server.hook",
-  "codex_app_server.item", "codex_app_server.lifecycle", "command_output", "compaction",
-  "error", "execution", "fallback", "item", "lifecycle", "notice", "patch", "plan",
-  "run_status", "thinking", "tool", "usage",
+  "codex_app_server.item", "codex_app_server.lifecycle", "codex_app_server.tool",
+  "command_output", "compaction", "error", "execution", "fallback", "item", "lifecycle",
+  "notice", "patch", "plan", "run_status", "thinking", "tool", "usage",
 ]);
 
 /** Per stream, the literal `data.phase` values its emitters write. */
@@ -45,6 +45,7 @@ export const KNOWN_AGENT_PHASES_BY_STREAM: Readonly<Record<string, ReadonlySet<s
     "turn_start_failed", "turn_start_retry_after_compact",
     "turn_start_waiting_for_native_turn", "turn_starting",
   ]),
+  "codex_app_server.tool": new Set<string>(),
   "command_output": new Set([
     "delta", "end",
   ]),
@@ -112,6 +113,9 @@ export const KNOWN_AGENT_DATA_KEYS_BY_STREAM: Readonly<Record<string, ReadonlySe
   "codex_app_server.lifecycle": new Set([
     "action", "clientId", "collaborationEffort", "delta", "effort", "error", "model",
     "phase", "serviceTier", "threadId",
+  ]),
+  "codex_app_server.tool": new Set([
+    "delta", "message", "name",
   ]),
   "command_output": new Set([
     "cwd", "delta", "durationMs", "exitCode", "itemId", "name", "output", "phase",

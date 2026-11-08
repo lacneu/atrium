@@ -118,8 +118,51 @@ export function emitAgentAuditEvent(event: AgentEventPayload) {
 }
 `;
 
+/** The gateway's frame senders, shaped like upstream's transports: the broadcaster factory
+ *  hands out (event, payload) senders (one of them guarded to `plugin.*` events), the node
+ *  runtime one more, the node registry a public method. Their bodies are the transport. */
+const TRANSPORT: Record<string, string> = {
+  "src/gateway/server-broadcast.ts": `
+declare function deliver(frame: string): void;
+export function createGatewayBroadcaster() {
+  const broadcastInternal = (event: string, payload: unknown) => deliver(JSON.stringify({ type: "event", event, payload }));
+  const broadcast = (event: string, payload: unknown) => broadcastInternal(event, payload);
+  const broadcastToConnIds = (event: string, payload: unknown, connIds: ReadonlySet<string>) => {
+    void connIds;
+    broadcastInternal(event, payload);
+  };
+  const broadcastPluginEvent = (event: string, payload: unknown) => {
+    if (!event.startsWith("plugin.")) throw new Error("invalid plugin event");
+    broadcastInternal(event, payload);
+  };
+  const getBufferedAmount = (connId: string) => connId.length;
+  return { broadcast, broadcastToConnIds, broadcastPluginEvent, getBufferedAmount };
+}
+`,
+  "src/gateway/server-node-session-runtime.ts": `
+declare function deliverToNodes(sessionKey: string, event: string, payload: unknown): void;
+export function createGatewayNodeSessionRuntime() {
+  const nodeSendToSession = (sessionKey: string, event: string, payload: unknown) => deliverToNodes(sessionKey, event, payload);
+  return { nodeSendToSession };
+}
+`,
+  "src/gateway/node-registry.ts": `
+declare function deliverToNode(nodeId: string, frame: string): void;
+export class NodeRegistry {
+  sendEvent(nodeId: string, event: string, payload?: unknown): boolean {
+    this.sendEventInternal(nodeId, event, payload);
+    return true;
+  }
+  private sendEventInternal(nodeId: string, event: string, payload: unknown): void {
+    deliverToNode(nodeId, JSON.stringify({ type: "event", event, payload }));
+  }
+}
+`,
+};
+
 /** The synthetic upstream: one file per behaviour, each on its own stream. */
 const UPSTREAM: Record<string, string> = {
+  ...TRANSPORT,
   "src/infra/agent-events.ts": BUS,
   "src/infra/streams.ts": `export const CONST_STREAM = "t_const";\n`,
   "src/cases/literal.ts": `
@@ -288,11 +331,16 @@ export function lifecycle(runId: string) {
 `,
   "src/plugin-sdk/public.ts": `export { emitAgentEvent } from "../infra/agent-events.js";\n`,
   "src/gateway/server-chat.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
 type Broadcast = (event: string, payload: unknown) => void;
 type Ev = { runId: string; stream: string; data: Record<string, unknown> };
 export function relay(broadcast: Broadcast, evt: Ev, expected: number) {
   broadcast("agent", { runId: evt.runId, stream: "error", data: { reason: "seq gap", expected } });
   broadcast("agent", evt);
+}
+export function onEvent(evt: Ev, expected: number) {
+  const { broadcast } = createGatewayBroadcaster();
+  relay(broadcast, evt, expected);
 }
 export function project(event: Ev): Ev {
   if (event.stream === "assistant") {
@@ -487,7 +535,7 @@ describe("deriveAgentEmissions — after the emitter", () => {
   });
 
   it("records a frame the gateway fabricates, and a data key it adds", () => {
-    expect(inv.transformations.fabricated).toEqual([expect.objectContaining({ stream: "error", keys: ["expected", "reason"], sender: "broadcast" })]);
+    expect(inv.transformations.fabricated).toEqual([expect.objectContaining({ stream: "error", keys: ["expected", "reason"], sender: expect.stringContaining("broadcast") })]);
     expect(inv.transformations.dataRewrites).toEqual(expect.arrayContaining([expect.objectContaining({ scope: "gateway", added: ["text"], guard: [{ stream: ["assistant"], negated: false }] })]));
   });
 
@@ -499,96 +547,439 @@ describe("deriveAgentEmissions — after the emitter", () => {
   });
 });
 
-describe("deriveAgentEmissions — a gateway sender is classified on its EVALUATED payload", () => {
-  // Review defect (2026-11-08): only an object literal written inline at the sender was a
-  // fabricated frame; `const extra = {…}; broadcast("agent", extra)` was filed as a relay
-  // and its frame vanished from the inventory, silently.
-  const SENDERS = `
-type Broadcast = (event: string, payload: unknown) => void;
+describe("deriveAgentEmissions — gateway senders are DISCOVERED by symbol and classified on their final payload", () => {
+  // Two reviews (2026-11-08): a sender call counted only when its event was a literal AT the
+  // call and the callee's parameter was NAMED `event` — `const event = "agent"` or a wrapper
+  // naming its parameter otherwise sent frames the inventory never saw; and following a
+  // payload's stream to its origin dropped what a helper did to the payload (a replaced
+  // `data`). Senders are now discovered by symbol from the transports' own senders, and each
+  // call's payload is the template with the call's arguments substituted.
+  const CHAT = `
+import type { NodeRegistry } from "./node-registry.js";
+type Ctx = {
+  broadcast: (event: string, payload: unknown) => void;
+  broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => void;
+  nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
+  registry: NodeRegistry;
+};
 type Ev = { runId: string; stream: string; data: Record<string, unknown> };
 declare function make(): unknown;
 declare function pick(): string;
+declare function pickEvent(): string;
 declare function openRecord(): Record<string, unknown>;
-export function viaBinding(broadcast: Broadcast, evt: Ev) {
-  const extra = { runId: evt.runId, stream: "x_extra", data: { k: 1 } };
-  broadcast("agent", extra);
+/** Two literals contextually typed by ONE property: both reach the same declaration. */
+type NotifyParams = { broadcast: (event: string, payload: unknown) => void };
+function notifyAgent(params: NotifyParams) {
+  params.broadcast("agent", { stream: "x_notify", data: { n: 1 } });
 }
-function sendHelper(broadcast: Broadcast, payload: Ev) {
-  broadcast("agent", payload);
+/** A sender stored in a field: the assignment's TARGET is not where the value goes. */
+export class Relay {
+  private readonly send: (event: string, payload: unknown) => void;
+  constructor(options: { send: (event: string, payload: unknown) => void }) {
+    this.send = options.send;
+  }
+  ping() {
+    this.send("chat", { state: "final" });
+  }
 }
-export function relayViaHelper(broadcast: Broadcast, evt: Ev) {
-  sendHelper(broadcast, evt);
+/** Exposed to plugins through the public surface: callers outside the program. */
+export type PluginGatewayApi = { emitRaw: (event: string, payload: unknown) => void };
+export function createChatHandlers(ctx: Ctx) {
+  const constEvent = () => {
+    const event = "agent";
+    ctx.broadcast(event, { stream: "missed", data: { key: 1 } });
+  };
+  const viaBinding = (runId: string) => {
+    const extra = { runId, stream: "x_extra", data: { k: 1 } };
+    ctx.broadcast("agent", extra);
+  };
+  const relayAs = (channel: string, frame: unknown) => ctx.broadcastToConnIds(channel, frame, new Set());
+  const renamed = () => relayAs("agent", { stream: "missed_renamed", data: { key: 1 } });
+  const rewrite = (evt: Ev) => ctx.broadcast("agent", { ...evt, data: { phase: "new_phase", missed: 1 } });
+  const caller = (runId: string) => rewrite({ runId, stream: "lifecycle", data: { phase: "start" } });
+  const handleEvent = (evt: Ev) => {
+    ctx.nodeSendToSession("k", "agent", evt);
+    ctx.registry.sendEvent("n", "agent", { ...evt, data: { ...evt.data, text: "accumulated" } });
+    ctx.broadcast("agent", { ...evt, data: { replaced: 1 } });
+    ctx.broadcast("chat", { state: "final" });
+  };
+  const typedCall = (get: () => Ev) => ctx.broadcast("agent", get());
+  const untyped = () => ctx.broadcast("agent", make());
+  const computedStream = (evt: Ev) => ctx.broadcast("agent", { ...evt, stream: pick() });
+  const openSpread = (evt: Ev) => ctx.broadcast("agent", { ...evt, ...openRecord() });
+  const unknownEvent = () => ctx.broadcast(pickEvent(), { stream: "x_unknown_event", data: {} });
+  const viaNotify1 = () => notifyAgent({ broadcast: ctx.broadcast });
+  const viaNotify2 = () => notifyAgent({ broadcast: ctx.broadcast });
+  const relay = new Relay({ send: ctx.broadcast });
+  const api: PluginGatewayApi = { emitRaw: ctx.broadcast };
+  return { constEvent, viaBinding, renamed, caller, handleEvent, typedCall, untyped, computedStream, openSpread, unknownEvent, viaNotify1, viaNotify2, relay, api };
 }
-export function fabricateViaHelper(broadcast: Broadcast, runId: string) {
-  sendHelper(broadcast, { runId, stream: "x_helper", data: { h: 1 } });
-}
-export function liveSender(broadcast: Broadcast, evt: Ev, sessionKey: string) {
-  const sendLive = (event: string, key: string, payload: unknown) => broadcast(event, payload);
-  sendLive("agent", sessionKey, evt);
-}
-function snapshotRecord(k: string): Record<string, unknown> {
-  return { ...(k ? { label: k } : {}), sessionKey: k };
-}
-export function recordSpread(broadcast: Broadcast, evt: Ev, sk: string) {
-  broadcast("agent", sk ? { ...evt, ...snapshotRecord(sk) } : evt);
-}
-export function typedCall(broadcast: Broadcast, get: () => Ev) {
-  broadcast("agent", get());
-}
-export function untyped(broadcast: Broadcast) {
-  broadcast("agent", make());
-}
-export function computedStream(broadcast: Broadcast, evt: Ev) {
-  broadcast("agent", { ...evt, stream: pick() });
-}
-export function openSpread(broadcast: Broadcast, evt: Ev) {
-  broadcast("agent", { ...evt, ...openRecord() });
+`;
+  const SERVER = `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import { createGatewayNodeSessionRuntime } from "./server-node-session-runtime.js";
+import { NodeRegistry } from "./node-registry.js";
+import { createChatHandlers } from "./server-chat.js";
+export function startGateway() {
+  const broadcaster = createGatewayBroadcaster();
+  const nodes = createGatewayNodeSessionRuntime();
+  // A SPREAD into a contextually typed argument: \`ctx.broadcast\` is Ctx's property, linked
+  // back to the broadcaster's by symbol.
+  const handlers = createChatHandlers({ ...broadcaster, nodeSendToSession: nodes.nodeSendToSession, registry: new NodeRegistry() });
+  return { handlers, plugin: broadcaster.broadcastPluginEvent };
 }
 `;
   let senders: Inventory;
-  type Relay = { function: string; payload: string; origins: { kind: string; function?: string; entries?: { how: string }[] }[] };
-  type Unresolved = { function: string; reason: string };
-  const tf = () => senders.transformations as unknown as {
-    fabricated: { stream: string; keys: string[]; function: string; via?: string[] }[];
-    relays: Relay[];
-    unresolved: Unresolved[];
-  };
+  type Row = { function: string; sender?: string; reason?: string; stream?: string; keys?: string[]; phase?: unknown; phaseAbsent?: boolean; origins?: { kind: string; entries?: string[] }[] };
+  const tf = () =>
+    senders.transformations as unknown as {
+      fabricated: Row[];
+      relays: Row[];
+      unresolved: Row[];
+      senderSites: Record<string, number>;
+      senders: { label: string }[];
+      openSenders: { label: string; channel: string; open: string[] }[];
+    };
+  const fnOf = (r: Row) => r.function.replace(/^createChatHandlers > /, "");
   beforeAll(() => {
     senders = derive({
       root: "/virtual-upstream",
-      files: { "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, "src/gateway/server-chat.ts": SENDERS },
+      files: {
+        ...TRANSPORT,
+        "src/infra/agent-events.ts": BUS,
+        "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!,
+        "src/gateway/server-chat.ts": CHAT,
+        "src/gateway/server.ts": SERVER,
+        "src/plugin-sdk/gateway.ts": `export type { PluginGatewayApi } from "../gateway/server-chat.js";\n`,
+      },
       tsconfig: TSCONFIG,
       compilerOptions: OPTIONS,
     });
   });
 
-  it("a literal reached through a binding or a helper's parameter is a FABRICATED frame", () => {
-    const fab = tf().fabricated.map((g) => [g.stream, g.keys.join(","), g.function, g.via ?? []]);
-    expect(fab).toEqual([
-      ["x_extra", "k", "viaBinding", []],
-      ["x_helper", "h", "fabricateViaHelper", [expect.stringContaining("`sendHelper`")]],
-    ]);
+  it("a frame sent through a const event, a renamed wrapper parameter or a binding is FABRICATED", () => {
+    const fab = new Map(tf().fabricated.map((g) => [g.stream, [fnOf(g), g.keys]]));
+    expect(fab.get("missed")).toEqual(["constEvent", ["key"]]);
+    expect(fab.get("missed_renamed")).toEqual(["renamed", ["key"]]);
+    expect(fab.get("x_extra")).toEqual(["viaBinding", ["k"]]);
   });
 
-  it("a relay names where its event comes from: the entry parameter, or a declared type only", () => {
-    const relays = new Map(tf().relays.map((r) => [r.function, r]));
-    // The helper's own parameter is resolved by its callers; the entry is theirs.
-    expect(relays.get("sendHelper")?.origins).toEqual([expect.objectContaining({ kind: "parameter", function: "relayViaHelper" })]);
-    // The payload is the parameter NAMED payload, not the next argument.
-    expect(relays.get("liveSender > sendLive")).toBeUndefined();
-    expect(relays.get("liveSender")?.payload).toBe("evt");
-    // A spread of an open record that the evaluator reads as setting no stream.
-    expect(relays.get("recordSpread")?.origins.map((o) => o.kind)).toEqual(["parameter"]);
-    expect(relays.get("typedCall")?.origins).toEqual([expect.objectContaining({ kind: "typed" })]);
+  it("a helper's transformation survives: its `data` replacement is the frame's", () => {
+    const rows = tf().fabricated.filter((g) => g.stream === "lifecycle");
+    expect(rows).toEqual([expect.objectContaining({ phase: "new_phase", keys: ["missed", "phase"] })]);
   });
 
-  it("anything else is UNRESOLVED and counted — never omitted, never a relay by default", () => {
-    const un = tf().unresolved.map((u) => [u.function, u.reason]);
-    expect(un).toEqual([
-      ["untyped", expect.stringContaining("declared type is unknown")],
-      ["computedStream", expect.stringMatching(/^a computed stream/)],
-      ["openSpread", expect.stringContaining("may set the stream")],
-    ]);
+  it("a relayed event names its origins — including where an escaping entry is reached", () => {
+    const relays = tf().relays.filter((r) => fnOf(r) === "handleEvent");
+    expect(relays.length).toBeGreaterThan(0);
+    for (const r of relays) expect(r.origins?.every((o) => o.kind === "typed" && (o.entries ?? []).length > 0)).toBe(true);
+    expect(tf().relays.some((r) => fnOf(r) === "typedCall")).toBe(true);
+  });
+
+  it("anything that cannot be resolved is UNRESOLVED and counted — never omitted", () => {
+    const un = tf().unresolved.map((u) => [fnOf(u), u.reason]);
+    expect(un).toEqual(
+      expect.arrayContaining([
+        ["untyped", expect.stringContaining("declared type is unknown")],
+        ["computedStream", expect.stringMatching(/^a computed stream/)],
+        ["openSpread", expect.stringContaining("may set the stream")],
+        // A relayed event whose data the gateway REPLACES is not a relay of the bus event.
+        ["handleEvent", expect.stringContaining("replaces a relayed event's data")],
+        // An event nobody can evaluate could be `agent`.
+        ["unknownEvent", expect.stringContaining("the event is not evaluated")],
+      ]),
+    );
+    // …while a relayed event's data plus a RECORDED rewrite is not unresolved.
+    expect(un.some(([, reason]) => /adds `text`/.test(String(reason)))).toBe(false);
+  });
+
+  it("another channel is pruned, and a sender whose own guard admits only `plugin.*` never counts as agent", () => {
+    // Every send of the fixture, by the channel its EVALUATED event names: the node sends
+    // (event second, after a session key) and the registry's are agent sends like the rest.
+    expect(tf().senderSites).toEqual({ agent: 10, other: 3, undetermined: 1 });
+    expect(tf().unresolved.some((u) => /plugin/i.test(`${u.function} ${u.reason}`))).toBe(false);
+    expect(tf().senders.some((s) => /broadcastPluginEvent/.test(s.label))).toBe(true);
+  });
+
+  it("the forms the first 9.36 run lost are followed: shared declarations, a field assignment, plugin callers", () => {
+    // Two literals typed by one property: each is credited with the references, so neither
+    // reads as "referenced by no name" (open, and unresolved for a sender).
+    expect(tf().fabricated.filter((g) => g.stream === "x_notify")).toHaveLength(1);
+    expect(tf().unresolved.some((u) => /notify/i.test(`${u.function} ${u.reason}`))).toBe(false);
+    // …so the only event nobody can evaluate is the one the fixture makes so.
+    expect(tf().unresolved.filter((u) => /the event is not evaluated/.test(String(u.reason))).map(fnOf)).toEqual(["unknownEvent"]);
+    // `this.send = options.send`: the target is not an escape; the field's calls are sites.
+    expect(senders.escapes.some((e) => /BinaryExpression/.test(e.reason))).toBe(false);
+    // A sender plugins can call is an OPEN entry, listed — not a site guessed at.
+    expect(tf().openSenders).toEqual([expect.objectContaining({ channel: "undetermined", open: expect.arrayContaining([expect.stringContaining("a type the public surface exposes")]) })]);
+    expect(tf().unresolved.some((u) => /emitRaw/.test(`${u.function} ${u.sender}`))).toBe(false);
+  });
+
+  it("every reference to a sender is accounted for", () => {
+    expect(senders.completeness.unaccounted).toBe(0);
+  });
+
+  it("refuses a gateway whose transport moved: a discovery that starts nowhere finds nothing", () => {
+    const files = { ...UPSTREAM };
+    delete files["src/gateway/server-broadcast.ts"];
+    expect(() => derive({ root: "/v", files, tsconfig: TSCONFIG, compilerOptions: OPTIONS })).toThrow(/upstream moved a frame sender/);
+    const renamed = { ...UPSTREAM, "src/gateway/node-registry.ts": TRANSPORT["src/gateway/node-registry.ts"]!.replace("class NodeRegistry", "class NodeRegistryRenamed") };
+    expect(() => derive({ root: "/v", files: renamed, tsconfig: TSCONFIG, compilerOptions: OPTIONS })).toThrow(/no class NodeRegistry/);
+  });
+});
+
+describe("deriveAgentEmissions — a sender stored in an object is followed through the object", () => {
+  // The second 9.36 run (2026-11-08) refused nine senders as "referenced by no name". Three
+  // mirrors of what upstream does with them: a shorthand destructuring
+  // (`createAgentEventHandler({ broadcast, … })`), a whole object handed to a function whose
+  // own type redeclares the slot (`abortChatRunById(params, …)` reading `ops.broadcast`), and
+  // a field no use reads (`GatewayConnectionOptions.broadcast`). Then what must stay refused.
+  const FILES: Record<string, string> = {
+    "src/gateway/handler-a.ts": `
+export type HandlerAOptions = { broadcast: (event: string, payload: unknown) => void; nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void };
+export function createHandlerA({ broadcast, nodeSendToSession }: HandlerAOptions) {
+  return (runId: string) => {
+    broadcast("agent", { stream: "x_destructured", data: { runId } });
+    nodeSendToSession("k", "agent", { stream: "x_destructured_node", data: { runId } });
+  };
+}
+`,
+    "src/gateway/abort-ops.ts": `
+export type AbortOps = { broadcast: (event: string, payload: unknown) => void; nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void };
+export function abortRun(ops: AbortOps, runId: string) {
+  ops.broadcast("chat", { runId, state: "aborted" });
+  ops.nodeSendToSession("k", "chat", { runId });
+  ops.broadcast("agent", { stream: "x_converted", data: { runId } });
+}
+`,
+    "src/gateway/shutdown-b.ts": `
+import { abortRun } from "./abort-ops.js";
+export type ShutdownParams = {
+  broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
+  nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
+  runs: string[];
+};
+function abortAll(params: ShutdownParams): number {
+  for (const runId of params.runs) abortRun(params, runId);
+  return params.runs.length;
+}
+export function prepareShutdown(params: { restart: boolean } & ShutdownParams) {
+  if (!params.restart) abortAll(params);
+}
+export function shutdown(params: ShutdownParams & { reason: string }) {
+  prepareShutdown({ ...params, restart: false });
+}
+`,
+    "src/gateway/conn-c.ts": `
+export type ConnOptions = { broadcast: (event: string, payload: unknown) => void; logWarn: (message: string) => void; port: number };
+export function attachConn(params: ConnOptions & { socket: object }) {
+  const { logWarn, port } = params;
+  const onClose = () => {
+    logWarn(\`closed on \${port}\`);
+    return params.socket;
+  };
+  return onClose;
+}
+export function attachWs(params: ConnOptions & { wss: { on: (event: string, f: () => void) => void } }) {
+  params.wss.on("connection", () => {
+    attachConn({ ...params, socket: {} });
+  });
+}
+`,
+    "src/gateway/conn-d.ts": `
+declare function externalSink(value: unknown): void;
+export type DynOptions = { broadcast: (event: string, payload: unknown) => void; other: () => void };
+export function useDyn(params: DynOptions, key: keyof DynOptions) {
+  return params[key];
+}
+export type SinkOptions = { broadcast: (event: string, payload: unknown) => void; label: string };
+export function useSink(params: SinkOptions) {
+  externalSink(params);
+}
+export type KeepOptions = { broadcast: (event: string, payload: unknown) => void; label: string };
+export function keep(params: KeepOptions) {
+  return params;
+}
+`,
+    // A parameter property outlives its constructor: \`this.opts\` is read in another method.
+    "src/gateway/holder-e.ts": `
+export type HolderOptions = { broadcast: (event: string, payload: unknown) => void; label: string };
+type Sender = { broadcast: (event: string, payload: unknown) => void };
+function sendThrough(target: Sender) {
+  target.broadcast("agent", { stream: "x_field", data: {} });
+}
+export class Holder {
+  constructor(private readonly opts: HolderOptions) {}
+  flush() {
+    sendThrough(this.opts);
+  }
+}
+`,
+    // A second, DIFFERENT sender reaches the same AbortOps slot (the third 9.36 run: the close
+    // path's wrapper and the maintenance path's runtime sender both land in
+    // \`ChatAbortOps.nodeSendToSession\`).
+    "src/gateway/maintenance-g.ts": `
+import { abortRun } from "./abort-ops.js";
+export type MaintenanceParams = { broadcast: (event: string, payload: unknown) => void; nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void };
+export function startMaintenance(params: MaintenanceParams) {
+  abortRun(params, "stale");
+}
+`,
+    "src/gateway/cast-f.ts": `
+export type CastOptions = { broadcast: (event: string, payload: unknown) => void; label: string };
+type Loose = { broadcast: (event: string, payload: unknown) => void };
+export function viaCast(params: CastOptions) {
+  (params as Loose).broadcast("agent", { stream: "x_cast", data: {} });
+}
+`,
+    "src/gateway/wiring.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import { createGatewayNodeSessionRuntime } from "./server-node-session-runtime.js";
+import { createHandlerA } from "./handler-a.js";
+import { shutdown } from "./shutdown-b.js";
+import { attachWs } from "./conn-c.js";
+import { keep, useDyn, useSink } from "./conn-d.js";
+import { Holder } from "./holder-e.js";
+import { viaCast } from "./cast-f.js";
+import { startMaintenance } from "./maintenance-g.js";
+export function wire(wss: { on: (event: string, f: () => void) => void }) {
+  const { broadcast } = createGatewayBroadcaster();
+  const { nodeSendToSession } = createGatewayNodeSessionRuntime();
+  const handler = createHandlerA({ broadcast, nodeSendToSession });
+  shutdown({ broadcast, nodeSendToSession: (k, e, p) => { void nodeSendToSession(k, e, p); }, runs: [], reason: "stop" });
+  attachWs({ wss, broadcast, logWarn: () => {}, port: 1 });
+  useDyn({ broadcast, other: () => {} }, "other");
+  useSink({ broadcast, label: "x" });
+  keep({ broadcast, label: "y" });
+  new Holder({ broadcast, label: "z" }).flush();
+  viaCast({ broadcast, label: "w" });
+  startMaintenance({ broadcast, nodeSendToSession });
+  return handler;
+}
+`,
+  };
+  type Row = { file: string; line: number; function: string; reason?: string; open?: string[]; stream?: string };
+  let followed: Inventory;
+  const tf = () => followed.transformations as unknown as { fabricated: Row[]; unresolved: Row[] };
+  const unread = () => (followed as unknown as { unreadSlots: { family: string; slot: string; at: string; followed: number }[] }).unreadSlots;
+  const lineOf = (needle: string) => FILES["src/gateway/wiring.ts"]!.split("\n").findIndex((l) => l.includes(needle)) + 1;
+  const unresolvedAt = (needle: string) => tf().unresolved.filter((u) => u.file === "src/gateway/wiring.ts" && u.line === lineOf(needle));
+  beforeAll(() => {
+    followed = derive({
+      root: "/virtual-upstream",
+      files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...FILES },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+  });
+
+  it("a member read only by a shorthand destructuring is referenced: the new binding does not take its credit", () => {
+    expect(unresolvedAt("createHandlerA({")).toEqual([]);
+    const streams = tf().fabricated.map((g) => g.stream);
+    expect(streams).toEqual(expect.arrayContaining(["x_destructured", "x_destructured_node"]));
+  });
+
+  it("an object handed whole to another type carries the slot into THAT type's declaration", () => {
+    expect(unresolvedAt("shutdown({")).toEqual([]);
+    expect(tf().fabricated).toEqual(expect.arrayContaining([expect.objectContaining({ stream: "x_converted", file: "src/gateway/abort-ops.ts" })]));
+  });
+
+  it("a slot two different senders reach: a call fills EACH sender's parameters", () => {
+    // `ops.nodeSendToSession("k", "chat", …)` is a chat send whichever sender the slot holds.
+    expect(tf().unresolved.filter((u) => u.file === "src/gateway/abort-ops.ts")).toEqual([]);
+    expect(unresolvedAt("startMaintenance({")).toEqual([]);
+  });
+
+  it("a cast is a conversion too: the asserted type's slot is followed", () => {
+    expect(unresolvedAt("viaCast({")).toEqual([]);
+    expect(tf().fabricated).toEqual(expect.arrayContaining([expect.objectContaining({ stream: "x_cast", file: "src/gateway/cast-f.ts" })]));
+  });
+
+  it("a slot no use of its object reads is UNREAD, proved, not unresolved", () => {
+    expect(unresolvedAt("attachWs({")).toEqual([]);
+    expect(unread()).toEqual(expect.arrayContaining([expect.objectContaining({ family: "sender", slot: "broadcast", at: `src/gateway/wiring.ts:${lineOf("attachWs({")}` })]));
+  });
+
+  it("what the following cannot see stays UNRESOLVED: a computed key, code outside the sources, a return, a class field", () => {
+    const openOf = (needle: string) => unresolvedAt(needle).flatMap((u) => u.open ?? []);
+    expect(openOf("useDyn({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is read under a computed key")]));
+    expect(openOf("useSink({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is passed to code outside the analysed sources")]));
+    expect(openOf("keep({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is returned")]));
+    expect(openOf("new Holder({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is kept as a class field")]));
+    for (const needle of ["useDyn({", "useSink({", "keep({", "new Holder({"]) {
+      expect(unread().some((s) => s.at === `src/gateway/wiring.ts:${lineOf(needle)}`), needle).toBe(false);
+    }
+  });
+
+  it("every reference is still accounted for", () => {
+    expect(followed.completeness.unaccounted).toBe(0);
+  });
+});
+
+describe("deriveAgentEmissions — a loop element a caller fills is an element", () => {
+  // The fourth 9.36 run lost `title` and `toolCallId` of `acp / runtime_event`: upstream
+  // loops over a parameter (`for await (const event of params.events)`) and hands each
+  // element to a callback; filling that parameter read the element as a property named
+  // "[]", absent, so every test on the element was decided false and the `tool_call` branch
+  // of acpRuntimeEventDiagnostics dropped its keys. Only rows the derivation wrongly called
+  // open had carried them.
+  const files: Record<string, string> = {
+    "src/acp/runtime-types.ts": `
+export type AcpRuntimeEvent =
+  | { type: "text_delta"; text: string; stream?: "output" | "thought" }
+  | { type: "status"; text: string; tag?: string }
+  | { type: "tool_call"; text: string; tag?: string; status?: string; title?: string; toolCallId?: string }
+  | { type: "done"; status?: "completed" | "cancelled"; stopReason?: string }
+  | { type: "error"; message: string; code?: string; retryable?: boolean };
+`,
+    "src/acp/lifecycle.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+import type { AcpRuntimeEvent } from "./runtime-types.js";
+function diagnostics(event: AcpRuntimeEvent): Record<string, unknown> {
+  if (event.type === "status" || event.type === "tool_call") {
+    return {
+      eventType: event.type,
+      text: event.text,
+      ...(event.tag ? { tag: event.tag } : {}),
+      ...(event.type === "tool_call"
+        ? { ...(event.status ? { status: event.status } : {}), ...(event.title ? { title: event.title } : {}), ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}) }
+        : {}),
+    };
+  }
+  if (event.type === "done") return { eventType: event.type, ...(event.stopReason ? { stopReason: event.stopReason } : {}) };
+  return { eventType: event.type };
+}
+export function emitAcpRuntimeEvent(params: { runId: string; event: AcpRuntimeEvent }) {
+  emitAgentEvent({ runId: params.runId, stream: "x_acp", data: { phase: "runtime_event", ...diagnostics(params.event) } });
+}
+`,
+    "src/acp/execution.ts": `
+import { emitAcpRuntimeEvent } from "./lifecycle.js";
+import type { AcpRuntimeEvent } from "./runtime-types.js";
+function consumeEvents(events: AcpRuntimeEvent[], onEvent?: (event: AcpRuntimeEvent) => void) {
+  for (const event of events) onEvent?.(event);
+}
+export function runAcp(runId: string, events: AcpRuntimeEvent[]) {
+  consumeEvents(events, (event) => { if (event.type !== "text_delta") emitAcpRuntimeEvent({ runId, event }); });
+}
+declare function nextEvents(): AcpRuntimeEvent[];
+// A caller that FILLS the array (upstream: \`events: turn.events\` from the runtime).
+export function runFilled(runId: string) {
+  consumeEvents(nextEvents(), (event) => { if (event.type !== "text_delta") emitAcpRuntimeEvent({ runId, event }); });
+}
+`,
+  };
+  it("the tool_call branch keeps its keys through the callback", () => {
+    const loops = derive({
+      root: "/virtual-upstream",
+      files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, ...files },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+    const acp = loops.emissions.filter((e) => e.stream === "x_acp");
+    // The open row (the caller's parameter closed by its type) and the filled call.
+    expect(acp.map((r) => r.function).sort()).toEqual(["runAcp", "runFilled"]);
+    for (const r of acp) expect(keyList(r), r.function).toEqual(expect.arrayContaining(["status?", "title?", "toolCallId?", "stopReason?", "tag?"]));
   });
 });
 
@@ -600,6 +991,7 @@ describe("deriveAgentEmissions — the normalization upstream applies before com
     const folded = derive({
       root: "/virtual-upstream",
       files: {
+        ...TRANSPORT,
         "src/infra/agent-events.ts": BUS,
         "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!,
         "src/chat/tool-content.ts": `

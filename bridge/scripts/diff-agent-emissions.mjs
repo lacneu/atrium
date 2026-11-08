@@ -222,6 +222,20 @@ export function diffInventories(a, b) {
   const fmtRelay = (r) => `\`${r.sender}\` at ${r.file}:${r.line} \`${r.function}\`: ${[...new Set((r.origins ?? []).map(originText))].sort().join(", ") || "no origin named"}`;
   list("Relay sites added or changed", (b.transformations.relays ?? []).filter((r) => !rlA.has(relayId(r))), fmtRelay);
   list("Relay sites removed or changed", (a.transformations.relays ?? []).filter((r) => !rlB.has(relayId(r))), fmtRelay);
+  // Senders only callers OUTSIDE the program reach (plugins): what they send is theirs.
+  const openSenderId = (o) => `${o.label}|${(o.at ?? "").replace(/:\d+$/, "")}|${o.channel}`;
+  const osA = new Set((a.transformations.openSenders ?? []).map(openSenderId));
+  const osB = new Set((b.transformations.openSenders ?? []).map(openSenderId));
+  const fmtOpenSender = (o) => `\`${o.label}\` at ${o.at} (event ${o.channel}): ${(o.open ?? []).join("; ")}`;
+  list("Open senders added", (b.transformations.openSenders ?? []).filter((o) => !osA.has(openSenderId(o))), fmtOpenSender);
+  list("Open senders removed", (a.transformations.openSenders ?? []).filter((o) => !osB.has(openSenderId(o))), fmtOpenSender);
+  // Members stored in an object slot that no use of the object reads (proved): dead there.
+  const unreadId = (s) => `${s.family}|${s.label}|${s.slot}|${(s.at ?? "").replace(/:\d+$/, "")}`;
+  const usA = new Set((a.unreadSlots ?? []).map(unreadId));
+  const usB = new Set((b.unreadSlots ?? []).map(unreadId));
+  const fmtUnread = (s) => `\`${s.label}\` stored as \`${s.slot}\` at ${s.at} (${s.family}; ${s.followed} binding(s) followed)`;
+  list("Unread slots added", (b.unreadSlots ?? []).filter((s) => !usA.has(unreadId(s))), fmtUnread);
+  list("Unread slots removed", (a.unreadSlots ?? []).filter((s) => !usB.has(unreadId(s))), fmtUnread);
   const guardText = (gs) => (gs ?? []).map((g) => `${g.negated ? "not " : ""}${[g.stream ? `stream∈{${g.stream.join(",")}}` : "", g.phase ? `phase∈{${g.phase.join(",")}}` : ""].filter(Boolean).join(" & ")}`).join("; ");
   const rwId = (g) => `${g.scope}|${g.file}|${g.function}|${(g.added ?? [g.removed]).join(",")}|${guardText(g.guard)}`;
   const ra = new Set([...a.transformations.dataRewrites, ...a.transformations.dataRemovals].map(rwId));

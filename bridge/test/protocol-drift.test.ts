@@ -450,6 +450,23 @@ describe("agent data: phases and keys the inventory never emits", () => {
     ]);
   });
 
+  it("a DOTTED stream the vocabulary knows is judged like any other (review, 2026-11-08)", () => {
+    // `codex_app_server.*` streams are inventoried: exempting every dotted name before
+    // looking it up let their new phases and keys through.
+    for (const stream of ["codex_app_server.item", "codex_app_server.guardian"]) {
+      protocolDrift.resetForTests();
+      protocolDrift.observe(agentFrame(stream, { phase: "new_phase", unknown_key: 1 }));
+      const shapes = protocolDrift.report().map((d) => d.shape);
+      expect(shapes, stream).toHaveLength(2);
+      expect(shapes.some((s) => /\.phase_[0-9a-f]{8}$/.test(s)), stream).toBe(true);
+      expect(shapes.some((s) => /\.datakey_[0-9a-f]{8}$/.test(s)), stream).toBe(true);
+      // …and a frame it does emit stays silent.
+      protocolDrift.resetForTests();
+      protocolDrift.observe(agentFrame(stream, { phase: "started" }));
+      expect(protocolDrift.report(), stream).toEqual([]);
+    }
+  });
+
   it("dotted (plugin-scoped) streams and unknown streams are not judged further", () => {
     protocolDrift.observe(agentFrame("acme.provenance", { phase: "whatever", anything: 1 }));
     protocolDrift.observe(agentFrame("brandnew", { phase: "whatever", anything: 1 }));

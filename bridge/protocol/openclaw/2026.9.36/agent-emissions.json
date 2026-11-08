@@ -106,94 +106,6 @@
   },
   "family": [
     {
-      "key": "extensions/acpx/src/harness-attempt.ts@1102",
-      "kind": "function",
-      "label": "runAcpHarnessAttempt",
-      "names": [
-        "runAcpHarnessAttempt"
-      ],
-      "at": "extensions/acpx/src/harness-attempt.ts:25",
-      "chain": [
-        "runAcpHarnessAttempt",
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "template": [
-        {
-          "stream": "\"acp\"",
-          "data": "{phase, ...{eventType, text, ...{tag} | {}, ...(.type===\"tool_call\" ? {...{status} | {}, ...{title} | {}, ...{toolCallId} | {}} : {})} | {eventType, message, ...{code} | {}, ...{retryable} | {}} | {eventType, ...{status} | {}, ...{stopReason} | {}} | {eventType, stream}}"
-        }
-      ],
-      "via": [
-        "extensions/acpx/src/harness-attempt.ts:277 (consumeAcpTurnStream)"
-      ]
-    },
-    {
-      "key": "extensions/acpx/src/harness.ts@7405",
-      "kind": "destructured",
-      "label": "runAcpHarnessAttempt=runAcpHarnessAttempt",
-      "names": [
-        "runAcpHarnessAttempt"
-      ],
-      "at": "extensions/acpx/src/harness.ts:219",
-      "chain": [
-        "runAcpHarnessAttempt=runAcpHarnessAttempt",
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "template": [
-        {
-          "stream": "\"acp\"",
-          "data": "{phase, ...{eventType, text, ...{tag} | {}, ...(.type===\"tool_call\" ? {...{status} | {}, ...{title} | {}, ...{toolCallId} | {}} : {})} | {eventType, message, ...{code} | {}, ...{retryable} | {}} | {eventType, ...{status} | {}, ...{stopReason} | {}} | {eventType, stream}}"
-        }
-      ],
-      "via": [
-        "extensions/acpx/src/harness.ts:219 (runAcpHarnessAttempt)"
-      ]
-    },
-    {
-      "key": "extensions/acpx/src/harness.ts@1833",
-      "kind": "function",
-      "label": "createAcpAgentHarness",
-      "names": [
-        "createAcpAgentHarness"
-      ],
-      "at": "extensions/acpx/src/harness.ts:71",
-      "chain": [
-        "createAcpAgentHarness",
-        "runAcpHarnessAttempt=runAcpHarnessAttempt",
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "template": [
-        {
-          "stream": "\"acp\"",
-          "data": "{phase, ...{eventType, text, ...{tag} | {}, ...(.type===\"tool_call\" ? {...{status} | {}, ...{title} | {}, ...{toolCallId} | {}} : {})} | {eventType, message, ...{code} | {}, ...{retryable} | {}} | {eventType, ...{status} | {}, ...{stopReason} | {}} | {eventType, stream}}"
-        }
-      ],
-      "via": [
-        "extensions/acpx/src/harness.ts:220 (runAcpHarnessAttempt=runAcpHarnessAttempt)"
-      ]
-    },
-    {
       "key": "extensions/agentsapi/agentsapi-attempt.ts@4543",
       "kind": "variable",
       "label": "runAgentsApiAttempt > emitEvent",
@@ -1087,6 +999,38 @@
       ]
     },
     {
+      "key": "extensions/codex/src/app-server/dynamic-tool-build.ts@6151",
+      "kind": "property",
+      "label": "prepareCodexAttemptTools > onCodexAppServerEvent",
+      "names": [
+        "onCodexAppServerEvent"
+      ],
+      "at": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:336",
+      "chain": [
+        "prepareCodexAttemptTools > onCodexAppServerEvent",
+        "emitCodexAppServerEvent",
+        "emitAgentHarnessAttemptEvent",
+        "emitAgentEvent",
+        "emitAgentEventIfCurrent",
+        "dispatchAgentEvent"
+      ],
+      "template": [
+        {
+          "stream": "arg0.stream",
+          "data": "arg0.data"
+        }
+      ],
+      "via": [
+        "extensions/codex/src/app-server/dynamic-tool-build.ts:201 (prepareCodexAttemptTools > onCodexAppServerEvent)",
+        "extensions/codex/src/app-server/dynamic-tool-build.ts:523 (prepareCodexAttemptTools > onCodexAppServerEvent)",
+        "extensions/codex/src/app-server/dynamic-tool-build.ts:742 (prepareCodexAttemptTools > onCodexAppServerEvent)",
+        "extensions/codex/src/app-server/dynamic-tool-build.ts:776 (prepareCodexAttemptTools > onCodexAppServerEvent)",
+        "extensions/codex/src/app-server/dynamic-tool-build.ts:807 (prepareCodexAttemptTools > onCodexAppServerEvent)",
+        "extensions/codex/src/app-server/run-attempt-tool-setup.ts:336 (prepareCodexAttemptTools > onCodexAppServerEvent)",
+        "extensions/codex/src/app-server/run-attempt-tool-setup.ts:353 (prepareCodexAttemptTools > onCodexAppServerEvent)"
+      ]
+    },
+    {
       "key": "extensions/copilot/src/event-bridge.ts@27580",
       "kind": "function",
       "label": "attachEventBridge > enqueueAgentEvent",
@@ -1163,35 +1107,6 @@
         "src/acp/control-plane/manager.core.ts:377 (tryDispatchAcpReplyCore > onEvent)",
         "src/acp/control-plane/manager.turn-stream.ts:152 (runManagerTurn > onEvent)",
         "src/acp/control-plane/manager.turn-stream.ts:161 (runManagerTurn > onEvent)"
-      ]
-    },
-    {
-      "key": "src/acp/control-plane/manager.turn-stream.ts@4878",
-      "kind": "function",
-      "label": "consumeAcpTurnStream",
-      "names": [
-        "consumeAcpTurnStream"
-      ],
-      "at": "src/acp/control-plane/manager.turn-stream.ts:138",
-      "chain": [
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "template": [
-        {
-          "stream": "\"acp\"",
-          "data": "{phase, ...{eventType, text, ...{tag} | {}, ...(.type===\"tool_call\" ? {...{status} | {}, ...{title} | {}, ...{toolCallId} | {}} : {})} | {eventType, message, ...{code} | {}, ...{retryable} | {}} | {eventType, ...{status} | {}, ...{stopReason} | {}} | {eventType, stream}}"
-        }
-      ],
-      "via": [
-        "src/acp/control-plane/manager.turn-stream.ts:199 (consumeAcpTurnEvents)",
-        "src/acp/control-plane/manager.turn-stream.ts:293 (consumeAcpTurnEvents)"
       ]
     },
     {
@@ -3628,233 +3543,6 @@
   ],
   "emissions": [
     {
-      "key": "<opaque>|-|args,commandBearing,cwd,durationMs,exitCode,isError,itemId,name,output,phase,status,summary,title,toolCallId|extensions/agentsapi/agentsapi-attempt.ts|runAgentsApiAttempt > emitEvent",
-      "stream": null,
-      "streamOpaque": {
-        "pattern": null,
-        "reason": "declared type is string (closure parameter #0.stream of runAgentsApiAttempt > emitEvent, not filled at this site)",
-        "origin": "extensions/agentsapi/agentsapi-attempt.ts:121",
-        "literals": null
-      },
-      "streamSource": "opaque",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "args",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "commandBearing",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "cwd",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "durationMs",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "exitCode",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "isError",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "name",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "output",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "summary",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "title",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "toolCallId",
-          "optional": true,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "declared type EmbeddedAgentEvent: declared type Record<string, unknown> & Omit<Partial<AgentCommandOutputEventFields>, \"status\" | \"phase\"> & { phase?: string | undefined; status?: string | undefined; args?: Record<string, unknown> | undefined; summ has an index signature",
-          "origin": "extensions/agentsapi/agentsapi-attempt.ts:121"
-        }
-      ],
-      "file": "extensions/agentsapi/agentsapi-attempt.ts",
-      "function": "runAgentsApiAttempt > emitEvent",
-      "emitter": "runAgentsApiAttempt > emitEvent",
-      "chain": [
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/agentsapi",
-      "lines": [
-        127
-      ]
-    },
-    {
-      "key": "<opaque>|-|args,commandBearing,cwd,durationMs,exitCode,isError,itemId,name,output,phase,status,summary,title,toolCallId|extensions/codex/src/app-server/run-attempt-tool-setup.ts|prepareCodexAttemptTools > onCodexAppServerEvent",
-      "stream": null,
-      "streamOpaque": {
-        "pattern": null,
-        "reason": "declared type is string (closure parameter #0.stream of prepareCodexAttemptTools > onCodexAppServerEvent, not filled at this site)",
-        "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241",
-        "literals": null
-      },
-      "streamSource": "opaque",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "args",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "commandBearing",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "cwd",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "durationMs",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "exitCode",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "isError",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "name",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "output",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "summary",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "title",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "toolCallId",
-          "optional": true,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "declared type EmbeddedAgentEvent: declared type Record<string, unknown> & Omit<Partial<AgentCommandOutputEventFields>, \"status\" | \"phase\"> & { phase?: string | undefined; status?: string | undefined; args?: Record<string, unknown> | undefined; summ has an index signature",
-          "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241"
-        }
-      ],
-      "file": "extensions/codex/src/app-server/run-attempt-tool-setup.ts",
-      "function": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "emitter": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "chain": [
-        "prepareCodexAttemptTools > onCodexAppServerEvent",
-        "emitCodexAppServerEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/codex",
-      "lines": [
-        240
-      ]
-    },
-    {
       "key": "<opaque>|-|args,commandBearing,cwd,durationMs,exitCode,isError,itemId,name,output,phase,status,summary,title,toolCallId|src/agents/harness/attempt-events.ts|emitAgentHarnessAttemptEvent",
       "stream": null,
       "streamOpaque": {
@@ -4070,6 +3758,8 @@
       "dataAbsent": false,
       "dataMaybeAbsent": false,
       "open": [
+        "its object is passed to code outside the analysed sources",
+        "its object is returned",
         "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
       ],
       "dataOpaque": [
@@ -4130,6 +3820,7 @@
       "dataAbsent": false,
       "dataMaybeAbsent": false,
       "open": [
+        "its object is stored into another object",
         "member of OpenClawPluginApi, a type the public surface exposes",
         "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
       ],
@@ -4153,243 +3844,6 @@
       "area": "src/plugins",
       "lines": [
         173
-      ]
-    },
-    {
-      "key": "<opaque>|<opaque>|args,commandBearing,cwd,durationMs,exitCode,isError,itemId,name,output,phase,status,summary,title,toolCallId|extensions/agentsapi/agentsapi-attempt.ts|runAgentsApiAttempt > emitEvent",
-      "stream": null,
-      "streamOpaque": {
-        "pattern": null,
-        "reason": "declared type is string (closure parameter #0.stream of runAgentsApiAttempt > emitEvent, not filled at this site)",
-        "origin": "extensions/agentsapi/agentsapi-attempt.ts:121",
-        "literals": null
-      },
-      "streamSource": "opaque",
-      "phase": null,
-      "phaseAbsent": false,
-      "phaseOpaque": {
-        "pattern": null,
-        "reason": "declared type string | undefined is open (a `string` member)",
-        "origin": "extensions/agentsapi/agentsapi-attempt.ts:121",
-        "literals": []
-      },
-      "phaseSource": "opaque",
-      "keys": [
-        {
-          "key": "args",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "commandBearing",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "cwd",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "durationMs",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "exitCode",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "isError",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "name",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "output",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "summary",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "title",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "toolCallId",
-          "optional": true,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "declared type EmbeddedAgentEvent: declared type Record<string, unknown> & Omit<Partial<AgentCommandOutputEventFields>, \"status\" | \"phase\"> & { phase?: string | undefined; status?: string | undefined; args?: Record<string, unknown> | undefined; summ has an index signature",
-          "origin": "extensions/agentsapi/agentsapi-attempt.ts:121"
-        }
-      ],
-      "file": "extensions/agentsapi/agentsapi-attempt.ts",
-      "function": "runAgentsApiAttempt > emitEvent",
-      "emitter": "runAgentsApiAttempt > emitEvent",
-      "chain": [
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/agentsapi",
-      "lines": [
-        127
-      ]
-    },
-    {
-      "key": "<opaque>|<opaque>|args,commandBearing,cwd,durationMs,exitCode,isError,itemId,name,output,phase,status,summary,title,toolCallId|extensions/codex/src/app-server/run-attempt-tool-setup.ts|prepareCodexAttemptTools > onCodexAppServerEvent",
-      "stream": null,
-      "streamOpaque": {
-        "pattern": null,
-        "reason": "declared type is string (closure parameter #0.stream of prepareCodexAttemptTools > onCodexAppServerEvent, not filled at this site)",
-        "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241",
-        "literals": null
-      },
-      "streamSource": "opaque",
-      "phase": null,
-      "phaseAbsent": false,
-      "phaseOpaque": {
-        "pattern": null,
-        "reason": "declared type string | undefined is open (a `string` member)",
-        "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241",
-        "literals": []
-      },
-      "phaseSource": "opaque",
-      "keys": [
-        {
-          "key": "args",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "commandBearing",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "cwd",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "durationMs",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "exitCode",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "isError",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "name",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "output",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "summary",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "title",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "toolCallId",
-          "optional": true,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "declared type EmbeddedAgentEvent: declared type Record<string, unknown> & Omit<Partial<AgentCommandOutputEventFields>, \"status\" | \"phase\"> & { phase?: string | undefined; status?: string | undefined; args?: Record<string, unknown> | undefined; summ has an index signature",
-          "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241"
-        }
-      ],
-      "file": "extensions/codex/src/app-server/run-attempt-tool-setup.ts",
-      "function": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "emitter": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "chain": [
-        "prepareCodexAttemptTools > onCodexAppServerEvent",
-        "emitCodexAppServerEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/codex",
-      "lines": [
-        240
       ]
     },
     {
@@ -4536,7 +3990,7 @@
       "phaseAbsent": false,
       "phaseOpaque": {
         "pattern": null,
-        "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+        "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"data\" | \"stream\">: declared type Record<string, unknown> has an index signature",
         "origin": "src/agents/agent-harness-completion-custody.ts:194",
         "literals": null
       },
@@ -4549,7 +4003,7 @@
       ],
       "dataOpaque": [
         {
-          "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+          "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"data\" | \"stream\">: declared type Record<string, unknown> has an index signature",
           "origin": "src/agents/agent-harness-completion-custody.ts:194"
         }
       ],
@@ -4671,7 +4125,7 @@
       ]
     },
     {
-      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text,title,toolCallId|src/acp/control-plane/manager.turn-stream.ts|emitCancelledAcpTurn",
+      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text,title,toolCallId|src/acp/control-plane/manager.turn-stream.ts|consumeAcpTurnStream",
       "stream": "acp",
       "streamOpaque": null,
       "streamSource": "syntax",
@@ -4744,539 +4198,11 @@
       "dataAbsent": false,
       "dataMaybeAbsent": false,
       "open": null,
-      "dataOpaque": [],
-      "file": "src/acp/control-plane/manager.turn-stream.ts",
-      "function": "emitCancelledAcpTurn",
-      "emitter": "runAcpAgentCommand > onEvent",
-      "chain": [
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/acp",
-      "lines": [
-        133
-      ]
-    },
-    {
-      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text,title,toolCallId|src/acp/control-plane/manager.turn-stream.ts|runManagerTurn > onEvent",
-      "stream": "acp",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "runtime_event",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "code",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "eventType",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "message",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "retryable",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stream",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "tag",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "title",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "toolCallId",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/acp/control-plane/manager.turn-stream.ts",
-      "function": "runManagerTurn > onEvent",
-      "emitter": "runManagerTurn > onEvent",
-      "chain": [
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/acp",
-      "lines": [
-        202
-      ]
-    },
-    {
-      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text,title,toolCallId|src/agents/command/acp-execution.ts|runAcpAgentCommand > onEvent",
-      "stream": "acp",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "runtime_event",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "code",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "eventType",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "message",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "retryable",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stream",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "tag",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "title",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "toolCallId",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/command/acp-execution.ts",
-      "function": "runAcpAgentCommand > onEvent",
-      "emitter": "runAcpAgentCommand > onEvent",
-      "chain": [
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        203
-      ]
-    },
-    {
-      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text|extensions/acpx/index.ts|register > ACPX_NATIVE_AGENT_IDS.map(#0)",
-      "stream": "acp",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "runtime_event",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "code",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "eventType",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "message",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "retryable",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stream",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "tag",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [],
-      "file": "extensions/acpx/index.ts",
-      "function": "register > ACPX_NATIVE_AGENT_IDS.map(#0)",
-      "emitter": "createAcpAgentHarness",
-      "chain": [
-        "createAcpAgentHarness",
-        "runAcpHarnessAttempt=runAcpHarnessAttempt",
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "extensions/acpx",
-      "lines": [
-        34
-      ]
-    },
-    {
-      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text|extensions/acpx/src/harness-attempt.ts|runAcpHarnessAttempt",
-      "stream": "acp",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "runtime_event",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "code",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "eventType",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "message",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "retryable",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stream",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "tag",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "extensions/acpx/src/harness-attempt.ts",
-      "function": "runAcpHarnessAttempt",
-      "emitter": "runAcpHarnessAttempt",
-      "chain": [
-        "runAcpHarnessAttempt",
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/acpx",
-      "lines": [
-        25
-      ]
-    },
-    {
-      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text|src/acp/control-plane/manager.turn-runner.ts|runManagerTurn",
-      "stream": "acp",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "runtime_event",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "code",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "eventType",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "message",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "retryable",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stream",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "tag",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [],
-      "file": "src/acp/control-plane/manager.turn-runner.ts",
-      "function": "runManagerTurn",
-      "emitter": "consumeAcpTurnStream",
-      "chain": [
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/acp",
-      "lines": [
-        373
-      ]
-    },
-    {
-      "key": "acp|runtime_event|code,eventType,message,phase,retryable,status,stopReason,stream,tag,text|src/acp/control-plane/manager.turn-stream.ts|consumeAcpTurnStream",
-      "stream": "acp",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "runtime_event",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "code",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "eventType",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "message",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "retryable",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "status",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stream",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "tag",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "exported as consumeAcpTurnStream by the public module src/plugin-sdk/acp-runtime.ts"
-      ],
       "dataOpaque": [],
       "file": "src/acp/control-plane/manager.turn-stream.ts",
       "function": "consumeAcpTurnStream",
-      "emitter": "consumeAcpTurnStream",
+      "emitter": "consumeAcpTurnEvents",
       "chain": [
-        "consumeAcpTurnStream",
         "consumeAcpTurnEvents",
         "runManagerTurn > onEvent",
         "runAcpAgentCommand > onEvent",
@@ -5285,10 +4211,11 @@
         "emitAgentEventIfCurrent",
         "dispatchAgentEvent"
       ],
-      "how": "open",
+      "how": "call",
       "area": "src/acp",
       "lines": [
-        138
+        199,
+        293
       ]
     },
     {
@@ -6057,74 +4984,6 @@
       ]
     },
     {
-      "key": "assistant|-|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > emitAssistantStreamData",
-      "stream": "assistant",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "delta",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "managedMediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "mediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "replace",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": true,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.reply-delivery.ts",
-      "function": "createReplyDelivery > emitAssistantStreamData",
-      "emitter": "createReplyDelivery > emitAssistantStreamData",
-      "chain": [
-        "createReplyDelivery > emitAssistantStreamData",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        552
-      ]
-    },
-    {
       "key": "assistant|-|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > flushAssistantStream",
       "stream": "assistant",
       "streamOpaque": null,
@@ -6186,76 +5045,7 @@
       "how": "call",
       "area": "src/agents",
       "lines": [
-        270,
-        555
-      ]
-    },
-    {
-      "key": "assistant|-|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.ts|flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "stream": "assistant",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "delta",
-          "optional": false,
-          "src": "type"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "managedMediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "mediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "replace",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "text",
-          "optional": false,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": true,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.ts",
-      "function": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "emitter": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "chain": [
-        "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        245
+        270
       ]
     },
     {
@@ -7830,74 +6620,6 @@
       ]
     },
     {
-      "key": "assistant|commentary|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > emitAssistantStreamData",
-      "stream": "assistant",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "commentary",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "type",
-      "keys": [
-        {
-          "key": "delta",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "managedMediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "mediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "replace",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": true,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.reply-delivery.ts",
-      "function": "createReplyDelivery > emitAssistantStreamData",
-      "emitter": "createReplyDelivery > emitAssistantStreamData",
-      "chain": [
-        "createReplyDelivery > emitAssistantStreamData",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        552
-      ]
-    },
-    {
       "key": "assistant|commentary|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > flushAssistantStream",
       "stream": "assistant",
       "streamOpaque": null,
@@ -7959,76 +6681,7 @@
       "how": "call",
       "area": "src/agents",
       "lines": [
-        270,
-        555
-      ]
-    },
-    {
-      "key": "assistant|commentary|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.ts|flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "stream": "assistant",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "commentary",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "type",
-      "keys": [
-        {
-          "key": "delta",
-          "optional": false,
-          "src": "type"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "managedMediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "mediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "replace",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "text",
-          "optional": false,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": true,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.ts",
-      "function": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "emitter": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "chain": [
-        "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        245
+        270
       ]
     },
     {
@@ -8525,74 +7178,6 @@
       ]
     },
     {
-      "key": "assistant|final_answer|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > emitAssistantStreamData",
-      "stream": "assistant",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "final_answer",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "type",
-      "keys": [
-        {
-          "key": "delta",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "managedMediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "mediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "replace",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "text",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": true,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.reply-delivery.ts",
-      "function": "createReplyDelivery > emitAssistantStreamData",
-      "emitter": "createReplyDelivery > emitAssistantStreamData",
-      "chain": [
-        "createReplyDelivery > emitAssistantStreamData",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        552
-      ]
-    },
-    {
       "key": "assistant|final_answer|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > flushAssistantStream",
       "stream": "assistant",
       "streamOpaque": null,
@@ -8654,76 +7239,7 @@
       "how": "call",
       "area": "src/agents",
       "lines": [
-        270,
-        555
-      ]
-    },
-    {
-      "key": "assistant|final_answer|delta,itemId,managedMediaUrls,mediaUrls,phase,replace,text|src/agents/embedded-agent-subscribe.ts|flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "stream": "assistant",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "final_answer",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "type",
-      "keys": [
-        {
-          "key": "delta",
-          "optional": false,
-          "src": "type"
-        },
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "managedMediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "mediaUrls",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "replace",
-          "optional": true,
-          "src": "type"
-        },
-        {
-          "key": "text",
-          "optional": false,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": true,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.ts",
-      "function": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "emitter": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "chain": [
-        "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        245
+        270
       ]
     },
     {
@@ -9972,6 +8488,48 @@
       "area": "extensions/codex",
       "lines": [
         325
+      ]
+    },
+    {
+      "key": "codex_app_server.tool|-|message,name|extensions/codex/src/app-server/dynamic-tool-build.ts|buildDynamicTools > onYield",
+      "stream": "codex_app_server.tool",
+      "streamOpaque": null,
+      "streamSource": "syntax",
+      "phase": null,
+      "phaseAbsent": true,
+      "phaseOpaque": null,
+      "phaseSource": null,
+      "keys": [
+        {
+          "key": "message",
+          "optional": false,
+          "src": "syntax"
+        },
+        {
+          "key": "name",
+          "optional": false,
+          "src": "syntax"
+        }
+      ],
+      "dataAbsent": false,
+      "dataMaybeAbsent": false,
+      "open": null,
+      "dataOpaque": [],
+      "file": "extensions/codex/src/app-server/dynamic-tool-build.ts",
+      "function": "buildDynamicTools > onYield",
+      "emitter": "prepareCodexAttemptTools > onCodexAppServerEvent",
+      "chain": [
+        "prepareCodexAttemptTools > onCodexAppServerEvent",
+        "emitCodexAppServerEvent",
+        "emitAgentHarnessAttemptEvent",
+        "emitAgentEvent",
+        "emitAgentEventIfCurrent",
+        "dispatchAgentEvent"
+      ],
+      "how": "call",
+      "area": "extensions/codex",
+      "lines": [
+        327
       ]
     },
     {
@@ -11399,6 +9957,8 @@
       "dataAbsent": false,
       "dataMaybeAbsent": true,
       "open": [
+        "its object is passed to code outside the analysed sources",
+        "its object is returned",
         "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
       ],
       "dataOpaque": [],
@@ -11650,6 +10210,8 @@
       "dataAbsent": false,
       "dataMaybeAbsent": true,
       "open": [
+        "its object is passed to code outside the analysed sources",
+        "its object is returned",
         "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
       ],
       "dataOpaque": [],
@@ -12647,6 +11209,8 @@
       "dataAbsent": false,
       "dataMaybeAbsent": true,
       "open": [
+        "its object is passed to code outside the analysed sources",
+        "its object is returned",
         "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
       ],
       "dataOpaque": [],
@@ -13619,64 +12183,6 @@
       ]
     },
     {
-      "key": "item|end|itemId,kind,phase,progressText,title|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > emitAssistantStreamData",
-      "stream": "item",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "end",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "kind",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "progressText",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "title",
-          "optional": false,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.reply-delivery.ts",
-      "function": "createReplyDelivery > emitAssistantStreamData",
-      "emitter": "createReplyDelivery > emitAssistantStreamData",
-      "chain": [
-        "createReplyDelivery > emitAssistantStreamData",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        552
-      ]
-    },
-    {
       "key": "item|end|itemId,kind,phase,progressText,title|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > emitBlockReply",
       "stream": "item",
       "streamOpaque": null,
@@ -13784,8 +12290,7 @@
       "how": "call",
       "area": "src/agents",
       "lines": [
-        270,
-        555
+        270
       ]
     },
     {
@@ -14122,64 +12627,6 @@
       "area": "src/agents",
       "lines": [
         85
-      ]
-    },
-    {
-      "key": "item|end|itemId,kind,phase,progressText,title|src/agents/embedded-agent-subscribe.ts|flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "stream": "item",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "end",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "kind",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "progressText",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "title",
-          "optional": false,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.ts",
-      "function": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "emitter": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "chain": [
-        "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        245
       ]
     },
     {
@@ -16062,64 +14509,6 @@
       ]
     },
     {
-      "key": "item|update|itemId,kind,phase,progressText,title|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > emitAssistantStreamData",
-      "stream": "item",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "update",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "kind",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "progressText",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "title",
-          "optional": false,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.reply-delivery.ts",
-      "function": "createReplyDelivery > emitAssistantStreamData",
-      "emitter": "createReplyDelivery > emitAssistantStreamData",
-      "chain": [
-        "createReplyDelivery > emitAssistantStreamData",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        552
-      ]
-    },
-    {
       "key": "item|update|itemId,kind,phase,progressText,title|src/agents/embedded-agent-subscribe.reply-delivery.ts|createReplyDelivery > emitBlockReply",
       "stream": "item",
       "streamOpaque": null,
@@ -16227,8 +14616,7 @@
       "how": "call",
       "area": "src/agents",
       "lines": [
-        270,
-        555
+        270
       ]
     },
     {
@@ -16565,64 +14953,6 @@
       "area": "src/agents",
       "lines": [
         85
-      ]
-    },
-    {
-      "key": "item|update|itemId,kind,phase,progressText,title|src/agents/embedded-agent-subscribe.ts|flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "stream": "item",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "update",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "itemId",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "kind",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "progressText",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "title",
-          "optional": false,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "src/agents/embedded-agent-subscribe.ts",
-      "function": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "emitter": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "chain": [
-        "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/agents",
-      "lines": [
-        245
       ]
     },
     {
@@ -19155,74 +17485,6 @@
       ]
     },
     {
-      "key": "lifecycle|end|endedAt,error,errorObservation,phase,startedAt|extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts|emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "end",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "type",
-      "keys": [
-        {
-          "key": "endedAt",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": false,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #0 of createAgentHarnessAttemptLifecycle > emitLifecycleTerminal: declared type Record<string, unknown> & { phase: \"error\" | \"end\"; } has an index signature",
-          "origin": "src/agents/harness/attempt-events.ts:66"
-        },
-        {
-          "reason": "closure parameter #0 of createAgentHarnessAttemptLifecycle > emitLifecycleTerminal: declared type Record<string, unknown> & { phase: \"error\" | \"end\"; } has an index signature",
-          "origin": "src/agents/harness/attempt-events.ts:66"
-        }
-      ],
-      "file": "extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts",
-      "function": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "emitter": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "chain": [
-        "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/codex",
-      "lines": [
-        204
-      ]
-    },
-    {
       "key": "lifecycle|end|phase|src/gateway/openai-http.ts|handleOpenAiHttpRequest > (async()=>{try{constresult=awaitrunAgentCommand();resultR...(#-1)",
       "stream": "lifecycle",
       "streamOpaque": null,
@@ -21171,74 +19433,6 @@
       ]
     },
     {
-      "key": "lifecycle|error|endedAt,error,errorObservation,phase,startedAt|extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts|emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "error",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "type",
-      "keys": [
-        {
-          "key": "endedAt",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": false,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #0 of createAgentHarnessAttemptLifecycle > emitLifecycleTerminal: declared type Record<string, unknown> & { phase: \"error\" | \"end\"; } has an index signature",
-          "origin": "src/agents/harness/attempt-events.ts:66"
-        },
-        {
-          "reason": "closure parameter #0 of createAgentHarnessAttemptLifecycle > emitLifecycleTerminal: declared type Record<string, unknown> & { phase: \"error\" | \"end\"; } has an index signature",
-          "origin": "src/agents/harness/attempt-events.ts:66"
-        }
-      ],
-      "file": "extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts",
-      "function": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "emitter": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "chain": [
-        "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/codex",
-      "lines": [
-        204
-      ]
-    },
-    {
       "key": "lifecycle|error|endedAt,error,executionSettled,phase|src/auto-reply/reply/agent-runner-fallback-settlement.ts|settleAgentFallbackCycle",
       "stream": "lifecycle",
       "streamOpaque": null,
@@ -22075,74 +20269,6 @@
       ]
     },
     {
-      "key": "lifecycle|finishing|endedAt,error,errorObservation,phase,startedAt|extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts|emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "finishing",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "endedAt",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": false,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #0 of createAgentHarnessAttemptLifecycle > emitLifecycleTerminal: declared type Record<string, unknown> & { phase: \"error\" | \"end\"; } has an index signature",
-          "origin": "src/agents/harness/attempt-events.ts:66"
-        },
-        {
-          "reason": "closure parameter #0 of createAgentHarnessAttemptLifecycle > emitLifecycleTerminal: declared type Record<string, unknown> & { phase: \"error\" | \"end\"; } has an index signature",
-          "origin": "src/agents/harness/attempt-events.ts:66"
-        }
-      ],
-      "file": "extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts",
-      "function": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "emitter": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "chain": [
-        "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/codex",
-      "lines": [
-        204
-      ]
-    },
-    {
       "key": "lifecycle|model|model,phase,provider|extensions/agentsapi/agentsapi-attempt.ts|runAgentsApiAttempt",
       "stream": "lifecycle",
       "streamOpaque": null,
@@ -22281,55 +20407,6 @@
       "area": "extensions/codex",
       "lines": [
         617
-      ]
-    },
-    {
-      "key": "lifecycle|model|model,phase,provider|extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts|emitLifecycleStart=createAgentHarnessAttemptLifecycle > emitLifecycleStart",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": "model",
-      "phaseAbsent": false,
-      "phaseOpaque": null,
-      "phaseSource": "syntax",
-      "keys": [
-        {
-          "key": "model",
-          "optional": false,
-          "src": "type"
-        },
-        {
-          "key": "phase",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "provider",
-          "optional": false,
-          "src": "type"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)"
-      ],
-      "dataOpaque": [],
-      "file": "extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts",
-      "function": "emitLifecycleStart=createAgentHarnessAttemptLifecycle > emitLifecycleStart",
-      "emitter": "emitLifecycleStart=createAgentHarnessAttemptLifecycle > emitLifecycleStart",
-      "chain": [
-        "emitLifecycleStart=createAgentHarnessAttemptLifecycle > emitLifecycleStart",
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "extensions/codex",
-      "lines": [
-        203
       ]
     },
     {
@@ -26172,79 +24249,11 @@
   ],
   "opaque": [
     {
-      "file": "extensions/agentsapi/agentsapi-attempt.ts",
-      "line": 127,
-      "function": "runAgentsApiAttempt > emitEvent",
-      "what": "data",
-      "reason": "declared type EmbeddedAgentEvent: declared type Record<string, unknown> & Omit<Partial<AgentCommandOutputEventFields>, \"status\" | \"phase\"> & { phase?: string | undefined; status?: string | undefined; args?: Record<string, unknown> | undefined; summ has an index signature",
-      "origin": "extensions/agentsapi/agentsapi-attempt.ts:121",
-      "emitter": "runAgentsApiAttempt > emitEvent",
-      "stream": null
-    },
-    {
-      "file": "extensions/agentsapi/agentsapi-attempt.ts",
-      "line": 127,
-      "function": "runAgentsApiAttempt > emitEvent",
-      "what": "phase",
-      "reason": "declared type string | undefined is open (a `string` member)",
-      "origin": "extensions/agentsapi/agentsapi-attempt.ts:121",
-      "emitter": "runAgentsApiAttempt > emitEvent",
-      "stream": null
-    },
-    {
-      "file": "extensions/agentsapi/agentsapi-attempt.ts",
-      "line": 127,
-      "function": "runAgentsApiAttempt > emitEvent",
-      "what": "stream",
-      "reason": "declared type is string (closure parameter #0.stream of runAgentsApiAttempt > emitEvent, not filled at this site)",
-      "origin": "extensions/agentsapi/agentsapi-attempt.ts:121",
-      "emitter": "runAgentsApiAttempt > emitEvent"
-    },
-    {
-      "file": "extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts",
-      "line": 204,
-      "function": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "what": "data",
-      "reason": "closure parameter #0 of createAgentHarnessAttemptLifecycle > emitLifecycleTerminal: declared type Record<string, unknown> & { phase: \"error\" | \"end\"; } has an index signature",
-      "origin": "src/agents/harness/attempt-events.ts:66",
-      "emitter": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "stream": "lifecycle"
-    },
-    {
-      "file": "extensions/codex/src/app-server/run-attempt-tool-setup.ts",
-      "line": 240,
-      "function": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "what": "data",
-      "reason": "declared type EmbeddedAgentEvent: declared type Record<string, unknown> & Omit<Partial<AgentCommandOutputEventFields>, \"status\" | \"phase\"> & { phase?: string | undefined; status?: string | undefined; args?: Record<string, unknown> | undefined; summ has an index signature",
-      "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241",
-      "emitter": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "stream": null
-    },
-    {
-      "file": "extensions/codex/src/app-server/run-attempt-tool-setup.ts",
-      "line": 240,
-      "function": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "what": "phase",
-      "reason": "declared type string | undefined is open (a `string` member)",
-      "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241",
-      "emitter": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "stream": null
-    },
-    {
-      "file": "extensions/codex/src/app-server/run-attempt-tool-setup.ts",
-      "line": 240,
-      "function": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "what": "stream",
-      "reason": "declared type is string (closure parameter #0.stream of prepareCodexAttemptTools > onCodexAppServerEvent, not filled at this site)",
-      "origin": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:241",
-      "emitter": "prepareCodexAttemptTools > onCodexAppServerEvent"
-    },
-    {
       "file": "src/agents/agent-harness-completion-custody.ts",
       "line": 173,
       "function": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "what": "data",
-      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"data\" | \"stream\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/agents/agent-harness-completion-custody.ts:194",
       "emitter": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "stream": null
@@ -26254,7 +24263,7 @@
       "line": 173,
       "function": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "what": "phase",
-      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"data\" | \"stream\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/agents/agent-harness-completion-custody.ts:194",
       "emitter": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "stream": null
@@ -26744,71 +24753,15 @@
       "function": "AgentSessionBase.subscribe > <returned>",
       "reason": "createEmbeddedAgentSessionEventHandler()→createEmbeddedAgentSessionEventHandler > <returned>@src/agents/embedded-agent-subscribe.ts passed to this.eventListeners.indexOf(…) whose declaration is not in the analysed sources",
       "through": "createEmbeddedAgentSessionEventHandler()→createEmbeddedAgentSessionEventHandler > <returned>@src/agents/embedded-agent-subscribe.ts"
+    },
+    {
+      "at": "src/gateway/server-chat.ts:1765",
+      "function": "createAgentEventHandler",
+      "reason": "createAgentEventHandler > handleEvent passed to Object.assign(…) whose declaration is not in the analysed sources",
+      "through": "createAgentEventHandler > handleEvent"
     }
   ],
   "openEntries": [
-    {
-      "label": "runAcpHarnessAttempt",
-      "kind": "function",
-      "at": "extensions/acpx/src/harness-attempt.ts:25",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (extensions/acpx/src/harness-attempt.ts:25)"
-      ],
-      "chain": [
-        "runAcpHarnessAttempt",
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "value": "acp"
-            }
-          ],
-          "keys": [
-            {
-              "key": "phase",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        }
-      ]
-    },
-    {
-      "label": "runAgentsApiAttempt > emitEvent",
-      "kind": "property",
-      "at": "extensions/agentsapi/agentsapi-attempt.ts:127",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (extensions/agentsapi/agentsapi-attempt.ts:127)"
-      ],
-      "chain": [
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "caller": true,
-              "values": []
-            }
-          ],
-          "keys": [],
-          "dataFromCaller": true
-        }
-      ]
-    },
     {
       "label": "Monitor.constructor > client.addNotificationHandler(#0)",
       "kind": "parameter",
@@ -26905,172 +24858,6 @@
       ]
     },
     {
-      "label": "emitLifecycleStart=createAgentHarnessAttemptLifecycle > emitLifecycleStart",
-      "kind": "property",
-      "at": "extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts:203",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts:203)"
-      ],
-      "chain": [
-        "emitLifecycleStart=createAgentHarnessAttemptLifecycle > emitLifecycleStart",
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "value": "lifecycle"
-            }
-          ],
-          "keys": [
-            {
-              "key": "phase",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        }
-      ]
-    },
-    {
-      "label": "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-      "kind": "property",
-      "at": "extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts:204",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (extensions/codex/src/app-server/run-attempt-lifecycle-controller.ts:204)"
-      ],
-      "chain": [
-        "emitLifecycleTerminal=createAgentHarnessAttemptLifecycle > emitLifecycleTerminal",
-        "runAgentsApiAttempt > emitEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "value": "lifecycle"
-            }
-          ],
-          "keys": [
-            {
-              "key": "endedAt",
-              "optional": false
-            },
-            {
-              "key": "phase",
-              "optional": true
-            },
-            {
-              "key": "startedAt",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        }
-      ]
-    },
-    {
-      "label": "prepareCodexAttemptTools > onCodexAppServerEvent",
-      "kind": "property",
-      "at": "extensions/codex/src/app-server/run-attempt-tool-setup.ts:240",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (extensions/codex/src/app-server/run-attempt-tool-setup.ts:240)"
-      ],
-      "chain": [
-        "prepareCodexAttemptTools > onCodexAppServerEvent",
-        "emitCodexAppServerEvent",
-        "emitAgentHarnessAttemptEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "caller": true,
-              "values": []
-            }
-          ],
-          "keys": [],
-          "dataFromCaller": true
-        }
-      ]
-    },
-    {
-      "label": "consumeAcpTurnStream",
-      "kind": "function",
-      "at": "src/acp/control-plane/manager.turn-stream.ts:138",
-      "openVia": [
-        "exported as consumeAcpTurnStream by the public module src/plugin-sdk/acp-runtime.ts (src/plugin-sdk/acp-runtime.ts:94)"
-      ],
-      "chain": [
-        "consumeAcpTurnStream",
-        "consumeAcpTurnEvents",
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "value": "acp"
-            }
-          ],
-          "keys": [
-            {
-              "key": "phase",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        }
-      ]
-    },
-    {
-      "label": "runManagerTurn > onEvent",
-      "kind": "property",
-      "at": "src/acp/control-plane/manager.turn-stream.ts:202",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (src/acp/control-plane/manager.turn-stream.ts:202)"
-      ],
-      "chain": [
-        "runManagerTurn > onEvent",
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "value": "acp"
-            }
-          ],
-          "keys": [
-            {
-              "key": "phase",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        }
-      ]
-    },
-    {
       "label": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "kind": "factory",
       "at": "src/agents/agent-harness-completion-custody.ts:173",
@@ -27093,237 +24880,6 @@
           ],
           "keys": [],
           "dataFromCaller": true
-        }
-      ]
-    },
-    {
-      "label": "runAcpAgentCommand > onEvent",
-      "kind": "property",
-      "at": "src/agents/command/acp-execution.ts:203",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (src/agents/command/acp-execution.ts:203)"
-      ],
-      "chain": [
-        "runAcpAgentCommand > onEvent",
-        "emitAcpRuntimeEvent",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [
-            {
-              "value": "acp"
-            }
-          ],
-          "keys": [
-            {
-              "key": "phase",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        }
-      ]
-    },
-    {
-      "label": "createReplyDelivery > emitAssistantStreamData",
-      "kind": "property",
-      "at": "src/agents/embedded-agent-subscribe.reply-delivery.ts:552",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (src/agents/embedded-agent-subscribe.reply-delivery.ts:552)"
-      ],
-      "chain": [
-        "createReplyDelivery > emitAssistantStreamData",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [],
-          "keys": [],
-          "dataFromCaller": false
-        },
-        {
-          "streams": [
-            {
-              "value": "assistant"
-            }
-          ],
-          "keys": [
-            {
-              "key": "delta",
-              "optional": false
-            },
-            {
-              "key": "itemId",
-              "optional": false
-            },
-            {
-              "key": "replace",
-              "optional": true
-            },
-            {
-              "key": "text",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        },
-        {
-          "streams": [
-            {
-              "value": "item"
-            }
-          ],
-          "keys": [
-            {
-              "key": "itemId",
-              "optional": true
-            },
-            {
-              "key": "kind",
-              "optional": false
-            },
-            {
-              "key": "phase",
-              "optional": false
-            },
-            {
-              "key": "progressText",
-              "optional": false
-            },
-            {
-              "key": "title",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": false
-        }
-      ]
-    },
-    {
-      "label": "createReplyDelivery > flushAssistantStream",
-      "kind": "property",
-      "at": "src/agents/embedded-agent-subscribe.reply-delivery.ts:555",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (src/agents/embedded-agent-subscribe.reply-delivery.ts:555)"
-      ],
-      "chain": [
-        "createReplyDelivery > flushAssistantStream",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [],
-          "keys": [],
-          "dataFromCaller": false
-        },
-        {
-          "streams": [
-            {
-              "value": "assistant"
-            }
-          ],
-          "keys": [],
-          "dataFromCaller": true
-        },
-        {
-          "streams": [
-            {
-              "value": "item"
-            }
-          ],
-          "keys": [
-            {
-              "key": "itemId",
-              "optional": true
-            },
-            {
-              "key": "kind",
-              "optional": false
-            },
-            {
-              "key": "phase",
-              "optional": false
-            },
-            {
-              "key": "progressText",
-              "optional": false
-            },
-            {
-              "key": "title",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": false
-        }
-      ]
-    },
-    {
-      "label": "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-      "kind": "property",
-      "at": "src/agents/embedded-agent-subscribe.ts:245",
-      "openVia": [
-        "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (src/agents/embedded-agent-subscribe.ts:245)"
-      ],
-      "chain": [
-        "flushAssistantStream=createReplyDelivery > flushAssistantStream",
-        "createReplyDelivery > emitAssistantStreamDataSafely",
-        "createReplyDelivery > publishAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "shapes": [
-        {
-          "streams": [],
-          "keys": [],
-          "dataFromCaller": false
-        },
-        {
-          "streams": [
-            {
-              "value": "assistant"
-            }
-          ],
-          "keys": [],
-          "dataFromCaller": true
-        },
-        {
-          "streams": [
-            {
-              "value": "item"
-            }
-          ],
-          "keys": [
-            {
-              "key": "itemId",
-              "optional": true
-            },
-            {
-              "key": "kind",
-              "optional": false
-            },
-            {
-              "key": "phase",
-              "optional": false
-            },
-            {
-              "key": "progressText",
-              "optional": false
-            },
-            {
-              "key": "title",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": false
         }
       ]
     },
@@ -27527,6 +25083,8 @@
       "kind": "property",
       "at": "src/gateway/worker-environments/service.ts:704",
       "openVia": [
+        "its object is passed to code outside the analysed sources (src/gateway/worker-environments/inference-control-internal.ts:56)",
+        "its object is returned (src/gateway/worker-environments/service.ts:743)",
         "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (src/gateway/worker-environments/service.ts:704)"
       ],
       "chain": [
@@ -27665,6 +25223,7 @@
       "kind": "property",
       "at": "src/plugins/registry-api.ts:173",
       "openVia": [
+        "its object is stored into another object (src/plugins/registry-api.ts:123)",
         "member of OpenClawPluginApi, a type the public surface exposes (src/plugins/plugin-api.types.ts:402)",
         "no reference by name in the analysed sources (computed access, dynamic table, or an external caller) (src/plugins/registry-api.ts:173)"
       ],
@@ -27698,6 +25257,15 @@
       ]
     }
   ],
+  "unreadSlots": [
+    {
+      "family": "sender",
+      "label": "broadcast=createGatewayBroadcaster()→broadcast",
+      "slot": "broadcast",
+      "at": "src/gateway/server-startup-finish.ts:186",
+      "followed": 2
+    }
+  ],
   "transformations": {
     "fabricated": [
       {
@@ -27713,101 +25281,38 @@
         "file": "src/gateway/server-chat.ts",
         "line": 1429,
         "function": "createAgentEventHandler > handleEvent",
-        "sender": "broadcast"
+        "sender": "broadcast=broadcast=createGatewayBroadcaster()→broadcast"
       }
     ],
     "relays": [
       {
         "file": "src/gateway/server-chat.ts",
-        "line": 1163,
-        "function": "createAgentEventHandler > sendAgentPayload",
-        "sender": "sendLivePayload",
-        "payload": "payload",
+        "line": 1185,
+        "function": "createAgentEventHandler > flushBufferedAgentDeltaIfNeeded",
+        "sender": "createAgentEventHandler > sendAgentPayload",
+        "payload": "sendAgentPayload(buffered.sessionKey, buffered.payload, { agentId: buffered.agen",
         "origins": [
-          {
-            "kind": "parameter",
-            "function": "createAgentEventHandler > handleEvent",
-            "parameter": "event",
-            "type": "AgentEventPayload",
-            "entries": [
-              {
-                "at": "src/gateway/server-chat.ts:1765",
-                "how": "referenced as a value (CallExpression)"
-              }
-            ],
-            "via": [
-              "src/gateway/server-chat.ts:1163 `createAgentEventHandler > sendAgentPayload`",
-              "src/gateway/server-chat.ts:1260 `createAgentEventHandler > sendOrBufferAgentTextEvent`"
-            ]
-          },
-          {
-            "kind": "parameter",
-            "function": "createAgentEventHandler > handleEvent",
-            "parameter": "event",
-            "type": "AgentEventPayload",
-            "entries": [
-              {
-                "at": "src/gateway/server-chat.ts:1765",
-                "how": "referenced as a value (CallExpression)"
-              }
-            ],
-            "via": [
-              "src/gateway/server-chat.ts:1163 `createAgentEventHandler > sendAgentPayload`"
-            ]
-          },
           {
             "kind": "typed",
             "type": "AgentEventPayload & { spawnedBy?: string | undefined; }",
-            "at": "src/gateway/server-chat.ts:1175",
-            "via": [
-              "src/gateway/server-chat.ts:1163 `createAgentEventHandler > sendAgentPayload`"
-            ]
+            "at": "src/gateway/server-chat.ts:1175"
           }
         ]
       },
       {
         "file": "src/gateway/server-chat.ts",
-        "line": 1330,
-        "function": "createAgentEventHandler > sendNodeToolPayload",
-        "sender": "nodeSendToSession",
-        "payload": "nodePayload",
-        "origins": [
-          {
-            "kind": "parameter",
-            "function": "createAgentEventHandler > handleEvent",
-            "parameter": "event",
-            "type": "AgentEventPayload",
-            "entries": [
-              {
-                "at": "src/gateway/server-chat.ts:1765",
-                "how": "referenced as a value (CallExpression)"
-              }
-            ],
-            "via": [
-              "src/gateway/server-chat.ts:1330 `createAgentEventHandler > sendNodeToolPayload`"
-            ]
-          }
-        ]
-      },
-      {
-        "file": "src/gateway/server-chat.ts",
-        "line": 1555,
+        "line": 1333,
         "function": "createAgentEventHandler > handleEvent",
-        "sender": "broadcastToConnIds",
-        "payload": "sessionKey ? { ...agentPayload, ...buildSessionEventSnapshot(sessionKey, undefin",
+        "sender": "createAgentEventHandler > handleEvent",
+        "payload": null,
         "origins": [
           {
-            "kind": "parameter",
-            "function": "createAgentEventHandler > handleEvent",
-            "parameter": "event",
+            "kind": "typed",
             "type": "AgentEventPayload",
+            "at": "src/gateway/server-chat.ts:1334",
             "entries": [
-              {
-                "at": "src/gateway/server-chat.ts:1765",
-                "how": "referenced as a value (CallExpression)"
-              }
-            ],
-            "via": []
+              "escapes: passed to Object.assign(…) whose declaration is not in the analysed sources (src/gateway/server-chat.ts:1765)"
+            ]
           }
         ]
       }
@@ -27927,6 +25432,1127 @@
         "guard": [],
         "removed": "partialResult",
         "how": "delete"
+      }
+    ],
+    "senders": [
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/chat-abort-ops.ts:15",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "prepareGatewayLifecycle > prepareClose > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/chat-abort-ops.ts:16",
+        "chain": [
+          "prepareGatewayLifecycle > prepareClose > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/chat-abort.ts:531",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "prepareGatewayLifecycle > prepareClose > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/chat-abort.ts:531",
+        "chain": [
+          "prepareGatewayLifecycle > prepareClose > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "NodeRegistry.sendEvent",
+        "names": [
+          "sendEvent"
+        ],
+        "at": "src/gateway/node-registry.ts:1269",
+        "chain": [
+          "NodeRegistry.sendEvent"
+        ],
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "NodeRegistry.sendEventRaw",
+        "names": [
+          "sendEventRaw"
+        ],
+        "at": "src/gateway/node-registry.ts:1277",
+        "chain": [
+          "NodeRegistry.sendEventRaw"
+        ],
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "NodeRegistry.sendEventForPairingIdentity",
+        "names": [
+          "sendEventForPairingIdentity"
+        ],
+        "at": "src/gateway/node-registry.ts:1290",
+        "chain": [
+          "NodeRegistry.sendEventForPairingIdentity"
+        ],
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "NodeRegistry.sendEventRawForPairingGeneration",
+        "names": [
+          "sendEventRawForPairingGeneration"
+        ],
+        "at": "src/gateway/node-registry.ts:1320",
+        "chain": [
+          "NodeRegistry.sendEventRawForPairingGeneration"
+        ],
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-broadcast.ts:700",
+        "chain": [
+          "createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-broadcast.ts:705",
+        "chain": [
+          "createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-broadcast.ts:719",
+        "chain": [
+          "createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-broadcast.ts:729",
+        "chain": [
+          "createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-broadcast.ts:729",
+        "chain": [
+          "createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-broadcast.ts:729",
+        "chain": [
+          "createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "createAgentEventHandler > sendAgentPayload",
+        "names": [
+          "sendAgentPayload"
+        ],
+        "at": "src/gateway/server-chat.ts:1134",
+        "chain": [
+          "createAgentEventHandler > sendAgentPayload",
+          "createAgentEventHandler > sendLivePayload",
+          "broadcast=broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "createAgentEventHandler > sendOrBufferAgentTextEvent",
+        "names": [
+          "sendOrBufferAgentTextEvent"
+        ],
+        "at": "src/gateway/server-chat.ts:1223",
+        "chain": [
+          "createAgentEventHandler > sendOrBufferAgentTextEvent",
+          "createAgentEventHandler > sendAgentPayload",
+          "createAgentEventHandler > sendLivePayload",
+          "broadcast=broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "createAgentEventHandler > sendNodeToolPayload",
+        "names": [
+          "sendNodeToolPayload"
+        ],
+        "at": "src/gateway/server-chat.ts:1301",
+        "chain": [
+          "createAgentEventHandler > sendNodeToolPayload",
+          "nodeSendToSession=startGatewayCoreRuntime > startupTrace.measure(#1) > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "createAgentEventHandler > handleEvent",
+        "names": [
+          "handleEvent"
+        ],
+        "at": "src/gateway/server-chat.ts:1333",
+        "chain": [
+          "createAgentEventHandler > handleEvent",
+          "broadcastToConnIds=broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ],
+        "open": [
+          "escapes: passed to Object.assign(…) whose declaration is not in the analysed sources"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcast=broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-chat.ts:295",
+        "chain": [
+          "broadcast=broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcastToConnIds=broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-chat.ts:296",
+        "chain": [
+          "broadcastToConnIds=broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "nodeSendToSession=startGatewayCoreRuntime > startupTrace.measure(#1) > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-chat.ts:297",
+        "chain": [
+          "nodeSendToSession=startGatewayCoreRuntime > startupTrace.measure(#1) > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-chat.ts:451",
+        "chain": [
+          "broadcastToConnIds=broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "createAgentEventHandler > sendLivePayload",
+        "names": [
+          "sendLivePayload"
+        ],
+        "at": "src/gateway/server-chat.ts:974",
+        "chain": [
+          "createAgentEventHandler > sendLivePayload",
+          "broadcast=broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-connection-state.ts:298",
+        "chain": [
+          "createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:111",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:167",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "nodeSendToAllSubscribed=createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed",
+        "names": [
+          "nodeSendToAllSubscribed"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:168",
+        "chain": [
+          "nodeSendToAllSubscribed=createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "startGatewayCoreRuntime > startEarlyRuntime > startupTrace.measure(#1) > loadGatewayStartupEarlyModule().then(#0) > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:204",
+        "chain": [
+          "startGatewayCoreRuntime > startEarlyRuntime > startupTrace.measure(#1) > loadGatewayStartupEarlyModule().then(#0) > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:241",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:242",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "startGatewayCoreRuntime > startupTrace.measure(#1) > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:244",
+        "chain": [
+          "startGatewayCoreRuntime > startupTrace.measure(#1) > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:288",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:87",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "nodeSendToAllSubscribed=createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed",
+        "names": [
+          "nodeSendToAllSubscribed"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:88",
+        "chain": [
+          "nodeSendToAllSubscribed=createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-core-runtime.ts:98",
+        "chain": [
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:114",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:138",
+        "chain": [
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:159",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "createTerminalSessionTransport > emit",
+        "names": [
+          "emit"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:216",
+        "chain": [
+          "createTerminalSessionTransport > emit",
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ],
+        "open": [
+          "member of TerminalSessionManagerOptions, a type the public surface exposes"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:230",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:333",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:512",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "prepareGatewayLifecycle > prepareClose > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:513",
+        "chain": [
+          "prepareGatewayLifecycle > prepareClose > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:76",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-lifecycle.ts:96",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "createGatewayNodeSessionRuntime()→nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-node-session-runtime.ts:104",
+        "chain": [
+          "createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "root",
+        "label": "createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed",
+        "names": [
+          "nodeSendToAllSubscribed"
+        ],
+        "at": "src/gateway/server-node-session-runtime.ts:110",
+        "chain": [
+          "createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "createGatewayNodeSessionRuntime > sendVoiceWakeEventToCurrentNodes",
+        "names": [
+          "sendVoiceWakeEventToCurrentNodes"
+        ],
+        "at": "src/gateway/server-node-session-runtime.ts:129",
+        "chain": [
+          "createGatewayNodeSessionRuntime > sendVoiceWakeEventToCurrentNodes",
+          "NodeRegistry.sendEventForPairingIdentity"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "createGatewayNodeSessionRuntime()→nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-node-session-runtime.ts:172",
+        "chain": [
+          "createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed",
+        "names": [
+          "nodeSendToAllSubscribed"
+        ],
+        "at": "src/gateway/server-node-session-runtime.ts:173",
+        "chain": [
+          "createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "createGatewayNodeSessionRuntime > nodeSendEvent",
+        "names": [
+          "nodeSendEvent"
+        ],
+        "at": "src/gateway/server-node-session-runtime.ts:87",
+        "chain": [
+          "createGatewayNodeSessionRuntime > nodeSendEvent",
+          "NodeRegistry.sendEventRawForPairingGeneration"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-plugin-reload.ts:370",
+        "chain": [
+          "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-plugin-reload.ts:581",
+        "chain": [
+          "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-plugin-reload.ts:97",
+        "chain": [
+          "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-plugin-reload.ts:99",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-reload-hot.ts:149",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-runtime-state-prepare.ts:490",
+        "chain": [
+          "createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-runtime-subscriptions.ts:165",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-runtime-subscriptions.ts:309",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-runtime-subscriptions.ts:310",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "startGatewayCoreRuntime > startupTrace.measure(#1) > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-runtime-subscriptions.ts:312",
+        "chain": [
+          "startGatewayCoreRuntime > startupTrace.measure(#1) > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-session-events.ts:108",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-session-events.ts:290",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-session-events.ts:613",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-startup-early.ts:170",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "nodeSendToAllSubscribed=createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed",
+        "names": [
+          "nodeSendToAllSubscribed"
+        ],
+        "at": "src/gateway/server-startup-early.ts:171",
+        "chain": [
+          "nodeSendToAllSubscribed=createGatewayNodeSessionRuntime()→nodeSendToAllSubscribed"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "startGatewayCoreRuntime > startEarlyRuntime > startupTrace.measure(#1) > loadGatewayStartupEarlyModule().then(#0) > nodeSendToSession",
+        "names": [
+          "nodeSendToSession"
+        ],
+        "at": "src/gateway/server-startup-early.ts:187",
+        "chain": [
+          "startGatewayCoreRuntime > startEarlyRuntime > startupTrace.measure(#1) > loadGatewayStartupEarlyModule().then(#0) > nodeSendToSession",
+          "nodeSendToSession=createGatewayNodeSessionRuntime()→nodeSendToSession"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-startup-finish.ts:125",
+        "chain": [
+          "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-startup-finish.ts:186",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-startup-finish.ts:259",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-startup-finish.ts:261",
+        "chain": [
+          "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-startup-finish.ts:506",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-startup-finish.ts:81",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-startup-finish.ts:82",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-startup-post-attach.ts:360",
+        "chain": [
+          "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/server-startup-post-attach.ts:834",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/gateway/server-startup-post-attach.ts:935",
+        "chain": [
+          "broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "createDeferredGatewayUpdateCheck > start > broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/server-startup-update-check.ts:91",
+        "chain": [
+          "createDeferredGatewayUpdateCheck > start > broadcast",
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "variable",
+        "label": "attachAuthenticatedGatewayConnect > sendConnectSnapshot",
+        "names": [
+          "sendConnectSnapshot"
+        ],
+        "at": "src/gateway/server/ws-connection/connect-session.ts:645",
+        "chain": [
+          "attachAuthenticatedGatewayConnect > sendConnectSnapshot",
+          "NodeRegistry.sendEventForPairingIdentity"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/session-activity-summary-events.ts:12",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "parameter",
+        "label": "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds",
+        "names": [
+          "broadcastToConnIds"
+        ],
+        "at": "src/gateway/terminal/gateway-transport.ts:11",
+        "chain": [
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "createTerminalSessionTransport > emit",
+        "names": [
+          "emit"
+        ],
+        "at": "src/gateway/terminal/gateway-transport.ts:15",
+        "chain": [
+          "createTerminalSessionTransport > emit",
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ]
+      },
+      {
+        "kind": "assignment",
+        "label": "createTerminalSessionTransport > emit",
+        "names": [
+          "emit"
+        ],
+        "at": "src/gateway/terminal/session-manager.ts:57",
+        "chain": [
+          "createTerminalSessionTransport > emit",
+          "broadcastToConnIds=createGatewayBroadcaster()→broadcastToConnIds"
+        ],
+        "open": [
+          "member of TerminalSessionManager, a type the public surface exposes"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/watch-node-http.ts:1001",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/watch-node-http.ts:1006",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/watch-node-http.ts:1014",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "parameter",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/watch-node-http.ts:295",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "property",
+        "label": "broadcast=createGatewayBroadcaster()→broadcast",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/gateway/watch-node-http.ts:980",
+        "chain": [
+          "broadcast=createGatewayBroadcaster()→broadcast"
+        ]
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcast=broadcastPluginEvent=broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/plugins/gateway-events.ts:42",
+        "chain": [
+          "broadcast=broadcastPluginEvent=broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "destructured",
+        "label": "broadcastPluginEvent=broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcastPluginEvent"
+        ],
+        "at": "src/plugins/services.ts:195",
+        "chain": [
+          "broadcastPluginEvent=broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      },
+      {
+        "kind": "property",
+        "label": "broadcastPluginEvent=broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent",
+        "names": [
+          "broadcast"
+        ],
+        "at": "src/plugins/services.ts:488",
+        "chain": [
+          "broadcastPluginEvent=broadcastPluginEvent=createGatewayBroadcaster()→broadcastPluginEvent"
+        ],
+        "eventPrefix": "plugin."
+      }
+    ],
+    "senderSites": {
+      "agent": 3,
+      "other": 64,
+      "undetermined": 0
+    },
+    "openSenders": [
+      {
+        "label": "NodeRegistry.sendEvent",
+        "kind": "root",
+        "at": "src/gateway/node-registry.ts:1269",
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes (src/gateway/node-registry.ts:1269)"
+        ],
+        "channel": "undetermined"
+      },
+      {
+        "label": "NodeRegistry.sendEventRaw",
+        "kind": "root",
+        "at": "src/gateway/node-registry.ts:1277",
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes (src/gateway/node-registry.ts:1277)"
+        ],
+        "channel": "undetermined"
+      },
+      {
+        "label": "NodeRegistry.sendEventForPairingIdentity",
+        "kind": "root",
+        "at": "src/gateway/node-registry.ts:1290",
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes (src/gateway/node-registry.ts:1290)"
+        ],
+        "channel": "undetermined"
+      },
+      {
+        "label": "NodeRegistry.sendEventRawForPairingGeneration",
+        "kind": "root",
+        "at": "src/gateway/node-registry.ts:1320",
+        "open": [
+          "member of NodeRegistry, a type the public surface exposes (src/gateway/node-registry.ts:1320)"
+        ],
+        "channel": "undetermined"
+      },
+      {
+        "label": "createTerminalSessionTransport > emit",
+        "kind": "property",
+        "at": "src/gateway/server-lifecycle.ts:216",
+        "open": [
+          "member of TerminalSessionManagerOptions, a type the public surface exposes (src/gateway/terminal/session-manager.types.ts:54)"
+        ],
+        "channel": "undetermined"
+      },
+      {
+        "label": "createTerminalSessionTransport > emit",
+        "kind": "assignment",
+        "at": "src/gateway/terminal/session-manager.ts:57",
+        "open": [
+          "member of TerminalSessionManager, a type the public surface exposes (src/gateway/terminal/session-manager.ts:57)"
+        ],
+        "channel": "undetermined"
       }
     ]
   },
@@ -28479,31 +27105,35 @@
     ]
   },
   "completeness": {
-    "familyNames": 82,
-    "identifiers": 31878,
-    "matched": 569,
-    "homonyms": 31309,
+    "familyNames": 96,
+    "identifiers": 32388,
+    "matched": 801,
+    "homonyms": 31587,
     "unaccounted": 0,
     "unaccountedReferences": [],
     "byClass": {
-      "compare": 3,
-      "declaration": 126,
-      "emission": 199,
-      "escape": 4,
+      "assignment-target": 1,
+      "compare": 4,
+      "declaration": 225,
+      "destructured": 1,
+      "emission": 202,
+      "escape": 5,
       "factory-call": 2,
-      "forward": 103,
-      "import-export": 93,
-      "type-only": 14,
-      "value-flow": 25
+      "forward": 119,
+      "import-export": 89,
+      "other-channel": 64,
+      "root-internal": 2,
+      "type-only": 17,
+      "value-flow": 70
     },
-    "unresolvedHomonyms": 2025
+    "unresolvedHomonyms": 2040
   },
   "summary": {
     "<opaque>": {
-      "sites": 11,
+      "sites": 7,
       "phases": {
         "-": {
-          "sites": 6,
+          "sites": 4,
           "keys": {
             "args": "optional",
             "commandBearing": "optional",
@@ -28525,10 +27155,10 @@
             "toolCallId": "optional",
             "value": "optional"
           },
-          "opaqueData": 6
+          "opaqueData": 4
         },
         "<opaque>": {
-          "sites": 5,
+          "sites": 3,
           "keys": {
             "args": "optional",
             "commandBearing": "optional",
@@ -28545,12 +27175,12 @@
             "title": "optional",
             "toolCallId": "optional"
           },
-          "opaqueData": 5
+          "opaqueData": 3
         }
       }
     },
     "acp": {
-      "sites": 12,
+      "sites": 7,
       "phases": {
         "prompt_submitted": {
           "sites": 1,
@@ -28562,7 +27192,7 @@
           "opaqueData": 0
         },
         "runtime_event": {
-          "sites": 11,
+          "sites": 6,
           "keys": {
             "code": "optional",
             "eventType": "always",
@@ -28618,10 +27248,10 @@
       }
     },
     "assistant": {
-      "sites": 63,
+      "sites": 54,
       "phases": {
         "-": {
-          "sites": 37,
+          "sites": 34,
           "keys": {
             "assistantMessageIndex": "always",
             "completedText": "always",
@@ -28650,7 +27280,7 @@
           "opaqueData": 0
         },
         "commentary": {
-          "sites": 12,
+          "sites": 9,
           "keys": {
             "delta": "always",
             "itemId": "optional",
@@ -28663,7 +27293,7 @@
           "opaqueData": 0
         },
         "final_answer": {
-          "sites": 10,
+          "sites": 7,
           "keys": {
             "delta": "always",
             "itemId": "optional",
@@ -28884,6 +27514,19 @@
         }
       }
     },
+    "codex_app_server.tool": {
+      "sites": 1,
+      "phases": {
+        "-": {
+          "sites": 1,
+          "keys": {
+            "message": "always",
+            "name": "always"
+          },
+          "opaqueData": 0
+        }
+      }
+    },
     "command_output": {
       "sites": 5,
       "phases": {
@@ -29003,7 +27646,7 @@
       }
     },
     "item": {
-      "sites": 86,
+      "sites": 80,
       "phases": {
         "-": {
           "sites": 4,
@@ -29044,7 +27687,7 @@
           "opaqueData": 0
         },
         "end": {
-          "sites": 40,
+          "sites": 37,
           "keys": {
             "approvalId": "optional",
             "approvalSlug": "optional",
@@ -29093,7 +27736,7 @@
           "opaqueData": 0
         },
         "update": {
-          "sites": 28,
+          "sites": 25,
           "keys": {
             "approvalId": "optional",
             "approvalSlug": "optional",
@@ -29116,7 +27759,7 @@
       }
     },
     "lifecycle": {
-      "sites": 93,
+      "sites": 89,
       "phases": {
         "<opaque>": {
           "sites": 12,
@@ -29150,7 +27793,7 @@
           "opaqueData": 0
         },
         "end": {
-          "sites": 24,
+          "sites": 23,
           "keys": {
             "aborted": "optional",
             "assistantTranscriptIdempotencyKey": "optional",
@@ -29174,10 +27817,10 @@
             "toolErrorSummary": "optional",
             "yielded": "optional"
           },
-          "opaqueData": 8
+          "opaqueData": 7
         },
         "error": {
-          "sites": 32,
+          "sites": 31,
           "keys": {
             "aborted": "optional",
             "assistantTranscriptIdempotencyKey": "optional",
@@ -29200,7 +27843,7 @@
             "toolErrorSummary": "optional",
             "yielded": "optional"
           },
-          "opaqueData": 8
+          "opaqueData": 7
         },
         "fallback": {
           "sites": 1,
@@ -29243,7 +27886,7 @@
           "opaqueData": 0
         },
         "finishing": {
-          "sites": 6,
+          "sites": 5,
           "keys": {
             "aborted": "optional",
             "assistantTranscriptIdempotencyKey": "optional",
@@ -29265,10 +27908,10 @@
             "toolErrorSummary": "optional",
             "yielded": "optional"
           },
-          "opaqueData": 1
+          "opaqueData": 0
         },
         "model": {
-          "sites": 9,
+          "sites": 8,
           "keys": {
             "model": "optional",
             "phase": "always",

@@ -50,6 +50,16 @@ import ts from "typescript";
 // fabricates frames (src/gateway): `transformations` records those by shape, anchored on
 // an agent event's `data` type, with the stream/phase guards that select them.
 //
+// The gateway's SENDERS are a second family discovered by the same machinery, from the
+// frame senders its transports hand out (SENDER_ROOT_MODULES / SENDER_ROOT_CLASSES): every
+// value derived from one is followed to its calls by symbol — never by the spelling of an
+// argument or a parameter — including through a spread into a contextually typed object.
+// Each call's (event, payload) is the root's template with the call's arguments
+// substituted, so the payload is the FINAL form. Fail-closed: a call whose event is not
+// evaluated, or whose payload's final form is not determined, is `unresolved` — counted,
+// listed, and refused by the vendoring; and its references enter the completeness count
+// like the bus emitters'. A sender's own body is the transport, not analysed.
+//
 // LIMITS, stated. The evaluator is flow-insensitive except for two constructs: a ternary
 // over a discriminant (`x.kind === "a" ? … : …`, narrowed) and a test on a parameter
 // (decided at the call site). A data object handed to a helper that mutates it is seen
@@ -83,6 +93,14 @@ export const SCAN_DIRS = ["src", "packages", "extensions", "ui"];
 export const GATEWAY_DIR = "src/gateway/";
 /** The chat display projection modules (section 2). */
 export const CHAT_PROJECTION_PREFIX = "src/gateway/chat-display-projection";
+/** The gateway's FRAME SENDERS — the roots of the second family (section 6): the members a
+ *  transport factory returns that take (event, payload), and the public methods of the node
+ *  registry that do. Everything that reaches them is DISCOVERED, by symbol. */
+export const SENDER_ROOT_MODULES = [
+  { file: "src/gateway/server-broadcast.ts", factory: "createGatewayBroadcaster" },
+  { file: "src/gateway/server-node-session-runtime.ts", factory: "createGatewayNodeSessionRuntime" },
+];
+export const SENDER_ROOT_CLASSES = [{ file: "src/gateway/node-registry.ts", className: "NodeRegistry" }];
 export const INVENTORY_SCHEMA = "atrium.agent-emissions/1";
 
 const SOURCE_FILE_RE = /\.(?:[cm]?ts|tsx)$/;
@@ -319,6 +337,15 @@ function definitelyHas(av, key, typed = () => false) {
     default:
       return false;
   }
+}
+
+/** An item's template stands for the parameters of ONE function, or of several when one
+ *  slot holds different senders (their templates merged): a call fills each one's holes. */
+function ownsHole(holeFn, fn) {
+  return holeFn instanceof Set ? holeFn.has(fn) : holeFn === fn;
+}
+function holeFnSet(holeFn) {
+  return holeFn instanceof Set ? holeFn : new Set(holeFn ? [holeFn] : []);
 }
 
 /** Collect hole function nodes referenced by `av` (deep). */
@@ -1022,7 +1049,10 @@ export function deriveAgentEmissions(input) {
     let cur = av;
     for (const k of keys) {
       if (k === "...") continue; // object rest: approximated by the whole object
-      cur = getProp(cur, k);
+      // `[]` is an ELEMENT (a loop over a parameter), never a property named "[]": read as
+      // one, a caller's array had no such key, and every test on the element was decided
+      // false — the branch of a `type === "tool_call"` dropped its keys.
+      cur = k === "[]" ? elementOf(cur, cur.at) : getProp(cur, k);
     }
     return cur;
   }
@@ -1088,7 +1118,8 @@ export function deriveAgentEmissions(input) {
       case "union":
         return union(av.opts.map((o) => elementOf(o, at)));
       case "hole":
-        return { ...av, path: [...av.path, "[]"], expr: undefined };
+        // Typed like a property step: closing it reads the element type of the parameter's.
+        return { ...av, path: [...av.path, "[]"], expr: undefined, typedFrom: av.expr ?? av.typedFrom, typedPath: [...(av.typedPath ?? []), "[]"] };
       case "opaque":
         return av;
       default:
@@ -1614,14 +1645,15 @@ export function deriveAgentEmissions(input) {
     return { decl, whenTrue: union(t), whenFalse: union(f), trueOpts: t.length, falseOpts: f.length };
   }
 
-  /** Replace the holes of `fn` by the call's argument values. */
+  /** Replace the holes of `fn` (one function, or a set: see ownsHole) by the call's
+   *  argument values, in one pass — an argument's own holes are never filled twice. */
   function subst(av, fn, args, ctx = ROOT_CTX, seen = new Map()) {
     if (!av) return av;
     if (seen.has(av)) return seen.get(av);
     let out;
     switch (av.k) {
       case "hole": {
-        if (av.fn !== fn) {
+        if (!ownsHole(fn, av.fn)) {
           out = av;
           break;
         }
@@ -1699,7 +1731,7 @@ export function deriveAgentEmissions(input) {
   const typedPathFallback = (h) => {
     if (!h.typedFrom) return opaque("unresolved parameter", undefined);
     let v = typeFallback(h.typedFrom, `argument #${h.idx} of ${labelOf(h.fn)}`);
-    for (const k of h.typedPath ?? []) v = getProp(v, k);
+    for (const k of h.typedPath ?? []) v = k === "[]" ? elementOf(v, v.at) : getProp(v, k);
     return v;
   };
 
@@ -1931,7 +1963,9 @@ export function deriveAgentEmissions(input) {
 
   const declKey = (decls) => [...decls].map((d) => `${fileOf(d)}@${d.getStart()}`).sort().join("|");
   const addItem = (spec) => {
-    const key = spec.key ?? declKey(spec.decls);
+    // Two families share this machinery (the bus emitters, and the gateway's frame senders,
+    // section 6); a member of one is never merged with a member of the other.
+    const key = spec.key ?? (spec.family === "sender" ? `sender|${declKey(spec.decls)}` : declKey(spec.decls));
     const existing = items.get(key);
     if (existing) {
       const merged = union([existing.template, spec.template]);
@@ -1940,12 +1974,17 @@ export function deriveAgentEmissions(input) {
         return existing;
       }
       existing.template = merged;
+      // Two senders reach this one slot: the merged template stands for BOTH functions'
+      // parameters, and a call fills each one's holes (a single hole function left the
+      // other sender's event "not filled at this site").
+      const fns = new Set([...holeFnSet(existing.holeFn), ...holeFnSet(spec.holeFn)]);
+      existing.holeFn = fns.size === 1 ? [...fns][0] : fns;
       existing.requeue += 1;
       existing.via.push(...(spec.via ?? []));
       queue.push({ item: existing, names: [...existing.names] });
       return existing;
     }
-    const item = { ...spec, key, requeue: 0, via: [...(spec.via ?? [])], openVia: [] };
+    const item = { ...spec, family: spec.family ?? "bus", key, requeue: 0, via: [...(spec.via ?? [])], openVia: [], refs: 0, rootInternalRefs: 0 };
     items.set(key, item);
     queue.push({ item, names: [...item.names] });
     return item;
@@ -1970,6 +2009,133 @@ export function deriveAgentEmissions(input) {
     def: dispatcher,
   });
 
+  // The FRAME SENDERS — the second family. Named by hand like the dispatcher: the functions
+  // the gateway's transports hand out to put an event frame on a client socket (a WS
+  // client, or a paired node). Their bodies are the transport (coalescing, projection,
+  // serialization) and are not analysed; everything that reaches them is discovered.
+  const senderRootFns = new Set();
+  const insideSenderRoot = (node) => {
+    for (let f = enclosingFunction(node); f; f = enclosingFunction(f)) if (senderRootFns.has(f)) return true;
+    return false;
+  };
+  for (const root of senderRoots()) {
+    senderRootFns.add(root.fn);
+    addItem({ kind: "root", family: "sender", decls: root.decls, names: root.names, template: root.template, holeFn: root.fn, chain: [root.label], label: root.label, def: root.def, eventPrefix: root.eventPrefix });
+  }
+  /** Each sender a root module or class exposes, with the (event, payload) template of
+   *  its parameters. A root module or class that is missing, or exposes none, is an error:
+   *  upstream moved its transport, and a discovery that starts nowhere finds nothing. */
+  function senderRoots() {
+    const out = [];
+    const paramIndex = (fn, names) => fn.parameters.findIndex((p) => ts.isIdentifier(p.name) && names.includes(p.name.text));
+    const holeOf = (fn, idx, path) => ({ k: "hole", fn, idx, path, expr: fn.parameters[idx].name, param: fn.parameters[idx] });
+    /** (event, payload) of a function: two parameters so named, or one object parameter
+     *  whose declared type has both properties. */
+    const templateOf = (fn) => {
+      const e = paramIndex(fn, ["event"]);
+      const p = paramIndex(fn, ["payload", "payloadJSON"]);
+      if (e >= 0 && p >= 0) return objFromEntries([{ t: "prop", key: "event", v: holeOf(fn, e, []), opt: false }, { t: "prop", key: "payload", v: holeOf(fn, p, []), opt: false }], locOf(fn));
+      if (fn.parameters.length === 1 && ts.isIdentifier(fn.parameters[0].name)) {
+        let t;
+        try {
+          t = checker.getTypeAtLocation(fn.parameters[0]);
+        } catch {
+          t = undefined;
+        }
+        const has = (k) => !!t && !!checker.getPropertyOfType(t, k);
+        const payloadKey = has("payload") ? "payload" : has("payloadJSON") ? "payloadJSON" : undefined;
+        if (has("event") && payloadKey) {
+          return objFromEntries([{ t: "prop", key: "event", v: holeOf(fn, 0, ["event"]), opt: false }, { t: "prop", key: "payload", v: holeOf(fn, 0, [payloadKey]), opt: false }], locOf(fn));
+        }
+      }
+      return undefined;
+    };
+    /** A guard the sender's own body opens with — `if (!event.startsWith("plugin.") || …)
+     *  throw` — makes every event it can send start with that prefix. */
+    const prefixOf = (fn) => {
+      const e = paramIndex(fn, ["event"]);
+      if (e < 0 || !fn.body || !ts.isBlock(fn.body)) return undefined;
+      const name = fn.parameters[e].name.text;
+      for (const st of fn.body.statements) {
+        if (!ts.isIfStatement(st) || st.elseStatement) continue;
+        const then = st.thenStatement;
+        const exits = ts.isThrowStatement(then) || ts.isReturnStatement(then) || (ts.isBlock(then) && then.statements.length > 0 && (ts.isThrowStatement(then.statements.at(-1)) || ts.isReturnStatement(then.statements.at(-1))));
+        if (!exits) continue;
+        const disjuncts = [];
+        const split = (c) => {
+          const u = unwrapExpr(c);
+          if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+            split(u.left);
+            split(u.right);
+          } else disjuncts.push(u);
+        };
+        split(st.expression);
+        for (const d of disjuncts) {
+          if (!ts.isPrefixUnaryExpression(d) || d.operator !== ts.SyntaxKind.ExclamationToken) continue;
+          const call = unwrapExpr(d.operand);
+          if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "startsWith") continue;
+          const recv = unwrapExpr(call.expression.expression);
+          const arg = call.arguments[0] && unwrapExpr(call.arguments[0]);
+          if (ts.isIdentifier(recv) && recv.text === name && arg && ts.isStringLiteralLike(arg)) return arg.text;
+        }
+      }
+      return undefined;
+    };
+    for (const spec of SENDER_ROOT_MODULES) {
+      const sf = sfByRel.get(spec.file);
+      if (!sf) throw new Error(`${spec.file} is not in the analysed sources — upstream moved a frame sender (${spec.factory})`);
+      const factory = sf.statements.find((st) => ts.isFunctionDeclaration(st) && st.name?.text === spec.factory && st.body);
+      if (!factory) throw new Error(`${spec.file}: no ${spec.factory} with a body — upstream renamed the transport factory`);
+      const found = [];
+      const visit = (n) => {
+        if (n !== factory && isFunctionLike(n)) return;
+        if (ts.isReturnStatement(n) && n.expression && ts.isObjectLiteralExpression(unwrapExpr(n.expression))) {
+          for (const prop of unwrapExpr(n.expression).properties) {
+            let fn;
+            let local;
+            if (ts.isShorthandPropertyAssignment(prop)) {
+              const d = declsOf(valueSymOf(prop.name))[0];
+              if (d && ts.isVariableDeclaration(d) && d.initializer && isFunctionLike(unwrapExpr(d.initializer))) {
+                fn = unwrapExpr(d.initializer);
+                local = d;
+              }
+            } else if (ts.isPropertyAssignment(prop) && isFunctionLike(unwrapExpr(prop.initializer))) fn = unwrapExpr(prop.initializer);
+            if (!fn) continue;
+            const template = templateOf(fn);
+            if (!template) continue;
+            const name = prop.name.getText();
+            // The root is the binding when there is one: its reference in the returned
+            // literal is then an ordinary flow to the property, followed like any other.
+            const decls = new Set([local ?? prop]);
+            found.push({ fn, template, decls, names: new Set([name, ...(local ? [local.name.text] : [])]), label: `${spec.factory}()→${name}`, def: local ?? prop, eventPrefix: prefixOf(fn) });
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(factory.body);
+      if (found.length === 0) throw new Error(`${spec.file}: ${spec.factory} returns no frame sender (event, payload) — upstream changed the transport`);
+      out.push(...found);
+    }
+    for (const spec of SENDER_ROOT_CLASSES) {
+      const sf = sfByRel.get(spec.file);
+      if (!sf) throw new Error(`${spec.file} is not in the analysed sources — upstream moved a frame sender (${spec.className})`);
+      const cls = sf.statements.find((st) => ts.isClassDeclaration(st) && st.name?.text === spec.className);
+      if (!cls) throw new Error(`${spec.file}: no class ${spec.className} — upstream renamed the node transport`);
+      const found = [];
+      for (const m of cls.members) {
+        if (!ts.isMethodDeclaration(m) || !m.body || !m.name || !ts.isIdentifier(m.name)) continue;
+        const flags = ts.getCombinedModifierFlags(m);
+        if (flags & (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) continue;
+        const template = templateOf(m);
+        if (!template) continue;
+        found.push({ fn: m, template, decls: new Set([m]), names: new Set([m.name.text]), label: `${spec.className}.${m.name.text}`, def: m, eventPrefix: prefixOf(m) });
+      }
+      if (found.length === 0) throw new Error(`${spec.file}: ${spec.className} has no public frame sender (event, payload) — upstream changed the node transport`);
+      out.push(...found);
+    }
+    return out;
+  }
+
   /** Where a FUNCTION VALUE expression flows. */
   function flowTargets(expr) {
     const outer = skipOuter(expr);
@@ -1982,6 +2148,11 @@ export function deriveAgentEmissions(input) {
     if (ts.isVariableDeclaration(p) && p.initializer === outer) {
       if (ts.isIdentifier(p.name)) return [{ kind: "var", decl: p }];
       return [{ kind: "opaque", reason: "destructured into a pattern" }];
+    }
+    // The TARGET of an assignment (`this.emit = options.emit`, left side) receives a value;
+    // it does not pass the member anywhere — the value assigned is followed from the right.
+    if (ts.isBinaryExpression(p) && p.left === outer && p.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && p.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      return [{ kind: "assignment-target" }];
     }
     if (ts.isBinaryExpression(p) && p.right === outer && p.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
       const left = unwrapExpr(p.left);
@@ -2070,13 +2241,13 @@ export function deriveAgentEmissions(input) {
   }
 
   /** The value item of a function expression that forwards: give it a name to be found by. */
-  function itemForValue(expr, template, holeFn, chain, via, label) {
+  function itemForValue(expr, template, holeFn, chain, via, label, family = "bus", eventPrefix = undefined) {
     const results = [];
     for (const t of flowTargets(expr)) {
       if (t.kind === "var") {
-        results.push(addItem({ kind: "variable", decls: new Set([t.decl]), names: new Set([t.decl.name.text]), template, holeFn, chain, label, via, def: t.decl }));
+        results.push(addItem({ kind: "variable", decls: new Set([t.decl]), names: new Set([t.decl.name.text]), template, holeFn, chain, label, via, def: t.decl, family, eventPrefix }));
       } else if (t.kind === "decls") {
-        results.push(addItem({ kind: t.how, decls: new Set(t.decls), names: new Set([t.name]), template, holeFn, chain, label, via, def: t.decls[0] }));
+        results.push(addItem({ kind: t.how, decls: new Set(t.decls), names: new Set([t.name]), template, holeFn, chain, label, via, def: t.decls[0], family, eventPrefix }));
       } else if (t.kind === "prop") {
         const decls = new Set([t.prop]);
         const name = t.prop.name.getText();
@@ -2084,7 +2255,7 @@ export function deriveAgentEmissions(input) {
         // The literal itself may be reached through a variable typed by inference.
         const own = checker.getSymbolAtLocation(t.prop.name);
         for (const d of declsOf(own)) decls.add(d);
-        results.push(addItem({ kind: "property", decls, names: new Set([name]), template, holeFn, chain, label, via, def: t.prop }));
+        results.push(addItem({ kind: "property", decls, names: new Set([name]), template, holeFn, chain, label, via, def: t.prop, family, eventPrefix }));
       } else if (t.kind === "arg") {
         const call = t.call;
         const callee = unwrapExpr(call.expression);
@@ -2118,11 +2289,11 @@ export function deriveAgentEmissions(input) {
         if (ts.isConstructorDeclaration(decl) && ts.getModifiers?.(param)?.length) {
           for (const s of checker.getSymbolsOfParameterPropertyDeclaration(param, param.name.text)) for (const d of declsOf(s)) decls.add(d);
         }
-        results.push(addItem({ kind: "parameter", decls, names: new Set([param.name.text]), template, holeFn, chain, label, via, def: param, scope: decl }));
+        results.push(addItem({ kind: "parameter", decls, names: new Set([param.name.text]), template, holeFn, chain, label, via, def: param, scope: decl, family, eventPrefix }));
       } else if (t.kind === "invoke") {
         results.push({ invokeAt: t.call, args: (ctx) => evalArgs(t.call.arguments, ctx) });
       } else if (t.kind === "return") {
-        results.push(addFactory(t.fn, template, holeFn, chain, via, label));
+        results.push(addFactory(t.fn, template, holeFn, chain, via, label, family, eventPrefix));
       } else if (t.kind === "opaque") {
         results.push({ escape: t.reason });
       } else {
@@ -2133,10 +2304,10 @@ export function deriveAgentEmissions(input) {
   }
 
   /** A function that RETURNS a forwarding closure: its calls produce emitters. */
-  function addFactory(fn, template, holeFn, chain, via, label) {
+  function addFactory(fn, template, holeFn, chain, via, label, family = "bus", eventPrefix = undefined) {
     const named = factoryHandle(fn);
     if (!named) return { escape: `factory ${labelOf(fn)} cannot be named` };
-    return addItem({ ...named, kind: "factory", template, holeFn, chain, label: `${labelOf(fn)}()→${label}`, via, factoryFn: fn });
+    return addItem({ ...named, kind: "factory", template, holeFn, chain, label: `${labelOf(fn)}()→${label}`, via, factoryFn: fn, family, eventPrefix });
   }
   function factoryHandle(fn) {
     if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name) {
@@ -2252,11 +2423,17 @@ export function deriveAgentEmissions(input) {
   }
 
   function processCallSite(siteNode, item, argAVs, how) {
+    // A frame sender's own body is the transport (section 6): nothing in it is a site.
+    if (item.family === "sender" && insideSenderRoot(siteNode)) return "root-internal";
     const started = Date.now();
     const eventAV = closeForeignHoles(subst(item.template, item.holeFn, argAVs), siteNode);
     const ms = Date.now() - started;
     if (ms > 1000) trace(`site ${locOf(siteNode)} via ${item.label} took ${ms} ms (${budget.steps} steps)`);
-    const c = classifySite(siteNode, eventAV, item);
+    const c = item.family === "sender" ? classifySenderSite(siteNode, eventAV, item) : classifySite(siteNode, eventAV, item);
+    if (c.kind === "pruned") {
+      siteResults.set(siteNode, { item, kind: "pruned", channel: c.channel, how });
+      return "pruned";
+    }
     if (c.kind === "forward") {
       const wfn = c.wrapperFn;
       const chain = [wrapperLabel(wfn), ...item.chain];
@@ -2270,23 +2447,23 @@ export function deriveAgentEmissions(input) {
         if (ts.isMethodDeclaration(wfn) && ts.isObjectLiteralExpression(wfn.parent)) {
           for (const d of contextualPropertyDecls(wfn.parent, wfn.name.getText())) decls.add(d);
         }
-        handled = [addItem({ kind: "function", decls, names: new Set([wfn.name.getText()]), template: c.template, holeFn: wfn, chain, label: wrapperLabel(wfn), via, def: wfn })];
+        handled = [addItem({ kind: "function", decls, names: new Set([wfn.name.getText()]), template: c.template, holeFn: wfn, chain, label: wrapperLabel(wfn), via, def: wfn, family: item.family, eventPrefix: item.eventPrefix })];
       } else if (ts.isConstructorDeclaration(wfn)) {
         handled = [{ escape: `forwarding inside a constructor (${labelOf(wfn)})` }];
       } else {
-        handled = itemForValue(wfn, c.template, wfn, chain, via, wrapperLabel(wfn));
+        handled = itemForValue(wfn, c.template, wfn, chain, via, wrapperLabel(wfn), item.family, item.eventPrefix);
       }
       const followed = [];
       for (const h of handled) {
         if (h && h.invokeAt) {
           // Invoked right here (IIFE, array callback): the call site is the invocation.
           const args = h.args(ROOT_CTX);
-          const tmpItem = { template: c.template, holeFn: wfn, chain, label: wrapperLabel(wfn) };
+          const tmpItem = { template: c.template, holeFn: wfn, chain, label: wrapperLabel(wfn), family: item.family, eventPrefix: item.eventPrefix };
           processCallSite(h.invokeAt, tmpItem, args, "invoked");
           followed.push({ invoked: locOf(h.invokeAt) });
         } else if (h && h.escape) {
           opaqueEscapes.push({ at: locOf(wfn), function: labelOf(wfn), reason: `wrapper ${labelOf(wfn)} ${h.escape}`, through: item.label });
-          unnamedOpen.push({ label: wrapperLabel(wfn), kind: "unnamed", def: wfn, template: c.template, holeFn: wfn, chain, openVia: [{ at: locOf(wfn), how: `escapes: ${h.escape}` }] });
+          unnamedOpen.push({ label: wrapperLabel(wfn), kind: "unnamed", def: wfn, template: c.template, holeFn: wfn, chain, family: item.family, eventPrefix: item.eventPrefix, openVia: [{ at: locOf(wfn), how: `escapes: ${h.escape}` }] });
           followed.push({ escape: h.escape });
         } else if (h && h.benign) {
           followed.push({ benign: h.benign });
@@ -2295,7 +2472,7 @@ export function deriveAgentEmissions(input) {
       siteResults.set(siteNode, { item, kind: "forward", wrapper: labelOf(wfn), how, followed });
       return "forward";
     }
-    siteResults.set(siteNode, { item, kind: "emission", variants: c.variants, how });
+    siteResults.set(siteNode, { item, kind: "emission", variants: c.variants, pair: c.pair, how });
     return "emission";
   }
 
@@ -2398,7 +2575,323 @@ export function deriveAgentEmissions(input) {
   };
 
   const matched = new Map(); // identifier → item key (completeness)
+  // A member that lives as an object PROPERTY also travels inside its object: `{ ...state }`
+  // carries `state.broadcast`. Where the literal is contextually typed (an argument, an
+  // annotated binding), the property it lands in is the contextual type's own declaration,
+  // which no reference by name links back to the member: those spreads are indexed once,
+  // by the property names their contextual type declares, and linked here — by symbol (the
+  // spread expression's type must carry THIS member's declaration under that name).
+  let spreadIndexCache;
+  const spreadLinked = new Set();
+  const spreadIndex = () => {
+    if (spreadIndexCache) return spreadIndexCache;
+    spreadIndexCache = new Map();
+    for (const sf of sourceFiles) {
+      const visit = (n) => {
+        if (ts.isObjectLiteralExpression(n)) {
+          const spreads = n.properties.filter((p) => ts.isSpreadAssignment(p));
+          if (spreads.length > 0) {
+            let ct;
+            try {
+              ct = checker.getContextualType(n);
+            } catch {
+              ct = undefined;
+            }
+            if (ct) {
+              const names = new Set();
+              for (const c of ct.isUnionOrIntersection?.() ? [ct, ...ct.types] : [ct]) {
+                let props = [];
+                try {
+                  props = checker.getPropertiesOfType(c);
+                } catch {
+                  props = [];
+                }
+                for (const p of props) names.add(p.name);
+              }
+              for (const name of names) {
+                if (!spreadIndexCache.has(name)) spreadIndexCache.set(name, []);
+                spreadIndexCache.get(name).push({ lit: n, spreads });
+              }
+            }
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+    }
+    return spreadIndexCache;
+  };
+  const spreadTypeCache = new Map();
+  const isPropertyLike = (d) => ts.isShorthandPropertyAssignment(d) || ts.isPropertyAssignment(d) || ts.isPropertySignature(d) || ts.isPropertyDeclaration(d) || ts.isMethodSignature(d) || (ts.isMethodDeclaration(d) && ts.isObjectLiteralExpression(d.parent));
+  function linkSpreads(item, names) {
+    if (![...item.decls].some(isPropertyLike)) return;
+    for (const name of names) {
+      for (const { lit, spreads } of spreadIndex().get(name) ?? []) {
+        for (const sp of spreads) {
+          let t = spreadTypeCache.get(sp);
+          if (t === undefined) {
+            try {
+              t = checker.getTypeAtLocation(sp.expression);
+            } catch {
+              t = null;
+            }
+            spreadTypeCache.set(sp, t);
+          }
+          if (!t) continue;
+          let prop;
+          try {
+            prop = checker.getPropertyOfType(t, name);
+          } catch {
+            prop = undefined;
+          }
+          if (!prop || !declsOf(prop).some((d) => item.decls.has(d))) continue;
+          const decls = new Set(contextualPropertyDecls(lit, name));
+          if (decls.size === 0 || [...decls].every((d) => item.decls.has(d))) continue;
+          addItem({ kind: "property", decls, names: new Set([name]), template: item.template, holeFn: item.holeFn, chain: item.chain, label: item.label, via: [{ at: locOf(sp), through: item.label }], def: sp, family: item.family, eventPrefix: item.eventPrefix });
+          spreadLinked.add(item.key);
+        }
+      }
+    }
+  }
+
+  // A member stored in an object SLOT (`prepareClose({ broadcast })`) travels inside that
+  // object, and structural typing lets whoever receives the object under ANOTHER type read
+  // the slot through that type's own declaration: `abortChatRunById(params, …)` reads
+  // `ops.broadcast`, which no reference by name links back to the member. So the object (the
+  // container) is followed through every use, by symbol. A use that hands it to another
+  // binding links that binding's own declaration of the slot, like a typed spread; a use that
+  // could read the slot unseen (a computed key, code outside the analysed sources, a store
+  // into another object, a return) is an ESCAPE. A slot that no use reads, with no escape, is
+  // UNREAD: nothing can call the member through it. The proof decides only for a member no
+  // reference names; the links it finds count for every member.
+  const CONTAINER_BINDINGS_MAX = 256;
+  const CONTAINER_DEPTH_MAX = 16;
+  const containerLinked = new Set();
+  const containerProofs = new Map(); // item key → { reads, escapes, followed }
+  const usesArgumentsCache = new Map();
+  const slotContainerOf = (def) =>
+    def && def.parent && ts.isObjectLiteralExpression(def.parent) && (ts.isPropertyAssignment(def) || ts.isShorthandPropertyAssignment(def) || ts.isSpreadAssignment(def) || ts.isMethodDeclaration(def)) ? def.parent : null;
+  const slotDeclsOfType = (t, name) => {
+    const out = [];
+    if (!t) return out;
+    const candidates = [t];
+    if (t.isUnionOrIntersection?.()) candidates.push(...t.types);
+    for (const c of candidates) {
+      let p;
+      try {
+        p = checker.getPropertyOfType(c, name) ?? checker.getPropertyOfType(checker.getApparentType(c), name);
+      } catch {
+        p = undefined;
+      }
+      if (!p) continue;
+      const ds = declsOf(p);
+      if (ds.length > 0) out.push(...ds);
+      else if (p.links?.syntheticOrigin) out.push(...declsOf(p.links.syntheticOrigin));
+    }
+    return out;
+  };
+  /** The body a call runs, in the analysed sources; a declaration without one (ambient,
+   *  a function-typed property) is outside the analysis. */
+  const calleeBody = (call) => {
+    const decl = calleeDeclaration(call);
+    return decl && decl.body ? decl : null;
+  };
+  const usesArguments = (fn) => {
+    if (usesArgumentsCache.has(fn)) return usesArgumentsCache.get(fn);
+    let found = false;
+    const visit = (n) => {
+      if (found || (isFunctionLike(n) && !ts.isArrowFunction(n))) return;
+      if (ts.isIdentifier(n) && n.text === "arguments") found = true;
+      else ts.forEachChild(n, visit);
+    };
+    ts.forEachChild(fn, visit);
+    usesArgumentsCache.set(fn, found);
+    return found;
+  };
+  /** Where a binding's references can be: its function (a parameter, a local), else its file. */
+  const bindingScopeOf = (id) => {
+    let n = id.parent;
+    while (n && (ts.isBindingElement(n) || ts.isObjectBindingPattern(n) || ts.isArrayBindingPattern(n))) n = n.parent;
+    if (n && ts.isParameter(n)) return n.parent;
+    return enclosingFunction(id) ?? id.getSourceFile();
+  };
+  const exportedAtModuleLevel = (id) => {
+    let n = id.parent;
+    while (n && !ts.isVariableStatement(n) && !ts.isSourceFile(n)) n = n.parent;
+    if (n && ts.isVariableStatement(n) && n.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) return true;
+    return (identifiersOf(id.getSourceFile()).get(id.text) ?? []).some((r) => r.parent && (ts.isExportSpecifier(r.parent) || ts.isExportAssignment(r.parent)));
+  };
+  function followContainer(item) {
+    if (containerProofs.has(item.key)) return;
+    const lit = slotContainerOf(item.def);
+    if (!lit || ![...item.decls].some(isPropertyLike)) return;
+    const slots = [...item.names];
+    const proof = { reads: 0, escapes: [], followed: 0 };
+    containerProofs.set(item.key, proof);
+    const seen = new Set();
+    const work = [{ node: lit, depth: 0 }];
+    const escape = (n, how) => {
+      proof.escapes.push({ at: locOf(n), how });
+    };
+    const linkSlot = (name, decls, at) => {
+      if (decls.length === 0 || decls.every((d) => item.decls.has(d))) return;
+      addItem({ kind: "property", decls: new Set(decls), names: new Set([name]), template: item.template, holeFn: item.holeFn, chain: item.chain, label: item.label, via: [{ at: locOf(at), through: item.label }], def: at, family: item.family, eventPrefix: item.eventPrefix, containerOf: item.key });
+      containerLinked.add(item.key);
+    };
+    const followBinding = (id, depth) => {
+      if (depth > CONTAINER_DEPTH_MAX || proof.followed >= CONTAINER_BINDINGS_MAX) return escape(id, "is followed past the analysis bound");
+      let sym;
+      try {
+        sym = checker.getSymbolAtLocation(id);
+      } catch {
+        sym = undefined;
+      }
+      if (!sym) return escape(id, "is bound where the checker resolves no symbol");
+      if (seen.has(sym)) return;
+      seen.add(sym);
+      proof.followed += 1;
+      const scope = bindingScopeOf(id);
+      if (ts.isSourceFile(scope) && exportedAtModuleLevel(id)) return escape(id, "is exported");
+      for (const ref of identifiersOf(id.getSourceFile()).get(id.text) ?? []) {
+        if (ref === id || ref.pos < scope.pos || ref.end > scope.end || isTypePosition(ref)) continue;
+        let rs;
+        try {
+          rs = ref.parent && ts.isShorthandPropertyAssignment(ref.parent) && ref.parent.name === ref ? checker.getShorthandAssignmentValueSymbol(ref.parent) : checker.getSymbolAtLocation(ref);
+        } catch {
+          rs = undefined;
+        }
+        if (rs === sym) work.push({ node: ref, depth: depth + 1 });
+      }
+    };
+    /** The container enters a binding: its type's own slot is linked, then it is followed. */
+    const intoBinding = (name, depth) => {
+      if (ts.isIdentifier(name)) {
+        let t;
+        try {
+          t = checker.getTypeAtLocation(name);
+        } catch {
+          t = undefined;
+        }
+        for (const slot of slots) linkSlot(slot, slotDeclsOfType(t, slot), name);
+        return followBinding(name, depth);
+      }
+      if (ts.isObjectBindingPattern(name)) {
+        for (const el of name.elements) {
+          if (el.dotDotDotToken) {
+            if (ts.isIdentifier(el.name)) intoBinding(el.name, depth);
+            else escape(el, "is destructured into a nested rest");
+            continue;
+          }
+          const key = el.propertyName ?? el.name;
+          if (!ts.isIdentifier(key) && !ts.isStringLiteral(key)) {
+            escape(el, "is destructured under a computed key");
+            continue;
+          }
+          if (!slots.includes(key.text)) continue;
+          proof.reads += 1;
+          linkSlot(key.text, bindingTargetDecls(el), el);
+        }
+        return;
+      }
+      return escape(name, "is destructured as an array");
+    };
+    /** One use of an expression whose value IS the container. */
+    const classify = (e, depth) => {
+      let outer = e;
+      for (;;) {
+        const p = outer.parent;
+        if (!p) break;
+        if (isWrapperParen(p) || ts.isAwaitExpression(p) || (ts.isConditionalExpression(p) && p.condition !== outer)) {
+          // A cast hands the object to another type like a binding does.
+          if (ts.isAsExpression(p) || ts.isTypeAssertionExpression(p)) {
+            let t;
+            try {
+              t = checker.getTypeAtLocation(p);
+            } catch {
+              t = undefined;
+            }
+            for (const slot of slots) linkSlot(slot, slotDeclsOfType(t, slot), p);
+          }
+          outer = p;
+          continue;
+        }
+        if (ts.isBinaryExpression(p)) {
+          const k = p.operatorToken.kind;
+          if (k === ts.SyntaxKind.QuestionQuestionToken || k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.AmpersandAmpersandToken || (k === ts.SyntaxKind.CommaToken && p.right === outer)) {
+            outer = p;
+            continue;
+          }
+        }
+        break;
+      }
+      const p = outer.parent;
+      if (!p) return escape(outer, "is used where nothing receives it");
+      if (ts.isPropertyAccessExpression(p) && p.expression === outer) {
+        if (slots.includes(p.name.text)) proof.reads += 1;
+        return;
+      }
+      if (ts.isElementAccessExpression(p) && p.expression === outer) {
+        const a = p.argumentExpression;
+        if (a && (ts.isStringLiteralLike(a) || ts.isNumericLiteral(a))) {
+          if (slots.includes(a.text)) proof.reads += 1;
+          return;
+        }
+        return escape(p, "is read under a computed key");
+      }
+      if ((ts.isCallExpression(p) || ts.isNewExpression(p)) && (p.arguments ?? []).includes(outer)) {
+        const i = p.arguments.indexOf(outer);
+        if (p.arguments.slice(0, i).some((a) => ts.isSpreadElement(a))) return escape(p, "is passed after a spread argument");
+        const fn = calleeBody(p);
+        if (!fn) return escape(p, "is passed to code outside the analysed sources");
+        if (usesArguments(fn)) return escape(p, "is passed to a function that reads `arguments`");
+        const param = fn.parameters[i];
+        if (!param || param.dotDotDotToken) return escape(p, "is passed to a rest or absent parameter");
+        // `constructor(private readonly opts: …)`: the class reads `this.opts` beyond the
+        // constructor's scope, where a binding's references are searched.
+        if (ts.getModifiers(param)?.length) return escape(p, "is kept as a class field (a parameter property)");
+        return intoBinding(param.name, depth);
+      }
+      if (ts.isSpreadAssignment(p) && p.expression === outer) {
+        for (const slot of slots) linkSlot(slot, contextualPropertyDecls(p.parent, slot), p);
+        work.push({ node: p.parent, depth: depth + 1 });
+        return;
+      }
+      if (ts.isVariableDeclaration(p) && p.initializer === outer) return intoBinding(p.name, depth);
+      if (ts.isBinaryExpression(p) && p.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        // A write INTO a followed binding is not a use of the object it held.
+        if (p.left === outer) return;
+        if (ts.isIdentifier(p.left)) {
+          let s;
+          try {
+            s = checker.getSymbolAtLocation(p.left);
+          } catch {
+            s = undefined;
+          }
+          const d = declsOf(s)[0];
+          if (d && (ts.isVariableDeclaration(d) || ts.isParameter(d)) && ts.isIdentifier(d.name)) return intoBinding(d.name, depth);
+        }
+        return escape(p, "is stored into another object");
+      }
+      if (ts.isExpressionStatement(p) || ts.isVoidExpression(p) || ts.isTypeOfExpression(p) || ts.isTemplateSpan(p) || (ts.isPrefixUnaryExpression(p) && p.operator === ts.SyntaxKind.ExclamationToken)) return;
+      if ((ts.isIfStatement(p) || ts.isWhileStatement(p) || ts.isDoStatement(p)) && p.expression === outer) return;
+      if (ts.isConditionalExpression(p) && p.condition === outer) return;
+      if (ts.isBinaryExpression(p)) {
+        const k = p.operatorToken.kind;
+        if (k === ts.SyntaxKind.EqualsEqualsEqualsToken || k === ts.SyntaxKind.ExclamationEqualsEqualsToken || k === ts.SyntaxKind.EqualsEqualsToken || k === ts.SyntaxKind.ExclamationEqualsToken || k === ts.SyntaxKind.InstanceOfKeyword || (k === ts.SyntaxKind.InKeyword && p.right === outer)) return;
+      }
+      if (ts.isReturnStatement(p) || (ts.isArrowFunction(p) && p.body === outer)) return escape(outer, "is returned");
+      if (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) || ts.isArrayLiteralExpression(p)) return escape(outer, "is stored into another object");
+      if (ts.isExportAssignment(p) || ts.isExportSpecifier(p)) return escape(outer, "is exported");
+      return escape(outer, `is used as ${ts.SyntaxKind[p.kind]}`);
+    };
+    while (work.length > 0) {
+      const { node, depth } = work.pop();
+      classify(node, depth);
+    }
+  }
   function processItem(item, names) {
+    linkSpreads(item, names);
+    followContainer(item);
     for (const name of names) {
       for (const sf of filesMentioning(name)) {
         const ids = identifiersOf(sf).get(name) ?? [];
@@ -2410,11 +2903,25 @@ export function deriveAgentEmissions(input) {
           budget.steps = 0;
           budget.exhausted = false;
           const p = id.parent;
+          // Inside a frame sender's own body: the transport's business, not a site.
+          if (item.family === "sender" && !isDeclarationName(id) && !isImportExportName(id) && insideSenderRoot(id)) {
+            const sym0 = valueSymOf(id);
+            if (declsOf(sym0).some((d) => item.decls.has(d))) {
+              matched.set(id, { item: item.key, cls: "root-internal" });
+              item.refs += 1;
+              item.rootInternalRefs += 1;
+            }
+            continue;
+          }
           // An object-pattern element: `{ emitAgentEvent }` / `{ emitAgentEvent: local }`.
           if (p && ts.isBindingElement(p) && ts.isObjectBindingPattern(p.parent) && (p.propertyName === id || (!p.propertyName && p.name === id))) {
             if (!bindingTargetDecls(p).some((d) => item.decls.has(d))) continue;
+            // A destructuring READS the member: it is this item's reference. Counted here,
+            // because `matched` keeps one credit per identifier and a shorthand pattern's
+            // identifier is also the new binding's declaration, which takes it next.
+            item.refs += 1;
             if (ts.isIdentifier(p.name)) {
-              addItem({ kind: "destructured", decls: new Set([p]), names: new Set([p.name.text]), template: item.template, holeFn: item.holeFn, chain: [`${p.name.text}=${item.label}`, ...item.chain.slice(1)], label: `${p.name.text}=${item.label}`, via: [{ at: locOf(p), through: item.label }], def: p });
+              addItem({ kind: "destructured", decls: new Set([p]), names: new Set([p.name.text]), template: item.template, holeFn: item.holeFn, chain: [`${p.name.text}=${item.label}`, ...item.chain.slice(1)], label: `${p.name.text}=${item.label}`, via: [{ at: locOf(p), through: item.label }], def: p, family: item.family, eventPrefix: item.eventPrefix });
               matched.set(id, { item: item.key, cls: "destructured" });
             } else {
               opaqueEscapes.push({ at: locOf(p), function: labelOf(enclosingFunction(p)), reason: `${item.label} destructured into a nested pattern`, through: item.label });
@@ -2448,21 +2955,22 @@ export function deriveAgentEmissions(input) {
               if (item.kind === "factory") {
                 // The call PRODUCES an emitter: follow where its result goes.
                 const fnTemplate = subst(item.template, item.factoryFn, evalArgs(call.arguments, ROOT_CTX));
-                const res = itemForValue(call, fnTemplate, item.holeFn, item.chain, [{ at: locOf(call), through: item.label }], `${item.label}@${fileOf(call)}`);
+                const res = itemForValue(call, fnTemplate, item.holeFn, item.chain, [{ at: locOf(call), through: item.label }], `${item.label}@${fileOf(call)}`, item.family, item.eventPrefix);
                 const esc = res.filter((r) => r && r.escape);
                 for (const e of esc) {
                   opaqueEscapes.push({ at: locOf(call), function: labelOf(enclosingFunction(call)), reason: `emitter produced by ${item.label} ${e.escape}`, through: item.label });
-                  unnamedOpen.push({ label: `${item.label}@${locOf(call)}`, kind: "factory-result", def: call, template: fnTemplate, holeFn: item.holeFn, chain: item.chain, openVia: [{ at: locOf(call), how: `escapes: ${e.escape}` }] });
+                  unnamedOpen.push({ label: `${item.label}@${locOf(call)}`, kind: "factory-result", def: call, template: fnTemplate, holeFn: item.holeFn, chain: item.chain, family: item.family, eventPrefix: item.eventPrefix, openVia: [{ at: locOf(call), how: `escapes: ${e.escape}` }] });
                 }
-                for (const r of res.filter((x) => x && x.invokeAt)) processCallSite(r.invokeAt, { template: fnTemplate, holeFn: item.holeFn, chain: item.chain, label: item.label }, r.args(ROOT_CTX), "invoked");
+                for (const r of res.filter((x) => x && x.invokeAt)) processCallSite(r.invokeAt, { template: fnTemplate, holeFn: item.holeFn, chain: item.chain, label: item.label, family: item.family, eventPrefix: item.eventPrefix }, r.args(ROOT_CTX), "invoked");
                 cls = esc.length ? "factory-call-escape" : "factory-call";
               } else {
                 const args = evalArgs(call.arguments, ROOT_CTX);
-                cls = processCallSite(call, item, args, "call") === "emission" ? "emission" : "forward";
+                const r = processCallSite(call, item, args, "call");
+                cls = r === "emission" ? "emission" : r === "pruned" ? "other-channel" : r === "root-internal" ? "root-internal" : "forward";
               }
             } else {
               const expr = id.parent && ts.isPropertyAccessExpression(id.parent) && id.parent.name === id ? id.parent : id;
-              const res = itemForValue(expr, item.template, item.holeFn, item.chain, [{ at: locOf(id), through: item.label }], item.label);
+              const res = itemForValue(expr, item.template, item.holeFn, item.chain, [{ at: locOf(id), through: item.label }], item.label, item.family, item.eventPrefix);
               const kinds = new Set();
               for (const r of res) {
                 if (r && r.escape) {
@@ -2479,6 +2987,7 @@ export function deriveAgentEmissions(input) {
             }
           }
           matched.set(id, { item: item.key, cls });
+          if (cls !== "declaration" && cls !== "import-export" && cls !== "type-only") item.refs += 1;
         }
       }
     }
@@ -2499,10 +3008,28 @@ export function deriveAgentEmissions(input) {
   // analysed sources. Reported as OPEN — never dropped.
   const referencedItems = new Set();
   for (const m of matched.values()) if (m.cls !== "declaration") referencedItems.add(m.item);
+  for (const k of spreadLinked) referencedItems.add(k);
+  for (const k of containerLinked) referencedItems.add(k);
+  // A slot its container's every use leaves unread is not open: nothing calls the member
+  // there. Listed, with how many bindings the proof followed.
+  const unreadSlots = [];
   for (const it of items.values()) {
-    if (it.kind === "root" || referencedItems.has(it.key)) continue;
+    if (it.kind === "root" || referencedItems.has(it.key) || it.refs > 0) continue;
+    // A slot the container following linked: the member that put the object there follows
+    // it, and every read through this declaration is a reference by name.
+    if (it.containerOf) continue;
+    const proof = containerProofs.get(it.key);
+    if (proof && proof.escapes.length === 0 && proof.reads === 0) {
+      unreadSlots.push({ family: it.family, label: it.label, slot: [...it.names].sort().join(","), at: it.def ? locOf(it.def) : "?", followed: proof.followed });
+      continue;
+    }
     it.openVia.push({ at: it.def ? locOf(it.def) : "?", how: "no reference by name in the analysed sources (computed access, dynamic table, or an external caller)" });
+    for (const e of proof?.escapes ?? []) it.openVia.push({ at: e.at, how: `its object ${e.how}` });
+    if (proof && proof.escapes.length === 0 && proof.reads > 0) {
+      it.openVia.push({ at: it.def ? locOf(it.def) : "?", how: "its object is read where the slot has no declaration to follow" });
+    }
   }
+  unreadSlots.sort((a, b) => cmp(`${a.at}|${a.label}`, `${b.at}|${b.label}`));
   // Members a CONTRACT exposes: an exported interface / type member whose implementation
   // forwards — callers outside the analysed sources (plugins) reach it through the type.
   for (const it of items.values()) {
@@ -2520,14 +3047,14 @@ export function deriveAgentEmissions(input) {
   const emissions = [];
   const opaqueRows = [];
   for (const [site, res] of siteResults) {
-    if (res.kind !== "emission") continue;
+    if (res.kind !== "emission" || res.item.family !== "bus") continue;
     buildRows({ site, variants: res.variants, fnLabel: labelOf(enclosingFunction(site)), emitter: res.item.label, chain: res.item.chain, how: res.how });
   }
   // OPEN rows: a member whose callers are not all in reach (public surface, contract, no
   // reference by name, an escape) still emits what its own template fixes — a literal
   // stream, the keys it adds. Its parameters are closed by their declared types; what the
   // caller supplies beyond that is an opaque contribution, never a silent gap.
-  const openSources = [...[...items.values()].filter((it) => it.kind !== "root" && it.openVia.length > 0), ...unnamedOpen];
+  const openSources = [...[...items.values()].filter((it) => it.kind !== "root" && it.openVia.length > 0), ...unnamedOpen].filter((it) => (it.family ?? "bus") === "bus");
   for (const it of openSources) {
     if (!it.def) continue;
     const closed = closeHolesOf(it.template, () => true);
@@ -2690,47 +3217,12 @@ export function deriveAgentEmissions(input) {
     const unresolved = [];
     const rewrites = [];
     const removals = [];
-    const senderRows = { fabricated, unresolved };
     for (const sf of sourceFiles) {
       const rel = relOfFile(sf);
       const scope = rel === ROOT_SOURCE ? "bus" : rel.startsWith(GATEWAY_DIR) ? "gateway" : null;
       if (!scope) continue;
       const row = (n, extra) => ({ scope, file: rel, line: lineOf(n), function: labelOf(enclosingFunction(n)), guard: guardOf(n), ...extra });
       const visit = (n) => {
-        if (scope === "gateway" && (ts.isCallExpression(n) || ts.isNewExpression(n)) && n.arguments) {
-          n.arguments.forEach((a, i) => {
-            const u = unwrapExpr(a);
-            if (!u || !ts.isStringLiteral(u) || u.text !== "agent") return;
-            // The event-name position of a sender: the callee's parameter at this index
-            // is named `event` (GatewayBroadcastFn, GatewayBroadcastToConnIdsFn, the
-            // node sender and the live-payload helper all spell it so).
-            let params;
-            try {
-              params = checker.getResolvedSignature(n)?.parameters;
-            } catch {
-              params = undefined;
-            }
-            if (params?.[i]?.name !== "event") return;
-            // The payload is the parameter the sender NAMES `payload` — not the next
-            // argument: `sendLivePayload(event, sessionKey, payload)` puts a session key
-            // there, which made its payload invisible.
-            const named = params.findIndex((p) => p.name === "payload");
-            const payloadIndex = named >= 0 ? named : i + 1;
-            const payload = n.arguments[payloadIndex];
-            const site = { file: rel, line: lineOf(n), function: labelOf(enclosingFunction(n)), sender: unwrapExpr(n.expression).getText().replace(/\s+/g, "") };
-            const text = payload ? payload.getText().replace(/\s+/g, " ").slice(0, 80) : null;
-            if (!payload) {
-              unresolved.push({ ...site, payload: null, via: [], reason: `no argument at the sender's payload position (#${payloadIndex})` });
-              return;
-            }
-            const origins = [];
-            // One evaluation budget per sender site, as per emission site.
-            budget.steps = 0;
-            budget.exhausted = false;
-            classifySenderPayload(ev(payload, ROOT_CTX), { site, at: site, text, via: [], depth: 0, visited: new Set(), origins, rows: senderRows });
-            if (origins.length > 0) relays.push({ ...site, payload: text, origins: dedupeRows(origins).sort((x, y) => cmp(JSON.stringify(x), JSON.stringify(y))) });
-          });
-        }
         // `data: { ...e.data, k }` — keys added to a copy of an event's data.
         if (ts.isPropertyAssignment(n) && n.name.getText() === "data" && ts.isObjectLiteralExpression(unwrapExpr(n.initializer))) {
           const added = addedKeys(unwrapExpr(n.initializer), (x) => isAgentEventDataExpr(x) || isDataCopy(x));
@@ -2772,64 +3264,289 @@ export function deriveAgentEmissions(input) {
       visit(sf);
     }
     const sortRows = (rows) => dedupeRows(rows).sort((a, b) => cmp(`${a.file}:${String(a.line).padStart(6, "0")}:${JSON.stringify(a)}`, `${b.file}:${String(b.line).padStart(6, "0")}:${JSON.stringify(b)}`));
-    return { fabricated: sortRows(fabricated), relays: sortRows(relays), unresolved: sortRows(unresolved), dataRewrites: sortRows(rewrites), dataRemovals: sortRows(removals) };
+    // The SENDERS, discovered by symbol (section 3, family "sender"): every site that reaches
+    // a frame sender with an event on the `agent` channel — or one nobody can rule out —
+    // classified on its final payload.
+    const rewriteKeys = new Set(rewrites.flatMap((r) => r.added ?? []));
+    const channels = { agent: 0, other: 0, undetermined: 0 };
+    const rows = { fabricated, unresolved, relays };
+    for (const [site, r] of siteResults) {
+      if (r.item.family !== "sender") continue;
+      if (r.kind === "pruned") {
+        channels.other += 1;
+        continue;
+      }
+      if (r.kind !== "emission") continue;
+      budget.steps = 0;
+      budget.exhausted = false;
+      classifyFinalSend({ node: site, at: { file: fileOf(site), line: lineOf(site), function: labelOf(enclosingFunction(site)) }, sender: r.item.label, chain: r.item.chain, text: site.getText().replace(/\s+/g, " ").slice(0, 80) }, r.pair, r.item, null, rows, rewriteKeys, channels);
+    }
+    const openSenders = [];
+    const external = (how) => /^member of .*, a type the public surface exposes$|^exported by the public surface$|^exported as .* by the public module /.test(how);
+    for (const it of [...items.values(), ...unnamedOpen]) {
+      if ((it.family ?? "bus") !== "sender" || it.openVia.length === 0) continue;
+      // Reached only from inside a sender's own body: the transport's, not an entry.
+      if (it.refs > 0 && it.refs === it.rootInternalRefs) continue;
+      if (!it.def) continue;
+      budget.steps = 0;
+      budget.exhausted = false;
+      const closed = closeHolesOf(it.template, () => true);
+      const open = dedupe(it.openVia.map((o) => `${o.how} (${o.at})`)).sort();
+      // No reference inside the program is what an externally called member looks like:
+      // with an external reason, it is not a gap of the analysis. Where its object went
+      // (`its object …`, the container following) only says how it leaves the program.
+      const unreferenced = (how) => how.startsWith("no reference by name") || how.startsWith("its object ");
+      const onlyExternal = it.openVia.some((o) => external(o.how)) && it.openVia.every((o) => external(o.how) || unreferenced(o.how));
+      const channel = eventChannel(getProp(closed, "event"), it.eventPrefix);
+      if (onlyExternal || it.kind === "root") {
+        // Callers outside the analysed sources (plugins): what they send is theirs and
+        // unknowable here — an OPEN entry, listed with what the sender itself fixes.
+        if (channel !== "other") openSenders.push({ label: it.label, kind: it.kind, at: locOf(it.def), open, channel });
+        continue;
+      }
+      classifyFinalSend({ node: it.def, at: { file: fileOf(it.def), line: lineOf(it.def), function: it.label }, sender: it.label, chain: it.chain, text: null }, closed, it, open, rows, rewriteKeys, channels);
+    }
+    const senders = [...items.values()]
+      .filter((it) => it.family === "sender")
+      .map((it) => ({ kind: it.kind, label: it.label, names: [...it.names].sort(), at: it.def ? locOf(it.def) : null, chain: it.chain, ...(it.eventPrefix ? { eventPrefix: it.eventPrefix } : {}), ...(it.openVia.length ? { open: dedupe(it.openVia.map((o) => o.how)).sort() } : {}) }))
+      .sort((a, b) => cmp(`${a.at}|${a.label}`, `${b.at}|${b.label}`));
+    return {
+      fabricated: sortRows(fabricated),
+      relays: sortRows(relays),
+      unresolved: sortRows(unresolved),
+      dataRewrites: sortRows(rewrites),
+      dataRemovals: sortRows(removals),
+      senders,
+      senderSites: channels,
+      openSenders: openSenders.sort((a, b) => cmp(`${a.at}|${a.label}`, `${b.at}|${b.label}`)),
+    };
   }
 
   // ---- what a gateway sender puts on the `agent` channel --------------------------------
   //
-  // Classified on the EVALUATED payload, whatever its syntax: a literal passed through a
-  // binding, a helper's parameter or a conditional is the same frame as one written inline
-  // (the review's `const extra = {…}; broadcast("agent", extra)` was a relay before). The
-  // stream decides, read the way an object spread reads it — the LAST entry that can set
-  // it wins, and whether a spread can set it is asked of its declared type first:
+  // The SENDERS are discovered by symbol, by the same machinery as the bus emitters
+  // (section 3, family "sender"), from the frame senders the gateway's transports expose
+  // (SENDER_ROOT_MODULES / SENDER_ROOT_CLASSES): every value derived from one — a wrapper
+  // forwarding its parameters, a property it is stored in, a parameter it is passed to,
+  // whatever its name or its type annotation — is followed to its calls, and each call's
+  // (event, payload) is the root's template with the call's arguments SUBSTITUTED: the
+  // payload's final form, with every spread, field replacement and Object.assign the
+  // wrappers applied (second review: following only the stream's origin dropped a
+  // helper's `data` replacement). A site whose event is a literal other than `agent` is
+  // another channel; one whose event cannot be evaluated is UNRESOLVED, never skipped.
+  // On the agent channel, the payload's stream decides, read the way an object spread
+  // reads it — the LAST entry that can set it wins, and whether a spread can set it is
+  // asked of its declared type first:
   //   - a literal                → a frame the gateway FABRICATES (`fabricated`, with its keys);
-  //   - the `stream` of a value whose declared type is an agent event, passed on unchanged:
-  //       · a parameter          → the helper's CALLERS are classified the same way (a literal
-  //                                one passes in is fabricated); where the helper escapes
-  //                                (passed as a value, exported, unnamed) the parameter is an
-  //                                ENTRY of the relay, listed as its origin;
-  //       · any other value      → a TYPED origin of the relay (read from state, returned by
-  //                                a call nobody can inline): listed, since nothing proves it
-  //                                came from the bus;
+  //   - the `stream` of a value whose declared type is an agent event, passed on unchanged
+  //                              → a RELAY, its origins named (the declared type it is known
+  //                                by, and — for a sender value that escapes — where);
+  //                                its `data` must be that event's own, or its own plus keys
+  //                                a recorded rewrite adds: anything else is the gateway
+  //                                rebuilding the frame, and unresolved;
   //   - anything else (a computed or absent stream, an untyped payload, a bound reached)
   //                              → `unresolved`, which the vendoring refuses.
-  const MAX_SENDER_CALLER_DEPTH = 4;
   const viaOf = (at) => `${at.file}:${at.line} \`${at.function}\``;
-  function classifySenderPayload(av, c) {
-    const variants = eventVariants(av).filter((v) => v.k !== "absent");
-    if (variants.length === 0) {
-      c.rows.unresolved.push({ ...c.site, ...locFields(c.at), payload: c.text, via: c.via.map(viaOf), reason: "the payload evaluates to nothing on every path" });
+  /** The channel an evaluated event names: "agent", "other" (only literals that are not
+   *  `agent`, or a prefix the root's own guard imposes) or "undetermined". */
+  function eventChannel(event, prefix) {
+    if (prefix !== undefined && !"agent".startsWith(prefix)) return "other";
+    let agent = false;
+    let undetermined = false;
+    for (const v of scalarValues(event)) {
+      if (v.absent) continue;
+      if (typeof v.value === "string") {
+        if (v.value === "agent") agent = true;
+        continue;
+      }
+      if (v.pattern !== undefined) {
+        const re = new RegExp(`^${v.pattern.split("*").map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+        if (re.test("agent")) undetermined = true;
+        continue;
+      }
+      undetermined = true;
+    }
+    return undetermined ? "undetermined" : agent ? "agent" : "other";
+  }
+  /** A sender call: another channel (pruned), a forwarding wrapper, or a site to classify. */
+  function classifySenderSite(siteNode, pair, item) {
+    const event = getProp(pair, "event");
+    if (eventChannel(event, item.eventPrefix) === "other") return { kind: "pruned", channel: "other" };
+    const relevant = new Set();
+    holeFns(event, relevant);
+    for (const v of eventVariants(getProp(pair, "payload"))) {
+      holeFns(getProp(v, "stream"), relevant);
+      dataShapeHoles(getProp(v, "data"), relevant);
+    }
+    if (relevant.size > 0) {
+      let fn = enclosingFunction(siteNode);
+      while (fn && !relevant.has(fn)) fn = enclosingFunction(fn);
+      if (fn) return { kind: "forward", wrapperFn: fn, template: pair };
+    }
+    return { kind: "emission", variants: [], pair };
+  }
+  /** Classify one final (event, payload) — a site's, or an escaping sender's closed one. */
+  function classifyFinalSend(c, pair, item, open, rows, rewriteKeys, channels) {
+    const event = getProp(pair, "event");
+    const channel = eventChannel(event, item.eventPrefix);
+    if (channel === "other") {
+      channels.other += 1;
       return;
     }
-    for (const v of variants) {
-      const leaves = streamLeaves(v, 0, false);
-      if (leaves.length === 0) leaves.push({ kind: "unresolved", reason: "a frame that sets no stream" });
-      for (const leaf of leaves) {
-        if (leaf.kind === "literal") pushFabricated(v, leaf.value, c);
-        else if (leaf.kind === "parameter") followParameter(leaf.hole, leaf.type, c);
-        else if (leaf.kind === "typed") c.origins.push({ kind: "typed", type: leaf.type, at: leaf.at ?? null, via: c.via.map(viaOf) });
-        else c.rows.unresolved.push({ ...c.site, ...locFields(c.at), payload: c.text, via: c.via.map(viaOf), reason: leaf.reason });
+    const base = { ...c.at, sender: c.sender, payload: c.text, ...(open ? { open } : {}) };
+    if (channel === "undetermined") {
+      channels.undetermined += 1;
+      rows.unresolved.push({ ...base, reason: `the event is not evaluated: ${scalarValues(event).map((v) => v.reason ?? v.pattern ?? JSON.stringify(v.value)).join("; ")}` });
+      return;
+    }
+    channels.agent += 1;
+    const origins = [];
+    const payload = getProp(pair, "payload");
+    const originOf = (leaf) => ({ kind: "typed", type: leaf.type, ...(leaf.at ? { at: leaf.at } : {}), ...(open ? { entries: open } : {}) });
+    const isRelayLeaf = (leaf) => leaf.kind === "typed" || leaf.kind === "parameter";
+    // The whole payload first: a pure relay needs no distribution into variants (which a
+    // payload built through many wrappers can multiply past the evaluator's bound).
+    const whole = streamLeaves(payload, 0, false);
+    if (whole.length === 0) {
+      rows.unresolved.push({ ...base, reason: payload.k === "absent" ? "the payload evaluates to nothing on every path" : "a frame that sets no stream" });
+      return;
+    }
+    if (whole.every((l) => isRelayLeaf(l) || l.kind === "unresolved")) {
+      for (const leaf of whole) {
+        if (isRelayLeaf(leaf)) origins.push(originOf(leaf));
+        else rows.unresolved.push({ ...base, reason: leaf.reason });
+      }
+      if (origins.length > 0) {
+        const fault = relayDataFault(payload, rewriteKeys);
+        if (fault) rows.unresolved.push({ ...base, reason: fault });
+      }
+    } else {
+      // A literal stream somewhere: each variant, so its keys are its own.
+      const variants = eventVariants(payload).filter((v) => v.k !== "absent");
+      for (const v of variants) {
+        const leaves = streamLeaves(v, 0, false);
+        if (leaves.length === 0) leaves.push({ kind: "unresolved", reason: "a frame that sets no stream" });
+        let relayed = false;
+        for (const leaf of leaves) {
+          if (leaf.kind === "literal") pushFabricated(v, leaf.value, c, rows);
+          else if (isRelayLeaf(leaf)) {
+            relayed = true;
+            origins.push(originOf(leaf));
+          } else rows.unresolved.push({ ...base, reason: leaf.reason });
+        }
+        if (relayed) {
+          const fault = relayDataFault(v, rewriteKeys);
+          if (fault) rows.unresolved.push({ ...base, reason: fault });
+        }
       }
     }
+    if (origins.length > 0) rows.relays.push({ ...c.at, sender: c.sender, payload: c.text, origins: dedupeRows(origins).sort((x, y) => cmp(JSON.stringify(x), JSON.stringify(y))) });
   }
-  const locFields = (at) => ({ file: at.file, line: at.line, function: at.function });
-  function pushFabricated(v, stream, c) {
+  function pushFabricated(v, stream, c, rows) {
     for (const d of dataVariants(getProp(v, "data"))) {
       const { keys, opaques } = keysOf(d);
       const phases = keys.has("phase") ? scalarValues(getProp(d, "phase")) : [{ value: null, absent: true }];
       for (const ph of phases) {
-        c.rows.fabricated.push({
+        rows.fabricated.push({
           stream,
           phase: ph.absent ? null : ph.value ?? null,
           phaseAbsent: !!ph.absent,
           keys: [...keys.keys()].sort(),
           dataOpaque: opaques.map((o) => ({ reason: o.reason, origin: o.at ?? null })),
-          ...locFields(c.at),
-          sender: c.site.sender,
-          ...(c.via.length > 0 ? { via: c.via.map(viaOf) } : {}),
+          ...c.at,
+          sender: c.sender,
+          ...(c.chain && c.chain.length > 1 ? { via: c.chain.slice(1) } : {}),
         });
       }
     }
+  }
+  /** A RELAYED variant's `data`: the event's own (inherited, or a copy of it), or its own
+   *  plus keys a recorded rewrite adds — else why not. A relay is the bus event; a frame
+   *  whose data the gateway replaces is not one, and its final form is not known. */
+  function relayDataFault(v, rewriteKeys) {
+    for (const leaf of dataLeaves(v, 0)) {
+      if (leaf.kind === "inherited") continue;
+      if (leaf.kind === "additions") {
+        for (const k of leaf.keys) {
+          if (k === "phase") return "the gateway rewrites a relayed event's phase";
+          if (!rewriteKeys.has(k)) return `the gateway adds \`${k}\` to a relayed event's data, a rewrite the inventory does not record`;
+        }
+        continue;
+      }
+      return leaf.reason;
+    }
+    return null;
+  }
+  const isEventDataNode = (n) => !!n && (isAgentEventDataExpr(n) || isDataCopy(n));
+  function dataLeaves(av, depth) {
+    if (depth > 16) return [{ kind: "unresolved", reason: "data provenance nested beyond 16 levels (evaluator bound)" }];
+    switch (av.k) {
+      case "absent":
+        return [];
+      case "union":
+        return av.opts.flatMap((o) => dataLeaves(o, depth + 1));
+      case "guard":
+        return [...dataLeaves(av.t, depth + 1), ...dataLeaves(av.f, depth + 1)];
+      case "obj": {
+        const out = [];
+        for (let i = av.entries.length - 1; i >= 0; i -= 1) {
+          const e = av.entries[i];
+          if (e.t === "prop") {
+            if (e.key !== "data") continue;
+            out.push(...explicitDataLeaves(e));
+            if (!e.opt) return out;
+          } else if (e.t === "keyopaque") {
+            out.push({ kind: "unresolved", reason: `a computed key (${e.text}) may set a relayed event's data` });
+            return out;
+          } else if (e.t === "spread") {
+            const sets = spreadSets(e, "data");
+            if (sets === "no") continue;
+            const sub = dataLeaves(e.v, depth + 1);
+            out.push(...sub);
+            if (sets === "always" && sub.length > 0) return out;
+          }
+        }
+        return out;
+      }
+      case "tobj":
+        if (isAgentEventType(av.type)) return [{ kind: "inherited" }];
+        return [{ kind: "unresolved", reason: `a relayed event's data from a value of declared type ${typeStr(av.type)}` }];
+      case "hole":
+      case "call":
+        return [{ kind: "inherited" }];
+      default:
+        return [{ kind: "unresolved", reason: `a relayed event's data is ${describe(av)}` }];
+    }
+  }
+  /** An explicit `data:` entry of a relayed frame: the event's own (re-stated, or a copy),
+   *  or a literal spreading it plus added keys. */
+  function explicitDataLeaves(e) {
+    if (isEventDataNode(e.init)) return [{ kind: "inherited" }];
+    const v = propVal(e);
+    const objs = v.k === "union" ? v.opts : [v];
+    const out = [];
+    for (const o of objs) {
+      if (o.k === "absent") continue;
+      if (o.k !== "obj") {
+        out.push({ kind: "unresolved", reason: `the gateway replaces a relayed event's data with ${describe(o)}` });
+        continue;
+      }
+      const spreads = o.entries.filter((x) => x.t === "spread");
+      if (!spreads.some((x) => isEventDataNode(x.node))) {
+        out.push({ kind: "unresolved", reason: "the gateway replaces a relayed event's data with an object of its own" });
+        continue;
+      }
+      if (spreads.some((x) => !isEventDataNode(x.node))) {
+        out.push({ kind: "unresolved", reason: "a relayed event's data is merged with a spread that is not its own" });
+        continue;
+      }
+      if (o.entries.some((x) => x.t === "keyopaque")) {
+        out.push({ kind: "unresolved", reason: "a computed key in a relayed event's data" });
+        continue;
+      }
+      out.push({ kind: "additions", keys: o.entries.filter((x) => x.t === "prop").map((x) => x.key) });
+    }
+    return out;
   }
   /** Is `t` (every alternative of it) an agent event — a type with `stream` and `data`? */
   const isAgentEventType = (t0) => {
@@ -2906,7 +3623,7 @@ export function deriveAgentEmissions(input) {
   /** Where the `stream` of one event variant comes from: literal, parameter, typed, or
    *  unresolved leaves (an object can mix them across its alternatives). Empty when
    *  nothing sets it — for a SPREAD (`nested`) that means "falls through to the entries
-   *  before it", and only the whole frame is refused for it (classifySenderPayload). */
+   *  before it", and only the whole frame is refused for it (classifyFinalSend). */
   function streamLeaves(av, depth, nested) {
     if (depth > 16) return [{ kind: "unresolved", reason: "stream provenance nested beyond 16 levels (evaluator bound)" }];
     switch (av.k) {
@@ -2998,83 +3715,6 @@ export function deriveAgentEmissions(input) {
       }
     };
     visit(v);
-    return out;
-  }
-  /** A parameter the stream is inherited from: classify what its callers pass, and name
-   *  the helper as an ENTRY where callers can reach it unseen. */
-  function followParameter(h, type, c) {
-    const key = `${locOf(h.fn)}#${h.idx}#${h.path.join(".")}`;
-    if (c.visited.has(key)) return;
-    const visited = new Set([...c.visited, key]);
-    const refs = functionReferences(h.fn);
-    const param = `${h.param.name.getText().slice(0, 40)}${h.path.length ? `.${h.path.join(".")}` : ""}`;
-    if (refs.escapes.length > 0 || refs.calls.length === 0) {
-      c.origins.push({
-        kind: "parameter",
-        function: labelOf(h.fn),
-        parameter: param,
-        type,
-        entries: refs.escapes.length > 0 ? refs.escapes : [{ at: locOf(h.fn), how: "no reference in the analysed sources" }],
-        via: c.via.map(viaOf),
-      });
-    }
-    if (refs.calls.length === 0) return;
-    if (c.depth >= MAX_SENDER_CALLER_DEPTH) {
-      c.rows.unresolved.push({ ...c.site, ...locFields(c.at), payload: c.text, via: c.via.map(viaOf), reason: `the callers of ${labelOf(h.fn)} lie beyond ${MAX_SENDER_CALLER_DEPTH} levels (classifier bound)` });
-      return;
-    }
-    for (const call of refs.calls) {
-      const at = { file: fileOf(call), line: lineOf(call), function: labelOf(enclosingFunction(call)) };
-      const arg = call.arguments[h.idx];
-      const argAV = arg ? ev(arg, ROOT_CTX) : h.param.initializer ? ev(h.param.initializer, ROOT_CTX) : ABSENT;
-      classifySenderPayload(getPath(argAV, h.path), {
-        ...c,
-        at,
-        text: arg ? arg.getText().replace(/\s+/g, " ").slice(0, 80) : null,
-        via: [...c.via, c.at],
-        depth: c.depth + 1,
-        visited,
-      });
-    }
-  }
-  /** The direct calls of a function, and the references through which it ESCAPES. */
-  const referencesCache = new Map();
-  function functionReferences(fn) {
-    if (referencesCache.has(fn)) return referencesCache.get(fn);
-    let nameNode;
-    if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name && ts.isIdentifier(fn.name)) nameNode = fn.name;
-    else {
-      const p = skipOuter(fn).parent;
-      if (p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) && p.initializer && unwrapExpr(p.initializer) === fn) nameNode = p.name;
-    }
-    let out;
-    if (!nameNode || ts.isMethodDeclaration(fn)) {
-      out = { calls: [], escapes: [{ at: locOf(fn), how: nameNode ? "a method: its callers go through its object" : "not bound to a name: its callers are whoever receives it" }] };
-    } else {
-      const sym = resolveSym(nameNode);
-      const calls = [];
-      const escapes = [];
-      for (const sf of filesMentioning(nameNode.text)) {
-        if (!sfByRel.has(relOfFile(sf))) continue;
-        for (const id of identifiersOf(sf).get(nameNode.text) ?? []) {
-          if (id === nameNode || valueSymOf(id) !== sym) continue;
-          const p = id.parent;
-          if (p && (ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isImportClause(p) || ts.isNamespaceImport(p))) continue;
-          const outer = skipOuter(id);
-          if (outer.parent && ts.isCallExpression(outer.parent) && outer.parent.expression === outer) {
-            calls.push(outer.parent);
-            continue;
-          }
-          escapes.push({ at: locOf(id), how: `referenced as a value (${ts.SyntaxKind[outer.parent?.kind] ?? "?"})` });
-        }
-      }
-      const decl = ts.isFunctionDeclaration(fn) ? fn : nameNode.parent;
-      const exported = !!decl && (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0;
-      if (exported) escapes.push({ at: locOf(nameNode), how: "exported: callers outside the analysed sources are unseen" });
-      calls.sort((a, b) => cmp(locOf(a), locOf(b)));
-      out = { calls, escapes: dedupeRows(escapes).sort((a, b) => cmp(`${a.at}|${a.how}`, `${b.at}|${b.how}`)) };
-    }
-    referencesCache.set(fn, out);
     return out;
   }
   /** The keys an object literal adds on top of a spread `isBase` accepts; null when it
@@ -3429,8 +4069,8 @@ export function deriveAgentEmissions(input) {
   // is only what its own template fixes; the rest is the caller's.
   const openEntries = [];
   for (const it of items.values()) {
-    if (it.openVia.length === 0) continue;
-    const callerHole = (v) => holeFns(v).has(it.holeFn);
+    if (it.openVia.length === 0 || it.family !== "bus") continue;
+    const callerHole = (v) => [...holeFns(v)].some((f) => ownsHole(it.holeFn, f));
     const shapes = [];
     const seenShape = new Set();
     for (const v of eventVariants(it.template)) {
@@ -3473,6 +4113,7 @@ export function deriveAgentEmissions(input) {
 
   // ---- 9. assemble ----------------------------------------------------------------------
   const family = [...items.values()]
+    .filter((it) => it.family === "bus")
     .map((it) => ({
       key: it.key,
       kind: it.kind,
@@ -3503,7 +4144,7 @@ export function deriveAgentEmissions(input) {
       case "absent":
         return "∅";
       case "hole":
-        return `${v.fn === fn ? "arg" : `arg(${labelOf(v.fn)})`}${v.idx}${v.path.length ? `.${v.path.join(".")}` : ""}`;
+        return `${ownsHole(fn, v.fn) ? "arg" : `arg(${labelOf(v.fn)})`}${v.idx}${v.path.length ? `.${v.path.join(".")}` : ""}`;
       case "union":
         return v.opts.map((o) => describeShort(o, fn)).join(" | ");
       case "obj":
@@ -3600,6 +4241,9 @@ export function deriveAgentEmissions(input) {
     opaque: opaqueOut,
     escapes: escapesOut,
     openEntries,
+    // Members stored in an object slot that no use of the object reads (the object followed
+    // through every use, none escaping): dead there, not open.
+    unreadSlots,
     transformations,
     chatContentParts,
     completeness: {
@@ -3746,7 +4390,7 @@ function main(argv) {
   process.stderr.write(
     `emissions: ${inv.emissions.length} rows, ${Object.keys(inv.summary).length} streams; family: ${inv.family.length}; ` +
       `opaque: ${inv.opaque.length}; escapes: ${inv.escapes.length}; identifiers ${c.identifiers} = matched ${c.matched} + homonyms ${c.homonyms} (unaccounted ${c.unaccounted}); ` +
-      `gateway senders: fabricated ${inv.transformations.fabricated.length}, relays ${inv.transformations.relays.length}, unresolved ${inv.transformations.unresolved.length}\n`,
+      `gateway senders: ${inv.transformations.senders.length} members, sites ${JSON.stringify(inv.transformations.senderSites)}; fabricated ${inv.transformations.fabricated.length}, relays ${inv.transformations.relays.length}, unresolved ${inv.transformations.unresolved.length}; unread slots ${inv.unreadSlots.length}\n`,
   );
 }
 

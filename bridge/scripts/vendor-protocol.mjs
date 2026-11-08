@@ -608,27 +608,38 @@ if (emissionsInventory.schema !== INVENTORY_SCHEMA) {
 if (emissionsInventory.upstream?.version !== version || emissionsInventory.upstream?.commit !== upstreamSha) {
   throw new Error(`emission inventory names ${emissionsInventory.upstream?.version}@${emissionsInventory.upstream?.commit}, not v${version}@${upstreamSha}`);
 }
+/** Keep the derived inventory of a refused vendoring where it can be read: the refusal is
+ *  a finding, and re-deriving to look at it costs a whole run. */
+const keepRefused = () => {
+  const kept = path.join(os.tmpdir(), `agent-emissions-refused-${version}.json`);
+  fs.writeFileSync(kept, emissionsFullText);
+  return kept;
+};
 const unaccounted = emissionsInventory.completeness?.unaccounted;
 if (unaccounted !== 0) {
   throw new Error(
-    `the emission inventory leaves ${unaccounted} identifier(s) of the emitter family unaccounted ` +
-      `at v${version} — refusing to vendor an inventory that may be short (see completeness.unaccountedReferences)`,
+    `the emission inventory leaves ${unaccounted} identifier(s) of the emitter families (bus emitters, gateway senders) unaccounted ` +
+      `at v${version} — refusing to vendor an inventory that may be short (see completeness.unaccountedReferences; derived inventory kept at ${keepRefused()}):\n` +
+      (emissionsInventory.completeness?.unaccountedReferences ?? []).slice(0, 40).map((u) => `  - ${u.name} at ${u.at}`).join("\n"),
   );
 }
 if (!Array.isArray(emissionsInventory.emissions) || emissionsInventory.emissions.length === 0) {
   throw new Error(`the emission inventory found no emission at v${version}`);
 }
 // A gateway sender whose payload the deriver could not classify — neither a frame it
-// fabricates (literal stream) nor an agent event passed on unchanged — could put anything
-// on the channel. Counted and REFUSED, never left out: before, a payload passed through a
-// binding was filed as a relay and its frame vanished from the inventory.
+// fabricates (literal stream) nor an agent event passed on unchanged — or whose EVENT nobody
+// can evaluate — could put anything on the channel. Counted and REFUSED, never left out:
+// before, a payload passed through a binding was filed as a relay and its frame vanished
+// from the inventory, and a sender reached through a variable event was not seen at all.
 const unresolvedSenders = emissionsInventory.transformations?.unresolved;
+if (!Array.isArray(emissionsInventory.transformations?.senders) || emissionsInventory.transformations.senders.length === 0) {
+  throw new Error(`the emission inventory discovered no gateway frame sender at v${version} — the discovery started nowhere`);
+}
 if (!Array.isArray(unresolvedSenders)) {
   throw new Error(`the emission inventory has no transformations.unresolved list at v${version} (extractor older than this vendoring?)`);
 }
 if (unresolvedSenders.length > 0) {
-  const kept = path.join(os.tmpdir(), `agent-emissions-refused-${version}.json`);
-  fs.writeFileSync(kept, emissionsFullText);
+  const kept = keepRefused();
   throw new Error(
     `${unresolvedSenders.length} gateway sender payload(s) at v${version} are neither fabricated nor an unchanged agent event — ` +
       `refusing to vendor an inventory that cannot say what they send (derived inventory kept at ${kept}):\n` +

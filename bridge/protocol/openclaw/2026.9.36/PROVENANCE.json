@@ -658,11 +658,11 @@
     "agent-emissions.json": {
       "upstreamPath": "src/infra/agent-events.ts",
       "upstream": "b3654d45ecd5d358a934276b64e963fa31dfe8c2e65e94eda4728e1607170ff3",
-      "emissions": 333,
-      "sha256": "e787349722f619dfd97b55bf8376afa75aa9ab7d5d4190a1df51c449fe8e1cd8",
-      "fullSha256": "8b5e3b4e96ab14f1ef03a53a0813a5c147e8b368b33402d5b3c2a3da32ffe6f8",
+      "emissions": 310,
+      "sha256": "b9a5245077934b0d4d342098a6ab32ca996505b42f1130d69f7f967530a9301d",
+      "fullSha256": "0a0f827caa7a31caba22252111e8c520ae1682d7fef3b5937818c1f96624464f",
       "deriver": "scripts/lib/derive-agent-emissions.mjs",
-      "deriverSha256": "3503ebba91b51c4a93ba6bebe291e9db7133b5f3f555880cfd22769af0a715ad",
+      "deriverSha256": "53a15243f952753298c72ce98fa70ad4a0d84cdba89ad7994c5078ad195dbc1a",
       "schema": "atrium.agent-emissions/1"
     }
   }

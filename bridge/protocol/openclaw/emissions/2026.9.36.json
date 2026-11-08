@@ -690,6 +690,24 @@
         }
       }
     },
+    "codex_app_server.tool": {
+      "phases": {
+        "-": {
+          "status": "ignored",
+          "why": "Codex harness yield notice: extensions/codex/src/app-server/dynamic-tool-build.ts:325-330 (`onYield`) sends `{ stream: \"codex_app_server.tool\", data: { name: \"sessions_yield\", message } }` through `onCodexAppServerEvent` (run-attempt-tool-setup.ts:240, emitCodexAppServerEvent); the Control UI renders no `codex_app_server.tool` frame either (its only codex reader is `codex_app_server.guardian`, ui/src/pages/chat/tool-stream.ts:299), and the bench never runs the Codex harness; Atrium follows it"
+        }
+      },
+      "keys": {
+        "message": {
+          "status": "ignored",
+          "why": "the yield message of the Codex harness notice (extensions/codex/src/app-server/dynamic-tool-build.ts:329), which Atrium does not read: the Control UI renders no `codex_app_server.tool` frame either (ui/src/pages/chat/tool-stream.ts:299 reads only the guardian stream); Atrium follows it"
+        },
+        "name": {
+          "status": "ignored",
+          "why": "always `sessions_yield` (extensions/codex/src/app-server/dynamic-tool-build.ts:329), a key of the Codex yield notice, which Atrium does not read: the Control UI renders no `codex_app_server.tool` frame either (ui/src/pages/chat/tool-stream.ts:299 reads only the guardian stream); Atrium follows it"
+        }
+      }
+    },
     "command_output": {
       "phases": {
         "-": {

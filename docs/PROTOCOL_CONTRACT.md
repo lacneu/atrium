@@ -117,7 +117,8 @@ a proof. A `gap` or `ignored` entry may not be read where its schema is read:
 `bridge/protocol/openclaw/read-sites.json` names, per schema, the functions that read
 its payload (or build it, for a `*Params` schema), and the test collects, through the
 TypeScript parser, the property names each of those functions touches and the receiver
-each is read through. A field the manifest declares unread and that one of its schema's
+each is read through — identified by its binding (declaration and scope, resolved by the
+checker), never by its spelling, so a shadowing variable is another receiver. A field the manifest declares unread and that one of its schema's
 read sites touches is refused, access by access, unless that very access is admitted (a
 `gap` whose `knownReaders` token is `<receiver>.<field>` in that file) or excepted. An
 exception names one concrete access — field, site, receivers — and is checked: a
@@ -147,18 +148,35 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   fabricates on the channel, the keys it rewrites after emission, and the chat
   content-part types its display projection produces. Its completeness is accounted:
   every identifier spelled like an emitter is classified, and vendoring refuses an
-  inventory that leaves one unaccounted. A gateway sender's payload is classified on its
-  evaluated form, whatever its syntax (inline, through a binding, through a helper's
-  parameter): a literal stream is a fabricated frame, an agent event passed on unchanged
-  is a relay with its origins named, and anything else is listed as unresolved, which
-  vendoring refuses. A content-part type the projection compares after normalizing it
+  inventory that leaves one unaccounted. The gateway's senders are a second family
+  discovered the same way, by symbol, from the frame senders its transports hand out: every
+  value derived from one — a wrapper, a property it is stored in, a parameter it is passed
+  to, a spread into a typed object — is followed to its calls, whatever the names of its
+  arguments or parameters; a destructuring is a reference like a call. A sender stored in an
+  object slot is also followed through the object: an object handed whole to a binding of
+  another type carries the slot into that type's own declaration, whose reads are then
+  followed by name; a slot that no use of its object reads, where no use could read it
+  unseen (a computed key, code outside the analysed sources, a store into another object, a
+  return), is listed as unread (`unreadSlots`) instead of open. Each call's payload is the
+  template of every sender the callee may hold, each with the call's arguments substituted
+  for its own parameters, so it is the final form, with every spread and field replacement
+  the wrappers applied. A literal stream is a fabricated frame; an agent event passed on
+  with its own data (or its data plus a recorded rewrite) is a relay with its origins
+  named; a call whose event or final payload cannot be evaluated is unresolved, and
+  vendoring refuses it. A sender only plugins can call (reached from the public plugin
+  surface, with no call in the analysed sources) is an open entry: listed in `openSenders`
+  with what the sender itself fixes, compared from one version to the next by the diff
+  report, and never blocking, since what a plugin sends is the plugin's. A gap inside the
+  analysed sources is never an open entry: it is unresolved and blocks. A sender's own body
+  is the transport and is not analysed. A content-part type the projection compares after normalizing it
   (`trim`, `lowercase`) is recorded with that normalization. The vendoring script writes it beside the
   schemas; `PROVENANCE.json` records its fingerprint (`sha256`), the extractor's full
   output (`fullSha256`) and the extractor itself (`deriverSha256`), and
   `vendor-integrity.test.ts` recomputes the fingerprint and the summary.
 - **The diff between two versions** is a readable report:
   `bridge/scripts/diff-agent-emissions.mjs <old> <new>` lists the streams, pairs and keys
-  added or removed, and the emission rows added, removed, modified or moved.
+  added or removed, the emission rows added, removed, modified or moved, and the open
+  senders added or removed.
 - **The classification.** Every (stream, phase) pair, every key an emitter writes and
   every key a gateway rewrite adds is classified: `handled` (an anchor present in the
   code and a proof — a golden capture that carries it, checked by opening the file, or a
@@ -170,7 +188,9 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
 - **The drift detector's known vocabulary** (`agent-emission-vocabulary.ts`: streams,
   phases per stream, keys per stream, content-part types) is generated from the
   vendored inventories (`bridge/scripts/emission-vocabulary.mjs --write`) and compared
-  to them element by element. Knowledge is per stream: a key only an emitter of
+  to them element by element. Every stream the vocabulary names is judged, dotted ones
+  included (`codex_app_server.*`); only an unknown dotted stream is a plugin's own and left
+  unjudged. Knowledge is per stream: a key only an emitter of
   unresolved stream writes is known on no stream. On a known stream, any `data.phase`
   its emitters do not write — on a stream that declares no phase included — is counted
   digested (`agent.<stream>.phase_<digest>`); a `data` key its emitters do not write is

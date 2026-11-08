@@ -436,11 +436,17 @@ interface ReadSites {
   unscoped: Record<string, string>;
   emissionStreams: Record<string, string>;
 }
+/** What touched-names collects per site. A receiver is identified by its BINDING
+ *  (`receiverKeys`: declaration + property path, resolved by the checker); its text
+ *  (`receivers`) is for messages and for the declarations of read-sites.json, which
+ *  `textKeys` resolves to bindings at the site. */
 type Touched = {
   reads: Set<string>;
   writes: Set<string>;
   receivers: Map<string, Set<string>>;
+  receiverKeys: Map<string, Set<string>>;
   aliases: Map<string, string>;
+  textKeys: Map<string, Set<string>>;
 };
 
 /** Schemas the bridge reads without a declared read site yet. A COPY, like the truth
@@ -492,30 +498,53 @@ function touchedAt(site: ReadSite): Touched | null {
   return site.fn === null ? t.file : (t.functions.get(site.fn) ?? null);
 }
 
-/** Through what each name is touched at a site, for one schema: its read receivers, plus
- *  WRITE when the schema is one the bridge SENDS (`*Params`) and the site builds the key. */
-function receiversAt(t: Touched, schema: string, name: string): string[] {
-  const out = [...(t.receivers.get(name) ?? [])];
+/** The text a receiver binding is spelled with at a site (for messages). */
+function textOfKey(t: Touched, key: string): string {
+  if (key === WRITE) return WRITE;
+  for (const [text, keys] of t.textKeys) if (keys.has(key)) return text;
+  return key;
+}
+
+/** Through what each name is touched at a site, for one schema: the BINDINGS it is read
+ *  through, plus WRITE when the schema is one the bridge SENDS (`*Params`) and the site
+ *  builds the key. */
+function receiverKeysAt(t: Touched, schema: string, name: string): string[] {
+  const out = [...(t.receiverKeys.get(name) ?? [])];
   if (schema.endsWith("Params") && t.writes.has(name)) out.push(WRITE);
   return out;
 }
 
-/** The receivers that ARE the schema's payload in a group: every receiver one of its
- *  HANDLED fields is read through, at any of the group's sites, closed over renamings
- *  (`const e = evt`). A homonym naming one of them names the payload itself. */
-function payloadReceivers(group: ReadSiteGroup, schema: string, manifest: Manifest): Set<string> {
+/** The binding a receiver TEXT denotes at a site — one, or the declaration is refused:
+ *  two bindings spelled alike there (one shadowing the other) make the text ambiguous. */
+function bindingOf(t: Touched, text: string): { key?: string; fault?: string } {
+  if (text === WRITE) return { key: WRITE };
+  const keys = t.textKeys.get(text);
+  if (keys === undefined || keys.size === 0) return { fault: `\`${text}\` is not a receiver there` };
+  if (keys.size > 1) return { fault: `\`${text}\` names ${keys.size} different bindings there (shadowing) — the access is ambiguous` };
+  return { key: [...keys][0] };
+}
+
+/** The receivers that ARE the schema's payload: at a site, every BINDING one of its
+ *  HANDLED fields is read through, closed over renamings (`const e = evt`, by binding);
+ *  and, group-wide, every TEXT such a binding is spelled with — a homonym spelled like the
+ *  payload anywhere in the group is refused too (the conservative half). */
+function payloadReceivers(group: ReadSiteGroup, schema: string, manifest: Manifest, site: ReadSite): { keys: Set<string>; texts: Set<string> } {
   const handled = Object.entries(manifest.schemas[schema]?.fields ?? {})
     .filter(([, e]) => e.status === "handled")
     .map(([f]) => f);
-  const out = new Set<string>();
-  for (const site of group.sites) {
-    const t = touchedAt(site);
-    if (t === null) continue;
+  const keysAt = (t: Touched): Set<string> => {
     const seeds = new Set<string>();
-    for (const f of handled) for (const r of t.receivers.get(f) ?? []) seeds.add(r);
-    for (const r of aliasClosure(seeds, t.aliases) as Set<string>) out.add(r);
+    for (const f of handled) for (const r of t.receiverKeys.get(f) ?? []) seeds.add(r);
+    return aliasClosure(seeds, t.aliases) as Set<string>;
+  };
+  const texts = new Set<string>();
+  for (const s of group.sites) {
+    const t = touchedAt(s);
+    if (t === null) continue;
+    for (const k of keysAt(t)) texts.add(textOfKey(t, k));
   }
-  return out;
+  const here = touchedAt(site);
+  return { keys: here === null ? new Set() : keysAt(here), texts };
 }
 
 /** The vendored literal a schema declares for a property (its discriminant), read from
@@ -544,12 +573,20 @@ function exceptionFault(group: ReadSiteGroup, x: ReadException, manifest: Manife
   const t = touchedAt(x.site);
   if (t === null) return `${at}: the site does not exist`;
   if (!Array.isArray(x.receivers) || x.receivers.length === 0) return `${at} names no receiver — an exception is one concrete access`;
-  const actual = new Set(receiversAt(t, schema, field));
-  for (const r of x.receivers) if (!actual.has(r)) return `${at}: \`${r}.${field}\` is not touched there (stale)`;
+  const actual = new Set(receiverKeysAt(t, schema, field));
+  const keys: string[] = [];
+  for (const r of x.receivers) {
+    const b = bindingOf(t, r);
+    if (b.fault !== undefined) return `${at}: ${b.fault}`;
+    if (!actual.has(b.key!)) return `${at}: \`${r}.${field}\` is not touched there (stale)`;
+    keys.push(b.key!);
+  }
   if (x.branch === undefined) {
-    const payload = payloadReceivers(group, schema, manifest);
-    for (const r of x.receivers) {
-      if (payload.has(r)) return `${at}: \`${r}\` carries handled ${schema} fields in this group — it IS the payload, not a homonym`;
+    const payload = payloadReceivers(group, schema, manifest, x.site);
+    for (const [i, r] of x.receivers.entries()) {
+      if (payload.keys.has(keys[i]!) || payload.texts.has(r)) {
+        return `${at}: \`${r}\` carries handled ${schema} fields in this group — it IS the payload, not a homonym`;
+      }
     }
     return null;
   }
@@ -562,7 +599,9 @@ function exceptionFault(group: ReadSiteGroup, x: ReadException, manifest: Manife
   const own = vendoredLiteral(version, schema, b.field);
   if (own === null) return `${at}: ${schema} declares no literal ${b.field} in the vendored schema`;
   if (x.site.fn === null) return `${at}: a branch is proved inside a function, not a whole file`;
-  const g = unreachableWhen(sourceOf(x.site.file), x.site.file, x.site.fn, field, x.receivers, b, own) as {
+  const discriminant = bindingOf(t, b.receiver);
+  if (discriminant.fault !== undefined) return `${at}: the discriminant ${discriminant.fault}`;
+  const g = unreachableWhen(sourceOf(x.site.file), x.site.file, x.site.fn, field, keys, { receiverKey: discriminant.key, field: b.field }, own) as {
     accesses: number;
     unguarded: number[];
   };
@@ -642,11 +681,18 @@ describe("coverage-truth V3 — a field declared unread is not read at its schem
           for (const site of g.sites) {
             const t = touchedAt(site);
             if (t === null) continue;
-            for (const r of receiversAt(t, schema, field)) {
-              if (exceptions.some((x) => x.field === `${schema}.${field}` && sameSite(x.site, site) && x.receivers.includes(r))) continue;
+            for (const key of receiverKeysAt(t, schema, field)) {
+              const r = textOfKey(t, key);
+              const excepted = exceptions.some(
+                (x) => x.field === `${schema}.${field}` && sameSite(x.site, site) && x.receivers.some((text) => bindingOf(t, text).key === key),
+              );
+              if (excepted) continue;
               const admitted =
                 e.status === "gap" &&
-                (e.knownReaders ?? []).some((k) => k.file === `bridge/${site.file}` && k.token === `${r}.${field}`);
+                (e.knownReaders ?? []).some((k) => {
+                  if (k.file !== `bridge/${site.file}` || !k.token.endsWith(`.${field}`)) return false;
+                  return bindingOf(t, k.token.slice(0, -`.${field}`.length)).key === key;
+                });
               if (admitted) continue;
               bad.push(
                 `${PROMISED} ${schema}.${field}: declared ${e.status} but ${siteId(site)} reads it through \`${r}\` — ` +

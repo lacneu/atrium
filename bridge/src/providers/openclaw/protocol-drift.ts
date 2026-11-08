@@ -1907,13 +1907,16 @@ export class ProtocolDriftRegistry {
         }
       } else {
         const stream = p.stream;
-        // A plugin stream is `<pluginId>.<suffix>` — plugin-scoped, and only its
-        // `.provenance` suffix is contract; anything else of it is the plugin's own.
-        if (typeof stream === "string" && !stream.includes(".")) {
-          if (!KNOWN_AGENT_STREAMS.has(stream)) {
+        // A stream the vocabulary KNOWS is judged, dotted or not: `codex_app_server.item`
+        // is an inventoried stream, and exempting every dotted name first let its new
+        // phases and keys through unjudged (review, 2026-11-08). Only an UNKNOWN dotted
+        // name is exempt — `<pluginId>.<suffix>`, plugin-scoped, whose content is the
+        // plugin's own (only its `.provenance` suffix is contract).
+        if (typeof stream === "string") {
+          if (KNOWN_AGENT_STREAMS.has(stream)) {
+            if (isRecord(p.data)) this.observeAgentData(stream, p.data);
+          } else if (!stream.includes(".")) {
             this.bump(`agent.stream_${this.digest(stream)}`);
-          } else if (isRecord(p.data)) {
-            this.observeAgentData(stream, p.data);
           }
         }
       }

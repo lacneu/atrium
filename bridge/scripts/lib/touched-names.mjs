@@ -1,5 +1,5 @@
-// Which property NAMES a piece of bridge code touches — through the TypeScript parser,
-// never a text scan — and THROUGH WHAT each one is touched.
+// Which property NAMES a piece of bridge code touches — through the TypeScript parser and
+// binder, never a text scan — and THROUGH WHAT each one is touched.
 //
 // The coverage manifest's truth guard (test/coverage-truth.test.ts, V3) asks one question
 // of a READ SITE (a named function, or a whole file, that reads one protocol schema's
@@ -14,11 +14,17 @@
 //     the caller asks, for the schemas the bridge SENDS)
 // Comments and string contents are not syntax, so they never count.
 //
-// The RECEIVER of each read is kept (its text, normalized: no parentheses, casts, `!` or
-// `?.`), because an exception to the guard is only as good as its scope: "this name is not
-// the payload's here" must say WHICH access it means, so it cannot also excuse the access
-// that IS the payload's (adversarial review, 2026-11-08). Bindings that merely rename
-// another receiver (`const e = evt as X`) are kept as aliases, so a renamed payload is
+// The RECEIVER of each read is kept, because an exception to the guard is only as good as
+// its scope: "this name is not the payload's here" must say WHICH access it means, so it
+// cannot also excuse the access that IS the payload's (adversarial review, 2026-11-08).
+// A receiver is identified by its BINDING, not its spelling: the root identifier is
+// resolved by the checker of a one-file program (every local name bound to its
+// declaration and scope; imports stay unresolved, which nothing here needs), and the key
+// is that declaration plus the property path (`payload@120.data`). Two variables both
+// spelled `state` — one shadowing the other in a block or a closure — are two receivers
+// (second review: an alias matched by NAME let a shadowing `const state = "error"` prove
+// a read unreachable that runs). Bindings that merely rename another receiver
+// (`const e = evt as X`) are kept as aliases, by binding too, so a renamed payload is
 // still the payload.
 
 import ts from "typescript";
@@ -64,7 +70,32 @@ const unwrap = (n) => {
   return cur;
 };
 
-/** A receiver's normalized text: `(evt as X)!.data?.x` → `evt.data.x`. */
+/** A one-file program: its checker binds every local identifier to its declaration. */
+const BOUND = new Map();
+function bound(text, fileName) {
+  const key = `${fileName}\u0000${text}`;
+  const hit = BOUND.get(key);
+  if (hit) return hit;
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const host = {
+    getSourceFile: (f) => (f === fileName ? sf : undefined),
+    getDefaultLibFileName: () => "lib.d.ts",
+    writeFile: () => {},
+    getCurrentDirectory: () => "/",
+    getCanonicalFileName: (f) => f,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+    fileExists: (f) => f === fileName,
+    readFile: (f) => (f === fileName ? text : undefined),
+  };
+  const program = ts.createProgram({ rootNames: [fileName], options: { noLib: true, noResolve: true, types: [], target: ts.ScriptTarget.Latest }, host });
+  const out = { sf: program.getSourceFile(fileName) ?? sf, checker: program.getTypeChecker() };
+  BOUND.set(key, out);
+  return out;
+}
+
+/** A receiver's normalized TEXT, for messages and declarations: `(evt as X)!.data?.x` →
+ *  `evt.data.x`. Never the identity of the receiver — see `receiverKey`. */
 export function receiverText(expr) {
   const e = unwrap(expr);
   if (!e) return "<none>";
@@ -79,41 +110,87 @@ export function receiverText(expr) {
   return e.getText().replace(/\s+/g, "").replace(/\?\./g, ".");
 }
 
-/** What an object binding pattern destructures: its initializer, a parameter, an element. */
-function patternReceiver(pattern) {
+/** The declaration an identifier is bound to, by the checker (shorthand values included). */
+function declarationOf(checker, id) {
+  let sym;
+  try {
+    const p = id.parent;
+    sym = p && ts.isShorthandPropertyAssignment(p) && p.name === id ? checker.getShorthandAssignmentValueSymbol(p) : checker.getSymbolAtLocation(id);
+  } catch {
+    sym = undefined;
+  }
+  return sym?.valueDeclaration ?? sym?.declarations?.[0];
+}
+
+/** The innermost non-arrow function enclosing a node (what `this` denotes there). */
+function thisOwner(node) {
+  for (let n = node.parent; n; n = n.parent) {
+    if (FUNCTION_LIKE.has(n.kind) && n.kind !== ts.SyntaxKind.ArrowFunction) return n;
+    if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) return n;
+  }
+  return undefined;
+}
+
+/** A receiver's IDENTITY: its root binding (declaration position) plus the property path.
+ *  An identifier the checker cannot bind (a global) is keyed by name, marked as such. */
+function receiverKey(checker, expr) {
+  const e = unwrap(expr);
+  if (!e) return "<none>";
+  if (ts.isIdentifier(e)) {
+    const d = declarationOf(checker, e);
+    return d ? `${e.text}@${d.getStart()}` : `${e.text}@?`;
+  }
+  if (e.kind === ts.SyntaxKind.ThisKeyword) return `this@${thisOwner(e)?.getStart() ?? "?"}`;
+  if (ts.isPropertyAccessExpression(e)) return `${receiverKey(checker, e.expression)}.${e.name.text}`;
+  if (ts.isElementAccessExpression(e)) {
+    const arg = e.argumentExpression;
+    return `${receiverKey(checker, e.expression)}[${arg && ts.isStringLiteralLike(arg) ? JSON.stringify(arg.text) : "*"}]`;
+  }
+  if (ts.isCallExpression(e)) return `${receiverKey(checker, e.expression)}()`;
+  return `~${e.getText().replace(/\s+/g, "")}@${e.getStart()}`;
+}
+
+/** What an object binding pattern destructures, as [text, key]: its initializer, a
+ *  parameter, an element. */
+function patternReceiver(checker, pattern) {
   const owner = pattern.parent;
-  if (!owner) return "<pattern>";
+  if (!owner) return ["<pattern>", `<pattern>@${pattern.getStart()}`];
   if (ts.isBindingElement(owner)) {
-    const key = propName(owner.propertyName ?? owner.name);
-    return `${patternReceiver(owner.parent)}.${key ?? "*"}`;
+    const k = propName(owner.propertyName ?? owner.name) ?? "*";
+    const [t, key] = patternReceiver(checker, owner.parent);
+    return [`${t}.${k}`, `${key}.${k}`];
   }
   if (ts.isVariableDeclaration(owner)) {
-    if (owner.initializer) return receiverText(owner.initializer);
+    if (owner.initializer) return [receiverText(owner.initializer), receiverKey(checker, owner.initializer)];
     const stmt = owner.parent?.parent;
-    if (stmt && (ts.isForOfStatement(stmt) || ts.isForInStatement(stmt))) return `<element of ${receiverText(stmt.expression)}>`;
-    return "<uninitialized>";
+    if (stmt && (ts.isForOfStatement(stmt) || ts.isForInStatement(stmt))) {
+      return [`<element of ${receiverText(stmt.expression)}>`, `<element of ${receiverKey(checker, stmt.expression)}>`];
+    }
+    return ["<uninitialized>", `<uninitialized>@${owner.getStart()}`];
   }
   if (ts.isParameter(owner)) {
     const fn = owner.parent;
-    return `<parameter #${fn?.parameters ? fn.parameters.indexOf(owner) : "?"}>`;
+    const i = fn?.parameters ? fn.parameters.indexOf(owner) : "?";
+    return [`<parameter #${i}>`, `<parameter #${i}>@${owner.getStart()}`];
   }
-  return "<pattern>";
+  return ["<pattern>", `<pattern>@${pattern.getStart()}`];
 }
 
-const emptyTouch = () => ({ reads: new Set(), writes: new Set(), receivers: new Map(), aliases: new Map() });
+const emptyTouch = () => ({ reads: new Set(), writes: new Set(), receivers: new Map(), receiverKeys: new Map(), aliases: new Map(), textKeys: new Map() });
 
 /**
  * Every named function of a source file, with the names its WHOLE body touches (nested
  * closures included: a site is the function and everything it encloses) and, per name,
- * the receivers it is read through.
+ * the receivers it is read through — by text (`receivers`, for messages) and by binding
+ * (`receiverKeys`, the identity). `textKeys` maps each receiver text met in the function
+ * to the bindings it denotes there (more than one = shadowing); `aliases` maps a renaming
+ * binding's key to the key of what it renames.
  *
  * @param {string} text
  * @param {string} fileName
- * @returns {{ functions: Map<string, Touch>, file: Touch }} where Touch is
- *   `{ reads: Set<string>, writes: Set<string>, receivers: Map<string, Set<string>>, aliases: Map<string, string> }`
  */
 export function touchedNames(text, fileName) {
-  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const { sf, checker } = bound(text, fileName);
   const functions = new Map();
   const file = emptyTouch();
   const stack = [];
@@ -121,12 +198,17 @@ export function touchedNames(text, fileName) {
     f(file);
     for (const t of stack) f(t);
   };
-  const read = (name, receiver) => {
+  const add = (m, k, v) => {
+    if (!m.has(k)) m.set(k, new Set());
+    m.get(k).add(v);
+  };
+  const read = (name, rText, rKey) => {
     if (name === null) return;
     each((t) => {
       t.reads.add(name);
-      if (!t.receivers.has(name)) t.receivers.set(name, new Set());
-      t.receivers.get(name).add(receiver);
+      add(t.receivers, name, rText);
+      add(t.receiverKeys, name, rKey);
+      add(t.textKeys, rText, rKey);
     });
   };
   const write = (name) => {
@@ -143,24 +225,26 @@ export function touchedNames(text, fileName) {
         pushed = true;
       }
     }
-    if (ts.isPropertyAccessExpression(node)) read(propName(node.name), receiverText(node.expression));
-    else if (ts.isElementAccessExpression(node) && node.argumentExpression && ts.isStringLiteralLike(node.argumentExpression)) {
-      read(node.argumentExpression.text, receiverText(node.expression));
+    if (ts.isPropertyAccessExpression(node)) {
+      read(propName(node.name), receiverText(node.expression), receiverKey(checker, node.expression));
+    } else if (ts.isElementAccessExpression(node) && node.argumentExpression && ts.isStringLiteralLike(node.argumentExpression)) {
+      read(node.argumentExpression.text, receiverText(node.expression), receiverKey(checker, node.expression));
     } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
-      read(propName(node.propertyName ?? node.name), patternReceiver(node.parent));
+      const [rText, rKey] = patternReceiver(checker, node.parent);
+      read(propName(node.propertyName ?? node.name), rText, rKey);
     } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InKeyword && ts.isStringLiteralLike(node.left)) {
-      read(node.left.text, receiverText(node.right));
+      read(node.left.text, receiverText(node.right), receiverKey(checker, node.right));
     } else if (ts.isPropertyAssignment(node) && ts.isObjectLiteralExpression(node.parent)) {
       write(propName(node.name));
     } else if (ts.isShorthandPropertyAssignment(node)) {
       write(node.name.text);
     }
-    // `const e = evt as X` / `const e = evt` — a RENAMING of another receiver.
+    // `const e = evt as X` / `const e = evt` — a RENAMING of another receiver, by binding.
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const init = unwrap(node.initializer);
       if (init && (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init) || ts.isElementAccessExpression(init) || init.kind === ts.SyntaxKind.ThisKeyword)) {
-        const alias = node.name.text;
-        const of = receiverText(init);
+        const alias = `${node.name.text}@${node.name.getStart()}`;
+        const of = receiverKey(checker, init);
         each((t) => t.aliases.set(alias, of));
       }
     }
@@ -172,10 +256,13 @@ export function touchedNames(text, fileName) {
 }
 
 /**
- * Every read of `field` through one of `receivers` inside the function(s) named `fnName`,
- * and which of them COULD run when the discriminant `G` (`<branch.receiver>.<branch.field>`,
- * or a `const` bound to it in that function) equals `own` — the value the excepted schema
- * itself takes, read from its vendored source by the caller, never declared by hand.
+ * Every read of `field` through one of the bindings `receiverKeys` inside the function(s)
+ * named `fnName`, and which of them COULD run when the discriminant — `<branch key>.field`
+ * read through the binding `branch.receiverKey`, or a `const` bound to exactly that read —
+ * equals `own`, the value the excepted schema itself takes (read from its vendored source
+ * by the caller, never declared by hand). Every name is resolved by the checker: a test or
+ * an alias that merely SPELLS the discriminant (a shadowing `const state = …` in a block
+ * or a closure) proves nothing.
  *
  * An access is proved unreachable for `G === own` when, walking up to the function:
  *   - it sits where a test held that excludes `own`: the then-branch (or `&&` right side,
@@ -188,10 +275,10 @@ export function touchedNames(text, fileName) {
  *
  * @returns {{ accesses: number, unguarded: number[] }} unguarded = 1-based lines
  */
-export function unreachableWhen(text, fileName, fnName, field, receivers, branch, own) {
-  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
-  const wanted = new Set(receivers);
-  const guardText = `${branch.receiver}.${branch.field}`;
+export function unreachableWhen(text, fileName, fnName, field, receiverKeys, branch, own) {
+  const { sf, checker } = bound(text, fileName);
+  const wanted = new Set(receiverKeys);
+  const guardKey = `${branch.receiverKey}.${branch.field}`;
   const fns = [];
   const find = (n) => {
     if (FUNCTION_LIKE.has(n.kind) && nameOf(n) === fnName) fns.push(n);
@@ -201,17 +288,23 @@ export function unreachableWhen(text, fileName, fnName, field, receivers, branch
   let accesses = 0;
   const unguarded = [];
   for (const fn of fns) {
-    const aliases = new Set();
+    // A `const` bound to the discriminant read, by its DECLARATION.
+    const aliasDecls = new Set();
     const collect = (n) => {
-      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && (n.parent.flags & ts.NodeFlags.Const) !== 0 && receiverText(n.initializer) === guardText) {
-        aliases.add(n.name.text);
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && (n.parent.flags & ts.NodeFlags.Const) !== 0 && receiverKey(checker, n.initializer) === guardKey) {
+        aliasDecls.add(n);
       }
       ts.forEachChild(n, collect);
     };
     collect(fn);
     const isG = (e) => {
       const u = unwrap(e);
-      return !!u && (receiverText(u) === guardText || (ts.isIdentifier(u) && aliases.has(u.text)));
+      if (!u) return false;
+      if (ts.isIdentifier(u)) {
+        const d = declarationOf(checker, u);
+        return !!d && aliasDecls.has(d);
+      }
+      return receiverKey(checker, u) === guardKey;
     };
     const EQ = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken];
     const NE = [ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken];
@@ -272,16 +365,19 @@ export function unreachableWhen(text, fileName, fnName, field, receivers, branch
             if (ts.isIfStatement(st) && !st.elseStatement && exits(st.thenStatement) && trueWhenOwn(st.expression)) return true;
           }
         }
+        // A closure runs when it is CALLED, not where it is written: a guard outside it
+        // proves nothing about it (it may be called on another path, or later).
+        if (FUNCTION_LIKE.has(p.kind)) return false;
         cur = p;
       }
       return false;
     };
     const visit = (n) => {
       let hit = false;
-      if (ts.isPropertyAccessExpression(n) && propName(n.name) === field && wanted.has(receiverText(n.expression))) hit = true;
-      else if (ts.isElementAccessExpression(n) && n.argumentExpression && ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === field && wanted.has(receiverText(n.expression))) hit = true;
-      else if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent) && propName(n.propertyName ?? n.name) === field && wanted.has(patternReceiver(n.parent))) hit = true;
-      else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InKeyword && ts.isStringLiteralLike(n.left) && n.left.text === field && wanted.has(receiverText(n.right))) hit = true;
+      if (ts.isPropertyAccessExpression(n) && propName(n.name) === field && wanted.has(receiverKey(checker, n.expression))) hit = true;
+      else if (ts.isElementAccessExpression(n) && n.argumentExpression && ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === field && wanted.has(receiverKey(checker, n.expression))) hit = true;
+      else if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent) && propName(n.propertyName ?? n.name) === field && wanted.has(patternReceiver(checker, n.parent)[1])) hit = true;
+      else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InKeyword && ts.isStringLiteralLike(n.left) && n.left.text === field && wanted.has(receiverKey(checker, n.right))) hit = true;
       if (hit) {
         accesses += 1;
         if (!guarded(n)) unguarded.push(sf.getLineAndCharacterOfPosition(n.getStart()).line + 1);
@@ -321,7 +417,8 @@ export function schemaLiteral(text, fileName, schemaName, property) {
 }
 
 /** The receivers a set of seed receivers reaches through `aliases` (both ways: a renaming
- *  of a payload is the payload, and so is what the payload was renamed FROM). */
+ *  of a payload is the payload, and so is what the payload was renamed FROM). Works on
+ *  keys and texts alike. */
 export function aliasClosure(seeds, aliases) {
   const out = new Set(seeds);
   for (let changed = true; changed; ) {
