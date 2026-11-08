@@ -25,8 +25,8 @@ session claim was validated in trusted-proxy authentication.
   does, and raises the missing cards of that conversation. An approval already answered never
   comes back, and a card whose approval was decided before Atrium could show it is closed with
   the gateway's own verdict instead of staying open. A request that reaches Atrium only after its
-  deadline is shown expired, never pending, and nobody is notified. If the gateway refuses a list
-  (a missing permission), the bridge logs which list and why, and goes on.
+  deadline is shown expired, and nobody is notified. If the gateway refuses a list (a missing
+  permission), the bridge logs which list and why, and goes on.
 - **An approval decided during a reconnection no longer stays pending.** When the decision
   reached Atrium before the approval's card was recorded — the previous connection still writing
   it, or two connections writing it at once — the card appeared pending and stayed so until it
@@ -61,20 +61,23 @@ session claim was validated in trusted-proxy authentication.
   for them. The protection against a turn that never ends is unchanged.
 - **A command you allow is no longer refused because of Atrium's own background work.**
   OpenClaw abandons an approval waiting for your decision as soon as a session is created on the
-  gateway, and each of Atrium's background jobs starts one: a conversation's summary, the fetch
-  of the documents a reply cites, an agent-file curation, the PDF preview of an Office file. A
-  command you had allowed could then end refused as `approval-request-failed`. These jobs now
-  wait while an approval is pending on the same OpenClaw instance, and a summary also waits
-  while the conversation it summarizes is still working (an answer in progress, a sub-agent
-  running). They start on their own once nothing holds them — so a preview or a document fetch
-  asked for during an approval can take that much longer to appear. A job still held 35 minutes
-  after it began waiting is withdrawn, never sent: a summary is attempted again after the
-  conversation's next answer, while a preview, a document fetch or a curation ends as failed.
-  The messages of your conversations are never held, and Hermes instances are not concerned. A
-  held job is traced once, as an `openclaw.dispatch` event with `dispatchStatus: "deferred"` and
-  its reason (`approval_pending` or `source_busy`); a withdrawn one with
-  `dispatchStatus: "cancelled"` and its reason (`approval_still_pending`, `source_still_busy` or
-  `target_changed`).
+  gateway, and each of Atrium's background jobs starts one: a conversation's summary, the fetch of
+  the documents a reply cites, an agent-file curation, the PDF preview of an Office file. A
+  command you had allowed could then end refused as `approval-request-failed`. These jobs now wait
+  while an approval is pending on the same OpenClaw instance, and a summary also waits while the
+  conversation it summarizes is still working (an answer in progress, a sub-agent running). An
+  approval holds them until the gateway settles it, or until a minute past its deadline, the time
+  Atrium itself keeps an unanswered request open. Atrium reads that deadline on its own clock, as
+  the OpenClaw Control UI does on its own: the minute covers a gateway clock running up to that
+  much behind; with a gateway further behind, the jobs can start again while the gateway still
+  waits. Jobs start on their own once nothing holds them — so a preview or a document fetch asked
+  for during an approval can take that much longer to appear. A job still held 35 minutes after it
+  began waiting is withdrawn, never sent: a summary is attempted again after the conversation's
+  next answer, while a preview, a document fetch or a curation ends as failed. The messages of
+  your conversations are never held, and Hermes instances are not concerned. A held job is traced
+  once, as an `openclaw.dispatch` event with `dispatchStatus: "deferred"` and its reason
+  (`approval_pending` or `source_busy`); a withdrawn one with `dispatchStatus: "cancelled"` and
+  its reason (`approval_still_pending`, `source_still_busy` or `target_changed`).
 - **A background job is never sent to another instance than the one it was asked for.** Each
   job now keeps the instance and agent it was asked for, and is withdrawn unsent if its hidden
   conversation no longer points there when it is about to leave. That conversation is also no

@@ -10,7 +10,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { deleteMessageAgentRequests } from "./agentRequests";
-import { DEFAULT_REQUEST_TTL_MS, questionShape } from "./lib/agentRequests";
+import { DEFAULT_REQUEST_TTL_MS, EXPIRY_SWEEP_GRACE_MS, questionShape } from "./lib/agentRequests";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -2269,10 +2269,10 @@ describe("a sighting already past its deadline (codex, integrated review of 0.10
   const agentRequestNotes = async (t: T) =>
     (await t.run((ctx) => ctx.db.query("notifications").collect())).filter((n) => n.kind === "agent_request");
 
-  test("an approval written after its deadline is recorded expired on our clock, with that deadline — never pending, nobody notified", async () => {
+  test("past its deadline and the sweep's grace: recorded expired on our clock, with that deadline — never pending, nobody notified", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId } = await seed(t);
-    const deadline = Date.now() - 1_000;
+    const deadline = Date.now() - EXPIRY_SWEEP_GRACE_MS - 1_000;
     const res = await record(t, chatId, { expiresAt: deadline });
     expect(res.created).toBe(true);
     const row = (await t.run((ctx) => ctx.db.get(res.id!)))!;
@@ -2285,6 +2285,34 @@ describe("a sighting already past its deadline (codex, integrated review of 0.10
     expect((await t.run((ctx) => ctx.db.get(res.id!)))!.status).toBe("expired");
   });
 
+  test("within the grace — our clock may run ahead of the gateway's (pass 2): pending with that deadline, nobody notified, then swept like any card", async () => {
+    vi.useFakeTimers();
+    try {
+      const T0 = Date.UTC(2026, 10, 8, 12, 0, 0);
+      vi.setSystemTime(T0);
+      const t = convexTest(schema, modules);
+      const { userId, chatId } = await seed(t);
+      const deadline = T0 - 1_000;
+      const res = await record(t, chatId, { expiresAt: deadline });
+      const row = (await t.run((ctx) => ctx.db.get(res.id!)))!;
+      expect(row).toMatchObject({ status: "pending", expiresAt: deadline });
+      expect(row.expiredLocally).toBeUndefined();
+      expect(await agentRequestNotes(t)).toEqual([]);
+      // Not offered to anyone: its deadline has passed.
+      expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
+      // Still within the grace: the sweep leaves it…
+      vi.setSystemTime(deadline + EXPIRY_SWEEP_GRACE_MS - 1);
+      await t.mutation(internal.agentRequests.reapExpired, {});
+      expect((await t.run((ctx) => ctx.db.get(res.id!)))!.status).toBe("pending");
+      // …and closes it once the grace has passed, as any card.
+      vi.setSystemTime(deadline + EXPIRY_SWEEP_GRACE_MS + 1);
+      await t.mutation(internal.agentRequests.reapExpired, {});
+      expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({ status: "expired", expiredLocally: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("a question too", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seed(t);
@@ -2292,7 +2320,7 @@ describe("a sighting already past its deadline (codex, integrated review of 0.10
       chatId,
       boundInstanceName: INSTANCE,
       ...ASK,
-      expiresAt: Date.now() - 1,
+      expiresAt: Date.now() - EXPIRY_SWEEP_GRACE_MS - 1,
     });
     expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({
       kind: "question",
@@ -2325,7 +2353,7 @@ describe("a sighting already past its deadline (codex, integrated review of 0.10
         chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: EXEC.providerCreatedAt, family: "approval", status: "allowed", decision: "allow-once",
       }),
     ).toEqual({ settled: false, outcome: "kept" });
-    const res = await record(t, chatId, { expiresAt: Date.now() - 1_000 });
+    const res = await record(t, chatId, { expiresAt: Date.now() - EXPIRY_SWEEP_GRACE_MS - 1_000 });
     const row = (await t.run((ctx) => ctx.db.get(res.id!)))!;
     expect(row).toMatchObject({ status: "allowed", resolvedElsewhere: true, decision: "allow-once" });
     expect(row.expiredLocally).toBeUndefined();

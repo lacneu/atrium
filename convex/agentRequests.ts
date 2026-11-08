@@ -508,22 +508,28 @@ export const upsertFromBridge = internalMutation({
         : null;
 
     const now = Date.now();
-    // A deadline the sighting names, already past by our clock: the request is over at the
-    // gateway, and this write arrived late (retried across an outage, an old socket's
-    // read). The OpenClaw Control UI keeps no such request either: it drops the approval
-    // and marks the question expired on its own clock (ui/src/app/exec-approval.ts:282-285,
-    // ui/src/app/question-prompt.ts:222-226 at v2026.9.36). Recorded expired on OUR clock
-    // (expiredLocally), with that deadline — never pending under a default one: such a
-    // card would hold every utility job of the instance (lib/utilityHold.ts) for a request
-    // nobody can answer (codex, integrated review of 0.103.5). Nobody is notified. A later
-    // sighting reopens it only before a deadline still ahead, which this one is not.
-    const lapsedDeadline =
-      resolution === null &&
-      typeof args.expiresAt === "number" &&
-      Number.isFinite(args.expiresAt) &&
-      args.expiresAt <= now
+    // A deadline the sighting names that has passed by our clock: this write arrived late
+    // (retried across an outage, an old socket's read). Kept AS GIVEN — never replaced by a
+    // default one, under which the card would hold every utility job of the instance
+    // (lib/utilityHold.ts) for a request nobody can answer (codex, integrated review of
+    // 0.103.5). The OpenClaw Control UI keeps no request past its deadline either: it drops
+    // such an approval and marks such a question expired on its own clock
+    // (ui/src/app/exec-approval.ts:282-285, ui/src/app/question-prompt.ts:222-226 at
+    // v2026.9.36). But the deadline is the gateway's and our clock may run ahead of it, so,
+    // as everywhere else, the request is over HERE only past it plus the sweep's grace
+    // (pass 2 of that review):
+    // - past the grace: recorded expired on our clock (expiredLocally);
+    // - within it: recorded pending, as any card in its grace — no longer answerable, still
+    //   holding the utility jobs while the gateway may still wait, closed by the gateway's
+    //   word or the sweep.
+    // Neither is notified: nobody can answer it any more. A later sighting reopens an
+    // expired one only before a deadline still ahead, which this one is not.
+    const pastDeadline =
+      typeof args.expiresAt === "number" && Number.isFinite(args.expiresAt) && args.expiresAt <= now
         ? Math.round(args.expiresAt)
         : null;
+    const lapsed =
+      resolution === null && pastDeadline !== null && pastDeadline <= now - EXPIRY_SWEEP_GRACE_MS;
     const id = await ctx.db.insert("agentRequests", {
       chatId: args.chatId,
       userId: chat.userId,
@@ -565,22 +571,25 @@ export const upsertFromBridge = internalMutation({
                 }
               : {}),
           }
-        : lapsedDeadline !== null
+        : lapsed
           ? { status: "expired" as const, resolvedAt: now, expiredLocally: true }
           : { status: "pending" as const }),
       createdAt: now,
-      expiresAt: lapsedDeadline ?? boundedDeadline(now, args.expiresAt),
+      expiresAt: pastDeadline ?? boundedDeadline(now, args.expiresAt),
       updatedAt: now,
     });
-    if (lapsedDeadline !== null) {
-      await trace(ctx, args.chatId, { phase: "requested-expired", source: args.source });
-      return { id, created: true };
-    }
     if (resolution !== null) {
       await trace(ctx, args.chatId, {
         phase: "requested-settled",
         source: args.source,
         status: resolution.status,
+      });
+      return { id, created: true };
+    }
+    if (pastDeadline !== null) {
+      await trace(ctx, args.chatId, {
+        phase: lapsed ? "requested-expired" : "requested-in-grace",
+        source: args.source,
       });
       return { id, created: true };
     }

@@ -12,6 +12,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { UTILITY_HOLD_MAX_MS, UTILITY_HOLD_RECHECK_MS } from "./lib/utilityHold";
+import { EXPIRY_SWEEP_GRACE_MS } from "./lib/agentRequests";
 import { STALLED_PENDING_MS } from "./outboxReconcile";
 import { RENDITION_TIMEOUT_MS } from "./fileRenditions";
 import { summaryCorrelationId } from "./chatSummaries";
@@ -401,14 +402,51 @@ describe("a utility job is held while an approval waits on its instance", () => 
     expect((await outbox(t, job.outboxId))!.utilityHoldSince).toBe(T0);
   });
 
-  test("it asks again at the approval's own deadline when that comes first", async () => {
+  test("it asks again when the approval stops holding — its deadline plus the sweep's grace — when that comes first", async () => {
     const t = convexTest(schema, modules);
     const job = await seedJob(t);
-    await seedRequest(t, await otherConversation(t), { expiresAt: T0 + 4_000 });
+    await seedRequest(t, await otherConversation(t), { expiresAt: T0 - EXPIRY_SWEEP_GRACE_MS + 4_000 });
     await dispatch(t, job.outboxId);
     const again = await scheduledDispatches(t);
     expect(again).toHaveLength(1);
     expect(again[0]!.scheduledTime).toBe(T0 + 4_000);
+  });
+
+  test("an approval past its deadline but within the sweep's grace still holds — the gateway's clock may run behind ours (codex, integrated review of 0.103.5, pass 2)", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t);
+    await seedRequest(t, await otherConversation(t), { expiresAt: T0 - 1 });
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(0);
+    expect((await outbox(t, job.outboxId))!.status).toBe("pending");
+    // Asked again at the next check, which comes before the grace ends.
+    expect((await scheduledDispatches(t))[0]!.scheduledTime).toBe(T0 + UTILITY_HOLD_RECHECK_MS);
+    // Past the grace, nothing holds it any more.
+    vi.setSystemTime(T0 - 1 + EXPIRY_SWEEP_GRACE_MS + 1);
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(1);
+  });
+
+  test("…and so does one the bridge records late, within that grace: pending with its own deadline, until the grace ends", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t);
+    const deadline = T0 - 1_000;
+    const res = await t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId: await otherConversation(t),
+      boundInstanceName: INSTANCE,
+      source: "openclaw.exec",
+      providerRequestId: "ap_in_grace",
+      providerCreatedAt: T0 - 30 * MIN,
+      approvalKind: "exec",
+      approval: { command: "echo OK", decisions: ["allow-once", "deny"] },
+      expiresAt: deadline,
+    });
+    expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({ status: "pending", expiresAt: deadline });
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(0);
+    vi.setSystemTime(deadline + EXPIRY_SWEEP_GRACE_MS + 1);
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(1);
   });
 
   for (const kind of ["documentary", "curator", "converter"] as const) {
@@ -465,17 +503,18 @@ describe("what does NOT hold a job", () => {
     expect(sends()).toBe(1);
   });
 
-  test("an approval past its deadline that the sweep has not closed yet", async () => {
+  test("an approval past its deadline and the sweep's grace that the sweep has not closed yet", async () => {
     const t = convexTest(schema, modules);
     const job = await seedJob(t);
-    await seedRequest(t, await otherConversation(t), { expiresAt: T0 - 1 });
+    await seedRequest(t, await otherConversation(t), { expiresAt: T0 - EXPIRY_SWEEP_GRACE_MS - 1 });
     await dispatch(t, job.outboxId);
     expect(sends()).toBe(1);
   });
 
-  test("an approval the bridge records after its deadline — a late write, never given a default one (codex, integrated review of 0.103.5)", async () => {
+  test("an approval the bridge records past its deadline and the sweep's grace — a late write, never given a default deadline (codex, integrated review of 0.103.5)", async () => {
     const t = convexTest(schema, modules);
     const job = await seedJob(t);
+    const deadline = T0 - EXPIRY_SWEEP_GRACE_MS - 1_000;
     const res = await t.mutation(internal.agentRequests.upsertFromBridge, {
       chatId: await otherConversation(t),
       boundInstanceName: INSTANCE,
@@ -484,12 +523,9 @@ describe("what does NOT hold a job", () => {
       providerCreatedAt: T0 - 31 * MIN,
       approvalKind: "exec",
       approval: { command: "echo OK", decisions: ["allow-once", "deny"] },
-      expiresAt: T0 - 1_000,
+      expiresAt: deadline,
     });
-    expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({
-      status: "expired",
-      expiresAt: T0 - 1_000,
-    });
+    expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({ status: "expired", expiresAt: deadline });
     await dispatch(t, job.outboxId);
     expect(sends()).toBe(1);
   });
@@ -1351,7 +1387,7 @@ describe("every creator stamps its job's target on the row, under the lock it ta
 
 describe("nothing read before an open approval hides it (codex review of lot A+B, pass 3)", () => {
   /** 200 rows of the instance, all `pending`, that do NOT hold a job — approvals past their
-   *  deadline the expiry sweep has not closed yet, or questions — written BEFORE the open
+   *  deadline and its grace the expiry sweep has not closed yet, or questions — written BEFORE the open
    *  approval, so a page read in creation order would hold only them. */
   async function rowsAhead(t: Tt, kind: "expired" | "question"): Promise<void> {
     await t.run(async (ctx) => {
@@ -1389,7 +1425,8 @@ describe("nothing read before an open approval hides it (codex review of lot A+B
                 kind: "approval" as const,
                 approvalKind: "exec" as const,
                 approval: { command: "echo OK", decisions: ["allow-once" as const, "deny" as const] },
-                expiresAt: T0 - 1,
+                // Past the sweep's grace too: rows the hold's range leaves out.
+                expiresAt: T0 - EXPIRY_SWEEP_GRACE_MS - 1,
               }),
           status: "pending" as const,
           createdAt: T0,

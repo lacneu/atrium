@@ -29,6 +29,7 @@
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { EXPIRY_SWEEP_GRACE_MS } from "./agentRequests";
 import { isChatBusy, SESSION_ACTIVE_FRESH_MS } from "./outboxQueue";
 
 /** The hidden chat kinds whose dispatch creates a fresh gateway session per job. */
@@ -77,8 +78,13 @@ export interface UtilityHold {
  * Should a utility job's session creation wait, and until when is it worth asking again?
  *
  * - An approval is open on the instance the job would run on (any conversation, any
- *   person — the gateway's revision is global): wait, and ask again at the earliest
- *   deadline among them or after UTILITY_HOLD_RECHECK_MS, whichever comes first.
+ *   person — the gateway's revision is global): wait, and ask again when the earliest of
+ *   them stops holding or after UTILITY_HOLD_RECHECK_MS, whichever comes first.
+ *   An approval holds while Atrium itself keeps it open: until the gateway settles it, or
+ *   until the expiry sweep would close it — its deadline plus EXPIRY_SWEEP_GRACE_MS. The
+ *   deadline is the gateway's, read on Convex's clock: the grace absorbs a gateway clock
+ *   running behind by up to that much, during which the gateway may still wait (codex,
+ *   integrated review of 0.103.5, pass 2).
  * - Otherwise, for a summary (`sourceChatId`), the summarized conversation is working:
  *   wait UTILITY_HOLD_RECHECK_MS.
  * - Otherwise null: dispatch now.
@@ -95,9 +101,9 @@ export async function utilitySessionHold(
 ): Promise<UtilityHold | null> {
   let earliestDeadline: number | null = null;
   for (const status of OPEN_STATUSES) {
-    // Straight to the earliest approval of this status still within its deadline: the
-    // range holds no other kind and no expired row, so nothing read before it can hide it
-    // — however many questions, or expired rows the sweep has not closed yet, there are.
+    // Straight to the earliest approval of this status that still holds: the range holds
+    // no other kind and no row past the sweep's grace, so nothing read before it can hide
+    // it — however many questions, or rows the sweep has not closed yet, there are.
     const open = await ctx.db
       .query("agentRequests")
       .withIndex("by_instanceName_and_status_and_kind_and_expiresAt", (q) =>
@@ -105,7 +111,7 @@ export async function utilitySessionHold(
           .eq("instanceName", args.instanceName)
           .eq("status", status)
           .eq("kind", "approval")
-          .gt("expiresAt", now),
+          .gt("expiresAt", now - EXPIRY_SWEEP_GRACE_MS),
       )
       .first();
     if (open !== null && (earliestDeadline === null || open.expiresAt < earliestDeadline)) {
@@ -115,7 +121,8 @@ export async function utilitySessionHold(
   if (earliestDeadline !== null) {
     return {
       reason: "approval_pending",
-      retryAt: Math.min(earliestDeadline, now + UTILITY_HOLD_RECHECK_MS),
+      // Past the range's bound, so always ahead of now.
+      retryAt: Math.min(earliestDeadline + EXPIRY_SWEEP_GRACE_MS, now + UTILITY_HOLD_RECHECK_MS),
     };
   }
   if (
