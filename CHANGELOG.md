@@ -1,30 +1,45 @@
 # Changelog
 
-## [0.103.5] — Approvals from sub-agents, after a reconnection and past ten minutes, safe from Atrium's background work
+## [0.103.5] — Approvals after a reconnection and past ten minutes, safe from Atrium's background work
 
-Patch release. The bridge and the Convex functions change; the frontend does not. The schema
-gains an index (`agentRequests.by_instanceName_and_status_and_kind_and_expiresAt`) and three
-optional fields (`outbox.utilityHoldSince`, `outbox.utilityJob`, `chats.convertHeldAt`); nothing
-needs migrating. Deploy **Convex first, then the bridge image**: either half works with the
-other half of 0.103.4 during the rollout. Validated on the live bench on OpenClaw 2026.9.36,
-with Hermes 0.21.7, in token and in trusted-proxy authentication.
+Patch release. The bridge and the Convex functions change; the frontend does not. The Convex
+schema gains a table (`agentRequestResolutions`), an index
+(`agentRequests.by_instanceName_and_status_and_kind_and_expiresAt`) and five optional fields
+(`agentRequests.expiredLocally`, `agentRequests.closedByGateway`, `outbox.utilityHoldSince`,
+`outbox.utilityJob`, `chats.convertHeldAt`); nothing needs migrating. **Deploy Convex first —
+schema and functions together — then the bridge image.** While the bridge is being replaced, a
+0.103.4 bridge keeps working against the new Convex. The new bridge also runs against 0.103.4's
+Convex, but without the Convex half of these fixes: a decision that reaches Atrium before its card
+is recorded is lost and the card stays pending until it expires, and a request Atrium closed on its
+own does not reopen. Validated on the live bench on OpenClaw 2026.9.36, with Hermes 0.21.7, in
+token authentication; the trusted-proxy session claim was validated in trusted-proxy
+authentication.
 
-- **A sub-agent's approval is shown in the conversation that started it.** When an agent
-  delegated work to a sub-agent and that sub-agent needed your approval to run a command, the
-  card never appeared: Atrium only accepted approvals raised by the conversation's own session,
-  so the sub-agent waited until its request expired. Atrium now accepts an approval raised by a
-  session that descends from the conversation — a sub-agent it saw being started, or one the
-  gateway's own session records name as started from it — and never one from another
-  conversation. The card appears under the message that started the sub-agent, and your answer
-  goes to the sub-agent's request. The card does not name the sub-agent yet.
 - **A pending approval comes back after a reconnection.** The gateway announces an approval
   once, to the connections open at that moment, and may skip a slow one. A card missed that way,
   or lost while the bridge was reconnecting, never came back, and the agent waited for an answer
   nobody could give. Each time a conversation's connection opens or reopens, Atrium now reads
   the gateway's pending approvals (commands, plugins, system agent), as the OpenClaw Control UI
-  does, and raises the missing cards of that conversation and of its sub-agents. An approval
-  already answered never comes back. If the gateway refuses a list (a missing permission), the
-  bridge logs which list and why, and goes on.
+  does, and raises the missing cards of that conversation. An approval already answered never
+  comes back, and a card whose approval was decided before Atrium could show it is closed with
+  the gateway's own verdict instead of staying open. If the gateway refuses a list (a missing
+  permission), the bridge logs which list and why, and goes on.
+- **An approval decided during a reconnection no longer stays pending.** When the decision
+  reached Atrium before the approval's card was recorded — the previous connection still writing
+  it, or two connections writing it at once — the card appeared pending and stayed so until it
+  expired. Convex now keeps the decision for an hour, and every write of that request records one
+  card, already decided, without a notification. A decision Convex cannot record at once is
+  written again on a bounded schedule, even after the connection closes, without asking the
+  gateway again; and a turn resumed after a reconnection is no longer held by an approval already
+  decided.
+- **An answer given while the connection to the gateway was down no longer closes the request.**
+  If you answered an approval or a question while the conversation's connection was away or
+  closing, Atrium marked the request expired without asking the gateway, and kept it closed even
+  once the gateway listed it again as still waiting — the agent then waited for an answer nobody
+  could give. Only the gateway's own reply now closes a request: while it still waits, the card
+  stays open and asks you to try again, and a request Atrium closed itself — on its own clock, or
+  on a missing connection before this release — is shown again, answerable, when the gateway
+  lists it as still waiting before its deadline.
 - **Waiting for an approval no longer gives up after 10 minutes.** Atrium stopped waiting for a
   decision after 10 minutes, while the gateway keeps a command approval open for 30: an answer
   given between the two reached a turn Atrium had already closed. The wait now follows the
@@ -72,22 +87,29 @@ with Hermes 0.21.7, in token and in trusted-proxy authentication.
   have it, and reads who owns an existing one from the gateway, as before. Token authentication
   never sent this request.
 
+**Known issue.** An approval needed by a sub-agent is not shown in the conversation that started
+it. When an agent delegates work to a sub-agent and that sub-agent needs your approval to run a
+command, no card appears, and the sub-agent waits for a decision Atrium cannot give until its
+request expires. The gateway delivers such approvals to the parent conversation only through a
+channel Atrium does not read yet.
+
 **Known issue, not new in this release.** An approval you grant can still end with the command
 refused as `approval-request-failed` when something other than Atrium's background work creates a
 session on the same gateway while the approval is pending: the first message of another
 conversation, in Atrium or in another client; a new session in the OpenClaw Control UI; a
 sub-agent being started; a scheduled task running. The gateway treats any new session as a change
 of access rights and abandons the pending wait, even though you allowed the command. It applies to
-every command approval, a sub-agent's included. This is an OpenClaw defect, reported upstream;
-Atrium cannot prevent it on its own.
+every command approval. This is an OpenClaw defect, reported upstream; Atrium cannot prevent it on
+its own.
 
-**Rollback:** redeploy the 0.103.4 bridge image and keep Convex on 0.103.5: its schema only adds an
-index and optional fields, and its functions accept every call a 0.103.4 bridge makes. Nothing to
-migrate in either direction. After a rollback, sub-agent approvals are not shown, a missed card
-does not come back, the approval wait stops at 10 minutes, a retried failure shows an error again,
-and with trusted-proxy authentication a new connection can again break a pending approval. Do
-**not** redeploy Convex 0.103.4 once 0.103.5 has run a background job: its schema rejects the
-documents that carry the new fields, so that deploy fails.
+**Rollback:** redeploy the 0.103.4 bridge image and keep Convex on 0.103.5: its schema only adds a
+table, an index and optional fields, and its functions accept every call a 0.103.4 bridge makes.
+After a rollback, a missed card does not come back, an answer given during a connection outage
+closes its request again, the approval wait stops at 10 minutes, a retried failure shows an error
+again, background jobs are no longer held during an approval, and with trusted-proxy
+authentication a new connection can again break a pending approval. Do **not** redeploy Convex
+0.103.4 once 0.103.5 has run: its schema rejects the documents that carry the new fields, so that
+deploy fails.
 
 ## [0.103.4] — A long conversation of heavy turns opens again
 
