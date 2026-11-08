@@ -121,7 +121,8 @@
         { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionRequested" },
         { "file": "src/core/agent-requests.ts", "fn": "readSecretStore" },
         { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "replayQuestions" },
-        { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "onQuestion" }
+        { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "onQuestion" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionCheck" }
       ],
       "exceptions": []
     },
@@ -144,9 +145,12 @@
       "sites": [
         { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalPresentation" },
         { "file": "src/core/agent-requests.ts", "fn": "scopeSummary" },
-        { "file": "src/core/agent-requests.ts", "fn": "readDecisions" }
+        { "file": "src/core/agent-requests.ts", "fn": "readDecisions" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalCheck" }
       ],
-      "exceptions": []
+      "exceptions": [
+        { "field": "SystemAgentApprovalPresentation.agentId", "site": { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalCheck" }, "receivers": ["presentation"], "branch": { "receiver": "presentation", "field": "kind" }, "why": "readOpenClawApprovalCheck reads an exec or plugin presentation's agent only: a system-agent approval is raised by the gateway's own system agent, whatever the chat, and its agent is never compared" }
+      ]
     },
     {
       "name": "approval snapshots",
@@ -154,7 +158,13 @@
         "ApprovalSnapshot", "PendingApprovalSnapshot", "AllowedApprovalSnapshot", "DeniedApprovalSnapshot",
         "ExpiredApprovalSnapshot", "CancelledApprovalSnapshot", "TerminalApprovalSnapshot"
       ],
-      "sites": [{ "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalTerminalStatus" }],
+      "sites": [
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalTerminalStatus" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalTerminal" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalSnapshotOrigin" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalCheck" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalResolveOutcome" }
+      ],
       "exceptions": []
     },
     {
@@ -209,6 +219,15 @@
       "name": "agent request answers",
       "schemas": ["QuestionResolveParams", "ApprovalResolveParams"],
       "sites": [{ "file": "src/agent-request-respond.ts", "fn": "respondOpenClaw" }],
+      "exceptions": []
+    },
+    {
+      "name": "agent request answer replies",
+      "schemas": ["QuestionResolveResult", "ApprovalResolveResult"],
+      "sites": [
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionResolveStatus" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalResolveOutcome" }
+      ],
       "exceptions": []
     },
     {

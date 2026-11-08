@@ -112,6 +112,21 @@ const FROZEN_TRUTH_FLOOR = [
   "ChatPendingInputsPage.queuedCount",
   // A delivery item's phase, `update` (a running tool's progress) included (2026-10-17).
   "AgentActivityItem.phase",
+  // The approval snapshots the observer settles or refuses, and the question-resolve verdict
+  // the answer path confirms (0.103.6 integration, 2026-11-08).
+  "AllowedApprovalSnapshot.source",
+  "DeniedApprovalSnapshot.source",
+  "ExpiredApprovalSnapshot.source",
+  "CancelledApprovalSnapshot.source",
+  "ApprovalSnapshot.source",
+  "TerminalApprovalSnapshot.source",
+  "PendingApprovalSnapshot.sourceSessionKey",
+  "ApprovalSnapshot.sourceSessionKey",
+  "AllowedApprovalSnapshot.decision",
+  "DeniedApprovalSnapshot.decision",
+  "ApprovalSnapshot.decision",
+  "TerminalApprovalSnapshot.decision",
+  "QuestionResolveResult.status",
 ];
 
 const ratchet = JSON.parse(

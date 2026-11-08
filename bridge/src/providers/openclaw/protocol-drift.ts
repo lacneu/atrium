@@ -457,10 +457,23 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 399,
-  ignored: 800,
+  handled: 408,
+  ignored: 791,
   gaps: 888,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  APPROVAL AND QUESTION READERS (0.103.6 integration, 2026-11-08): the read sites now
+   *  name every function that reads an approval snapshot, a presentation, a question record
+   *  or a resolve reply — 0.103.5's `readOpenClawApprovalSnapshotOrigin` and
+   *  `readOpenClawApprovalTerminal`, and the answer path's replies, read by functions of their
+   *  own (`readOpenClawApprovalCheck`, `readOpenClawApprovalResolveOutcome`,
+   *  `readOpenClawQuestionCheck`, `readOpenClawQuestionResolveStatus`) instead of inline in
+   *  respondOpenClaw. Nine ignored entries were false and are handled: the terminal
+   *  snapshots' `source` (Allowed / Denied / Expired / Cancelled / Approval / Terminal) and
+   *  the pending one's `sourceSessionKey` (Pending / Approval) — a snapshot naming another
+   *  session is refused — and `QuestionResolveResult.status`, the verdict an answer is
+   *  confirmed by. `SystemAgentApprovalPresentation.agentId` stays ignored, now provably
+   *  unread (a branch exception on the presentation's `kind`). No gap moves.
    *
    *  TRUTH GUARD V3 (2026-11-08): the coverage-truth guard now asks the bridge's own read
    *  sites (protocol/openclaw/read-sites.json) whether a field declared unread is read.

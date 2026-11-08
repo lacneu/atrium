@@ -205,6 +205,58 @@
     {
       "path": "AgentActivityItem.phase",
       "scan": false
+    },
+    {
+      "path": "AllowedApprovalSnapshot.source",
+      "scan": false
+    },
+    {
+      "path": "DeniedApprovalSnapshot.source",
+      "scan": false
+    },
+    {
+      "path": "ExpiredApprovalSnapshot.source",
+      "scan": false
+    },
+    {
+      "path": "CancelledApprovalSnapshot.source",
+      "scan": false
+    },
+    {
+      "path": "ApprovalSnapshot.source",
+      "scan": false
+    },
+    {
+      "path": "TerminalApprovalSnapshot.source",
+      "scan": false
+    },
+    {
+      "path": "PendingApprovalSnapshot.sourceSessionKey",
+      "scan": false
+    },
+    {
+      "path": "ApprovalSnapshot.sourceSessionKey",
+      "scan": false
+    },
+    {
+      "path": "AllowedApprovalSnapshot.decision",
+      "scan": false
+    },
+    {
+      "path": "DeniedApprovalSnapshot.decision",
+      "scan": false
+    },
+    {
+      "path": "ApprovalSnapshot.decision",
+      "scan": false
+    },
+    {
+      "path": "TerminalApprovalSnapshot.decision",
+      "scan": false
+    },
+    {
+      "path": "QuestionResolveResult.status",
+      "scan": false
     }
   ]
 }

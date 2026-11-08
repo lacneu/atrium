@@ -377,6 +377,37 @@ describe("OpenClaw approvals", () => {
       await respondOpenClaw(body({ source: "openclaw.plugin", providerRequestId: "ap-1", approvalKind: "plugin", decision: "allow-once" }), gw, false, LIVE),
     ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "denied", saidBy: "gateway" });
   });
+
+  it("a system-agent approval is answered whatever agent its snapshot names: that agent is not read", async () => {
+    // Raised by the gateway's own system agent, whatever the chat (SystemAgentApprovalPresentation).
+    const { calls, gw } = recorder({
+      "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "system-agent", agentId: "openclaw" } } },
+      "approval.resolve": { applied: true, approval: { status: "allowed" } },
+    });
+    const out = await respondOpenClaw(
+      body({ source: "openclaw.system_agent", providerRequestId: "ap-s", approvalKind: "system-agent", decision: "allow-once" }),
+      gw, false, LIVE,
+    );
+    expect(out).toEqual({ ok: true });
+    expect(calls[1]).toEqual(["approval.resolve", { id: "ap-s", kind: "system-agent", decision: "allow-once" }]);
+  });
+
+  it("an exec or plugin card the gateway records as a system-agent approval is never resolved from here", async () => {
+    // The gateway's record is not the request the card shows — even routed here, even when the
+    // snapshot names this conversation's own agent.
+    for (const approvalKind of ["exec", "plugin"] as const) {
+      const { calls, gw } = recorder({
+        "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "system-agent", agentId: "denis" } } },
+        "approval.resolve": { applied: true, approval: { status: "allowed" } },
+      });
+      const out = await respondOpenClaw(
+        body({ source: `openclaw.${approvalKind}`, providerRequestId: "ap-x", approvalKind, decision: "allow-once" }),
+        gw, true, LIVE,
+      );
+      expect(out, approvalKind).toEqual({ ok: false, httpStatus: 403, code: "session_mismatch" });
+      expect(calls.map(([m]) => m), approvalKind).toEqual(["approval.get"]);
+    }
+  });
 });
 
 describe("incomplete gateway replies are never a confirmation", () => {

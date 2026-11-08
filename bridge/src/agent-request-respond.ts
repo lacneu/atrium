@@ -25,7 +25,11 @@ import {
   openClawDecision,
   openClawQuestionAnswers,
   questionShape,
+  readOpenClawApprovalCheck,
+  readOpenClawApprovalResolveOutcome,
+  readOpenClawQuestionCheck,
   readOpenClawQuestionRequested,
+  readOpenClawQuestionResolveStatus,
   type AgentRequestSource,
   type ApprovalDecision,
   type HermesAnsweredVerdict,
@@ -277,30 +281,27 @@ export async function respondOpenClaw(
     live !== undefined && !live.connection.isClosed && live.instanceName === body.instanceName;
   const isQuestion = body.source === "openclaw.ask_user" || body.source === "openclaw.secret";
   if (isQuestion) {
-    let record: Record<string, unknown> | null = null;
+    let asked: ReturnType<typeof readOpenClawQuestionCheck> = null;
     try {
-      const got = payloadOf(await gateway.request("question.get", { id: body.providerRequestId })) as {
-        question?: unknown;
-      } | null;
-      record = typeof got?.question === "object" && got.question !== null
-        ? (got.question as Record<string, unknown>)
-        : null;
+      asked = readOpenClawQuestionCheck(
+        payloadOf(await gateway.request("question.get", { id: body.providerRequestId })),
+      );
     } catch (err) {
       return classifyQuestionError(err);
     }
-    if (record === null) return goneByGateway("expired");
+    if (asked === null) return goneByGateway("expired");
     // The id is the gateway's; the chat is ours. They must name the same session, or
     // an answer typed in one conversation would settle another's question.
-    if (!sameSession(body.sessionKey, record.sessionKey)) {
+    if (!sameSession(body.sessionKey, asked.sessionKey)) {
       return { ok: false, httpStatus: 403, code: "session_mismatch" };
     }
     // Same id, another request: the gateway forgets a settled question after 15 s and
     // takes caller-chosen ids, so the card's generation must be the one still asked.
-    if (!sameGeneration(body.providerCreatedAt, record.createdAtMs)) {
+    if (!sameGeneration(body.providerCreatedAt, asked.createdAtMs)) {
       return goneByGateway("expired");
     }
-    if (record.status !== "pending") {
-      const s = record.status;
+    if (asked.status !== "pending") {
+      const s = asked.status;
       return goneByGateway(
         s === "answered" || s === "cancelled" || s === "expired" ? s : "expired",
       );
@@ -308,30 +309,32 @@ export async function respondOpenClaw(
     // …and the same QUESTION: a reused id under a clock that stood still carries the same
     // creation time and another question — the card must not answer it (codex P1).
     if (body.questionShape !== undefined) {
-      const asked = readOpenClawQuestionRequested(record);
-      if (asked === null || questionShape(asked.questions) !== body.questionShape) {
+      const question = readOpenClawQuestionRequested(asked.record);
+      if (question === null || questionShape(question.questions) !== body.questionShape) {
         return goneByGateway("expired");
       }
     }
     // Still waiting, by the gateway's own word: answered only from the live session.
     if (!liveHere) return SESSION_UNAVAILABLE;
     try {
-      const res = payloadOf(
-        body.skip
-          ? await gateway.request("question.resolve", {
-              id: body.providerRequestId,
-              cancel: true,
-              resolvedBy: "atrium",
-            })
-          : await gateway.request("question.resolve", {
-              id: body.providerRequestId,
-              answers: openClawQuestionAnswers(body.answers ?? []),
-              resolvedBy: "atrium",
-            }),
-      ) as { status?: unknown } | null;
+      const verdict = readOpenClawQuestionResolveStatus(
+        payloadOf(
+          body.skip
+            ? await gateway.request("question.resolve", {
+                id: body.providerRequestId,
+                cancel: true,
+                resolvedBy: "atrium",
+              })
+            : await gateway.request("question.resolve", {
+                id: body.providerRequestId,
+                answers: openClawQuestionAnswers(body.answers ?? []),
+                resolvedBy: "atrium",
+              }),
+        ),
+      );
       // Success is the verdict we asked for (QuestionResolveResult); anything else is a
       // reply we cannot read, not a confirmation.
-      if (res?.status !== (body.skip ? "cancelled" : "answered")) {
+      if (verdict !== (body.skip ? "cancelled" : "answered")) {
         return { ok: false, httpStatus: 502, code: "gateway_error" };
       }
       return { ok: true };
@@ -345,10 +348,10 @@ export async function respondOpenClaw(
     return { ok: false, httpStatus: 400, code: "invalid_answer" };
   }
   try {
-    const got = payloadOf(await gateway.request("approval.get", { id: body.providerRequestId })) as {
-      approval?: { status?: unknown; createdAtMs?: unknown; presentation?: { agentId?: unknown } };
-    } | null;
-    if (!sameGeneration(body.providerCreatedAt, got?.approval?.createdAtMs)) {
+    const check = readOpenClawApprovalCheck(
+      payloadOf(await gateway.request("approval.get", { id: body.providerRequestId })),
+    );
+    if (!sameGeneration(body.providerCreatedAt, check.createdAtMs)) {
       return goneByGateway("expired");
     }
     // The id is the gateway's; the chat is ours — the same re-check as for a question.
@@ -356,20 +359,21 @@ export async function respondOpenClaw(
     // session-scoped projection; absent from every approval.get captured live on
     // 2026.9.5), but it names the AGENT that asked. An exec or plugin approval whose
     // agent is not this conversation's is never resolved from here. A system-agent
-    // approval is raised by the gateway's own system agent, whatever the chat.
+    // approval is raised by the gateway's own system agent, whatever the chat: its agent is
+    // not read, and an exec or plugin card the gateway records as a system-agent approval is
+    // not the request the card shows.
     // An exec approval may name NO agent (upstream allows `agentId: null`); it is then
     // answerable only on the proof that this chat's own socket routed it here.
     // (With no live session here, that proof cannot be had yet — nothing is resolved then,
     // and the person is told to try again, below.)
-    const presentedAgent = got?.approval?.presentation?.agentId;
     const agentChecked =
-      typeof presentedAgent === "string" && presentedAgent !== ""
-        ? sameAgent(body.sessionKey, presentedAgent)
+      typeof check.agentId === "string" && check.agentId !== ""
+        ? sameAgent(body.sessionKey, check.agentId)
         : routedHere || !liveHere;
-    if (body.approvalKind !== "system-agent" && !agentChecked) {
+    if (body.approvalKind !== "system-agent" && (check.systemAgent || !agentChecked)) {
       return { ok: false, httpStatus: 403, code: "session_mismatch" };
     }
-    const status = got?.approval?.status;
+    const status = check.status;
     if (status !== "pending") {
       return goneByGateway(
         status === "allowed" || status === "denied" || status === "expired" || status === "cancelled"
@@ -387,23 +391,25 @@ export async function respondOpenClaw(
     return transportFailure(msg);
   }
   try {
-    const res = payloadOf(
-      await gateway.request("approval.resolve", {
-        id: body.providerRequestId,
-        kind: body.approvalKind,
-        decision: openClawDecision(body.decision),
-      }),
-    ) as { applied?: unknown; approval?: { status?: unknown } } | null;
-    if (res?.applied === false) {
+    const outcome = readOpenClawApprovalResolveOutcome(
+      payloadOf(
+        await gateway.request("approval.resolve", {
+          id: body.providerRequestId,
+          kind: body.approvalKind,
+          decision: openClawDecision(body.decision),
+        }),
+      ),
+    );
+    if (outcome.applied === false) {
       // First answer wins: someone else decided first. Their verdict is the record.
-      const s = res.approval?.status;
+      const s = outcome.status;
       return goneByGateway(
         s === "allowed" || s === "denied" || s === "expired" || s === "cancelled" ? s : "expired",
       );
     }
     // Only `applied: true` confirms OUR decision was recorded; an unreadable reply is
     // not one (a retry then reads the approval's real state first).
-    if (res?.applied !== true) return { ok: false, httpStatus: 502, code: "gateway_error" };
+    if (outcome.applied !== true) return { ok: false, httpStatus: 502, code: "gateway_error" };
     return { ok: true };
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
