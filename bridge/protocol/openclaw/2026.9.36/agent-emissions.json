@@ -3024,7 +3024,7 @@
         },
         {
           "stream": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.params.event.kind | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.params.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | {...∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.params.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3060,7 +3060,7 @@
         },
         {
           "stream": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.event.kind | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | {...∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3121,7 +3121,7 @@
         },
         {
           "stream": "arg1.request.event.kind",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "arg1.request.event.payload | {...arg1.request.event.payload, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3154,7 +3154,7 @@
         },
         {
           "stream": "arg2.request.event.kind | arg1.request.event.kind | arg0.pending.get(…).request.event.kind",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "arg2.request.event.payload | arg1.request.event.payload | arg0.pending.get(…).request.event.payload | {...arg2.request.event.payload | arg1.request.event.payload | arg0.pending.get(…).request.event.payload, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3187,7 +3187,7 @@
         },
         {
           "stream": "arg0.pending.get(…).request.event.kind | arg1.request.event.kind | arg0.pending.get(…).request.event.kind",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "arg0.pending.get(…).request.event.payload | arg1.request.event.payload | arg0.pending.get(…).request.event.payload | {...arg0.pending.get(…).request.event.payload | arg1.request.event.payload | arg0.pending.get(…).request.event.payload, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3221,7 +3221,7 @@
         },
         {
           "stream": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.event.kind | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | {...∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3255,7 +3255,7 @@
         },
         {
           "stream": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.event.kind | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | {...∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg0.request.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3290,7 +3290,7 @@
         },
         {
           "stream": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.kind | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | {...∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3325,7 +3325,7 @@
         },
         {
           "stream": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.kind | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | {...∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3360,7 +3360,7 @@
         },
         {
           "stream": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.kind | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>",
-          "data": "<opaque: result of structuredClone(…); declared type is any> | {...<opaque: result of structuredClone(…); declared type is any>, name, args?, partialResult?, result?}"
+          "data": "∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | {...∅ | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>> | arg1.event.payload | <opaque: declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>>, name, args?, partialResult?, result?}"
         },
         {
           "stream": "∅",
@@ -3755,12 +3755,20 @@
         }
       ],
       "dataAbsent": false,
-      "dataMaybeAbsent": false,
+      "dataMaybeAbsent": true,
       "open": null,
       "dataOpaque": [
         {
-          "reason": "result of structuredClone(…); declared type is any",
-          "origin": "src/gateway/worker-environments/live-event-projection.ts:17"
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:501"
+        },
+        {
+          "reason": "result of JSON.parse(…); declared type is any",
+          "origin": "src/gateway/server/ws-connection/worker-connection.ts:278"
+        },
+        {
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:464"
         }
       ],
       "file": "src/gateway/server/ws-connection/worker-connection.ts",
@@ -3820,7 +3828,7 @@
         }
       ],
       "dataAbsent": false,
-      "dataMaybeAbsent": false,
+      "dataMaybeAbsent": true,
       "open": [
         "its object is kept in a class field that code outside the class can read",
         "its object is passed to code outside the analysed sources",
@@ -3828,8 +3836,16 @@
       ],
       "dataOpaque": [
         {
-          "reason": "result of structuredClone(…); declared type is any",
-          "origin": "src/gateway/worker-environments/live-event-projection.ts:17"
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:501"
+        },
+        {
+          "reason": "argument #1 of createWorkerTurnRpc > pushLiveEvent; declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>> (closure parameter #1.event.payload of createWorkerTurnRpc > pushLiveEvent, not filled at this site)",
+          "origin": "src/gateway/worker-environments/worker-turn-rpc.ts:462"
+        },
+        {
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:464"
         }
       ],
       "file": "src/gateway/worker-environments/service.ts",
@@ -4159,19 +4175,27 @@
       "phaseAbsent": false,
       "phaseOpaque": {
         "pattern": null,
-        "reason": "result of structuredClone(…); declared type is any",
-        "origin": "src/gateway/worker-environments/live-event-projection.ts:17",
+        "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+        "origin": "src/gateway/worker-environments/live-events.ts:501",
         "literals": null
       },
       "phaseSource": "opaque",
       "keys": [],
       "dataAbsent": false,
-      "dataMaybeAbsent": false,
+      "dataMaybeAbsent": true,
       "open": null,
       "dataOpaque": [
         {
-          "reason": "result of structuredClone(…); declared type is any",
-          "origin": "src/gateway/worker-environments/live-event-projection.ts:17"
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:501"
+        },
+        {
+          "reason": "result of JSON.parse(…); declared type is any",
+          "origin": "src/gateway/server/ws-connection/worker-connection.ts:278"
+        },
+        {
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:464"
         }
       ],
       "file": "src/gateway/server/ws-connection/worker-connection.ts",
@@ -4208,14 +4232,14 @@
       "phaseAbsent": false,
       "phaseOpaque": {
         "pattern": null,
-        "reason": "result of structuredClone(…); declared type is any",
-        "origin": "src/gateway/worker-environments/live-event-projection.ts:17",
+        "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+        "origin": "src/gateway/worker-environments/live-events.ts:501",
         "literals": null
       },
       "phaseSource": "opaque",
       "keys": [],
       "dataAbsent": false,
-      "dataMaybeAbsent": false,
+      "dataMaybeAbsent": true,
       "open": [
         "its object is kept in a class field that code outside the class can read",
         "its object is passed to code outside the analysed sources",
@@ -4223,8 +4247,16 @@
       ],
       "dataOpaque": [
         {
-          "reason": "result of structuredClone(…); declared type is any",
-          "origin": "src/gateway/worker-environments/live-event-projection.ts:17"
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:501"
+        },
+        {
+          "reason": "argument #1 of createWorkerTurnRpc > pushLiveEvent; declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>> (closure parameter #1.event.payload of createWorkerTurnRpc > pushLiveEvent, not filled at this site)",
+          "origin": "src/gateway/worker-environments/worker-turn-rpc.ts:462"
+        },
+        {
+          "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+          "origin": "src/gateway/worker-environments/live-events.ts:464"
         }
       ],
       "file": "src/gateway/worker-environments/service.ts",
@@ -26359,8 +26391,28 @@
       "line": 358,
       "function": "attachWorkerWsMessageHandler > handleMessage > dispatch > invoke",
       "what": "data",
-      "reason": "result of structuredClone(…); declared type is any",
-      "origin": "src/gateway/worker-environments/live-event-projection.ts:17",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:501",
+      "emitter": "dispatchWorkerRequest",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/server/ws-connection/worker-connection.ts",
+      "line": 358,
+      "function": "attachWorkerWsMessageHandler > handleMessage > dispatch > invoke",
+      "what": "data",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:464",
+      "emitter": "dispatchWorkerRequest",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/server/ws-connection/worker-connection.ts",
+      "line": 358,
+      "function": "attachWorkerWsMessageHandler > handleMessage > dispatch > invoke",
+      "what": "data",
+      "reason": "result of JSON.parse(…); declared type is any",
+      "origin": "src/gateway/server/ws-connection/worker-connection.ts:278",
       "emitter": "dispatchWorkerRequest",
       "stream": null
     },
@@ -26379,6 +26431,26 @@
       "line": 358,
       "function": "attachWorkerWsMessageHandler > handleMessage > dispatch > invoke",
       "what": "phase",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:501",
+      "emitter": "dispatchWorkerRequest",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/server/ws-connection/worker-connection.ts",
+      "line": 358,
+      "function": "attachWorkerWsMessageHandler > handleMessage > dispatch > invoke",
+      "what": "phase",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:464",
+      "emitter": "dispatchWorkerRequest",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/server/ws-connection/worker-connection.ts",
+      "line": 358,
+      "function": "attachWorkerWsMessageHandler > handleMessage > dispatch > invoke",
+      "what": "phase",
       "reason": "result of JSON.parse(…); declared type is any",
       "origin": "src/gateway/server/ws-connection/worker-connection.ts:278",
       "emitter": "dispatchWorkerRequest",
@@ -26389,8 +26461,8 @@
       "line": 358,
       "function": "attachWorkerWsMessageHandler > handleMessage > dispatch > invoke",
       "what": "phase",
-      "reason": "result of structuredClone(…); declared type is any",
-      "origin": "src/gateway/worker-environments/live-event-projection.ts:17",
+      "reason": "result of JSON.parse(…); declared type is any",
+      "origin": "src/gateway/server/ws-connection/worker-connection.ts:278",
       "emitter": "dispatchWorkerRequest",
       "stream": null
     },
@@ -26426,8 +26498,38 @@
       "line": 704,
       "function": "createWorkerTurnRpc > pushLiveEvent",
       "what": "data",
-      "reason": "result of structuredClone(…); declared type is any",
-      "origin": "src/gateway/worker-environments/live-event-projection.ts:17",
+      "reason": "argument #1 of createWorkerTurnRpc > pushLiveEvent; declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>> (closure parameter #1.event.payload of createWorkerTurnRpc > pushLiveEvent, not filled at this site)",
+      "origin": "src/gateway/worker-environments/worker-turn-rpc.ts:462",
+      "emitter": "createWorkerTurnRpc > pushLiveEvent",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/worker-environments/service.ts",
+      "line": 704,
+      "function": "createWorkerTurnRpc > pushLiveEvent",
+      "what": "data",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:501",
+      "emitter": "createWorkerTurnRpc > pushLiveEvent",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/worker-environments/service.ts",
+      "line": 704,
+      "function": "createWorkerTurnRpc > pushLiveEvent",
+      "what": "data",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:464",
+      "emitter": "createWorkerTurnRpc > pushLiveEvent",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/worker-environments/service.ts",
+      "line": 704,
+      "function": "createWorkerTurnRpc > pushLiveEvent",
+      "what": "phase",
+      "reason": "argument #1 of createWorkerTurnRpc > pushLiveEvent; declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>> (closure parameter #1.event.payload of createWorkerTurnRpc > pushLiveEvent, not filled at this site)",
+      "origin": "src/gateway/worker-environments/worker-turn-rpc.ts:462",
       "emitter": "createWorkerTurnRpc > pushLiveEvent",
       "stream": null
     },
@@ -26456,8 +26558,18 @@
       "line": 704,
       "function": "createWorkerTurnRpc > pushLiveEvent",
       "what": "phase",
-      "reason": "result of structuredClone(…); declared type is any",
-      "origin": "src/gateway/worker-environments/live-event-projection.ts:17",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:501",
+      "emitter": "createWorkerTurnRpc > pushLiveEvent",
+      "stream": null
+    },
+    {
+      "file": "src/gateway/worker-environments/service.ts",
+      "line": 704,
+      "function": "createWorkerTurnRpc > pushLiveEvent",
+      "what": "phase",
+      "reason": "declared type is Static<Type.TObject<{ readonly runEpoch: any; readonly lastAckedSeq: any; readonly seq: any; readonly runId: any; readonly event: any; }>>",
+      "origin": "src/gateway/worker-environments/live-events.ts:464",
       "emitter": "createWorkerTurnRpc > pushLiveEvent",
       "stream": null
     },
@@ -27421,7 +27533,7 @@
               "optional": true
             }
           ],
-          "dataFromCaller": false
+          "dataFromCaller": true
         },
         {
           "streams": [
