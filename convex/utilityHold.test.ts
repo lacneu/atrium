@@ -473,6 +473,27 @@ describe("what does NOT hold a job", () => {
     expect(sends()).toBe(1);
   });
 
+  test("an approval the bridge records after its deadline — a late write, never given a default one (codex, integrated review of 0.103.5)", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t);
+    const res = await t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId: await otherConversation(t),
+      boundInstanceName: INSTANCE,
+      source: "openclaw.exec",
+      providerRequestId: "ap_late",
+      providerCreatedAt: T0 - 31 * MIN,
+      approvalKind: "exec",
+      approval: { command: "echo OK", decisions: ["allow-once", "deny"] },
+      expiresAt: T0 - 1_000,
+    });
+    expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({
+      status: "expired",
+      expiresAt: T0 - 1_000,
+    });
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(1);
+  });
+
   test("an approval already settled", async () => {
     const t = convexTest(schema, modules);
     const job = await seedJob(t);

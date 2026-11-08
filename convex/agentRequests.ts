@@ -508,6 +508,22 @@ export const upsertFromBridge = internalMutation({
         : null;
 
     const now = Date.now();
+    // A deadline the sighting names, already past by our clock: the request is over at the
+    // gateway, and this write arrived late (retried across an outage, an old socket's
+    // read). The OpenClaw Control UI keeps no such request either: it drops the approval
+    // and marks the question expired on its own clock (ui/src/app/exec-approval.ts:282-285,
+    // ui/src/app/question-prompt.ts:222-226 at v2026.9.36). Recorded expired on OUR clock
+    // (expiredLocally), with that deadline — never pending under a default one: such a
+    // card would hold every utility job of the instance (lib/utilityHold.ts) for a request
+    // nobody can answer (codex, integrated review of 0.103.5). Nobody is notified. A later
+    // sighting reopens it only before a deadline still ahead, which this one is not.
+    const lapsedDeadline =
+      resolution === null &&
+      typeof args.expiresAt === "number" &&
+      Number.isFinite(args.expiresAt) &&
+      args.expiresAt <= now
+        ? Math.round(args.expiresAt)
+        : null;
     const id = await ctx.db.insert("agentRequests", {
       chatId: args.chatId,
       userId: chat.userId,
@@ -537,9 +553,8 @@ export const upsertFromBridge = internalMutation({
       ...(kind === "credential"
         ? { credential: boundCredential(args.credential, args.source) }
         : {}),
-      ...(resolution === null
-        ? { status: "pending" as const }
-        : {
+      ...(resolution !== null
+        ? {
             status: resolution.status,
             resolvedAt: now,
             // Decided by someone, and not through this card (it did not exist).
@@ -549,11 +564,18 @@ export const upsertFromBridge = internalMutation({
                   ...(resolution.decision !== undefined ? { decision: resolution.decision } : {}),
                 }
               : {}),
-          }),
+          }
+        : lapsedDeadline !== null
+          ? { status: "expired" as const, resolvedAt: now, expiredLocally: true }
+          : { status: "pending" as const }),
       createdAt: now,
-      expiresAt: boundedDeadline(now, args.expiresAt),
+      expiresAt: lapsedDeadline ?? boundedDeadline(now, args.expiresAt),
       updatedAt: now,
     });
+    if (lapsedDeadline !== null) {
+      await trace(ctx, args.chatId, { phase: "requested-expired", source: args.source });
+      return { id, created: true };
+    }
     if (resolution !== null) {
       await trace(ctx, args.chatId, {
         phase: "requested-settled",

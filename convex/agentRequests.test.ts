@@ -10,7 +10,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { deleteMessageAgentRequests } from "./agentRequests";
-import { questionShape } from "./lib/agentRequests";
+import { DEFAULT_REQUEST_TTL_MS, questionShape } from "./lib/agentRequests";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -2246,5 +2246,88 @@ describe("only the gateway's word closes a card for good", () => {
     const row = await t.run((ctx) => ctx.db.get(id!));
     expect(row).toMatchObject({ status: "allowed", decision: "allow-once", resolvedElsewhere: true });
     expect(row!.expiredLocally).toBeUndefined();
+  });
+});
+
+describe("a sighting already past its deadline (codex, integrated review of 0.103.5)", () => {
+  const EXEC = {
+    source: "openclaw.exec" as const,
+    providerRequestId: "ap_late",
+    providerCreatedAt: 700,
+    approvalKind: "exec" as const,
+    sessionKey: "agent:denis:atrium:chat:alice:c1",
+    approval: { command: "make deploy", decisions: ["allow-once", "deny"] },
+  };
+  type T = ReturnType<typeof convexTest>;
+  const record = (t: T, chatId: Id<"chats">, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...EXEC,
+      ...over,
+    });
+  const agentRequestNotes = async (t: T) =>
+    (await t.run((ctx) => ctx.db.query("notifications").collect())).filter((n) => n.kind === "agent_request");
+
+  test("an approval written after its deadline is recorded expired on our clock, with that deadline — never pending, nobody notified", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const deadline = Date.now() - 1_000;
+    const res = await record(t, chatId, { expiresAt: deadline });
+    expect(res.created).toBe(true);
+    const row = (await t.run((ctx) => ctx.db.get(res.id!)))!;
+    expect(row).toMatchObject({ kind: "approval", status: "expired", expiredLocally: true, expiresAt: deadline });
+    expect(row.resolvedAt).toBeTypeOf("number");
+    expect(await agentRequestNotes(t)).toEqual([]);
+    expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
+    // Another write of that sighting, its deadline still past, reopens nothing.
+    expect(await record(t, chatId, { expiresAt: deadline, providerSeenSeq: 20 })).toEqual({ id: res.id, created: false });
+    expect((await t.run((ctx) => ctx.db.get(res.id!)))!.status).toBe("expired");
+  });
+
+  test("a question too", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const res = await t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...ASK,
+      expiresAt: Date.now() - 1,
+    });
+    expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({
+      kind: "question",
+      status: "expired",
+      expiredLocally: true,
+    });
+    expect(await agentRequestNotes(t)).toEqual([]);
+  });
+
+  test("a deadline still ahead is the card's, and a sighting that names none gets the default", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const ahead = Date.now() + 60_000;
+    const a = await record(t, chatId, { expiresAt: ahead });
+    expect(await t.run((ctx) => ctx.db.get(a.id!))).toMatchObject({ status: "pending", expiresAt: ahead });
+    const before = Date.now();
+    const b = await record(t, chatId, { providerRequestId: "ap_no_deadline" });
+    const row = (await t.run((ctx) => ctx.db.get(b.id!)))!;
+    expect(row.status).toBe("pending");
+    expect(row.expiredLocally).toBeUndefined();
+    expect(row.expiresAt).toBeGreaterThanOrEqual(before + DEFAULT_REQUEST_TTL_MS);
+    expect(await agentRequestNotes(t)).toHaveLength(2);
+  });
+
+  test("a verdict kept for it outranks the lapse: the card carries the gateway's verdict", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    expect(
+      await t.mutation(internal.agentRequests.settleFromBridge, {
+        chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: EXEC.providerCreatedAt, family: "approval", status: "allowed", decision: "allow-once",
+      }),
+    ).toEqual({ settled: false, outcome: "kept" });
+    const res = await record(t, chatId, { expiresAt: Date.now() - 1_000 });
+    const row = (await t.run((ctx) => ctx.db.get(res.id!)))!;
+    expect(row).toMatchObject({ status: "allowed", resolvedElsewhere: true, decision: "allow-once" });
+    expect(row.expiredLocally).toBeUndefined();
   });
 });

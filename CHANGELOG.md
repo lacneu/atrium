@@ -8,12 +8,14 @@ schema gains a table (`agentRequestResolutions`), an index
 (`agentRequests.expiredLocally`, `agentRequests.closedByGateway`, `outbox.utilityHoldSince`,
 `outbox.utilityJob`, `chats.convertHeldAt`); nothing needs migrating. **Deploy Convex first —
 schema and functions together — then the bridge image.** While the bridge is being replaced, a
-0.103.4 bridge keeps working against the new Convex. The new bridge also runs against 0.103.4's
-Convex, but without the Convex half of these fixes: a decision that reaches Atrium before its card
-is recorded is lost and the card stays pending until it expires, and a request Atrium closed on its
-own does not reopen. Validated on the live bench on OpenClaw 2026.9.36, with Hermes 0.21.7, in
-token authentication; the trusted-proxy session claim was validated in trusted-proxy
-authentication.
+0.103.4 bridge keeps working against the new Convex, and what Convex decides alone already applies
+to it: background jobs wait while an approval is pending on an OpenClaw instance, and keep the
+instance they were asked for. The new bridge also runs against 0.103.4's Convex, but without the
+Convex half of these fixes: a decision that reaches Atrium before its card is recorded is lost and
+the card stays pending until it expires, a request Atrium closed on its own does not reopen, and
+background jobs are neither held during an approval nor kept to their instance. Validated on the
+live bench on OpenClaw 2026.9.36, with Hermes 0.21.7, in token authentication; the trusted-proxy
+session claim was validated in trusted-proxy authentication.
 
 - **A pending approval comes back after a reconnection.** The gateway announces an approval
   once, to the connections open at that moment, and may skip a slow one. A card missed that way,
@@ -22,8 +24,9 @@ authentication.
   the gateway's pending approvals (commands, plugins, system agent), as the OpenClaw Control UI
   does, and raises the missing cards of that conversation. An approval already answered never
   comes back, and a card whose approval was decided before Atrium could show it is closed with
-  the gateway's own verdict instead of staying open. If the gateway refuses a list (a missing
-  permission), the bridge logs which list and why, and goes on.
+  the gateway's own verdict instead of staying open. A request that reaches Atrium only after its
+  deadline is shown expired, never pending, and nobody is notified. If the gateway refuses a list
+  (a missing permission), the bridge logs which list and why, and goes on.
 - **An approval decided during a reconnection no longer stays pending.** When the decision
   reached Atrium before the approval's card was recorded — the previous connection still writing
   it, or two connections writing it at once — the card appeared pending and stayed so until it
@@ -104,12 +107,14 @@ its own.
 
 **Rollback:** redeploy the 0.103.4 bridge image and keep Convex on 0.103.5: its schema only adds a
 table, an index and optional fields, and its functions accept every call a 0.103.4 bridge makes.
-After a rollback, a missed card does not come back, an answer given during a connection outage
-closes its request again, the approval wait stops at 10 minutes, a retried failure shows an error
-again, background jobs are no longer held during an approval, and with trusted-proxy
-authentication a new connection can again break a pending approval. Do **not** redeploy Convex
-0.103.4 once 0.103.5 has run: its schema rejects the documents that carry the new fields, so that
-deploy fails.
+This undoes the bridge's half only: a missed card does not come back, an answer given during a
+connection outage closes its request again, the approval wait stops at 10 minutes, a retried
+failure shows an error again, and with trusted-proxy authentication a new connection can again
+break a pending approval. What Convex decides stays, whatever the bridge: background jobs still
+wait while an approval is pending on an OpenClaw instance, are still withdrawn 35 minutes after
+they began waiting, and still keep the instance they were asked for — a bridge rollback does not
+lift that wait. Do **not** redeploy Convex 0.103.4 once 0.103.5 has run: its schema rejects the
+documents that carry the new fields, so that deploy fails.
 
 ## [0.103.4] — A long conversation of heavy turns opens again
 
