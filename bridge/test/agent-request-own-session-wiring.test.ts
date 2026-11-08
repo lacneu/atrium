@@ -193,7 +193,8 @@ describe("approvals on the real Session: its own session's only", () => {
       "the child's request is not even read",
     ).toEqual([]);
 
-    // The answer path: the child's card is refused before anything reaches the gateway.
+    // The answer path: the child's card is refused before anything reaches the gateway — a
+    // refusal, never a verdict that would close a card.
     const operator = { calls: [] as string[], request: async (m: string) => (operator.calls.push(m), { type: "res", ok: true, payload: null }) };
     expect(
       await respondOpenClaw(
@@ -213,7 +214,7 @@ describe("approvals on the real Session: its own session's only", () => {
         reg.peekByChat("c1")!.routedApproval(child.approvalId),
         reg.peekByChat("c1"),
       ),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 403, code: "session_mismatch" });
     expect(operator.calls).toEqual([]);
 
     // A reconnection: the new socket inherits nothing, lists what still waits, and records its

@@ -169,21 +169,53 @@ describe("OpenClaw questions", () => {
     expect(g.calls.map(([m]) => m)).toEqual(["question.get"]);
   });
 
-  it("is NEVER resolved unless the chat's session is live here, on the request's session (codex, 0.21.5 pass 23)", async () => {
+  it("is NEVER resolved unless the chat's session is live here, on the request's session (codex, 0.21.5 pass 23) — and that absence is RETRYABLE, never a verdict (lot « trames 1 », pass 8)", async () => {
     // After a bridge restart the resolution would go out on an operator connection that
-    // ingests nothing: the agent would resume with nobody reading what follows.
-    const g = recorder({ "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 1_000, questions: [] } }, "question.resolve": { status: "answered" } });
-    const gone = { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+    // ingests nothing: the agent would resume with nobody reading what follows. But a
+    // socket away or closed says nothing about the request: the gateway, asked, says it
+    // still waits — the card must stay answerable.
+    const g = recorder({
+      "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 1_000, questions: [] } },
+      "question.resolve": { status: "answered" },
+      "approval.get": { approval: { id: "ap_1", status: "pending", createdAtMs: 1_000, presentation: { agentId: "denis" } } },
+      "approval.resolve": { applied: true },
+    });
+    const retry = { ok: false, httpStatus: 503, code: "session_unavailable" };
     const b = body({ answers: [{ id: "token", values: ["x"] }] });
-    expect(await respondOpenClaw(b, g.gw, false, undefined)).toEqual(gone); // no live session
-    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, sessionKey: "agent:denis:atrium:chat:denis:c2" })).toEqual(gone);
-    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, instanceName: "other" })).toEqual(gone);
+    expect(await respondOpenClaw(b, g.gw, false, undefined)).toEqual(retry); // no live session
+    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, instanceName: "other" })).toEqual(retry);
     const approval = body({ source: "openclaw.exec", approvalKind: "exec", decision: "allow-once", providerRequestId: "ap_1" } as Partial<RespondBody>);
-    expect(await respondOpenClaw(approval, g.gw, true, undefined)).toEqual(gone);
+    expect(await respondOpenClaw(approval, g.gw, true, undefined)).toEqual(retry);
     // A CLOSED socket still registered (awaiting the reaper) reads nothing either (pass 25).
-    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, connection: { isClosed: true } })).toEqual(gone);
-    expect(await respondOpenClaw(approval, g.gw, true, { ...LIVE, connection: { isClosed: true } })).toEqual(gone);
-    expect(g.calls).toEqual([]);
+    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, connection: { isClosed: true } })).toEqual(retry);
+    expect(await respondOpenClaw(approval, g.gw, true, { ...LIVE, connection: { isClosed: true } })).toEqual(retry);
+    // An approval naming no agent: its routing proof needs the live socket — retryable too.
+    const agentless = recorder({ "approval.get": { approval: { id: "ap_1", status: "pending", createdAtMs: 1_000, presentation: {} } } });
+    expect(await respondOpenClaw(approval, agentless.gw, false, undefined)).toEqual(retry);
+    // Only reads: nothing was resolved.
+    expect([...g.calls, ...agentless.calls].map(([m]) => m).filter((m) => m.endsWith(".resolve"))).toEqual([]);
+    // The live conversation on ANOTHER session: refused before any read — a refusal, not a
+    // verdict (Convex leaves the card answerable).
+    const other = recorder({});
+    expect(await respondOpenClaw(b, other.gw, false, { ...LIVE, sessionKey: "agent:denis:atrium:chat:denis:c2" })).toEqual({
+      ok: false,
+      httpStatus: 403,
+      code: "session_mismatch",
+    });
+    expect(other.calls).toEqual([]);
+  });
+
+  it("…while the gateway's OWN word still closes the card, the session away or not", async () => {
+    const approval = body({ source: "openclaw.exec", approvalKind: "exec", decision: "allow-once", providerRequestId: "ap_1" } as Partial<RespondBody>);
+    const decided = recorder({ "approval.get": { approval: { id: "ap_1", status: "allowed", createdAtMs: 1_000, presentation: { agentId: "denis" } } } });
+    expect(await respondOpenClaw(approval, decided.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "allowed" });
+    const unknown = recorder({ "approval.get": new Error("unknown approval id") });
+    expect(await respondOpenClaw(approval, unknown.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    const forgotten = recorder({ "question.get": new Error("question ask_1 was not found") });
+    expect(await respondOpenClaw(body({}), forgotten.gw, false, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    // The gateway not reached at all: a transport failure, retryable, never a verdict.
+    const down = recorder({ "approval.get": new Error("socket closed") });
+    expect(await respondOpenClaw(approval, down.gw, true, undefined)).toEqual({ ok: false, httpStatus: 502, code: "gateway_unreachable" });
   });
 
   it("skipping CANCELS — the agent is told to proceed without an answer", async () => {
@@ -312,7 +344,8 @@ describe("OpenClaw approvals", () => {
     // audience on the session-scoped stream (`session.approval`). Atrium does not consume
     // that stream yet, and does not rebuild the audience from the broadcasts: the parent
     // conversation shows no card for it, and a card naming the child's session — the
-    // child's own agent and a request routed nowhere else — is refused before any read.
+    // child's own agent and a request routed nowhere else — is refused before any read:
+    // a refusal (`session_mismatch`), never a verdict that would close the card.
     const CHILD = "agent:files:subagent:11111111-1111-4111-8111-111111111111";
     const { calls, gw } = recorder({
       "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "exec", agentId: "files" } } },
@@ -327,9 +360,8 @@ describe("OpenClaw approvals", () => {
     });
     expect(await respondOpenClaw(childCard, gw, true, LIVE)).toEqual({
       ok: false,
-      httpStatus: 409,
-      code: "request_gone",
-      status: "expired",
+      httpStatus: 403,
+      code: "session_mismatch",
     });
     expect(calls).toEqual([]);
   });

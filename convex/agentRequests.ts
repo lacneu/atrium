@@ -292,7 +292,25 @@ export const upsertFromBridge = internalMutation({
         : null;
     if (approvalGeneration !== null) {
       const same = ofFamily.find((r) => r.providerCreatedAt === approvalGeneration);
-      if (same !== undefined) return { id: same._id, created: false };
+      if (same !== undefined) {
+        // …except a card Atrium's own clock closed (`expiredLocally`): that was never the
+        // gateway's verdict, and this sighting — written only after `approval.get` showed
+        // the request pending (agent-request-observer.ts) — says it still waits. It is
+        // answerable again, until the deadline the gateway gives now. A real verdict stays.
+        if (same.status === "expired" && same.expiredLocally === true) {
+          const reopenedAt = Date.now();
+          await ctx.db.patch(same._id, {
+            status: "pending",
+            updatedAt: reopenedAt,
+            expiresAt: boundedDeadline(reopenedAt, args.expiresAt),
+            resolvedAt: undefined,
+            expiredLocally: undefined,
+            failureCode: undefined,
+          });
+          await trace(ctx, args.chatId, { phase: "reopened", source: same.source });
+        }
+        return { id: same._id, created: false };
+      }
     }
     // A row WITHOUT a generation cannot be a replay of this one either: every OpenClaw
     // request ingested carries one (required below), so such a row came from an
@@ -621,7 +639,9 @@ export const settleFromBridge = internalMutation({
     // No card of this generation (yet): an approval's verdict is kept for the creation
     // that may still be on its way (keepResolution). A card already closed: nothing.
     if (row === null) return { settled: false, outcome: await keepResolution(ctx, args) };
-    if (!isOpenStatus(row.status)) return { settled: false, outcome: "none" };
+    // A card Atrium's own clock closed is not settled: the gateway's verdict is the card's.
+    const expiredHere = row.status === "expired" && row.expiredLocally === true;
+    if (!isOpenStatus(row.status) && !expiredHere) return { settled: false, outcome: "none" };
     const now = Date.now();
     // Ours in flight: the gateway's broadcast of OUR answer can beat the action's
     // own settle. It is still our answer, not someone else's.
@@ -636,6 +656,7 @@ export const settleFromBridge = internalMutation({
       status: args.status,
       updatedAt: now,
       resolvedAt: now,
+      ...(expiredHere ? { expiredLocally: undefined } : {}),
     };
     // What the gateway recorded, NEVER cut: a truncated copy both misstates the answer and
     // can match ours by its prefix (codex P2). Past the bounds Atrium's own answers obey, it
@@ -860,8 +881,9 @@ export const prepareAnswer = internalMutation({
     const now = Date.now();
     if (row.expiresAt <= now) {
       // RETURNED, not thrown: a throw would roll this settle back with it, and the
-      // row would keep offering an answer the agent can no longer receive.
-      await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now });
+      // row would keep offering an answer the agent can no longer receive. Atrium's clock,
+      // not the gateway's verdict (see expiredLocally).
+      await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now, expiredLocally: true });
       await clearNotification(ctx, row);
       return { refused: "AGENT_REQUEST_EXPIRED" };
     }
@@ -1078,7 +1100,8 @@ export const revertAnswer = internalMutation({
     await ctx.db.patch(requestId, {
       status: expired ? "expired" : "pending",
       updatedAt: now,
-      ...(expired ? { resolvedAt: now } : {}),
+      // Past its deadline by OUR clock: not the gateway's verdict (see expiredLocally).
+      ...(expired ? { resolvedAt: now, expiredLocally: true } : {}),
       failureCode: failureCode.slice(0, 64),
       resolvedByUserId: undefined,
       answers: undefined,
@@ -1439,7 +1462,8 @@ export const reapExpired = internalMutation({
         )
         .take(100);
       for (const row of rows) {
-        await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now });
+        // Atrium's clock, not the gateway's verdict (see expiredLocally).
+        await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now, expiredLocally: true });
         await clearNotification(ctx, row);
         await trace(ctx, row.chatId, { phase: "swept", source: row.source });
         expired += 1;

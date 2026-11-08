@@ -3762,6 +3762,10 @@ export default defineSchema({
     /** A curated code when the provider refused the answer, or the last transport
      *  failure while the row went back to `pending`. Never provider prose. */
     failureCode: v.optional(v.string()),
+    /** Closed `expired` by Atrium's own clock (its deadline passed here: the sweep, an
+     *  answer that failed past it), never by the gateway. Not a verdict: a sighting of the
+     *  same request the gateway says still waits reopens it (upsertFromBridge). */
+    expiredLocally: v.optional(v.boolean()),
   })
     .index("by_chat_and_created", ["chatId", "createdAt"])
     .index("by_chat_and_status", ["chatId", "status"])
