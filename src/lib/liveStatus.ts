@@ -16,8 +16,10 @@ export type Schedule = (task: () => void, ms: number) => () => void;
 export const STATUS_REFILL_MS = 150;
 
 export interface LiveStatus {
-  /** Empties the region, then fills it with `text`: announced even when the same. */
-  say(text: string): void;
+  /** Empties the region, then fills it with `text`: announced even when the same.
+   *  With `holdMs`, the region empties again that long after it was filled (a status
+   *  shown over the page, not in a dialog that closes with it: lot 24). */
+  say(text: string, holdMs?: number): void;
   /** Empties the region, and drops a filling still to come. */
   clear(): void;
 }
@@ -29,12 +31,13 @@ export function liveStatus(set: (text: string) => void, schedule: Schedule): Liv
     cancel = null;
   };
   return {
-    say(text) {
+    say(text, holdMs) {
       stop();
       set("");
       cancel = schedule(() => {
         cancel = null;
         set(text);
+        if (holdMs !== undefined) cancel = schedule(() => set(""), holdMs);
       }, STATUS_REFILL_MS);
     },
     clear() {

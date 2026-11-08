@@ -21,14 +21,18 @@ function region() {
     if (text !== content) contents.push(text);
     content = text;
   }, schedule);
+  // Runs each task due by then at its own time, in time order — a task may schedule
+  // another, which runs in turn if it is due.
   const advance = (ms: number) => {
-    now += ms;
-    for (const timer of timers) {
-      if (timer.live && timer.at <= now) {
-        timer.live = false;
-        timer.task();
-      }
+    const until = now + ms;
+    for (;;) {
+      const due = timers.filter((t) => t.live && t.at <= until).sort((a, b) => a.at - b.at)[0];
+      if (due === undefined) break;
+      now = due.at;
+      due.live = false;
+      due.task();
     }
+    now = until;
   };
   return { status, advance, contents, content: () => content };
 }
@@ -62,6 +66,25 @@ describe("a refusal is announced each time (lot 23)", () => {
     r.status.say(REFUSED);
     r.advance(STATUS_REFILL_MS);
     expect(r.contents).toEqual(["", REFUSED]);
+  });
+
+  test("held (lot 24): the region empties again that long after it was filled — and a new refusal restarts the hold", () => {
+    const r = region();
+    r.status.say(REFUSED, 6000);
+    r.advance(STATUS_REFILL_MS);
+    expect(r.content()).toBe(REFUSED);
+    r.advance(5999);
+    expect(r.content()).toBe(REFUSED);
+    r.advance(1);
+    expect(r.content()).toBe("");
+    // A second refusal before the first hold ended: heard anew, held anew.
+    r.status.say(REFUSED, 6000);
+    r.advance(STATUS_REFILL_MS + 3000);
+    r.status.say(REFUSED, 6000);
+    r.advance(STATUS_REFILL_MS + 5999);
+    expect(r.content()).toBe(REFUSED);
+    r.advance(1);
+    expect(r.contents).toEqual(["", REFUSED, "", REFUSED, "", REFUSED, ""]);
   });
 
   test("cleared — the list closed or read anew: empty, and a filling still to come is dropped", () => {

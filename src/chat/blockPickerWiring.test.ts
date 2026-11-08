@@ -224,8 +224,12 @@ describe("a block action lands on the block chosen, or on nothing (lot 22)", () 
     expect(refusal, "a refused pick does more than read the list again").not.toBeNull();
     expect(body.indexOf("onPick(")).toBeGreaterThan(refusal!.index + refusal![0].length);
     expect(callsTo(pick, "onPick")[0].arguments[0].getText()).toBe("{ ...choice, blockIndex: at }");
-    // The notice: said through the status region (lot 23, below).
-    expect(callsTo(pick, "say")).toHaveLength(1);
+    // The notice: said through the status region (lot 23, below) — and the action's
+    // own refusal too (lot 24, below).
+    expect(callsTo(pick, "say").map((c) => c.arguments.map((a) => a.getText()).join())).toEqual([
+      "m.block_pick_changed()",
+      "refused",
+    ]);
   });
 
   test("the gutter acts on the block its row still stands by, or on nothing — the row then moves", () => {
@@ -240,9 +244,13 @@ describe("a block action lands on the block chosen, or on nothing (lot 22)", () 
       .filter((t) => /stillHovered/.test(t));
     expect(clicks, "both gutter buttons check the block first").toHaveLength(2);
     for (const click of clicks) {
-      expect(click).toMatch(/const at = stillHovered\(body, hover\);\s*if \(at === null\) \{\s*setHover\(locateBlock\(body, e\.clientY\)\);\s*return;\s*\}/);
+      // Nothing done, the row moved — and, since lot 24, the person told so: a
+      // refused click is no longer silent (refuseMoved, below).
+      expect(click).toMatch(/const at = stillHovered\(body, hover\);\s*if \(at === null\) \{\s*refuseMoved\(e\.clientY, hover\.top\);\s*return;\s*\}/);
       expect(click).not.toMatch(/hover\.blockIndex/);
     }
+    const moved = find(gutter, ts.isVariableDeclaration).find((d) => d.name.getText() === "refuseMoved")!;
+    expect(moved.getText()).toMatch(/const next = locateBlock\(body, clientY\);\s*setHover\(next\);\s*refuse\(m\.block_gutter_changed\(\), next\?\.top \?\? top\);/);
     expect(clicks.join("\n")).toMatch(/bmApi\.toggle\(messageId, at\)/);
     expect(clicks.join("\n")).toMatch(/onReplyToBlock\(at, excerpt\)/);
   });
@@ -297,7 +305,139 @@ describe("a block's identity, and every refusal heard (lot 23)", () => {
     const effect = callsTo(SF, "useEffect").find((c) => /read\(\);/.test(c.getText()) && /picked\.current = false/.test(c.getText()))!;
     expect(effect.arguments[0].getText()).toMatch(/^\(\) => \{\s*announcer\.clear\(\);\s*if \(open\) \{/);
     expect(effect.arguments[1]?.getText()).toBe("[open, read, announcer]");
-    expect(callsTo(SF, "say")).toHaveLength(1);
+    // Two says, both refusals: a block changed (lot 23), the action refused (lot 24).
+    const says = callsTo(SF, "say");
+    expect(says).toHaveLength(2);
+    for (const say of says) {
+      let up: ts.Node = say;
+      while (!ts.isIfStatement(up)) up = up.parent;
+      expect(up.expression.getText()).toMatch(/^(at === null|refused !== null)$/);
+    }
     expect(callsTo(SF, "setStatus")).toHaveLength(0);
+  });
+});
+
+// LOT 24: every refused block action is said, on every surface — the lists in their
+// dialog, the gutter beside its row —, through a status region on the page before it
+// speaks, each refusal announced anew (src/lib/liveStatus.test.ts). What each refusal
+// says and the bookmark toggle's outcome are pure (blockRefusals.test.ts). Here: the
+// regions, and that no refusal branch of a block action returns without saying it — a
+// structural guard over every early return of the handlers, so a new silent branch
+// fails the suite.
+describe("every refused block action is said, on every surface (lot 24)", () => {
+  const gutter = fnNamed(GUTTER, "BookmarkGutterInner")!;
+  const message = fnNamed(CHAT, "AssistantMessage")!;
+  const pickers = jsx(message, "BlockPicker");
+  const clicks = () =>
+    jsx(gutter, "button")
+      .map((b) => attr(b, "onClick")?.initializer)
+      .filter((init): init is ts.JsxExpression => init !== undefined && /stillHovered/.test(init.getText()))
+      .map((init) => init.expression as ts.ArrowFunction);
+  /** The returns of a handler that are its own (not those of a callback inside it). */
+  const ownReturns = (fn: ts.FunctionLikeDeclaration) =>
+    find(fn, ts.isReturnStatement).filter((r) => {
+      let up: ts.Node = r.parent;
+      while (!ts.isFunctionLike(up)) up = up.parent;
+      return up === fn;
+    });
+  /** The statement before a return, in its block. */
+  const before = (r: ts.ReturnStatement) => {
+    const block = r.parent as ts.Block;
+    return block.statements[block.statements.indexOf(r) - 1]?.getText() ?? "";
+  };
+
+  test("the gutter's status region is in the bubble from the start, its content the announcer's", () => {
+    const regions = jsx(gutter, "p").filter((p) => attr(p, "role")?.initializer?.getText() === '"status"');
+    expect(regions).toHaveLength(1);
+    expect(attr(regions[0]!, "className")?.initializer?.getText()).toBe('"oc-bmk-status"');
+    expect(attr(regions[0]!, "style")?.initializer?.getText()).toBe("{{ top: statusTop }}");
+    // Rendered with the portal, not behind the row's condition nor any other.
+    let up: ts.Node = regions[0]!;
+    while (!ts.isJsxElement(up)) up = up.parent;
+    expect((up as ts.JsxElement).children.map((c) => c.getText().trim()).filter((t) => t !== "")).toEqual(["{status}"]);
+    for (let n: ts.Node = up.parent; !ts.isCallExpression(n); n = n.parent) {
+      expect(ts.isConditionalExpression(n) || (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken), "the region behind a condition").toBe(false);
+    }
+    const portal = callsTo(gutter, "createPortal")[0]!;
+    expect(portal.getText()).toContain('className="oc-bmk-status"');
+    const announcer = find(gutter, ts.isVariableDeclaration).find((d) => d.name.getText() === "announcer")!;
+    expect(announcer.initializer?.getText()).toBe("useMemo(() => liveStatus(setStatus, windowSchedule), [])");
+    expect(gutter.getText()).toMatch(/useEffect\(\(\) => \(\) => announcer\.clear\(\), \[announcer\]\);/);
+    const refuse = find(gutter, ts.isVariableDeclaration).find((d) => d.name.getText() === "refuse")!;
+    expect(refuse.getText()).toMatch(/setStatusTop\(top\);\s*announcer\.say\(text, GUTTER_STATUS_HOLD_MS\);/);
+    // Visible where the person looks: under the row's line, above it when the
+    // thread's visible bottom is too close (the composer would hide it).
+    expect(refuse.getText()).toMatch(/const room = viewport === null \? Infinity : viewport\.getBoundingClientRect\(\)\.bottom - rowAt;\s*setStatusAbove\(room < GUTTER_STATUS_ROOM_PX\);/);
+    expect(attr(regions[0]!, "data-above")?.initializer?.getText()).toBe("{statusAbove || undefined}");
+    const css = readFileSync(join(process.cwd(), "src/chat/convexChat.css"), "utf-8");
+    expect(css).toMatch(/\.oc-bmk-status \{[^}]*transform: translateY\(1\.6rem\);/);
+    expect(css).toMatch(/\.oc-bmk-status\[data-above\] \{\s*transform: translateY\(calc\(-100% - 0\.25rem\)\);\s*\}/);
+  });
+
+  test("no gutter refusal is silent: every early return of its two handlers comes right after the refusal is said", () => {
+    const handlers = clicks();
+    expect(handlers, "the reply and the bookmark buttons").toHaveLength(2);
+    for (const handler of handlers) {
+      const returns = ownReturns(handler);
+      expect(returns.length, handler.getText().slice(0, 80)).toBeGreaterThan(0);
+      for (const r of returns) expect(before(r), "a silent return").toMatch(/^refuse(Moved)?\(/);
+    }
+  });
+
+  test("the gutter says the action's own refusal: a quote past the bounds, a bookmark refused", () => {
+    const [reply, bookmark] = clicks();
+    expect(reply!.getText()).toMatch(/const refused = onReplyToBlock\(at, excerpt\);\s*if \(refused !== null\) refuse\(refused, hover\.top\);\s*else announcer\.clear\(\);/);
+    expect(bookmark!.getText()).toMatch(/void bmApi\.toggle\(messageId, at\)\.then\(\(outcome\) => \{\s*const refused = bookmarkRefusalText\(outcome\);\s*if \(refused !== null\) refuse\(refused, top\);\s*else announcer\.clear\(\);\s*\}\);/);
+  });
+
+  test("no list refusal is silent: every early return of a pick says why, but the one waiting for a pick in flight", () => {
+    const pick = find(SF, ts.isVariableDeclaration).find((d) => d.name.getText() === "pick")!;
+    const fn = pick.initializer as ts.ArrowFunction;
+    for (const r of ownReturns(fn)) {
+      const guard = ts.isIfStatement(r.parent) ? r.parent : r.parent.parent;
+      // The one exception: a second pick while the first is acted on. The list says it
+      // is busy (aria-busy), and the first pick's own outcome is said or done.
+      if (ts.isIfStatement(guard) && guard.expression.getText() === "acting.current") continue;
+      expect(before(r), "a silent return").toMatch(/^announcer\.say\(/);
+    }
+    expect(fn.getText()).toMatch(/refused = await onPick\(\{ \.\.\.choice, blockIndex: at \}\);/);
+    expect(fn.getText()).toMatch(/if \(refused !== null\) \{\s*read\(\);\s*announcer\.say\(refused\);\s*return;\s*\}\s*picked\.current = true;\s*onOpenChange\(false\);/);
+    const [list] = jsx(SF, "div").filter((d) => attr(d, "className")?.initializer?.getText() === '"oc-blockpick__list"');
+    expect(attr(list!, "aria-busy")?.initializer?.getText()).toBe("{busy || undefined}");
+  });
+
+  test("the lists and the gutter are handed every refusal: quotes past the bounds, bookmarks refused", () => {
+    const stage = find(message, ts.isVariableDeclaration).find((d) => d.name.getText() === "stageQuote")!;
+    expect(stage.getText()).toMatch(/quoteRefusalText\(addPendingQuote\(chatId, quote\)\)/);
+    expect(stage.getText()).not.toMatch(/Toast/);
+    const onPick = (kind: string) => {
+      const picker = pickers.find((p) => attr(p, "kind")?.initializer?.getText() === `"${kind}"`)!;
+      return (attr(picker, "onPick")!.initializer as ts.JsxExpression).expression as ts.ArrowFunction;
+    };
+    // An expression body: what the action returns is what the list says.
+    expect(ts.isCallExpression(onPick("quote").body) && onPick("quote").body.getText().startsWith("stageQuote(")).toBe(true);
+    expect(onPick("bookmark").body.getText()).toBe("bmApi.toggle(choice.messageId, choice.blockIndex).then(bookmarkRefusalText)");
+    const [gutterJsx] = jsx(message, "BookmarkGutter");
+    expect(attr(gutterJsx!, "onReplyToBlock")!.initializer!.getText()).toMatch(/\(blockIndex, excerpt\) =>\s*stageQuote\(quoteChatId, \{/);
+    // The header's whole-message quote is not a block action: its refusal stays a toast.
+    expect(message.getText()).toMatch(/const refused = stageQuote\(quoteChatId, \{\s*messageId,\s*blockIndex: null,\s*excerpt,\s*\}\);\s*if \(refused !== null\) quoteAddToast\.error\(refused\);/);
+  });
+
+  test("the bookmark toggle returns how it ended — the server's refusal and an admin's view of another account included", () => {
+    const provider = fnNamed(GUTTER, "BookmarksProvider")!;
+    expect(provider.getText()).toMatch(/useQuery\(api\.me\.getImpersonation\)/);
+    expect(provider.getText()).toMatch(/const impersonating = impersonation\?\.impersonating === true;/);
+    const [outcome] = callsTo(provider, "bookmarkToggleOutcome");
+    expect(outcome!.arguments[0]!.getText()).toBe("impersonating");
+    expect(outcome!.arguments[1]!.getText()).toMatch(/^\(\) =>\s*toggleMut\(/);
+  });
+
+  test("empty, the gutter's region is out of sight and out of the flow — never removed from the page", () => {
+    const css = readFileSync(join(process.cwd(), "src/chat/convexChat.css"), "utf-8");
+    const base = /\.oc-bmk-status \{([^}]*)\}/.exec(css);
+    const empty = /\.oc-bmk-status:empty \{([^}]*)\}/.exec(css);
+    expect(base?.[1]).toMatch(/position: absolute;/);
+    expect(empty?.[1]).toMatch(/clip: rect\(0, 0, 0, 0\);/);
+    for (const rule of [base![1], empty![1]]) expect(rule).not.toMatch(/display: none|visibility: hidden/);
   });
 });

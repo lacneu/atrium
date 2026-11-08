@@ -2065,6 +2065,41 @@
 .oc-bmk-gutter--reply:hover {
   color: var(--primary);
 }
+/* A refused gutter action, said where it was clicked (lot 24): under the row's line,
+   over the block's start — above the row when the thread's bottom is too close —, for
+   a few seconds; the pointer passes through it. */
+.oc-bmk-status {
+  position: absolute;
+  left: 0;
+  z-index: 3;
+  transform: translateY(1.6rem);
+  max-width: min(24rem, 100%);
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--popover-foreground);
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 18px -6px rgb(0 0 0 / 0.25);
+  pointer-events: none;
+}
+.oc-bmk-status[data-above] {
+  transform: translateY(calc(-100% - 0.25rem));
+}
+/* The region is in the bubble from the start, empty (ARIA22): out of sight and out of
+   the flow until it says something. */
+.oc-bmk-status:empty {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  box-shadow: none;
+}
 /* "Reply to a block…" and "Bookmark a block…" (the reply's ⋯ menu): the reply's
    blocks as flat rows, a finger's height each, scrolling past what the screen
    holds. A bookmark row carries the gutter's flag, amber and filled once set. */

@@ -45,7 +45,6 @@ import { TalkControl, type TalkPresence } from "./TalkControl";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import {
   QUOTE_EXCERPT_CLIENT_MAX,
-  QUOTE_MAX_PER_TURN,
   addPendingQuote,
   clearPendingQuotes,
   pendingQuoteKey,
@@ -311,6 +310,7 @@ import { useCoarsePointer, useTouchReveal } from "@/lib/useMediaQuery";
 import { composerAutoFocus, messageActionsReveal } from "./touchReveal";
 import { BlockPicker } from "./BlockPicker";
 import { blockKey, listSources, type GroupMember } from "./quoteBlocks";
+import { bookmarkRefusalText, quoteRefusalText } from "./blockRefusals";
 import { headerFitInput } from "./chatHeaderFit";
 import {
   composerFitLevels,
@@ -3948,20 +3948,15 @@ function AssistantMessage() {
   // Quote-reply staging target (the CURRENT chat — keyed store, leak-proof).
   const quoteChatId = useContext(QuoteChatIdContext);
   const quoteAddToast = useToast();
-  // Stage one more passage, or SAY why not. The bound is the server's, mirrored
-  // client-side: refusing the click is honest, letting the send fail is not.
+  // Stage one more passage, or say why not. The bound is the server's, mirrored
+  // client-side: refusing the click is honest, letting the send fail is not. The
+  // reason is RETURNED, for the surface the person acted on to say it there (lot
+  // 24): a block's list in its dialog, the gutter beside its row; the header's
+  // whole-message quote in a toast.
   const stageQuote = useCallback(
-    (chatId: string, quote: PendingQuote) => {
-      const refusal = addPendingQuote(chatId, quote);
-      if (refusal === "too-many") {
-        quoteAddToast.error(
-          m.quote_reply_max_reached({ count: QUOTE_MAX_PER_TURN }),
-        );
-      } else if (refusal === "too-long") {
-        quoteAddToast.error(m.quote_reply_budget_reached());
-      }
-    },
-    [quoteAddToast],
+    (chatId: string, quote: PendingQuote): string | null =>
+      quoteRefusalText(addPendingQuote(chatId, quote)),
+    [],
   );
   // Whole-message quote source (header ↩ next to the agent name — same two
   // levels as bookmarks: header = message, gutter = block). The STORED final
@@ -4165,12 +4160,13 @@ function AssistantMessage() {
                   quoteEffectiveText,
                   QUOTE_EXCERPT_CLIENT_MAX,
                 );
-                if (excerpt !== "")
-                  stageQuote(quoteChatId, {
-                    messageId,
-                    blockIndex: null,
-                    excerpt,
-                  });
+                if (excerpt === "") return;
+                const refused = stageQuote(quoteChatId, {
+                  messageId,
+                  blockIndex: null,
+                  excerpt,
+                });
+                if (refused !== null) quoteAddToast.error(refused);
               }}
             >
               <Reply size={13} />
@@ -4281,7 +4277,9 @@ function AssistantMessage() {
             messageId={messageId}
             sources={sources}
             marked={bookmarkedBlocks}
-            onPick={(choice) => bmApi.toggle(choice.messageId, choice.blockIndex)}
+            onPick={(choice) =>
+              bmApi.toggle(choice.messageId, choice.blockIndex).then(bookmarkRefusalText)
+            }
           />
         ) : null}
         <BookmarkGutter

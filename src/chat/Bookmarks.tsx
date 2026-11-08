@@ -42,7 +42,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { liveStatus, windowSchedule } from "@/lib/liveStatus";
 import { m } from "@/paraglide/messages.js";
+import {
+  bookmarkRefusalText,
+  bookmarkToggleOutcome,
+  type BookmarkToggleOutcome,
+} from "./blockRefusals";
 import { QUOTE_EXCERPT_CLIENT_MAX } from "./pendingQuote";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -70,7 +76,12 @@ interface BookmarksApi {
   rows: BookmarkView[];
   activeId: string | null;
   byMessage: ReadonlyMap<string, BookmarkView[]>;
-  toggle: (messageId: string, blockIndex: number | null) => void;
+  /** How it ended, refusals included (lot 24): a surface that offers a block's
+   *  bookmark says a refused one where the person acted. */
+  toggle: (
+    messageId: string,
+    blockIndex: number | null,
+  ) => Promise<BookmarkToggleOutcome>;
   remove: (id: string) => void;
   rename: (id: string, label: string) => void;
   jumpTo: (bm: BookmarkView) => void;
@@ -175,6 +186,13 @@ export function BookmarksProvider({
       }
     | undefined;
   const toggleMut = useMutation(api.chatBookmarks.toggleBookmark);
+  // An admin viewing another person's account: the server leaves that person's
+  // bookmarks untouched and says nothing — the toggle says it instead (lot 24).
+  // The banner's own query: Convex shares the subscription.
+  const impersonation = useQuery(api.me.getImpersonation) as
+    | { impersonating: boolean }
+    | undefined;
+  const impersonating = impersonation?.impersonating === true;
   const removeMut = useMutation(api.chatBookmarks.removeBookmark);
   const renameMut = useMutation(api.chatBookmarks.renameBookmark);
   const setActiveMut = useMutation(api.chatBookmarks.setActiveBookmark);
@@ -245,20 +263,23 @@ export function BookmarksProvider({
       activeId,
       byMessage,
       toggle: (messageId, blockIndex) =>
-        void toggleMut({
-          chatId: chatId as Id<"chats">,
-          messageId: messageId as Id<"messages">,
-          ...(blockIndex !== null ? { blockIndex } : {}),
-        }).then((res) => {
-          // PLACING focuses the anchor (flash; scroll only if offscreen):
-          // a message-level bookmark set from the bottom of a long reply
-          // anchors at its TOP, which may be far out of view (user report).
-          if (res?.placed === true) {
-            focusAnchor(messageId, blockIndex, "smooth", {
-              skipScrollIfVisible: true,
-            });
-          }
-        }),
+        bookmarkToggleOutcome(impersonating, () =>
+          toggleMut({
+            chatId: chatId as Id<"chats">,
+            messageId: messageId as Id<"messages">,
+            ...(blockIndex !== null ? { blockIndex } : {}),
+          }).then((res) => {
+            // PLACING focuses the anchor (flash; scroll only if offscreen):
+            // a message-level bookmark set from the bottom of a long reply
+            // anchors at its TOP, which may be far out of view (user report).
+            if (res?.placed === true) {
+              focusAnchor(messageId, blockIndex, "smooth", {
+                skipScrollIfVisible: true,
+              });
+            }
+            return res;
+          }),
+        ),
       remove: (id) =>
         void removeMut({ bookmarkId: id as Id<"chatBookmarks"> }),
       rename: (id, label) =>
@@ -271,6 +292,7 @@ export function BookmarksProvider({
       activeId,
       byMessage,
       chatId,
+      impersonating,
       toggleMut,
       removeMut,
       renameMut,
@@ -555,6 +577,13 @@ export function BookmarkNavRail() {
   );
 }
 
+/** How long a refused gutter action stays said over the reply — the app's toasts'
+ *  own time: long enough to read, short enough not to hide the text. */
+const GUTTER_STATUS_HOLD_MS = 6000;
+/** The height a refusal takes under its row (its row's line, then a few lines): with
+ *  less room above the thread's visible bottom, it is said above the row instead. */
+const GUTTER_STATUS_ROOM_PX = 120;
+
 interface HoverState {
   top: number;
   blockIndex: number;
@@ -638,7 +667,7 @@ class GutterBoundary extends Component<
 
 export function BookmarkGutter(props: {
   messageLevelMarkers?: boolean;
-  onReplyToBlock?: (blockIndex: number, excerpt: string) => void;
+  onReplyToBlock?: (blockIndex: number, excerpt: string) => string | null;
 } = {}) {
   return (
     <GutterBoundary>
@@ -657,8 +686,9 @@ function BookmarkGutterInner({
   messageLevelMarkers?: boolean;
   /** Quote-reply (assistant bubbles): a second gutter button under the
    *  bookmark one — "reply to this block". Receives the hovered block index
-   *  and its RENDERED text excerpt (word-truncated client-side). */
-  onReplyToBlock?: (blockIndex: number, excerpt: string) => void;
+   *  and its RENDERED text excerpt (word-truncated client-side); returns why the
+   *  quote was refused, which the gutter says (lot 24), or null. */
+  onReplyToBlock?: (blockIndex: number, excerpt: string) => string | null;
 } = {}) {
   const bmApi = useBookmarks();
   const messageId = useMessage((msg) => msg.id);
@@ -666,6 +696,15 @@ function BookmarkGutterInner({
   const sentinelRef = useRef<HTMLSpanElement | null>(null);
   const [body, setBody] = useState<HTMLElement | null>(null);
   const [hover, setHover] = useState<HoverState | null>(null);
+  // EVERY REFUSED GUTTER ACTION IS SAID (lot 24): beside the row, where the person
+  // clicked, and to a screen reader — the region is in the bubble from the start,
+  // empty, and each refusal empties it, then fills it (liveStatus). It empties again
+  // after a while: it sits over the reply, not in a dialog that closes with it.
+  const [status, setStatus] = useState("");
+  const announcer = useMemo(() => liveStatus(setStatus, windowSchedule), []);
+  useEffect(() => () => announcer.clear(), [announcer]);
+  const [statusTop, setStatusTop] = useState(0);
+  const [statusAbove, setStatusAbove] = useState(false);
   const [markerTops, setMarkerTops] = useState<ReadonlyMap<string, number>>(
     new Map(),
   );
@@ -753,6 +792,23 @@ function BookmarkGutterInner({
   const hoverHasBookmark =
     hover !== null &&
     (mine ?? []).some((b) => b.blockIndex === hover.blockIndex);
+  const refuse = (text: string, top: number) => {
+    // Under the row's line, or above it when the thread's visible bottom is too close:
+    // said where the person looks, never under the composer.
+    const viewport = body.closest<HTMLElement>(".oc-thread__viewport");
+    const rowAt = body.getBoundingClientRect().top + top;
+    const room = viewport === null ? Infinity : viewport.getBoundingClientRect().bottom - rowAt;
+    setStatusAbove(room < GUTTER_STATUS_ROOM_PX);
+    setStatusTop(top);
+    announcer.say(text, GUTTER_STATUS_HOLD_MS);
+  };
+  // The row no longer stands by the block it showed (lot 22): nothing is done, the
+  // row moves to what the pointer is over now, and the person is told so.
+  const refuseMoved = (clientY: number, top: number) => {
+    const next = locateBlock(body, clientY);
+    setHover(next);
+    refuse(m.block_gutter_changed(), next?.top ?? top);
+  };
   return (
     <>
       <span ref={sentinelRef} hidden />
@@ -772,11 +828,11 @@ function BookmarkGutterInner({
                   title={m.quote_reply_button()}
                   aria-label={m.quote_reply_button()}
                   onClick={(e) => {
-                    // The block the row stands by, or nothing: the row moves to
-                    // what the pointer is over now (lot 22).
+                    // The block the row stands by, or nothing — and the person
+                    // told why (lots 22, 24).
                     const at = stillHovered(body, hover);
                     if (at === null) {
-                      setHover(locateBlock(body, e.clientY));
+                      refuseMoved(e.clientY, hover.top);
                       return;
                     }
                     const target = anchorElement(body, at);
@@ -784,7 +840,13 @@ function BookmarkGutterInner({
                       target.textContent ?? "",
                       QUOTE_EXCERPT_CLIENT_MAX,
                     );
-                    if (excerpt !== "") onReplyToBlock(at, excerpt);
+                    if (excerpt === "") {
+                      refuseMoved(e.clientY, hover.top);
+                      return;
+                    }
+                    const refused = onReplyToBlock(at, excerpt);
+                    if (refused !== null) refuse(refused, hover.top);
+                    else announcer.clear();
                   }}
                 >
                   <Reply size={14} />
@@ -802,10 +864,15 @@ function BookmarkGutterInner({
                 onClick={(e) => {
                   const at = stillHovered(body, hover);
                   if (at === null) {
-                    setHover(locateBlock(body, e.clientY));
+                    refuseMoved(e.clientY, hover.top);
                     return;
                   }
-                  bmApi.toggle(messageId, at);
+                  const top = hover.top;
+                  void bmApi.toggle(messageId, at).then((outcome) => {
+                    const refused = bookmarkRefusalText(outcome);
+                    if (refused !== null) refuse(refused, top);
+                    else announcer.clear();
+                  });
                 }}
               >
                 <Bookmark size={14} />
@@ -819,6 +886,14 @@ function BookmarkGutterInner({
               <BookmarkMarker key={bm.id} bookmark={bm} top={top} />
             );
           })}
+          <p
+            className="oc-bmk-status"
+            role="status"
+            style={{ top: statusTop }}
+            data-above={statusAbove || undefined}
+          >
+            {status}
+          </p>
         </>,
         body,
       )}

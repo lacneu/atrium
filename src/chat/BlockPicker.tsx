@@ -108,7 +108,10 @@ export function BlockPicker({
   kind: BlockPickerKind;
   /** The blocks already bookmarked (kind "bookmark"), by `blockKey`: shown set. */
   marked?: ReadonlySet<string>;
-  onPick: (choice: BlockChoice) => void;
+  /** Acts on the block chosen; returns why it was refused — a quote past the bounds,
+   *  a bookmark the server refused —, which the list says (lot 24), or null. A
+   *  bookmark waits for the server: the list stays open until it answers. */
+  onPick: (choice: BlockChoice) => string | null | Promise<string | null>;
 }) {
   const [choices, setChoices] = useState<BlockChoice[]>([]);
   // What each bubble showed when the list was read; and the status a refused pick
@@ -119,6 +122,10 @@ export function BlockPicker({
   const announcer = useMemo(() => liveStatus(setStatus, windowSchedule), []);
   useEffect(() => () => announcer.clear(), [announcer]);
   const picked = useRef(false);
+  // A pick being acted on (a bookmark waits for the server): the list is busy, and the
+  // pick's own outcome — done, or said — comes first.
+  const acting = useRef(false);
+  const [busy, setBusy] = useState(false);
   const sourceKey = sources.join(" ");
   const read = useCallback(() => {
     const list = readChoices(sourceKey === "" ? [] : sourceKey.split(" "), kind);
@@ -139,7 +146,8 @@ export function BlockPicker({
   // `resolveChosen`). Found: the action takes its index now. Gone, ambiguous, or a
   // bookmark whose state is no longer the one the row showed: nothing is done, the list
   // is read again and says why.
-  const pick = (choice: BlockChoice) => {
+  const pick = async (choice: BlockChoice) => {
+    if (acting.current) return;
     const at = pickTarget(
       choice,
       kind,
@@ -152,8 +160,22 @@ export function BlockPicker({
       announcer.say(m.block_pick_changed());
       return;
     }
+    // The action itself can be refused (lot 24): the list stays open and says why.
+    acting.current = true;
+    setBusy(true);
+    let refused: string | null;
+    try {
+      refused = await onPick({ ...choice, blockIndex: at });
+    } finally {
+      acting.current = false;
+      setBusy(false);
+    }
+    if (refused !== null) {
+      read();
+      announcer.say(refused);
+      return;
+    }
     picked.current = true;
-    onPick({ ...choice, blockIndex: at });
     onOpenChange(false);
   };
   // A PICKED QUOTE GOES ON TO THE REPLY BEING WRITTEN: the composer takes the
@@ -187,7 +209,7 @@ export function BlockPicker({
         {choices.length === 0 ? (
           <p className="oc-blockpick__empty">{text.empty()}</p>
         ) : (
-          <div className="oc-blockpick__list">
+          <div className="oc-blockpick__list" aria-busy={busy || undefined}>
             {choices.map((choice) => {
               const set =
                 kind === "bookmark" &&
