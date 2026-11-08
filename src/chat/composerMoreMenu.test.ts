@@ -56,7 +56,7 @@ function positions(html: string): Record<OverflowKey, number> {
     expand: html.indexOf(`>${m.chat_composer_expand()}`),
     mic: html.indexOf(`>${m.chat_mic_start()}`),
     // Talk renders its start entry into this empty slot (it owns the call).
-    talk: html.indexOf("<div></div>"),
+    talk: html.indexOf('<div data-more-key="talk"></div>'),
     perm: html.indexOf(PERMISSION_MARKER),
     "talk-settings": html.indexOf(`aria-label="${m.chat_composer_more_talk()}"`),
   };

@@ -46,43 +46,54 @@ export function pickFitLevel(
   return required.length;
 }
 
-/** What a fit remembers from one measure to the next (lot 13). */
+/** What a fit remembers from one measure to the next (lots 13, 14). */
 export interface FitMemory {
   /** How many levels the measure had: another number, and the indices below
    *  name other presentations — everything is forgotten. */
   readonly levels: number;
   /** For each level MORE detailed than the current one: the width it needed when
-   *  the fit left it, read in the wider presentation then on screen, and moved
-   *  since only by what the content changed. */
+   *  the fit left it, read in the wider presentation then on screen. */
   readonly locked: ReadonlyArray<number | undefined>;
   /** For each locked level: the current presentation's own reading of its width,
    *  the last time it was compared. Forgotten at every change of level — another
    *  presentation reads another number. */
   readonly seen: ReadonlyArray<number | undefined>;
+  /** The locks were read for the content now on screen: true only when they come
+   *  from a climb the wider presentation refused at once, and as long as this
+   *  presentation's readings do not move. */
+  readonly verified: boolean;
+  /** The last move was a climb: if the next decision — taken in the wider
+   *  presentation — leaves it again, the width it reads is the content's own. */
+  readonly climbed: boolean;
 }
 
 /** A fit that has measured nothing yet. */
-export const FRESH_FIT: FitMemory = { levels: 0, locked: [], seen: [] };
+export const FRESH_FIT: FitMemory = { levels: 0, locked: [], seen: [], verified: false, climbed: false };
 
 /** Less than this between two readings of the same presentation is layout noise
  *  (sub-pixel rounding), not a content change. */
 const READING_NOISE = 0.5;
 
 /**
- * The level to show, with a LOCKED hysteresis (lot 13): a measure taken in a
+ * The level to show, with a LOCKED hysteresis (lots 13, 14). A measure taken in a
  * compact presentation may depend on that presentation — a clone that inherits
  * the stacked layout reads narrower than the table it measures, and the table
  * and the stacked rows then called each other for ever. So a level, once left
  * because it no longer fit, keeps the width it needed THEN, read in the wider
  * presentation it was leaving; the fit climbs back to it only when the space
- * covers that width plus `hysteresis` — never on the reading of the presentation
- * now shown alone (it counts too: the larger of the two is taken).
+ * covers that width plus `hysteresis` — the compact presentation's own reading
+ * counts too (the larger of the two is taken).
  *
- * The content may change meanwhile (a row added, a label translated): the lock
- * follows what the current presentation's reading of that level MOVED, never
- * that reading itself. A loop is then impossible whatever a clone inherits: at a
- * given width and content, the climb needs the very width that made the fit
- * leave, plus the band.
+ * A lock is only TRUSTED once verified for the content on screen (lot 14): the
+ * need can drop between the decision and the compact render — a smaller text
+ * size applied by a passive effect — or later, while the compact presentation is
+ * shown. An unverified lock never refuses a climb the readings allow: the fit
+ * climbs, and the wider presentation's own reading — taken at once, in the same
+ * task, before anything is painted (`createFitController`) — either keeps the
+ * climb or sends it straight back with a lock now verified. A verified lock stays
+ * verified until the compact presentation's readings move, i.e. the content
+ * changes. A loop is impossible: at a given width and content there is at most
+ * one such probe, and it ends verified.
  */
 export function decideFitLevel(
   input: FitInput,
@@ -96,17 +107,17 @@ export function decideFitLevel(
   const same = memory.levels === required.length;
   const locked = same ? [...memory.locked] : [];
   const seen = same ? [...memory.seen] : [];
-  // The content moved: each lock moves by as much as this presentation's own
-  // reading of its level did since it last looked.
+  let verified = same && memory.verified;
+  // The content moved under this presentation: its readings of the locked levels
+  // changed, and the locks — read for the content as it was — are verified no more.
   for (let l = 0; l < Math.min(current, required.length); l++) {
-    const lock = locked[l];
-    if (lock === undefined) continue;
+    if (locked[l] === undefined) continue;
     const before = seen[l];
     if (before === undefined) {
       seen[l] = required[l];
     } else if (Math.abs(required[l] - before) > READING_NOISE) {
-      locked[l] = lock + (required[l] - before);
       seen[l] = required[l];
+      verified = false;
     }
   }
   let level = required.length;
@@ -118,16 +129,32 @@ export function decideFitLevel(
       break;
     }
   }
+  // A climb the readings allow but an unverified lock refuses: climb, and let the
+  // wider presentation's reading decide (it is taken before anything is painted).
+  if (level >= current && !verified) {
+    for (let l = 0; l < current; l++) {
+      if (available >= required[l] + hysteresis) {
+        level = l;
+        break;
+      }
+    }
+  }
   if (level > current) {
     // Leaving the levels [current, level): each keeps what it needs, read NOW —
-    // in the widest presentation of the move, the one still on screen.
+    // in the widest presentation of the move, the one still on screen. Right
+    // after a climb, that reading is the content's own: verified.
     for (let l = current; l < level; l++) locked[l] = required[l];
+    verified = same && memory.climbed;
   } else if (level < current) {
     // Back on `level`: it and the levels below it hold no lock any more.
     locked.length = level;
+    verified = false;
   }
   if (level !== current) seen.length = 0;
-  return { level, memory: { levels: required.length, locked, seen } };
+  return {
+    level,
+    memory: { levels: required.length, locked, seen, verified, climbed: level < current },
+  };
 }
 
 /**
@@ -135,7 +162,10 @@ export function decideFitLevel(
  * on a reading of the presentation actually on screen: between a change of level
  * and its render, every reading would still be of the previous one, so measures
  * wait for `shown` — which measures at once, so that a move is checked in the
- * presentation it chose and that presentation's readings start from there.
+ * presentation it chose and that presentation's readings start from there. The
+ * hook calls `shown` from a layout effect: a move decided there (a climb the
+ * wider presentation refuses) is rendered before the browser paints — the
+ * refused climb is never seen.
  */
 export function createFitController(onLevel: (level: number) => void) {
   let decided = 0;
@@ -180,7 +210,22 @@ export interface ResizeWatcher {
 export interface MutationWatcher {
   observe(target: Node, options: MutationObserverInit): void;
   disconnect(): void;
+  takeRecords(): unknown[];
 }
+
+/** What changes a measured content without changing its box (lot 14): nodes added
+ *  or removed, text edited, a class or `hidden` switched (a button turning into a
+ *  spinner, an action appearing). Other attributes are left out on purpose: the
+ *  callers write the chosen level as `data-*` attributes and must not hear their
+ *  own write, and inline styles animate (a live audio meter) without changing what
+ *  is measured. */
+export const CONTENT_CHANGES: MutationObserverInit = {
+  childList: true,
+  characterData: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ["class", "hidden"],
+};
 
 /**
  * Keeps the observers on EXACTLY the elements `sync` was last given (lot 12). An
@@ -189,18 +234,27 @@ export interface MutationWatcher {
  * once; the node it replaced is dropped. Subscribing only when the dependencies
  * changed left the observers on a detached node: the composer recovered from a
  * detached draft kept the level of the window it had left.
+ *
+ * It listens to their CONTENT as well as their size, for every fit (lot 14): an
+ * action appearing in a row (an agent file's "Review the proposal") changes the
+ * width the row needs, not the list's box, and neither an observer of sizes nor
+ * the caller's dependencies heard of it. `drain` drops what was recorded so far:
+ * the measure's own clone, inserted and removed inside an observed element, is
+ * not a change of the content.
  */
 export function createTargetWatch(
   onChange: () => void,
-  content: boolean,
   makeResize: (cb: () => void) => ResizeWatcher = (cb) => new ResizeObserver(cb),
   makeMutation: (cb: () => void) => MutationWatcher = (cb) => new MutationObserver(cb),
 ) {
   let targets: Element[] = [];
-  let observers: Array<ResizeWatcher | MutationWatcher> = [];
+  let resize: ResizeWatcher | null = null;
+  let mutation: MutationWatcher | null = null;
   const stop = () => {
-    for (const o of observers) o.disconnect();
-    observers = [];
+    resize?.disconnect();
+    mutation?.disconnect();
+    resize = null;
+    mutation = null;
   };
   return {
     /** The elements to observe NOW; returns whether the subscription changed. */
@@ -214,20 +268,18 @@ export function createTargetWatch(
       if (els.length > 0) {
         const ro = makeResize(onChange);
         for (const el of els) ro.observe(el);
-        observers.push(ro);
-        // Attributes are left out on purpose: the caller writes the chosen level
-        // onto the observed element as attributes, and must not hear its own write.
-        if (content) {
-          const mo = makeMutation(onChange);
-          for (const el of els) {
-            mo.observe(el, { childList: true, characterData: true, subtree: true });
-          }
-          observers.push(mo);
-        }
+        resize = ro;
+        const mo = makeMutation(onChange);
+        for (const el of els) mo.observe(el, CONTENT_CHANGES);
+        mutation = mo;
       }
       // A new node is measured at once, not at its first resize.
       onChange();
       return true;
+    },
+    /** Forgets the content changes recorded so far (the measure's own clone). */
+    drain() {
+      mutation?.takeRecords();
     },
     dispose() {
       stop();
@@ -235,6 +287,82 @@ export function createTargetWatch(
     },
   };
 }
+
+/** What the restyle hub reads of the page (the browser's, or a test's). */
+export interface RestyleEnv {
+  /** Calls back with the names of the root element's attributes that changed. */
+  watchRoot(cb: (attributes: ReadonlyArray<string | null>) => void): () => void;
+  /** The root element's computed font size. */
+  fontSize(): string;
+  /** Calls back when web fonts have finished loading. */
+  watchFonts(cb: () => void): () => void;
+}
+
+/**
+ * Every fit measures again when the page restyles what it measures without
+ * touching it (lot 14): the root's font size (the text-size preference — 14 px
+ * where it was 16), its classes and language (a theme, a locale), web fonts
+ * finishing to load. A width then changes inside boxes that keep their size: no
+ * observer of the measured elements hears of it. The root's inline style also
+ * carries the keyboard's height: only a change of the font size counts there.
+ */
+export function createRestyleHub(env: () => RestyleEnv | null) {
+  const listeners = new Set<() => void>();
+  let stop: (() => void) | null = null;
+  const fire = () => {
+    for (const listener of [...listeners]) listener();
+  };
+  return {
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      if (stop === null) {
+        const page = env();
+        if (page !== null) {
+          let size = page.fontSize();
+          const offRoot = page.watchRoot((attributes) => {
+            const now = page.fontSize();
+            const resized = now !== size;
+            size = now;
+            if (resized || attributes.some((a) => a !== "style")) fire();
+          });
+          const offFonts = page.watchFonts(fire);
+          stop = () => {
+            offRoot();
+            offFonts();
+          };
+        }
+      }
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0 && stop !== null) {
+          stop();
+          stop = null;
+        }
+      };
+    },
+  };
+}
+
+const browserRestyle = (): RestyleEnv | null =>
+  typeof document === "undefined"
+    ? null
+    : {
+        watchRoot(cb) {
+          const mo = new MutationObserver((records) => cb(records.map((r) => r.attributeName)));
+          mo.observe(document.documentElement, { attributes: true });
+          return () => mo.disconnect();
+        },
+        fontSize: () => getComputedStyle(document.documentElement).fontSize,
+        watchFonts(cb) {
+          const fonts = document.fonts;
+          if (fonts === undefined || typeof fonts.addEventListener !== "function") return () => {};
+          fonts.addEventListener("loadingdone", cb);
+          return () => fonts.removeEventListener("loadingdone", cb);
+        },
+      };
+
+/** The page's restyles, shared by every fit. */
+const RESTYLE = createRestyleHub(browserRestyle);
 
 /** The fitting level, re-decided whenever an observed element changes size or a
  *  `deps` value changes (a localized label, a badge…), and whenever an observed
@@ -248,10 +376,12 @@ export function createTargetWatch(
  *  its own element would only be seen at the caller's next commit (held for
  *  every caller by fitTargetsWiring.test.ts).
  *
- *  `content: true` also re-decides when the observed elements' CONTENT changes
- *  (children added or removed, text edited): a bar whose controls render their own
- *  labels (a permission mode's name, a count) changes the width it needs without
- *  changing its own size, so a resize observer alone would never hear of it.
+ *  It also re-decides, for every caller, when the observed elements' CONTENT
+ *  changes (children added or removed, text edited, a class switched) and when the
+ *  page restyles them (text size, theme, locale, web fonts): a width changes
+ *  inside boxes that keep their size, and neither a resize observer nor `deps`
+ *  hear of it (lot 14; the composer alone did, before). What is measured must
+ *  therefore sit inside what is observed (held by fitTargetsWiring.test.ts).
  *
  *  A level left because it no longer fit is climbed back to only when the space
  *  covers the width it needed when left, read in that wider presentation
@@ -265,9 +395,8 @@ export function useFitLevel(
   measure: () => FitInput | null,
   observed: () => ReadonlyArray<Element | null | undefined>,
   deps: DependencyList,
-  options: { content?: boolean; hysteresis?: number } = {},
+  options: { hysteresis?: number } = {},
 ): number {
-  const content = options.content === true;
   const hysteresis = options.hysteresis ?? 0;
   const [level, setLevel] = useState(0);
   // Read through refs: the observers live across renders, while the closures they
@@ -283,34 +412,41 @@ export function useFitLevel(
   const controllerRef = useRef<ReturnType<typeof createFitController> | null>(null);
   if (controllerRef.current === null) controllerRef.current = createFitController(setLevel);
   const controller = controllerRef.current;
-  const runRef = useRef(() => controller.measure(() => measureRef.current(), hysteresisRef.current));
+  const watchRef = useRef<ReturnType<typeof createTargetWatch> | null>(null);
+  // A measure, then the content changes it recorded itself (its clone) dropped.
+  const readRef = useRef(() => {
+    const input = measureRef.current();
+    watchRef.current?.drain();
+    return input;
+  });
+  const runRef = useRef(() => controller.measure(readRef.current, hysteresisRef.current));
   // The level on screen: the controller measures in it before anything else does.
   useLayoutEffect(() => {
-    controller.shown(level, () => measureRef.current(), hysteresisRef.current);
+    controller.shown(level, readRef.current, hysteresisRef.current);
   }, [controller, level]);
-  const watchRef = useRef<ReturnType<typeof createTargetWatch> | null>(null);
   // AFTER EVERY COMMIT: the observed elements as they are now. A remounted one
   // (unmounted, mounted again, `deps` unchanged) is observed and measured afresh.
   useLayoutEffect(() => {
     if (watchRef.current === null) {
-      watchRef.current = createTargetWatch(() => runRef.current(), content);
+      watchRef.current = createTargetWatch(() => runRef.current());
     }
     watchRef.current.sync(observedRef.current());
   });
+  // The page restyled what is measured (text size, theme, web fonts): again.
+  useLayoutEffect(() => RESTYLE.subscribe(() => runRef.current()), []);
   // A dependency of the measure changed: decide again.
   useLayoutEffect(() => {
     runRef.current();
     // `deps` IS the contract: the caller lists what changes a measured width.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, hysteresis]);
-  // `content` changes which observers there are: a new watch, made by the next
-  // commit; the last one goes on unmount.
+  // The watch goes on unmount (a new one is made by the next commit, if any).
   useLayoutEffect(
     () => () => {
       watchRef.current?.dispose();
       watchRef.current = null;
     },
-    [content],
+    [],
   );
   return level;
 }

@@ -311,6 +311,7 @@ import {
   levelAt,
   movableControls,
 } from "./composerFit";
+import { composerAround, restoreComposerFocus } from "./composerFocus";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { MediaPart } from "./MediaPart";
 import { MarkdownText, AgentMarkdown } from "./MarkdownText";
@@ -4664,6 +4665,7 @@ function ComposerAgentSelect({
   const manages = room ? managesRoom(room.viewerRoomRole) : false;
   const toast = useToast();
   const [open, setOpen] = useState(false);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const [tab, setTab] = useState<"agents" | "people">("agents");
   // People tab: one field filters who is here AND finds whom to invite.
   const [pq, setPq] = useState("");
@@ -5262,6 +5264,7 @@ function ComposerAgentSelect({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
+              ref={settingsTriggerRef}
               type="button"
               className="oc-roompill__chev"
               title={m.room_pill_settings()}
@@ -5271,7 +5274,16 @@ function ComposerAgentSelect({
               <ChevronDown size={13} aria-hidden />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="oc-roommenu">
+          <DropdownMenuContent
+            align="end"
+            className="oc-roommenu"
+            // The chevron may have gone into the composer's More menu meanwhile:
+            // the focus then goes there, else to the field (lot 14).
+            onCloseAutoFocus={(e) => {
+              const { more, field } = composerAround(settingsTriggerRef.current);
+              if (restoreComposerFocus([settingsTriggerRef.current, more, field])) e.preventDefault();
+            }}
+          >
             <DropdownMenuItem onSelect={() => onManage("agents", null)}>
               <Settings2 aria-hidden />
               {m.conversation_manage()}
@@ -6232,7 +6244,6 @@ function Composer({
     },
     () => [barRef.current],
     [fitLevels, coarsePointer, composerExpanded],
-    { content: true },
   );
   const fit = levelAt(fitLevels, fitIndex);
   const moved = new Set(fit.moved);

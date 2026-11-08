@@ -4,7 +4,7 @@
 // settings sections. A popover rather than a menu, because those two stay open while
 // one adjusts them (the permission modes, Talk's voice and sensitivity) — the same
 // reason the header's "Advanced" is one.
-import type { ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import {
   Check,
   Maximize2,
@@ -18,6 +18,7 @@ import {
 import { m } from "@/paraglide/messages.js";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { barControl, composerAround, restoreComposerFocus } from "./composerFocus";
 import { MORE_MENU_ORDER, type OverflowKey } from "./composerFit";
 
 export function ComposerMoreMenu({
@@ -49,12 +50,44 @@ export function ComposerMoreMenu({
   talkStartSlot: (el: HTMLDivElement | null) => void;
 }) {
   const close = () => onOpenChange(false);
+  // THE FOCUS FOLLOWS ITS CONTROL BACK (lot 14). The item that holds the focus,
+  // by its key: when the bar takes that control back — the window widened — the
+  // item leaves the menu, and the menu itself closes once nothing is left in it,
+  // its button hidden. Radix tried that hidden button and the focus fell on the
+  // page; it now goes to the control that took the item's place, then the field.
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const focusedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const note = (el: EventTarget | null) => {
+      const key =
+        el instanceof Element
+          ? el.closest(".oc-composer__more-pop [data-more-key]")?.getAttribute("data-more-key")
+          : null;
+      if (key) focusedKey.current = key;
+    };
+    note(document.activeElement); // Radix may have focused the first item already
+    const onFocusIn = (e: FocusEvent) => note(e.target);
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, [open]);
+  const movedKey = [...moved].join(" ");
+  useLayoutEffect(() => {
+    const key = focusedKey.current;
+    if (key === null || moved.has(key as OverflowKey)) return;
+    focusedKey.current = null;
+    const { bar, field } = composerAround(triggerRef.current);
+    restoreComposerFocus([barControl(bar, key), field]);
+    // `movedKey` stands for `moved` (a new Set every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movedKey]);
   const item = (key: OverflowKey): ReactNode => {
     switch (key) {
       case "tools":
         return (
           <Button
             key={key}
+            data-more-key={key}
             variant="ghost"
             className="oc-composer__more-item w-full justify-start"
             aria-pressed={tools.shown}
@@ -69,6 +102,7 @@ export function ComposerMoreMenu({
         return (
           <Button
             key={key}
+            data-more-key={key}
             variant="ghost"
             className="oc-composer__more-item w-full justify-start"
             onClick={() => {
@@ -84,6 +118,7 @@ export function ComposerMoreMenu({
         return hold.held ? (
           <Button
             key={key}
+            data-more-key={key}
             variant="ghost"
             className="oc-composer__more-item w-full justify-start"
             onClick={() => {
@@ -97,6 +132,7 @@ export function ComposerMoreMenu({
         ) : (
           <Button
             key={key}
+            data-more-key={key}
             variant="ghost"
             className="oc-composer__more-item w-full justify-start"
             disabled={hold.disabled}
@@ -113,6 +149,7 @@ export function ComposerMoreMenu({
         return (
           <Button
             key={key}
+            data-more-key={key}
             variant="ghost"
             className="oc-composer__more-item w-full justify-start"
             aria-pressed={expand.expanded}
@@ -129,6 +166,7 @@ export function ComposerMoreMenu({
         return (
           <Button
             key={key}
+            data-more-key={key}
             variant="ghost"
             className="oc-composer__more-item w-full justify-start"
             onClick={() => {
@@ -142,10 +180,10 @@ export function ComposerMoreMenu({
         );
       case "talk":
         // Talk renders its own start entry here (it owns the call).
-        return <div key={key} ref={talkStartSlot} />;
+        return <div key={key} data-more-key={key} ref={talkStartSlot} />;
       case "perm":
         return (
-          <div key={key} className="oc-composer__more-section">
+          <div key={key} data-more-key={key} className="oc-composer__more-section">
             {permission}
           </div>
         );
@@ -154,6 +192,7 @@ export function ComposerMoreMenu({
         return (
           <div
             key={key}
+            data-more-key={key}
             ref={talkSettingsSlot}
             className="oc-composer__more-section"
             role="group"
@@ -166,6 +205,7 @@ export function ComposerMoreMenu({
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
+          ref={triggerRef}
           type="button"
           className="oc-composer__icon oc-composer__more"
           title={m.chat_composer_more()}
@@ -174,7 +214,17 @@ export function ComposerMoreMenu({
           <MoreHorizontal size={18} aria-hidden />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="oc-composer__more-pop w-80 p-1">
+      <PopoverContent
+        align="end"
+        side="top"
+        className="oc-composer__more-pop w-80 p-1"
+        onCloseAutoFocus={(e) => {
+          const { bar, field } = composerAround(triggerRef.current);
+          const back = barControl(bar, focusedKey.current);
+          focusedKey.current = null;
+          if (restoreComposerFocus([triggerRef.current, back, field])) e.preventDefault();
+        }}
+      >
         {MORE_MENU_ORDER.filter((key) => moved.has(key)).map(item)}
       </PopoverContent>
     </Popover>
