@@ -13,6 +13,8 @@
  * reference left unclassified — on a synthetic upstream, the only place those failure
  * modes can be exercised deliberately.
  */
+import { createHash } from "node:crypto";
+
 import { beforeAll, describe, expect, it } from "vitest";
 
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
@@ -67,13 +69,28 @@ type Inventory = {
   summary: Record<string, { sites: number; phases: Record<string, { sites: number; keys: Record<string, string> }> }>;
 };
 
-const derive = deriver.deriveAgentEmissions as (input: {
+type ReadOnlyMember = {
+  type: string;
+  member: string;
+  argument: number;
+  declaredIn: string;
+  implementation: { file: string; factory: string };
+  reviewedAt: string;
+  evidence: string;
+  bodies: { file: string; fn: string; sha256: string }[];
+};
+type DeriveInput = {
   root: string;
   files: Record<string, string>;
   tsconfig?: unknown;
   compilerOptions?: Record<string, unknown>;
   meta?: Record<string, unknown>;
-}) => Inventory;
+  readOnlyMembers?: ReadOnlyMember[];
+};
+const deriveWith = deriver.deriveAgentEmissions as (input: DeriveInput) => Inventory;
+// The synthetic upstream has none of upstream's chat-state modules: no read-only member
+// declaration applies unless a test brings its own.
+const derive = (input: DeriveInput) => deriveWith({ readOnlyMembers: [], ...input });
 const serialize = deriver.serializeInventory as (inv: Inventory) => string;
 const diff = diffInventories as (a: Inventory, b: Inventory) => string;
 
@@ -143,7 +160,8 @@ export function createGatewayBroadcaster() {
 declare function deliverToNodes(sessionKey: string, event: string, payload: unknown): void;
 export function createGatewayNodeSessionRuntime() {
   const nodeSendToSession = (sessionKey: string, event: string, payload: unknown) => deliverToNodes(sessionKey, event, payload);
-  return { nodeSendToSession };
+  const nodeSendToAllSubscribed = (event: string, payload: unknown) => deliverToNodes("*", event, payload);
+  return { nodeSendToSession, nodeSendToAllSubscribed };
 }
 `,
   "src/gateway/node-registry.ts": `
@@ -153,8 +171,20 @@ export class NodeRegistry {
     this.sendEventInternal(nodeId, event, payload);
     return true;
   }
-  private sendEventInternal(nodeId: string, event: string, payload: unknown): void {
+  sendEventRaw(nodeId: string, event: string, payloadJSON?: string | null): boolean {
+    this.sendEventInternal(nodeId, event, payloadJSON);
+    return true;
+  }
+  async sendEventForPairingIdentity(params: { nodeId: string; connId: string; event: string; payload?: unknown }): Promise<boolean> {
+    return this.sendEventInternal(params.nodeId, params.event, params.payload);
+  }
+  async sendEventRawForPairingGeneration(nodeId: string, pairingGeneration: string, event: string, payloadJSON?: string | null): Promise<boolean> {
+    void pairingGeneration;
+    return this.sendEventInternal(nodeId, event, payloadJSON);
+  }
+  private sendEventInternal(nodeId: string, event: string, payload: unknown): boolean {
     deliverToNode(nodeId, JSON.stringify({ type: "event", event, payload }));
+    return true;
   }
 }
 `,
@@ -407,7 +437,8 @@ describe("deriveAgentEmissions — values", () => {
   it("accumulates a `let` reassigned from itself, and a property written on a binding", () => {
     // One row per value the binding can hold: before the reassignment, and after it.
     expect(rows("t_let").map(keyList)).toEqual([["accumulated", "phase"], ["phase"]]);
-    expect(rows("t_write").map(keyList)).toEqual([["phase", "written?"]]);
+    // `meta.written = true` runs, unconditionally, before the emission: the key is certain.
+    expect(rows("t_write").map(keyList)).toEqual([["phase", "written"]]);
   });
 
   it("decides a test on a parameter where the parameter is filled (`p === x ? a : p`)", () => {
@@ -691,6 +722,8 @@ export function startGateway() {
     );
     // …while a relayed event's data plus a RECORDED rewrite is not unresolved.
     expect(un.some(([, reason]) => /adds `text`/.test(String(reason)))).toBe(false);
+    // …nor an event handed to a sender before another send: a send is a delivery.
+    expect(un.some(([, reason]) => /passed to ctx\.nodeSendToSession/.test(String(reason)))).toBe(false);
   });
 
   it("another channel is pruned, and a sender whose own guard admits only `plugin.*` never counts as agent", () => {
@@ -800,6 +833,13 @@ export type KeepOptions = { broadcast: (event: string, payload: unknown) => void
 export function keep(params: KeepOptions) {
   return params;
 }
+// A container RETURNED by a function no analysed code calls: an entry point outside the
+// sources could read the slot.
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+export function exposeOps() {
+  const { broadcast } = createGatewayBroadcaster();
+  return { send: broadcast, label: "q" };
+}
 `,
     // A parameter property outlives its constructor: \`this.opts\` is read in another method.
     "src/gateway/holder-e.ts": `
@@ -900,19 +940,1001 @@ export function wire(wss: { on: (event: string, f: () => void) => void }) {
     expect(unread()).toEqual(expect.arrayContaining([expect.objectContaining({ family: "sender", slot: "broadcast", at: `src/gateway/wiring.ts:${lineOf("attachWs({")}` })]));
   });
 
-  it("what the following cannot see stays UNRESOLVED: a computed key, code outside the sources, a return, a class field", () => {
+  it("what the following cannot see stays UNRESOLVED: a computed key, code outside the sources, an uncalled factory, a class field", () => {
     const openOf = (needle: string) => unresolvedAt(needle).flatMap((u) => u.open ?? []);
     expect(openOf("useDyn({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is read under a computed key")]));
     expect(openOf("useSink({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is passed to code outside the analysed sources")]));
-    expect(openOf("keep({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is returned")]));
-    expect(openOf("new Holder({")).toEqual(expect.arrayContaining([expect.stringContaining("its object is kept as a class field")]));
-    for (const needle of ["useDyn({", "useSink({", "keep({", "new Holder({"]) {
+    // A returned object reaches its function's callers; one no analysed code calls escapes.
+    const exposed = tf().unresolved.filter((u) => u.file === "src/gateway/conn-d.ts").flatMap((u) => u.open ?? []);
+    expect(exposed).toEqual(expect.arrayContaining([expect.stringContaining("its object is returned by a function no analysed code calls")]));
+    for (const needle of ["useDyn({", "useSink({"]) {
       expect(unread().some((s) => s.at === `src/gateway/wiring.ts:${lineOf(needle)}`), needle).toBe(false);
     }
   });
 
+  it("a class field is followed: `this.opts` anywhere in the class holds the object", () => {
+    expect(unresolvedAt("new Holder({")).toEqual([]);
+    expect(tf().fabricated).toEqual(expect.arrayContaining([expect.objectContaining({ stream: "x_field", file: "src/gateway/holder-e.ts" })]));
+  });
+
+  it("a returned object is followed to its callers: discarded there, its slot is unread", () => {
+    expect(unresolvedAt("keep({")).toEqual([]);
+    expect(unread()).toEqual(expect.arrayContaining([expect.objectContaining({ slot: "broadcast", at: `src/gateway/wiring.ts:${lineOf("keep({")}` })]));
+  });
+
   it("every reference is still accounted for", () => {
     expect(followed.completeness.unaccounted).toBe(0);
+  });
+});
+
+describe("deriveAgentEmissions — the third review's silent omissions", () => {
+  // Codex, 2026-11-08: three forms passed with `unresolved: []` and `unaccounted: 0` while
+  // an agent frame went missing. Each must now enrich the inventory or refuse.
+  const MIRROR: Record<string, string> = {
+    // 1. A call through a literal key, beside a followed call by name; a computed key.
+    "src/gateway/ops-h.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+declare function later(run: () => void): void;
+export function runOps() {
+  const { broadcast } = createGatewayBroadcaster();
+  const ops = { send: broadcast };
+  ops.send("chat", {});
+  ops["send"]("agent", { stream: "x_bracket", data: { lost: 1 } });
+  later(() => ops["send"]("agent", { stream: "x_bracket_closure", data: { late: 1 } }));
+}
+export function runComputed(key: "send" | "other") {
+  const { broadcast } = createGatewayBroadcaster();
+  const table = { send: broadcast, other: (event: string, payload: unknown) => void [event, payload] };
+  table.send("chat", {});
+  table[key]("agent", { stream: "x_hidden", data: {} });
+}
+// A read the following sees but no reference by name can follow (the slot typed \`any\`).
+export function runUntyped() {
+  const { broadcast } = createGatewayBroadcaster();
+  const box = { send: broadcast };
+  const loose: any = box;
+  loose.send("agent", { stream: "x_untyped_read", data: {} });
+}
+// An object NESTED in another, handed whole to a function of another type.
+type OtherOps = { send: (event: string, payload: unknown) => void };
+function abortWith(o: OtherOps) {
+  o.send("agent", { stream: "x_nested_conv", data: { n: 1 } });
+}
+function useNested(deps: { ops: { send: (event: string, payload: unknown) => void } }) {
+  abortWith(deps.ops);
+}
+export function runNested() {
+  const { broadcast } = createGatewayBroadcaster();
+  useNested({ ops: { send: broadcast } });
+}
+// An object returned by a callback handed to code that does not pass its return on.
+declare function register(make: () => unknown): void;
+export function registerOps() {
+  const { broadcast } = createGatewayBroadcaster();
+  register(() => ({ send: broadcast }));
+}
+`,
+    // 2. A payload written after it is built, through an alias, by a helper, by code
+    //    outside the sources — and after the send.
+    "src/gateway/mutate-i.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+declare function externalMutate(p: unknown): void;
+function rewriteFrame(p: { stream: string; data: Record<string, unknown> }) {
+  p.stream = "x_rewritten";
+  p.data = { replaced: 1 };
+}
+export function runMutations() {
+  const { broadcast } = createGatewayBroadcaster();
+  const payload = { stream: "x_mut", data: { a: 1 } as Record<string, unknown> };
+  payload.data.newKey = 1;
+  const d = payload.data;
+  d.aliasKey = 1;
+  broadcast("agent", payload);
+  const viaHelper = { stream: "x_helper", data: { b: 1 } as Record<string, unknown> };
+  rewriteFrame(viaHelper);
+  broadcast("agent", viaHelper);
+  const viaExternal = { stream: "x_external", data: { c: 1 } };
+  externalMutate(viaExternal);
+  broadcast("agent", viaExternal);
+  const late = { stream: "x_late", data: { e: 1 } as Record<string, unknown> };
+  broadcast("agent", late);
+  late.data.afterSend = 1;
+}
+`,
+  };
+  // The forms the first pass after these fixes refused on 9.36 (2026-11-08): an event
+  // string handed to a helper, a factory reached through a dynamic import, a callback
+  // whose return a wrapper passes through, a class field assigned in the constructor.
+  Object.assign(MIRROR, {
+    "src/gateway/runtime-k.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+declare function observe(event: string): void;
+export function createRuntimeK() {
+  const { broadcast } = createGatewayBroadcaster();
+  return { notify: broadcast, label: "k" };
+}
+export function relayK(event: string, payload: { stream: string; data: Record<string, unknown> }) {
+  observe(event);
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast(event, payload);
+}
+export function useRelayK() {
+  relayK("agent", { stream: "x_prim", data: {} });
+}
+`,
+    "src/gateway/lazy-k.ts": `
+// upstream's startupTrace.measure (src/gateway/server-channels.ts)
+declare function measure<T>(name: string, run: () => T | Promise<T>): Promise<T>;
+type Deps = { notify: (event: string, payload: unknown) => void };
+class Keeper {
+  private deps: Deps;
+  constructor(deps: Deps) {
+    this.deps = deps;
+  }
+  fire() {
+    this.deps.notify("agent", { stream: "x_kept", data: { f: 1 } });
+  }
+  fireDestructured() {
+    const { deps } = this;
+    deps.notify("agent", { stream: "x_this_destructured", data: { d: 1 } });
+  }
+}
+// upstream's GatewayRestartTransaction (src/gateway/server-reload-restart.ts)
+class Txn {
+  constructor(private readonly options: Deps) {}
+  run() {
+    this.options.notify("agent", { stream: "x_txn", data: { t: 1 } });
+  }
+}
+export async function startLazy() {
+  const { createRuntimeK } = await import("./runtime-k.js");
+  const { notify } = createRuntimeK();
+  notify("agent", { stream: "x_lazy", data: { z: 1 } });
+  // upstream's server-lifecycle.ts: a rest destructuring of the factory's object
+  const { label, ...restK } = createRuntimeK();
+  void label;
+  restK.notify("agent", { stream: "x_rest", data: { r: 1 } });
+  const runtime = await measure("runtime", () => createRuntimeK());
+  runtime.notify("agent", { stream: "x_measured", data: { m: 1 } });
+  const keeper = new Keeper({ notify: createRuntimeK().notify });
+  keeper.fire();
+  keeper.fireDestructured();
+  new Txn({ notify: createRuntimeK().notify }).run();
+}
+`,
+  });
+  // A payload handed to a sender before another send: upstream's sendLivePayload
+  // (src/gateway/server-chat.ts) broadcasts a payload, then sends the same one to the node
+  // session. A send is a delivery; a helper's own writes still count, and code outside the
+  // sources still refuses.
+  Object.assign(MIRROR, {
+    "src/gateway/live-q.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import { createGatewayNodeSessionRuntime } from "./server-node-session-runtime.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+type Senders = {
+  broadcast: (event: string, payload: unknown, opts?: unknown) => void;
+  nodeSendToSession: (sessionKey: string, event: string, payload: unknown, opts?: unknown) => void;
+};
+declare function audit(p: unknown): void;
+function createLiveQ({ broadcast, nodeSendToSession }: Senders) {
+  const sendLive = (event: "agent" | "chat", sessionKey: string | undefined, payload: Frame) => {
+    broadcast(event, payload, {});
+    if (sessionKey) nodeSendToSession(sessionKey, event, payload, {});
+  };
+  const stamp = (p: Frame) => {
+    p.data.stamped = 1;
+    broadcast("agent", p);
+  };
+  return {
+    liveQ: () => sendLive("agent", "k", { runId: "r", stream: "x_live", data: { q: 1 } }),
+    stampedQ: () => {
+      const p: Frame = { runId: "r", stream: "x_stamped", data: { s: 1 } };
+      stamp(p);
+      nodeSendToSession("k", "agent", p);
+    },
+    auditedQ: () => {
+      const p: Frame = { runId: "r", stream: "x_audited", data: {} };
+      broadcast("agent", p);
+      audit(p);
+      nodeSendToSession("k", "agent", p);
+    },
+  };
+}
+export function wireQ() {
+  const b = createGatewayBroadcaster();
+  const n = createGatewayNodeSessionRuntime();
+  return createLiveQ({ broadcast: b.broadcast, nodeSendToSession: n.nodeSendToSession });
+}
+// The transport's own sender, called directly: its body hands the payload to code outside
+// the sources, and is the transport, not analysed.
+export function directQ() {
+  const { nodeSendToSession } = createGatewayNodeSessionRuntime();
+  const { broadcast } = createGatewayBroadcaster();
+  const p = { runId: "r", stream: "x_direct", data: { d: 1 } };
+  nodeSendToSession("k", "agent", p);
+  broadcast("agent", p);
+}
+`,
+  });
+  // A class field is followed only where TypeScript keeps its reads: each form below can
+  // read the field where no reference is followed, and must refuse. One factory per form.
+  const factory = (letter: string) => `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+export function createRuntime${letter}() {
+  const { broadcast } = createGatewayBroadcaster();
+  return { notify: broadcast };
+}
+`;
+  Object.assign(MIRROR, {
+    "src/gateway/runtime-l.ts": factory("L"),
+    "src/gateway/runtime-m.ts": factory("M"),
+    "src/gateway/runtime-n.ts": factory("N"),
+    "src/gateway/runtime-o.ts": factory("O"),
+    "src/gateway/runtime-p.ts": factory("P"),
+    "src/gateway/fields-l.ts": `
+import { createRuntimeL } from "./runtime-l.js";
+import { createRuntimeM } from "./runtime-m.js";
+import { createRuntimeN } from "./runtime-n.js";
+import { createRuntimeO } from "./runtime-o.js";
+import { createRuntimeP } from "./runtime-p.js";
+type Notify = { notify: (event: string, payload: unknown) => void };
+declare function leak(x: unknown): void;
+// Not private: any holder of an instance reads \`deps\`.
+class Exposed {
+  constructor(readonly deps: Notify) {}
+}
+// A computed key on the instance can be the field.
+class Lookup {
+  private deps: Notify;
+  constructor(deps: Notify) {
+    this.deps = deps;
+  }
+  get(key: string) {
+    return (this as any)[key];
+  }
+}
+// Destructured from the instance, then handed on.
+class Leaky {
+  private deps: Notify;
+  constructor(deps: Notify) {
+    this.deps = deps;
+  }
+  run() {
+    const { deps } = this;
+    leak(deps);
+  }
+}
+// A literal key reaches a private field from anywhere.
+class Keyed {
+  private deps: Notify;
+  constructor(deps: Notify) {
+    this.deps = deps;
+  }
+}
+// A rest destructuring of the instance carries every field.
+class Rest {
+  private deps: Notify;
+  constructor(deps: Notify) {
+    this.deps = deps;
+  }
+  run() {
+    const { ...all } = this;
+    leak(all);
+  }
+}
+export function fieldsL() {
+  void new Exposed({ notify: createRuntimeL().notify });
+  void new Lookup({ notify: createRuntimeM().notify });
+  new Leaky({ notify: createRuntimeN().notify }).run();
+  leak(new Keyed({ notify: createRuntimeO().notify })["deps"]);
+  new Rest({ notify: createRuntimeP().notify }).run();
+}
+`,
+  });
+  type Row = { file: string; line: number; function: string; stream?: string; keys?: string[]; reason?: string; open?: string[] };
+  let inv3: Inventory;
+  const tf = () => inv3.transformations as unknown as { fabricated: Row[]; unresolved: Row[] };
+  const rowsOf = (stream: string) => tf().fabricated.filter((g) => g.stream === stream);
+  beforeAll(() => {
+    inv3 = derive({
+      root: "/virtual-upstream",
+      files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...MIRROR },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+  });
+
+  it("1. a literal key is a reference like a name: `ops[\"send\"](…)` is a site, in a closure too", () => {
+    expect(rowsOf("x_bracket")).toEqual([expect.objectContaining({ keys: ["lost"] })]);
+    expect(rowsOf("x_bracket_closure")).toEqual([expect.objectContaining({ keys: ["late"] })]);
+  });
+
+  it("1. a computed key on the object is UNRESOLVED, even beside a followed reference", () => {
+    const open = tf().unresolved.filter((u) => u.file === "src/gateway/ops-h.ts").flatMap((u) => u.open ?? []);
+    expect(open).toEqual(expect.arrayContaining([expect.stringContaining("its object is read under a computed key")]));
+    expect(rowsOf("x_hidden")).toEqual([]);
+  });
+
+  it("1. a read the following sees and no reference follows is UNRESOLVED, never dropped", () => {
+    const open = tf().unresolved.filter((u) => u.file === "src/gateway/ops-h.ts").flatMap((u) => u.open ?? []);
+    expect(open).toEqual(expect.arrayContaining([expect.stringContaining("its object is read where no reference was followed")]));
+  });
+
+  it("1. an object a nameless callback returns to code that does not pass it on is UNRESOLVED", () => {
+    const open = tf().unresolved.filter((u) => u.file === "src/gateway/ops-h.ts").flatMap((u) => u.open ?? []);
+    expect(open).toEqual(expect.arrayContaining([expect.stringContaining("its object is returned by a function with no name to be called by")]));
+  });
+
+  it("1. an object nested in another is followed: handed whole to another type, its slot is linked", () => {
+    expect(rowsOf("x_nested_conv")).toEqual([expect.objectContaining({ keys: ["n"] })]);
+  });
+
+  it("2. writes to the payload before the send are its frame: nested, through an alias", () => {
+    expect(rowsOf("x_mut")).toEqual([expect.objectContaining({ keys: expect.arrayContaining(["a", "newKey", "aliasKey"]) })]);
+  });
+
+  it("2. a helper's writes are followed into the frame", () => {
+    expect(rowsOf("x_rewritten")).toEqual(expect.arrayContaining([expect.objectContaining({ keys: ["replaced"] })]));
+  });
+
+  it("2. a payload handed to code whose effects are not modeled, before the send, is UNRESOLVED", () => {
+    const un = tf().unresolved.filter((u) => u.file === "src/gateway/mutate-i.ts");
+    expect(un.map((u) => u.reason).join(" | ")).toMatch(/externalMutate/);
+  });
+
+  it("2. a write after the send is not the frame's", () => {
+    expect(rowsOf("x_late")).toEqual([expect.objectContaining({ keys: ["e"] })]);
+  });
+
+  it("the forms the 9.36 pass refused: a string handed to a helper stays a string; a dynamic import, a passthrough callback and a class field are followed", () => {
+    for (const stream of ["x_prim", "x_lazy", "x_rest", "x_measured", "x_kept", "x_this_destructured", "x_txn"]) expect(rowsOf(stream).length, stream).toBeGreaterThan(0);
+    const un = tf().unresolved.filter((u) => u.file === "src/gateway/runtime-k.ts" || u.file === "src/gateway/lazy-k.ts");
+    expect(un.map((u) => `${u.file}:${u.line} ${u.reason} ${(u.open ?? []).join("; ")}`)).toEqual([]);
+  });
+
+  it("2. a payload handed to a sender before another send keeps its shape: a send is a delivery", () => {
+    const un = tf().unresolved.filter((u) => u.file === "src/gateway/live-q.ts");
+    expect(rowsOf("x_live").length).toBeGreaterThan(0);
+    for (const r of rowsOf("x_live")) expect(r.keys).toEqual(["q"]);
+    // The helper's own write counts; only its inner send is a delivery.
+    expect(rowsOf("x_stamped").length).toBeGreaterThan(0);
+    for (const r of rowsOf("x_stamped")) expect(r.keys).toEqual(expect.arrayContaining(["s", "stamped"]));
+    expect(rowsOf("x_direct").length).toBeGreaterThan(0);
+    for (const r of rowsOf("x_direct")) expect(r.keys).toEqual(["d"]);
+    expect(un.filter((u) => /liveQ|stampedQ|sendLive|stamp|directQ/.test(u.function)).map((u) => `${u.function}: ${u.reason}`)).toEqual([]);
+  });
+
+  it("2. beside a send, code outside the sources still refuses, named alone", () => {
+    const reasons = tf().unresolved.filter((u) => u.file === "src/gateway/live-q.ts").map((u) => u.reason ?? "");
+    expect(reasons.some((r) => /audit\(/.test(r))).toBe(true);
+    expect(reasons.some((r) => /passed to broadcast\(/.test(r))).toBe(false);
+  });
+
+  // The open slot is the one each literal `{ notify: createRuntimeX().notify }` fills.
+  const openOfFactory = (letter: string) => {
+    const line = (MIRROR["src/gateway/fields-l.ts"] ?? "").split("\n").findIndex((l) => l.includes(`createRuntime${letter.toUpperCase()}().notify`)) + 1;
+    expect(line, letter).toBeGreaterThan(0);
+    return tf().unresolved.filter((u) => u.file === "src/gateway/fields-l.ts" && u.line === line).flatMap((u) => u.open ?? []);
+  };
+  it("a class field code outside the class can read is UNRESOLVED", () => {
+    expect(openOfFactory("l")).toEqual(expect.arrayContaining([expect.stringContaining("its object is kept in a class field that code outside the class can read")]));
+  });
+
+  it("a class that reads its instance under a computed key is UNRESOLVED", () => {
+    expect(openOfFactory("m")).toEqual(expect.arrayContaining([expect.stringContaining("the class reads its instance under a computed key")]));
+  });
+
+  it("a field destructured from its instance is followed: handed to code outside the sources, UNRESOLVED", () => {
+    expect(openOfFactory("n")).toEqual(expect.arrayContaining([expect.stringContaining("its object is passed to code outside the analysed sources")]));
+  });
+
+  it("a literal key reaches a private field from anywhere: handed to code outside the sources, UNRESOLVED", () => {
+    expect(openOfFactory("o")).toEqual(expect.arrayContaining([expect.stringContaining("its object is passed to code outside the analysed sources")]));
+  });
+
+  it("a rest destructuring of the instance carries its fields: handed on, UNRESOLVED", () => {
+    expect(openOfFactory("p")).toEqual(expect.arrayContaining([expect.stringContaining("its object is passed to code outside the analysed sources")]));
+  });
+
+  it("every reference is accounted for, literal keys included", () => {
+    expect(inv3.completeness.unaccounted).toBe(0);
+  });
+});
+
+describe("deriveAgentEmissions — what the first 9.36 pass after the C3 fixes refused", () => {
+  // Pass 8 (2026-11-08): the busiest bus site (embedded-agent-subscribe.handlers.tools.
+  // completion.ts, handleToolExecutionEnd) ran out of evaluation budget — a binding written
+  // before it is read was re-evaluated at every reference — and lost its family and keys; the
+  // gateway kernel hands its runtime through more layers than the container following's
+  // bound allowed. And an alias read at the send must see what was done to its object after
+  // the alias.
+  const chain = (n: number) => {
+    const lines = [`  const v0 = { k0: 1 } as Record<string, unknown>;`, `  v0.w0 = 1;`];
+    for (let i = 1; i <= n; i += 1) lines.push(`  const v${i} = { ...v${i - 1}, ...v${i - 1} } as Record<string, unknown>;`, `  v${i}.w${i} = 1;`);
+    return lines.join("\n");
+  };
+  const blow = (n: number) => {
+    const lines = [`  const a0 = { ...x, ...x };`];
+    for (let i = 1; i <= n; i += 1) lines.push(`  const a${i} = { ...a${i - 1}, ...a${i - 1} };`);
+    return `${lines.join("\n")}\n  return a${n};`;
+  };
+  // An argument costly enough that evaluating it at each of eight references runs out of
+  // budget, and once does not.
+  const REPEAT_DEPTH = 12;
+  const SHARED_DEPTH = 13;
+  const SHARED_FILLER_DEPTH = 10;
+  const SHARED_FILLERS = 12;
+  const layers = 8;
+  const deepTypes = Array.from({ length: layers }, (_, i) => `type T${i + 1} = { inner: T${i} };`).join("\n");
+  const deepFns = Array.from({ length: layers }, (_, i) => `function w${i + 1}(x: T${i}): T${i + 1} {\n  return { inner: x };\n}`).join("\n");
+  const deepUse = Array.from({ length: layers }, (_, i) => `  const r${i + 1} = w${i + 1}(r${i});`).join("\n");
+  const FILES: Record<string, string> = {
+    "src/cases/cost-r.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+export function costly(runId: string) {
+${chain(18)}
+  emitAgentEvent({ runId, stream: "x_cost", data: v18 });
+}
+`,
+    // The first site spends most of its budget on fillers no memo can share (fresh
+    // arguments each time), then reads `shared`, whose own evaluation crosses the bound; the
+    // second site reads `shared` with a budget of its own, and has room for it.
+    "src/cases/shared-r.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+function filler(x: Record<string, unknown>) {
+${blow(SHARED_FILLER_DEPTH)}
+}
+function heavy(x: Record<string, unknown>) {
+${blow(SHARED_DEPTH)}
+}
+export function sharedSites(runId: string) {
+  const shared = { ...heavy({ sharedKey: 1 }) };
+  emitAgentEvent({ runId, stream: "x_blow", data: { ${Array.from({ length: SHARED_FILLERS }, (_, i) => `...filler({ f${i}: 1 })`).join(", ")}, ...shared } });
+  emitAgentEvent({ runId, stream: "x_shared", data: { ...shared } });
+}
+export function aliasBus(runId: string) {
+  const b = { k: 1 } as Record<string, unknown>;
+  const a = b;
+  b.lateBus = 1;
+  emitAgentEvent({ runId, stream: "x_alias_bus", data: a });
+}
+`,
+    "src/gateway/alias-r.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+export function aliasR() {
+  const { broadcast } = createGatewayBroadcaster();
+  const b: Frame = { runId: "r", stream: "x_alias_late", data: { a: 1 } };
+  const a = b;
+  b.data.late = 1;
+  broadcast("agent", a);
+  const p: Frame = { runId: "r", stream: "x_unsent", data: { c: 1 } };
+  const { data } = p;
+  p.data.late2 = 1;
+  broadcast("agent", { stream: "x_alias_destr", data });
+  const q: Frame = { runId: "r", stream: "x_alias_cond", data: { e: 1 } };
+  const pick = q.runId ? q : q;
+  q.data.late3 = 1;
+  broadcast("agent", pick);
+}
+`,
+    "src/cases/repeat-r.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+function heavy(x: Record<string, unknown>) {
+${blow(REPEAT_DEPTH)}
+}
+function enrich(target: Record<string, unknown>, extra: Record<string, unknown>) {
+  target.data = extra;
+}
+export function repeated(runId: string) {
+  const p = { data: {} } as { data: Record<string, unknown> };
+  enrich(p, heavy({ k: 1 }));
+  emitAgentEvent({ runId, stream: "x_repeat", data: { ...p.data, ...p.data, ...p.data, ...p.data, ...p.data, ...p.data, ...p.data, ...p.data } });
+}
+`,
+    // Pass 9: handleEvent hands its event through predicate chains deeper than the effect
+    // bound. Past the bound, a chain that only reads still has no effect; one that writes,
+    // or reaches code whose effects are not modeled, refuses, naming what it reached.
+    "src/gateway/chain-r.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+declare function opaqueCheck(x: unknown): boolean;
+${Array.from({ length: 6 }, (_, i) => `function r${i}(x: Frame): boolean {\n  return ${i < 5 ? `r${i + 1}(x)` : "typeof x.stream === \"string\""};\n}`).join("\n")}
+${Array.from({ length: 6 }, (_, i) => `function w${i}(x: Frame): boolean {\n  ${i < 5 ? `return w${i + 1}(x);` : "x.data.late = 1;\n  return true;"}\n}`).join("\n")}
+${Array.from({ length: 6 }, (_, i) => `function e${i}(x: Frame): boolean {\n  return ${i < 5 ? `e${i + 1}(x)` : "opaqueCheck(x)"};\n}`).join("\n")}
+function loopA(x: Frame, n: number): boolean {
+  return n > 0 ? loopB(x, n - 1) : x.stream === "s";
+}
+function loopB(x: Frame, n: number): boolean {
+  return loopA(x, n);
+}
+export function chains() {
+  const { broadcast } = createGatewayBroadcaster();
+  const readOnly: Frame = { runId: "r", stream: "x_chain_read", data: { a: 1 } };
+  r0(readOnly);
+  broadcast("agent", readOnly);
+  const written: Frame = { runId: "r", stream: "x_chain_write", data: { b: 1 } };
+  w0(written);
+  broadcast("agent", written);
+  const external: Frame = { runId: "r", stream: "x_chain_external", data: { c: 1 } };
+  e0(external);
+  broadcast("agent", external);
+  const cyclic: Frame = { runId: "r", stream: "x_chain_cycle", data: { d: 1 } };
+  loopA(cyclic, 3);
+  broadcast("agent", cyclic);
+}
+`,
+    // A callee that writes a key but never reads its other argument: that argument, however
+    // costly, is not evaluated.
+    "src/cases/marked-r.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+function huge(x: Record<string, unknown>) {
+${blow(20)}
+}
+function mark(target: Record<string, unknown>, unused: Record<string, unknown>) {
+  target.marked = 1;
+}
+export function marked(runId: string) {
+  const q = { base: 1 } as Record<string, unknown>;
+  mark(q, huge({ k: 1 }));
+  const after = { tail: 1 };
+  emitAgentEvent({ runId, stream: "x_marked", data: { ...q, ...after } });
+}
+`,
+    // One binding read by the bus and by a sender: each mode has its own value.
+    "src/gateway/mixed-r.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+declare function externalTouch(x: unknown): void;
+export function mixed(runId: string) {
+  const { broadcast } = createGatewayBroadcaster();
+  const inner = { m: 1 } as Record<string, unknown>;
+  externalTouch(inner);
+  const data = { ...inner };
+  const outer = { runId, stream: "x_mixed", data };
+  broadcast("agent", outer);
+  emitAgentEvent(outer);
+}
+`,
+    "src/gateway/deep-r.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type T0 = { notify: (event: string, payload: unknown) => void };
+${deepTypes}
+${deepFns}
+function createRuntimeR(): T0 {
+  const { broadcast } = createGatewayBroadcaster();
+  return { notify: broadcast };
+}
+export function deepR() {
+  const r0 = createRuntimeR();
+${deepUse}
+  r${layers}${".inner".repeat(layers)}.notify("agent", { stream: "x_deep", data: { d: 1 } });
+}
+`,
+  };
+  let inv4: Inventory;
+  type Fab = { file: string; stream?: string; keys?: string[]; reason?: string; open?: string[] };
+  const tf4 = () => inv4.transformations as unknown as { fabricated: Fab[]; unresolved: Fab[] };
+  const busKeys = (stream: string) => inv4.emissions.filter((e) => e.stream === stream).map(keyList);
+  // Where the evaluation budget ran out in a file: an opaque row, or an opaque part of a row.
+  const budgetCutsIn = (file: string) => [
+    ...inv4.opaque.filter((o) => o.file === file && /budget/.test(o.reason)).map((o) => o.reason),
+    ...inv4.emissions
+      .filter((e) => (e as unknown as { file: string }).file === file)
+      .flatMap((e) => ((e as unknown as { dataOpaque: { reason: string }[] }).dataOpaque ?? []).map((o) => o.reason))
+      .filter((r) => /budget/.test(r)),
+  ];
+  beforeAll(() => {
+    inv4 = derive({
+      root: "/virtual-upstream",
+      files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...FILES },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+  });
+
+  it("a binding written before it is read is evaluated once per set of preceding writes, not at every reference", () => {
+    // 18 bindings, each read twice by the next: re-evaluated at every reference, 2^18
+    // evaluations; once per signature, 36.
+    expect(busKeys("x_cost")).toEqual([[...Array.from({ length: 19 }, (_, i) => [`w${i}`]).flat(), "k0"].sort()]);
+    expect(budgetCutsIn("src/cases/cost-r.ts")).toEqual([]);
+  });
+
+  it("what a call does to a binding is computed once for the references it precedes", () => {
+    // `enrich` replaces the data with its costly argument: read once, not at each of the
+    // eight references.
+    expect(busKeys("x_repeat")).toEqual([["k"]]);
+    expect(budgetCutsIn("src/cases/repeat-r.ts")).toEqual([]);
+  });
+
+  it("past the effect bound, a chain that only reads has no effect; one that writes or reaches unmodeled code refuses", () => {
+    const keysOf = (stream: string) => tf4().fabricated.filter((g) => g.stream === stream).map((g) => g.keys);
+    expect(keysOf("x_chain_read")).toEqual([["a"]]);
+    expect(keysOf("x_chain_cycle")).toEqual([["d"]]);
+    const reasons = tf4().unresolved.filter((u) => u.file === "src/gateway/chain-r.ts").map((u) => u.reason ?? "");
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/more than 3 calls before the send, then w5 writes into it/),
+        expect.stringMatching(/more than 3 calls before the send, then passed to opaqueCheck\(/),
+      ]),
+    );
+    expect(reasons).toHaveLength(2);
+  });
+
+  it("an argument a callee never reads is not evaluated to know what the callee writes", () => {
+    // Evaluated, it would spend the site's budget, and `after`, read next, would be cut short.
+    expect(busKeys("x_marked")).toEqual([["base", "marked", "tail"]]);
+    expect(budgetCutsIn("src/cases/marked-r.ts")).toEqual([]);
+  });
+
+  it("a binding read by the bus and by a sender has a value per mode: the sender still refuses", () => {
+    // The bus keeps what it sees, with no opaque part; the sender refuses, naming the call.
+    expect(busKeys("x_mixed")).toEqual([["m"]]);
+    expect(inv4.emissions.filter((e) => e.stream === "x_mixed").map((e) => (e as unknown as { dataOpaque: unknown[] }).dataOpaque)).toEqual([[]]);
+    const reasons = tf4().unresolved.filter((u) => u.file === "src/gateway/mixed-r.ts").map((u) => u.reason ?? "");
+    expect(reasons).toEqual([expect.stringContaining("externalTouch(")]);
+    expect(tf4().fabricated.filter((g) => g.stream === "x_mixed")).toEqual([]);
+  });
+
+  it("a value the budget cut short at one site is not reused at another", () => {
+    // `blow` exhausts the budget at the first site, after which `shared` is read there; the
+    // second site reads `shared` with a budget of its own.
+    const rowsOf = (stream: string) => inv4.emissions.filter((e) => e.stream === stream) as unknown as { dataOpaque: { reason: string; origin: string }[] }[];
+    // The first site's budget runs out inside `shared`'s own evaluation (the mirror is
+    // calibrated so)…
+    expect(rowsOf("x_blow").flatMap((r) => r.dataOpaque).some((o) => /budget/.test(o.reason))).toBe(true);
+    // …and the second site's `shared` is whole: its key, and no part cut short.
+    expect(busKeys("x_shared")).toEqual([["sharedKey"]]);
+    expect(rowsOf("x_shared").flatMap((r) => r.dataOpaque)).toEqual([]);
+  });
+
+  it("an alias read at the send sees what was done to its object after the alias", () => {
+    expect(busKeys("x_alias_bus")).toEqual([["k", "lateBus"]]);
+    const keysOf = (stream: string) => tf4().fabricated.filter((g) => g.stream === stream).map((g) => g.keys);
+    expect(keysOf("x_alias_late")).toEqual([["a", "late"]]);
+    expect(keysOf("x_alias_destr")).toEqual([["c", "late2"]]);
+    expect(keysOf("x_alias_cond")).toEqual([["e", "late3"]]);
+  });
+
+  it("an object handed through more layers than the old bound is followed to its read", () => {
+    expect(tf4().fabricated.filter((g) => g.stream === "x_deep").map((g) => g.keys)).toEqual([["d"]]);
+    expect(tf4().unresolved.flatMap((u) => u.open ?? []).filter((o) => /past the analysis bound/.test(o))).toEqual([]);
+  });
+
+  it("every reference is accounted for", () => {
+    expect(inv4.completeness.unaccounted).toBe(0);
+  });
+});
+
+describe("deriveAgentEmissions — the fallback cycle (pass 10 lost terminalReceipt)", () => {
+  // Upstream 9.36, reduced to its shape. The candidate run writes the lifecycle backstop into
+  // a SUB-OBJECT of the cycle's parameters (state.pendingLifecycleTerminal, from a callback);
+  // the settlement then emits through that backstop with the run's terminal facts — facts
+  // that come from the caller's parameters. Pass 10 stopped treating executeAgentFallbackCycle
+  // as a member that forwards, so its callers' data, and terminalReceipt, were lost.
+  const FILES: Record<string, string> = {
+    // upstream src/auto-reply/reply/agent-lifecycle-terminal.ts:59-190
+    "src/auto-reply/reply/agent-lifecycle-terminal.ts": `
+import { emitAgentEvent } from "../../infra/agent-events.js";
+export type AgentLifecycleTerminalBackstop = {
+  emit: (phase: "end" | "error", resultOrError: unknown, extraData?: Record<string, unknown>) => void;
+};
+export function createAgentLifecycleTerminalBackstop(params: { runId: string }): AgentLifecycleTerminalBackstop {
+  const startedAt = Date.now();
+  const prepareTerminal = (phase: "end" | "error", extraData?: Record<string, unknown>) => {
+    const data: Record<string, unknown> = { phase, endedAt: Date.now(), startedAt };
+    if (extraData) {
+      Object.assign(data, extraData);
+    }
+    return { runId: params.runId, stream: "lifecycle", data };
+  };
+  const emit: AgentLifecycleTerminalBackstop["emit"] = (phase, _resultOrError, extraData) => {
+    const event = prepareTerminal(phase, extraData);
+    const settled = { ...event, data: { ...event.data, executionSettled: true } };
+    emitAgentEvent(settled);
+  };
+  return { emit };
+}
+`,
+    // upstream src/auto-reply/reply/agent-runner-fallback-cycle.types.ts:64-81
+    "src/auto-reply/reply/agent-runner-fallback-cycle.types.ts": `
+import type { AgentLifecycleTerminalBackstop } from "./agent-lifecycle-terminal.js";
+export type AgentFallbackCycleState = {
+  lifecycleGeneration: string;
+  pendingLifecycleTerminal?: { provider: string; model: string; backstop: AgentLifecycleTerminalBackstop };
+};
+export type AgentTurnTiming = {
+  logIfSlow: (entry: { runId: string }) => void;
+  measure: <T>(name: string, run: () => T | Promise<T>) => Promise<T>;
+};
+export type AgentFallbackCycleParams = {
+  runId: string;
+  turn: { sessionKey?: string };
+  state: AgentFallbackCycleState;
+  timing: AgentTurnTiming;
+};
+`,
+    // upstream src/auto-reply/reply/agent-runner-turn-timing.ts:74-76: \`measure: timing.measure\`
+    "src/auto-reply/reply/agent-runner-turn-timing.ts": `
+import type { AgentTurnTiming } from "./agent-runner-fallback-cycle.types.js";
+export function createAgentTurnTimingTracker(): AgentTurnTiming {
+  const timing = {
+    measure: async <T>(_name: string, run: () => T | Promise<T>): Promise<T> => await run(),
+  };
+  return {
+    logIfSlow: () => undefined,
+    measure: timing.measure,
+  };
+}
+`,
+    // upstream src/auto-reply/reply/agent-runner-fallback-candidate.ts:280-345 (the callbacks
+    // at :322-324 and :343-345 write into params.state), the run entry's receipt from
+    // src/agents/embedded-agent-runner/run-entry-terminal.ts:115-125
+    "src/auto-reply/reply/agent-runner-fallback-candidate.ts": `
+import { createAgentLifecycleTerminalBackstop, type AgentLifecycleTerminalBackstop } from "./agent-lifecycle-terminal.js";
+import type { AgentFallbackCycleParams } from "./agent-runner-fallback-cycle.types.js";
+type Common = {
+  runId: string;
+  onLifecycleBackstop: (backstop: AgentLifecycleTerminalBackstop) => void;
+  onLifecycleGeneration: (generation: string) => void;
+};
+function runEmbeddedFallbackCandidate(common: Common) {
+  common.onLifecycleGeneration("g2");
+  common.onLifecycleBackstop(createAgentLifecycleTerminalBackstop({ runId: common.runId }));
+  return { terminal: { metadata: { terminalReceipt: { rerouted: false } } } };
+}
+export async function runAgentFallbackCandidates(params: AgentFallbackCycleParams) {
+  const provider = "p";
+  const model = "m";
+  const common: Common = {
+    runId: params.runId,
+    onLifecycleBackstop: (backstop: AgentLifecycleTerminalBackstop) => {
+      params.state.pendingLifecycleTerminal = { provider, model, backstop };
+    },
+    onLifecycleGeneration: (generation: string) => {
+      params.state.lifecycleGeneration = generation;
+    },
+  };
+  // upstream :125-130: the run goes through the caller's timing
+  return params.timing.measure("model_fallback", () => runEmbeddedFallbackCandidate(common));
+}
+`,
+    // upstream src/auto-reply/reply/agent-runner-fallback-settlement.ts:24-60, :79-95, :179-188
+    "src/auto-reply/reply/agent-runner-fallback-settlement.ts": `
+import { emitAgentEvent } from "../../infra/agent-events.js";
+import type { AgentFallbackCycleParams } from "./agent-runner-fallback-cycle.types.js";
+export async function settleAgentFallbackCycle({ cycle, fallbackResult }: { cycle: AgentFallbackCycleParams; fallbackResult: { terminal: { metadata: Record<string, unknown> } } }) {
+  const turn = cycle.turn;
+  const terminalMetadata = fallbackResult.terminal.metadata;
+  const settledLifecycleTerminal =
+    cycle.state.pendingLifecycleTerminal?.provider === "p" ? cycle.state.pendingLifecycleTerminal.backstop : undefined;
+  cycle.state.pendingLifecycleTerminal = undefined;
+  const emitSettledLifecycleError = (error: Error, extraData?: Record<string, unknown>) => {
+    if (settledLifecycleTerminal) {
+      settledLifecycleTerminal.emit("error", error, extraData);
+      return;
+    }
+    emitAgentEvent({
+      runId: cycle.runId,
+      lifecycleGeneration: cycle.state.lifecycleGeneration,
+      ...(turn.sessionKey ? { sessionKey: turn.sessionKey } : {}),
+      stream: "lifecycle",
+      data: { phase: "error", error: error.message, endedAt: Date.now(), ...extraData, executionSettled: true },
+    });
+  };
+  const privateFinalTerminalReply = turn.sessionKey ? { disposition: "visible" } : undefined;
+  if (terminalMetadata.failed) {
+    emitSettledLifecycleError(new Error("failed"), terminalMetadata);
+  } else {
+    settledLifecycleTerminal?.emit(
+      "end",
+      undefined,
+      privateFinalTerminalReply ? { ...terminalMetadata, terminalReply: privateFinalTerminalReply } : terminalMetadata,
+    );
+  }
+}
+`,
+    // upstream src/auto-reply/reply/agent-runner-fallback-cycle.ts:11-21
+    "src/auto-reply/reply/agent-runner-fallback-cycle.ts": `
+import { runAgentFallbackCandidates } from "./agent-runner-fallback-candidate.js";
+import type { AgentFallbackCycleParams } from "./agent-runner-fallback-cycle.types.js";
+import { settleAgentFallbackCycle } from "./agent-runner-fallback-settlement.js";
+export async function executeAgentFallbackCycle(params: AgentFallbackCycleParams) {
+  const fallbackResult = await runAgentFallbackCandidates(params);
+  params.timing.logIfSlow({ runId: params.runId });
+  return settleAgentFallbackCycle({ cycle: params, fallbackResult });
+}
+`,
+    // upstream src/auto-reply/reply/agent-runner-execution.ts:307-330: the caller, with facts of
+    // its own
+    "src/auto-reply/reply/agent-runner-execution.ts": `
+import { executeAgentFallbackCycle } from "./agent-runner-fallback-cycle.js";
+import { createAgentTurnTimingTracker } from "./agent-runner-turn-timing.js";
+export async function executeAgentTurnInternalLoop(runId: string) {
+  // upstream :137-139
+  const agentTurnTiming = createAgentTurnTimingTracker();
+  const fallbackCycleState = { lifecycleGeneration: "g1" };
+  await executeAgentFallbackCycle({
+    runId,
+    turn: { sessionKey: "s" },
+    state: fallbackCycleState,
+    timing: agentTurnTiming,
+  });
+}
+`,
+  };
+  let inv5: Inventory;
+  beforeAll(() => {
+    inv5 = derive({
+      root: "/virtual-upstream",
+      files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...FILES },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+  });
+
+  it("a write into a sub-object of the parameters does not cut the caller's data off: executeAgentFallbackCycle forwards", () => {
+    expect(inv5.family.map((f) => f.label)).toEqual(expect.arrayContaining(["executeAgentFallbackCycle"]));
+  });
+
+  it("the run's terminalReceipt, reached through the caller's timing, is on the lifecycle frames at the caller", () => {
+    const rows = inv5.emissions.filter((e) => e.stream === "lifecycle" && (e as unknown as { file: string }).file === "src/auto-reply/reply/agent-runner-execution.ts");
+    expect(rows.length).toBeGreaterThan(0);
+    const keys = rows.map((r) => keyList(r).map((k) => k.replace(/\?$/, "")));
+    for (const k of keys) expect(k).toContain("terminalReceipt");
+    // settle's own reply rides on the end frame (upstream agent-runner-fallback-settlement.ts:183-189)
+    expect(keys.some((k) => k.includes("terminalReply"))).toBe(true);
+  });
+});
+
+describe("deriveAgentEmissions — a member declared read-only for a version (READ_ONLY_MEMBERS)", () => {
+  // upstream 9.36: handleEvent hands its payload to chatRunState.recordProgressEvent, typed
+  // by ChatRunState; the checker sees the type's signature, no body. The declaration names
+  // the member and locks the bodies it was reviewed on.
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+  const RECORD = `(runId: string, event: Ev, extra?: Ev) => {
+    void extra;
+    store.set(runId, copyEvent(event));
+  }`;
+  const COPY = `export function copyEvent(event: Ev): Ev {
+  return JSON.parse(JSON.stringify(event)) as Ev;
+}`;
+  const runState = (record: string) => `
+export type Ev = { runId: string; stream: string; data: Record<string, unknown> };
+export type RunState = {
+  record: (runId: string, event: Ev, extra?: Ev) => void;
+};
+${COPY}
+export function createRunState(): RunState {
+  const store = new Map<string, Ev>();
+  const record = ${record};
+  return { record };
+}
+`;
+  const USE = `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import { createRunState, type RunState } from "./run-state.js";
+export function relayRecorded(state: RunState) {
+  const { broadcast } = createGatewayBroadcaster();
+  const payload = { runId: "r", stream: "x_recorded", data: { a: 1 } };
+  state.record("r", payload);
+  broadcast("agent", payload);
+}
+export function relayAsExtra(state: RunState) {
+  const { broadcast } = createGatewayBroadcaster();
+  const other = { runId: "r", stream: "x_extra_arg", data: { b: 1 } };
+  state.record("r", { runId: "r", stream: "s", data: {} }, other);
+  broadcast("agent", other);
+}
+export function wire() {
+  relayRecorded(createRunState());
+  relayAsExtra(createRunState());
+}
+`;
+  const ENTRY: ReadOnlyMember = {
+    type: "RunState",
+    member: "record",
+    argument: 1,
+    declaredIn: "src/gateway/run-state.ts",
+    implementation: { file: "src/gateway/run-state.ts", factory: "createRunState" },
+    reviewedAt: "test",
+    evidence: "createRunState's record copies the event through JSON (copyEvent) and stores the copy.",
+    bodies: [
+      { file: "src/gateway/run-state.ts", fn: "createRunState > record", sha256: sha(RECORD) },
+      { file: "src/gateway/run-state.ts", fn: "copyEvent", sha256: sha(COPY) },
+    ],
+  };
+  const run = (files: Record<string, string>, readOnlyMembers: ReadOnlyMember[]) =>
+    deriveWith({ root: "/virtual-upstream", files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...files }, tsconfig: TSCONFIG, compilerOptions: OPTIONS, readOnlyMembers });
+  type Fab = { function: string; stream?: string; keys?: string[]; reason?: string };
+  const tfOf = (inv: Inventory) => inv.transformations as unknown as { fabricated: Fab[]; unresolved: Fab[] };
+  const FILES = { "src/gateway/run-state.ts": runState(RECORD), "src/gateway/use-q.ts": USE };
+
+  it("declared, the member is a call that writes nothing into the object: the send is a fabricated frame", () => {
+    const tf = tfOf(run(FILES, [ENTRY]));
+    expect(tf.fabricated.filter((g) => g.stream === "x_recorded").map((g) => g.keys)).toEqual([["a"]]);
+    expect(tf.unresolved.filter((u) => u.function === "relayRecorded")).toEqual([]);
+  });
+
+  it("undeclared, the same call is code whose effects are not modeled: the send is UNRESOLVED", () => {
+    const tf = tfOf(run(FILES, []));
+    expect(tf.unresolved.filter((u) => u.function === "relayRecorded").map((u) => u.reason)).toEqual([expect.stringContaining("passed to state.record(")]);
+  });
+
+  it("an object handed at another argument than the declared one stays UNRESOLVED", () => {
+    const tf = tfOf(run(FILES, [ENTRY]));
+    expect(tf.unresolved.filter((u) => u.function === "relayAsExtra").map((u) => u.reason)).toEqual([expect.stringContaining("passed to state.record(")]);
+  });
+
+  it("a body that changed since the review refuses the derivation", () => {
+    const changed = { ...FILES, "src/gateway/run-state.ts": runState(RECORD.replace("store.set(runId, copyEvent(event));", "event.data.touched = 1;\n    store.set(runId, copyEvent(event));")) };
+    expect(() => run(changed, [ENTRY])).toThrow(/RunState\.record: createRunState > record \(src\/gateway\/run-state\.ts\) is not the body the declaration was reviewed on/);
+  });
+
+  it("another object providing the member refuses the derivation", () => {
+    const other = { ...FILES, "src/gateway/other-state.ts": `import type { RunState } from "./run-state.js";\nexport const fake: RunState = { record: (runId, event) => void [runId, event] };\n` };
+    expect(() => run(other, [ENTRY])).toThrow(/RunState\.record: another object provides it \(src\/gateway\/other-state\.ts:2\)/);
+  });
+
+  it("a declared member that is gone refuses the derivation", () => {
+    const gone = { ...FILES, "src/gateway/run-state.ts": runState(RECORD).replace("  record: (runId: string, event: Ev, extra?: Ev) => void;\n", "") };
+    expect(() => run(gone, [ENTRY])).toThrow(/RunState\.record: the declared member is absent/);
+  });
+
+  it("upstream's declaration names the member, its argument and three locked bodies", () => {
+    const entries = deriver.READ_ONLY_MEMBERS as ReadOnlyMember[];
+    expect(entries.map((e) => `${e.type}.${e.member}#${e.argument}`)).toEqual(["ChatRunState.recordProgressEvent#1"]);
+    expect(entries[0]!.bodies.map((b) => b.fn)).toEqual(["createChatRunState > recordProgressEvent", "updateChatRunProgressSnapshot", "captureProgressEvent"]);
+    for (const b of entries[0]!.bodies) expect(b.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("deriveAgentEmissions — the transport's senders are a known set, each with its contract", () => {
+  const withTransport = (file: string, edit: (text: string) => string) => ({ ...TRANSPORT, [file]: edit(TRANSPORT[file]!) });
+  const run = (transport: Record<string, string>, extra: Record<string, string> = {}) =>
+    derive({ root: "/virtual-upstream", files: { ...transport, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...extra }, tsconfig: TSCONFIG, compilerOptions: OPTIONS });
+  const SITE = {
+    "src/gateway/site-j.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+export function sendOne() {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", { stream: "x_contract", data: { k: 1 } });
+}
+`,
+  };
+  const fabricated = (inv: Inventory) => (inv.transformations as unknown as { fabricated: { stream: string }[] }).fabricated.map((g) => g.stream);
+  const BROADCAST = "src/gateway/server-broadcast.ts";
+
+  it("parameters renamed (`topic`, `body`): the contract is positional, the sender still found", () => {
+    const t = withTransport(BROADCAST, (s) => s.replace("const broadcast = (event: string, payload: unknown) => broadcastInternal(event, payload);", "const broadcast = (topic: string, body: unknown) => broadcastInternal(topic, body);"));
+    expect(t[BROADCAST]).toContain("topic: string");
+    expect(fabricated(run(t, SITE))).toContain("x_contract");
+  });
+
+  it("`broadcast: broadcastInternal`: the member is found through its identifier", () => {
+    const t = withTransport(BROADCAST, (s) => s.replace("return { broadcast, broadcastToConnIds", "return { broadcast: broadcastInternal, broadcastToConnIds"));
+    expect(t[BROADCAST]).toContain("broadcast: broadcastInternal");
+    expect(fabricated(run(t, SITE))).toContain("x_contract");
+  });
+
+  it("a listed sender absent refuses the derivation", () => {
+    const t = withTransport(BROADCAST, (s) => s.replace("return { broadcast, broadcastToConnIds, broadcastPluginEvent, getBufferedAmount };", "return { broadcast, broadcastPluginEvent, getBufferedAmount };"));
+    expect(() => run(t)).toThrow(/broadcastToConnIds: the listed frame sender is absent/);
+  });
+
+  it("a contract the signature does not bear out refuses the derivation", () => {
+    const t = withTransport(BROADCAST, (s) => s.replace("const broadcast = (event: string, payload: unknown) => broadcastInternal(event, payload);", "const broadcast = (payload: unknown, event: string) => broadcastInternal(event, payload);"));
+    expect(() => run(t)).toThrow(/broadcast: argument #0, the event, is not typed as a string/);
+  });
+
+  it("a candidate sender nobody listed refuses the derivation", () => {
+    const t = withTransport(BROADCAST, (s) =>
+      s
+        .replace("const getBufferedAmount", "const broadcastRaw = (event: string, frame: unknown) => broadcastInternal(event, frame);\n  const getBufferedAmount")
+        .replace("broadcastPluginEvent, getBufferedAmount };", "broadcastPluginEvent, getBufferedAmount, broadcastRaw };"),
+    );
+    expect(() => run(t)).toThrow(/broadcastRaw takes a string and reaches the transport's delivery/);
   });
 });
 

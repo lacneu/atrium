@@ -149,21 +149,53 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   content-part types its display projection produces. Its completeness is accounted:
   every identifier spelled like an emitter is classified, and vendoring refuses an
   inventory that leaves one unaccounted. The gateway's senders are a second family
-  discovered the same way, by symbol, from the frame senders its transports hand out: every
-  value derived from one — a wrapper, a property it is stored in, a parameter it is passed
-  to, a spread into a typed object — is followed to its calls, whatever the names of its
-  arguments or parameters; a destructuring is a reference like a call. A sender stored in an
-  object slot is also followed through the object: an object handed whole to a binding of
-  another type carries the slot into that type's own declaration, whose reads are then
-  followed by name; a slot that no use of its object reads, where no use could read it
-  unseen (a computed key, code outside the analysed sources, a store into another object, a
-  return), is listed as unread (`unreadSlots`) instead of open. Each call's payload is the
+  discovered the same way, by symbol, from the frame senders its transports hand out. Those
+  are a known, named set (`SENDER_ROOTS`): each transport and the senders it returns, each
+  with its contract — which argument is the event and which the payload, by position or by
+  property of one object argument, never by a parameter's name. Each listed sender must be
+  found by symbol (through a binding or an identifier: `broadcast: broadcastInternal`), with
+  a signature that bears its contract out (the event argument typed as a string, the payload
+  argument present); another member of a transport that hands the transport's delivery a
+  string is a candidate sender and must be listed, as a sender or as a non-sender with why.
+  Anything else refuses the derivation. Every value derived from a sender — a wrapper, a
+  property it is stored in, a parameter it is passed to, a spread into a typed object — is
+  followed to its calls, whatever the names of its arguments or parameters; a destructuring
+  is a reference like a call, and a literal key (`ops["send"]`) like a name. A sender
+  stored in an object slot is also followed through the object, nested ones included: an
+  object handed whole to a binding of another type carries the slot into that type's own
+  declaration, whose reads are then followed by name; a returned object reaches its
+  function's callers. A private class field that holds the object is followed through its
+  reads in the class (`this.f`, `{ f } = this`, a rest of the instance) and through its
+  literal keys anywhere. A use of the object that could read the slot unseen — a computed
+  key, code outside the analysed sources, an array, a class field other code can read, a
+  computed key on the instance of a class that holds it, a function nobody in the analysed
+  sources calls — is an escape, and so is a read the following sees that no
+  reference followed: either makes the sender open, whatever else reads it, so a sender is
+  unresolved. A slot that no use of its object reads, with no escape, is listed as unread
+  (`unreadSlots`) instead of open. Each call's payload is the
   template of every sender the callee may hold, each with the call's arguments substituted
   for its own parameters, so it is the final form, with every spread and field replacement
-  the wrappers applied. A literal stream is a fabricated frame; an agent event passed on
-  with its own data (or its data plus a recorded rewrite) is a relay with its origins
-  named; a call whose event or final payload cannot be evaluated is unresolved, and
-  vendoring refuses it. A sender only plugins can call (reached from the public plugin
+  the wrappers applied, and with what was done to the payload before the send: its writes
+  (one key down included, through an alias included), and the effects of the functions it
+  was handed to, read from their bodies. A payload sent through an alias (`const a = b`,
+  `const { data } = b`) carries what was done to `b` up to the send, after the alias too. A
+  sender's payload, or its data, handed before the send to code whose effects are not
+  modeled makes the call unresolved; handed to a frame sender, it keeps its shape, since a
+  send is a delivery and the transport's body is not analysed. A member reached only through
+  a declared type (the checker sees its signature, no body) is code whose effects are not
+  modeled, unless a per-version declaration names it read-only (`READ_ONLY_MEMBERS`, beside
+  `SENDER_ROOTS` in the extractor): the type and member, the argument, the upstream
+  evidence, and the fingerprint (`sha256`) of every body that evidence rests on. The
+  declaration holds only while it is checked true at the version derived: each body present
+  and unchanged, the member still declared, the named factory still providing it, and no
+  other object of the analysed sources providing it; otherwise the derivation refuses and the
+  entry is reviewed again. At 2026.9.36 it names `ChatRunState.recordProgressEvent`, which
+  copies the event (JSON round trip) and writes nothing into it. A bus emission's object takes
+  the same writes and modeled effects; an effect not modeled there is a limit the soundness
+  contract states. A literal stream is a fabricated frame; an agent event passed on with its
+  own data (or its data plus a recorded rewrite) is a relay with its origins named; a call
+  whose event or final payload cannot be evaluated is unresolved, and vendoring refuses it.
+  A sender only plugins can call (reached from the public plugin
   surface, with no call in the analysed sources) is an open entry: listed in `openSenders`
   with what the sender itself fixes, compared from one version to the next by the diff
   report, and never blocking, since what a plugin sends is the plugin's. A gap inside the
@@ -204,6 +236,84 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
 
 The output is a support matrix carried by the `/compat` payload: what this
 bridge build supports, and what it does not.
+
+### The extractor's soundness contract
+
+**What it guarantees.** Every sender the transports hand out is found by symbol, from the
+known set and the contracts `SENDER_ROOTS` declares. Every reference to an emitter or a
+sender is classified, an identifier or a literal key alike (`completeness.unaccounted`
+is 0). Every call it reaches is evaluated to its final payload. What it reports is one of
+the following:
+
+- a fabricated frame;
+- a relay with its origins;
+- an open entry that only plugins can call;
+- an unread slot, with the proof that no use reads it;
+- an opaque row naming the value it could not read;
+- an unresolved call.
+
+**What it refuses instead of guessing.** Vendoring stops, naming each site, on:
+
+- an unaccounted reference;
+- an unresolved sender call: an event not evaluated, a payload not determined, a payload
+  (or its data) handed beforehand to code whose effects are not modeled, or a sender whose
+  object escapes;
+- a listed sender absent;
+- a contract the signature does not bear out;
+- a candidate sender nobody listed;
+- a transport moved;
+- a read-only member declaration that no longer holds: a body changed or absent, the member
+  or its factory gone, another object providing the member.
+
+The inventory it refused is kept for examination. The extractor is corrected, never the
+inventory.
+
+**Its known limits.** A static analysis of an arbitrary program cannot be complete: values
+computed at run time, reflection, code loaded from outside the analysed sources and
+aliasing beyond what it follows escape it by nature. In particular:
+
+- a write through another holder of the object it does not follow (an object stored in a
+  map and written there later) is not seen;
+- an instance whose private field holds the object is not followed where it is handed: a
+  read of that field there under a computed key is not seen;
+- the following of an object that holds a sender is bounded (depth, number of bindings):
+  past the bound the object escapes, and the sender is unresolved;
+- a send is taken to leave its payload as it was: the transport's body is not analysed, so
+  a transport that wrote into a payload before a second send of it would not be seen;
+- a member declared read-only is trusted as reviewed: the fingerprints lock the bodies the
+  review read, not the functions those bodies call, which the review covers only at the
+  version it names;
+- an effect is valued from a function's body only to a bounded depth, and a library function
+  counts as having no effect only when it is named as such. Past that bound, a callee that
+  only reads the object, through every call it hands it on to, has no effect (read once per
+  function, whatever the depth); a callee that writes into it there, and code outside the
+  analysed sources at any depth:
+  - make a sender's call unresolved, naming what was reached;
+  - are not marked on a bus emission's object: its row carries the keys the evaluator sees;
+- the evaluator is flow-insensitive beyond straight-line code before the send;
+- a value known only by its declared type is an over-approximation.
+
+The two nets below cover what the analysis cannot see, and the unmarked bus effects.
+
+**The two nets at run time.**
+
+- **The bench's emission check.** Every frame captured on the live bench must be in the
+  inventory. A captured frame the inventory does not carry, on a core stream, is a defect
+  of the extractor, not of the gateway.
+- **The drift detector in production** counts, by stream, every phase and key that the
+  supported version's inventory does not carry, under the naming rules above.
+
+**When one fires.**
+
+- **The bench check reports a frame.** Find the emitter in the upstream source and write a
+  synthetic mirror of the form the extractor missed. Correct the extractor so the mirror
+  passes, or so it refuses the form. Then re-derive the version and classify what the new
+  inventory adds.
+- **The drift detector reports a shape.** Read the digest or the name it counts, and see
+  whether the supported version emits it (the inventory and the upstream source).
+  - If it does, the inventory missed it: the bench check's procedure applies.
+  - If it does not, the gateway runs a version or a plugin the support does not cover.
+    That is a version question, not an extractor one.
 
 ## The runtime drift detector
 
