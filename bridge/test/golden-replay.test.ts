@@ -460,18 +460,46 @@ describe("golden replay — the corpus covers what it claims", () => {
   });
 });
 
+/** The anonymiser MASKS the names of the agent `data` keys it does not allowlist
+ *  (`xxxxXx`, scripts/lib/anonymize-capture.mjs): a substitution of its own, not a name
+ *  any gateway sent, so the drift detector has nothing to judge in it. Only those names
+ *  are removed — every stream, phase, payload field and unmasked key is still judged. */
+const MASKED_NAME = /^[xX]+$/;
+function withoutMaskedDataKeys(frame: unknown): { frame: unknown; judgedKeys: number } {
+  if (typeof frame !== "object" || frame === null) return { frame, judgedKeys: 0 };
+  const f = frame as Record<string, unknown>;
+  const p = f.payload as Record<string, unknown> | undefined;
+  if (f.event !== "agent" || typeof p !== "object" || p === null) return { frame, judgedKeys: 0 };
+  const data = p.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return { frame, judgedKeys: 0 };
+  const kept = Object.fromEntries(Object.entries(data).filter(([k]) => !MASKED_NAME.test(k)));
+  return { frame: { ...f, payload: { ...p, data: kept } }, judgedKeys: Object.keys(kept).length };
+}
+
 describe("golden replay — the corpus is at the vendored version", () => {
   it("produces NO protocol drift", () => {
     // The corpus was captured from the version the bridge vendors, so a single unknown
     // field means either the capture is from another version or the anonymiser mangled a
     // name — and this catches both. It is also the cheapest check of the anonymiser:
     // mangle a discriminant and the report fills with unknown states.
+    //
+    // Since the drift detector also judges an agent frame's `data.phase` and `data` keys
+    // against the vendored emission inventory, this is the corpus-wide proof that every
+    // phase and key a supported gateway was CAPTURED sending is in that inventory — for
+    // every version the corpus holds, the older ones included.
     protocolDrift.resetForTests();
+    let judgedKeys = 0;
     for (const fx of CORPUS) {
-      for (const e of fx.entries) protocolDrift.observe(e.frame);
+      for (const e of fx.entries) {
+        const stripped = withoutMaskedDataKeys(e.frame);
+        judgedKeys += stripped.judgedKeys;
+        protocolDrift.observe(stripped.frame);
+      }
     }
     expect(protocolDrift.report()).toEqual([]);
     expect(protocolDrift.overflowCount()).toBe(0);
+    // Not vacuous: the corpus carries thousands of unmasked `data` keys to judge.
+    expect(judgedKeys).toBeGreaterThan(10_000);
   });
 });
 

@@ -1,5 +1,18 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
+import { convexIngestSecretOrNull } from "../../config.js";
 import { ConvexIngestError } from "../../convex-writer.js";
+import {
+  KNOWN_AGENT_DATA_KEYS_BY_STREAM,
+  KNOWN_AGENT_PHASES_BY_STREAM,
+  KNOWN_AGENT_STREAMS,
+  KNOWN_CHAT_CONTENT_PART_TYPES,
+  KNOWN_CHAT_CONTENT_PART_TYPES_FOLDED,
+  OPAQUE_EMITTER_AGENT_DATA_KEYS,
+} from "./agent-emission-vocabulary.js";
+
+// The agent channel's known vocabulary is DERIVED from the vendored emission inventories
+// (agent-emission-vocabulary.ts); re-exported so readers of this module keep one import.
+export { KNOWN_AGENT_STREAMS, KNOWN_CHAT_CONTENT_PART_TYPES };
 
 // Protocol DRIFT detector (Inc 2 of docs/PROTOCOL_CONTRACT.md).
 //
@@ -444,10 +457,28 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 360,
-  ignored: 809,
-  gaps: 918,
+  handled: 399,
+  ignored: 800,
+  gaps: 888,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  TRUTH GUARD V3 (2026-11-08): the coverage-truth guard now asks the bridge's own read
+   *  sites (protocol/openclaw/read-sites.json) whether a field declared unread is read.
+   *  Forty declarations of this manifest were false. Twenty-nine gaps and ten ignored
+   *  entries became handled — `HelloOk.server/policy/features/auth`, every `ConnectParams`
+   *  field the connect request sends, `ShutdownEvent.reason`, the `AgentActivityItem` keys the
+   *  delivery cards are built from, the session meta `parseSessionMeta` publishes,
+   *  `AgentDatabaseAdmissionRefusal.reason`, the job-level cron fallbacks, `inFlightRun` on a
+   *  tail page, `nextBefore`, `isHeartbeat`, `ChatDeltaEvent.agentId` — and `ShutdownEvent.
+   *  restartExpectedMs` stays a gap, now naming its reader and its defect (S1). Six other
+   *  names it met at a read site are another object's there (declared homonyms); for the
+   *  four `agentId` of the other chat states the stated reason was false all the same and is
+   *  rewritten, `ChatStatusEvent.agentId` moving from gap to ignored like its siblings.
+   *  Since the review of the same day, each such exception names ONE access (site and
+   *  receivers) and is checked — a homonym whose receiver reads handled fields of the
+   *  schema is the payload itself and is refused; the `agentId` ones and
+   *  `ChatAbortedEvent.errorMessage` are branch exceptions, proved unreachable for the
+   *  schema's own `state` — so a false one can no longer turn a real read green.
    *
    *  TERMINAL APPROVAL SNAPSHOTS (0.103.5): the `decision` of a decided approval's
    *  `approval.get` snapshot (Allowed / Denied / Approval / Terminal) is handled — a card
@@ -547,23 +578,14 @@ export const COVERAGE_SUMMARY = {
     "AgentActivityItem.approvalSlug",
     "AgentActivityItem.commandBearing",
     "AgentActivityItem.endedAt",
-    "AgentActivityItem.error",
     "AgentActivityItem.hideFromChannelProgress",
-    "AgentActivityItem.itemId",
-    "AgentActivityItem.kind",
-    "AgentActivityItem.meta",
-    "AgentActivityItem.name",
-    "AgentActivityItem.progressText",
     "AgentActivityItem.startedAt",
-    "AgentActivityItem.status",
     "AgentActivityItem.summary",
     "AgentActivityItem.suppressChannelProgress",
     "AgentActivityItem.title",
-    "AgentActivityItem.toolCallId",
     "AgentDatabaseAdmissionRefusal.agentId",
     "AgentDatabaseAdmissionRefusal.embeddedOwnerId",
     "AgentDatabaseAdmissionRefusal.paths",
-    "AgentDatabaseAdmissionRefusal.reason",
     "AgentDatabaseAdmissionRefusal.repairHint",
     "AgentKind",
     "AgentSummary.admissionRefusal",
@@ -593,26 +615,16 @@ export const COVERAGE_SUMMARY = {
     "ChatSendParams.replyToId",
     "ChatSendParams.toolBindings",
     "ChatSendParams.workContext",
-    "ChatStatusEvent.agentId",
     "ChatStatusEvent.phase",
     "ChatToolTitlesParams.agentId",
     "ChatToolTitlesParams.items",
     "ChatToolTitlesParams.sessionKey",
     "ChatToolTitlesResult.disabled",
     "ChatToolTitlesResult.titles",
-    "ConnectParams.auth",
-    "ConnectParams.client",
     "ConnectParams.commands",
-    "ConnectParams.device",
-    "ConnectParams.locale",
-    "ConnectParams.maxProtocol",
-    "ConnectParams.minProtocol",
     "ConnectParams.modelCatalog",
     "ConnectParams.pathEnv",
     "ConnectParams.permissions",
-    "ConnectParams.role",
-    "ConnectParams.scopes",
-    "ConnectParams.userAgent",
     "ControlUiLinkReaderDescriptor.icon",
     "ControlUiLinkReaderDescriptor.id",
     "ControlUiLinkReaderDescriptor.label",
@@ -802,15 +814,11 @@ export const COVERAGE_SUMMARY = {
     "GatewaySuspension.phase",
     "GatewayThinkingLevelOption.id",
     "GatewayThinkingLevelOption.label",
-    "HelloOk.auth",
     "HelloOk.controlUiLinkReaders",
     "HelloOk.controlUiTabs",
     "HelloOk.controlUiWidgetKinds",
-    "HelloOk.features",
     "HelloOk.pluginSurfaceUrls",
-    "HelloOk.policy",
     "HelloOk.protocol",
-    "HelloOk.server",
     "HelloOk.snapshot",
     "HelloOk.type",
     "HumanMention.end",
@@ -1166,13 +1174,11 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.channel",
     "SessionRow.chatType",
     "SessionRow.childSessions",
-    "SessionRow.contextTokens",
     "SessionRow.controlOwnerSessionKey",
     "SessionRow.createdAt",
     "SessionRow.createdVia",
     "SessionRow.derivedTitle",
     "SessionRow.displayName",
-    "SessionRow.estimatedCostUsd",
     "SessionRow.execCwd",
     "SessionRow.execNode",
     "SessionRow.expandedParticipants",
@@ -1190,8 +1196,6 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.lastMessagePreview",
     "SessionRow.lastReadAt",
     "SessionRow.lastRunError",
-    "SessionRow.model",
-    "SessionRow.modelProvider",
     "SessionRow.nativeRuntimeConsent",
     "SessionRow.outputTokens",
     "SessionRow.parentSessionId",
@@ -1215,8 +1219,6 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.subagentRole",
     "SessionRow.swarm",
     "SessionRow.swarmGroupId",
-    "SessionRow.totalTokens",
-    "SessionRow.totalTokensFresh",
     "SessionRow.unread",
     "SessionRow.updatedAt",
     "SessionRow.workspaceDir",
@@ -1335,7 +1337,6 @@ export const COVERAGE_SUMMARY = {
     "SessionsStorageParams",
     "SessionsStorageStatusResult.agents",
     "SessionsStorageStatusResult.maintenance",
-    "ShutdownEvent.reason",
     "ShutdownEvent.restartExpectedMs",
     "SkillCuratorLiveEntry.archivedReason",
     "SkillCuratorLiveEntry.createdAtMs",
@@ -1599,68 +1600,82 @@ export type ExceptionSite =
    *  and one the turn's recv deadline keys on. */
   | "hermes-ws-ack";
 
-/** Per-PROCESS random salt for the unknown-state id.
- *
- *  Without it the id was a plain 32-bit FNV-1a of the value: one-way in form only, since
- *  anyone holding the reported shape could confirm a guess by hashing it — `AliceMartin`,
- *  an e-mail address, any candidate from a dictionary (raised in review). A salt nobody
- *  outside this process holds makes the id underivable, at the cost of one property that
- *  was not worth much: the same unknown state on two bridges now reads as two findings
- *  rather than one. Over-reporting a new state is the safe direction.
- *
- *  NEVER logged, never reported, never persisted. */
-const UNKNOWN_STATE_SALT = randomBytes(16).toString("hex");
+/** The domain label the digest key is derived under. Changing it re-keys every digest. */
+const DRIFT_DIGEST_LABEL = "atrium-drift-digest-v1";
 
-/** Chat `message.content[].type` values the gateway's display projection emits
- *  (v2026.9.6 src/gateway/chat-display-projection*.ts). `canvas` is the inline-widget
- *  preview (providers/openclaw/widgets.ts); the others are read as text or ignored. */
-export const KNOWN_CHAT_CONTENT_PART_TYPES: ReadonlySet<string> = new Set([
-  "text",
-  "canvas",
-  "image",
-  "audio",
-  "video",
-  "attachment",
-  "thinking",
-  "redacted_thinking",
-  "reasoning",
-  "toolCall",
-  "toolResult",
-]);
+/** The KEY every digest of a registry is computed under.
+ *
+ *  The first id was a plain 32-bit FNV-1a of the value: anyone holding the reported shape
+ *  could confirm a guess by hashing it. A random salt in front of it was the second
+ *  attempt, and it did not hold either (adversarial review, 2026-11-08): FNV-1a is
+ *  invertible step by step, so ONE known (value, digest) pair gives back the hash state
+ *  after the salt, and from there the digest of any other value. A keyed MAC is the
+ *  construction built for this: without the key, a known pair says nothing about any
+ *  other value's tag. What protects the digest is that the key is SECRET, not that it
+ *  changes:
+ *   - with the deployment's ingest secret (BRIDGE_INGEST_SECRET, the one the bridge
+ *     already presents to Convex — no new secret), the key is
+ *     HMAC-SHA256(secret, "atrium-drift-digest-v1"): STABLE across restarts and across
+ *     the bridges of one deployment, so the Convex shape ledger keeps ONE row per unknown
+ *     value and its triage survives a restart. Rotating the secret changes every digest
+ *     once — each unknown value gets one new row — and they are stable again after;
+ *   - without it (tests, a development shell), a random key per process, so digests are
+ *     comparable within the process only.
+ *  The secret and the key are NEVER logged, reported or persisted: the key lives in the
+ *  registry's private field, and nothing here formats either. */
+export function driftDigestKey(secret: string | null): Buffer {
+  return secret ? createHmac("sha256", secret).update(DRIFT_DIGEST_LABEL, "utf8").digest() : randomBytes(32);
+}
 
-/** Agent event `stream` values: upstream `AgentEventStream` (v2026.9.6
- *  src/infra/agent-events.ts) plus `run_status`, which the gateway emits under the
- *  open `string` arm (captured live on 2026.9.6). */
-export const KNOWN_AGENT_STREAMS: ReadonlySet<string> = new Set([
-  "lifecycle",
-  "tool",
-  "assistant",
-  "usage",
-  "error",
-  "item",
-  "plan",
-  "approval",
-  "command_output",
-  "patch",
-  "compaction",
-  "thinking",
-  "run_status",
-]);
+/** A key or field NAME is published only when it is VOCABULARY — a name the vendored
+ *  contract or emission inventory spells — and fits the Convex grammar (convex/compat.ts
+ *  SEGMENT, the kind prefix included). Any other name is a wire string nobody vouched for,
+ *  and a charset says nothing about it (`AliceMartin` is a perfectly plain identifier):
+ *  digested, like a value (adversarial review, 2026-11-08). */
+const SEGMENT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** FNV-1a, 32 bits, hex, over the SALTED value — for wire values that must be
- *  DISTINGUISHED without being disclosed or guessed. */
-function shortDigest(s: string): string {
-  let h = 0x811c9dc5;
-  const salted = `${UNKNOWN_STATE_SALT}\u0000${s}`;
-  for (let i = 0; i < salted.length; i++) {
-    h ^= salted.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
+/** HMAC-SHA256 under the registry's key, 32 bits of it in hex — for wire values (and
+ *  unvouched names) that must be DISTINGUISHED without being disclosed or guessed. */
+function keyedDigest(key: Buffer, s: string): string {
+  return createHmac("sha256", key).update(s, "utf8").digest("hex").slice(0, 8);
+}
+type Digest = (s: string) => string;
+
+/** Every top-level payload field the vendored contract spells (any chat state, the agent
+ *  envelope): the vocabulary a misplaced field may be NAMED from. */
+const PAYLOAD_FIELD_NAMES: ReadonlySet<string> = new Set([...KNOWN_AGENT_FIELDS, ...KNOWN_CHAT_FIELDS]);
+
+/** Every `data` key name the inventories spell, on any stream or for an emitter whose
+ *  stream they could not resolve: the vocabulary a misplaced key may be NAMED from. */
+const INVENTORY_DATA_KEY_NAMES: ReadonlySet<string> = new Set([
+  ...Object.values(KNOWN_AGENT_DATA_KEYS_BY_STREAM).flatMap((keys) => [...keys]),
+  ...OPAQUE_EMITTER_AGENT_DATA_KEYS,
+]);
+
+/** Apply one normalization chain of the display projection (`trim`, `lowercase`, in the
+ *  order upstream applies them before it compares a content block's type). */
+function foldContentPartType(fold: string, type: string): string {
+  let out = type;
+  for (const step of fold.split("+")) {
+    if (step === "trim") out = out.trim();
+    else if (step === "lowercase") out = out.toLowerCase();
+    else return "\u0000"; // a step this build does not know matches nothing
   }
-  return h.toString(16).padStart(8, "0");
+  return out;
+}
+
+/** Is a content part's type one the projection builds or recognizes — exactly, or after
+ *  the normalization upstream applies to it (`toolResult` IS `toolresult` upstream)? */
+export function isKnownChatContentPartType(type: string): boolean {
+  if (KNOWN_CHAT_CONTENT_PART_TYPES.has(type)) return true;
+  for (const [fold, types] of Object.entries(KNOWN_CHAT_CONTENT_PART_TYPES_FOLDED)) {
+    if (types.has(foldContentPartType(fold, type))) return true;
+  }
+  return false;
 }
 
 /** The PROTOCOL-LEVEL shape of a frame: which known surface judges it, and under which
@@ -1674,6 +1689,7 @@ function shortDigest(s: string): string {
 function classifyProtocolShape(
   f: Record<string, unknown>,
   p: Record<string, unknown>,
+  digest: Digest,
 ): { known: ReadonlySet<string> | undefined; prefix: string } {
   if (f.event === "chat") {
     const state = typeof p.state === "string" ? p.state : "";
@@ -1689,12 +1705,13 @@ function classifyProtocolShape(
       // single bucket hides whether one new state appeared or five — but it is an
       // UNVALIDATED wire value, and this shape is stored and displayed. A charset
       // filter was the first attempt and it proves nothing: `AliceMartin` passes it.
-      // A one-way digest keeps every property an operator needs (stable across frames,
-      // comparable across bridges, one id per distinct state) and carries no value, so
-      // the non-leak is structural rather than a promise about what a gateway sends.
+      // A keyed digest keeps what an operator needs (stable across frames — and across
+      // restarts and bridges of one deployment, driftDigestKey — one id per distinct
+      // state) and carries no value, so the non-leak is structural rather than a promise
+      // about what a gateway sends.
       // The name itself is recoverable where it belongs — the vendored schema diff of
       // the version that introduced it.
-      return { known: undefined, prefix: `chat.«unknown-state».${shortDigest(state)}` };
+      return { known: undefined, prefix: `chat.«unknown-state».${digest(state)}` };
     }
     return { known: perState, prefix: `chat.${state}` };
   }
@@ -1748,10 +1765,10 @@ export function decodeInboundFrame(
  *
  *  An event type outside {chat, agent} is DIGESTED, not named: `event` is a wire string
  *  like `state` was, and lot 23 settled that question — a charset filter is procedural
- *  (`AliceMartin` passes it) while a salted digest keeps the one property an operator
+ *  (`AliceMartin` passes it) while a keyed digest keeps the one property an operator
  *  needs, telling one unknown event apart from another. Naming them properly is the C1
  *  sensor's job, once there is a known-event manifest to name them against. */
-function exceptionFrameShape(frame: unknown, site: ExceptionSite): string {
+function exceptionFrameShape(frame: unknown, site: ExceptionSite, digest: Digest): string {
   // The known surfaces this module holds are OpenClaw's; a Hermes frame judged against
   // them would report "unknown" about a contract it never claimed to follow.
   if (site.startsWith("hermes-")) return "«hermes»";
@@ -1760,13 +1777,13 @@ function exceptionFrameShape(frame: unknown, site: ExceptionSite): string {
   if (f.type !== "event") return "«non-event»";
   if (f.event !== "chat" && f.event !== "agent") {
     const ev = typeof f.event === "string" ? f.event : "";
-    return `«other-event».${shortDigest(ev)}`;
+    return `«other-event».${digest(ev)}`;
   }
   const payload = f.payload;
   if (typeof payload !== "object" || payload === null) {
     return `${f.event}.«no-payload»`;
   }
-  return classifyProtocolShape(f, payload as Record<string, unknown>).prefix;
+  return classifyProtocolShape(f, payload as Record<string, unknown>, digest).prefix;
 }
 
 
@@ -1799,7 +1816,16 @@ function rowOfShape(shape: string): SensorRow {
   return FIELD_ROW;
 }
 
-class ProtocolDriftRegistry {
+export class ProtocolDriftRegistry {
+  /** The digest key (driftDigestKey), given at construction and never exposed: a private
+   *  field, absent from `report()`, from every log line and from JSON. */
+  readonly #digestKey: Buffer;
+  private readonly digest: Digest = (s) => keyedDigest(this.#digestKey, s);
+
+  constructor(digestKey: Buffer) {
+    this.#digestKey = digestKey;
+  }
+
   /** One counter map per kind of finding (SENSOR_KINDS), so no budget can starve another. */
   private readonly byKind = new Map<ShapeKind, Map<string, number>>(
     SENSOR_KINDS.map((row) => [row.kind, new Map<string, number>()]),
@@ -1838,10 +1864,10 @@ class ProtocolDriftRegistry {
           // so `AliceMartin` passes it unchanged and an unanticipated broadcast could
           // publish a wire value straight into a counter name (adversarial review,
           // 2026-09-12). An UNCLASSIFIED event name is a wire string by definition — it
-          // is exactly the value nobody has vouched for — and the salted digest keeps the
+          // is exactly the value nobody has vouched for — and the keyed digest keeps the
           // only property an operator needs here: telling one unknown family apart from
           // another, across frames, without disclosing either.
-          this.bump(`${UNANTICIPATED_BROADCAST_PREFIX}${shortDigest(f.event)}`);
+          this.bump(`${UNANTICIPATED_BROADCAST_PREFIX}${this.digest(f.event)}`);
           return;
         }
       }
@@ -1852,7 +1878,7 @@ class ProtocolDriftRegistry {
       // PER STATE for chat (the union hid cross-state fields, see above). An
       // unrecognised state cannot be judged field by field, so it is reported ONCE as
       // itself rather than as a wall of unknown fields.
-      const cls = classifyProtocolShape(f, p);
+      const cls = classifyProtocolShape(f, p, this.digest);
       if (cls.known === undefined) {
         this.bump(cls.prefix);
         return;
@@ -1861,10 +1887,15 @@ class ProtocolDriftRegistry {
       const prefix = cls.prefix;
       for (const key of Object.keys(p)) {
         if (known.has(key)) continue;
-        this.bump(`${prefix}.${key}`);
+        // A field another state or version carries is vocabulary, and named; any other
+        // name is digested (SEGMENT_NAME above).
+        this.bump(
+          `${prefix}.${PAYLOAD_FIELD_NAMES.has(key) && SEGMENT_NAME.test(key) ? key : `field_${this.digest(key)}`}`,
+        );
       }
       // One level INSIDE the two fields the key check above calls "known": a chat
-      // message's content-part `type` and an agent event's `stream`. Both are open
+      // message's content-part `type` and an agent event's `stream` — and, on a known
+      // stream, its `data.phase` and `data` keys (observeAgentData). All are open
       // vocabularies the normalizer reads by value, so a new value is dropped unread —
       // the silence the `canvas` part lived in until widgets were instructed.
       // Digested like an unknown state: a wire value nobody has vouched for.
@@ -1873,21 +1904,24 @@ class ProtocolDriftRegistry {
         if (Array.isArray(content)) {
           for (const part of content) {
             const type = isRecord(part) ? part.type : undefined;
-            if (typeof type === "string" && !KNOWN_CHAT_CONTENT_PART_TYPES.has(type)) {
-              this.bump(`${prefix}.contentpart_${shortDigest(type)}`);
+            if (typeof type === "string" && !isKnownChatContentPartType(type)) {
+              this.bump(`${prefix}.contentpart_${this.digest(type)}`);
             }
           }
         }
       } else {
         const stream = p.stream;
-        // A plugin stream is `<pluginId>.<suffix>` — plugin-scoped, and only its
-        // `.provenance` suffix is contract; anything else of it is the plugin's own.
-        if (
-          typeof stream === "string" &&
-          !stream.includes(".") &&
-          !KNOWN_AGENT_STREAMS.has(stream)
-        ) {
-          this.bump(`agent.stream_${shortDigest(stream)}`);
+        // A stream the vocabulary KNOWS is judged, dotted or not: `codex_app_server.item`
+        // is an inventoried stream, and exempting every dotted name first let its new
+        // phases and keys through unjudged (review, 2026-11-08). Only an UNKNOWN dotted
+        // name is exempt — `<pluginId>.<suffix>`, plugin-scoped, whose content is the
+        // plugin's own (only its `.provenance` suffix is contract).
+        if (typeof stream === "string") {
+          if (KNOWN_AGENT_STREAMS.has(stream)) {
+            if (isRecord(p.data)) this.observeAgentData(stream, p.data);
+          } else if (!stream.includes(".")) {
+            this.bump(`agent.stream_${this.digest(stream)}`);
+          }
         }
       }
     } catch (err) {
@@ -1903,6 +1937,47 @@ class ProtocolDriftRegistry {
         this.bump(`${DETECTOR_FAILURE_PREFIX}${safe}`);
       } catch {
         // Truly nothing left to do: the detector must not be able to break the feed.
+      }
+    }
+  }
+
+  /** One level inside a KNOWN stream's `data`, against the vendored emission inventories
+   *  (agent-emission-vocabulary.ts), judged PER STREAM:
+   *   - a `phase` the stream's emitters never write — including ANY phase on a stream whose
+   *     emitters write none (a gate on "has phases" let `usage` carry anything, review
+   *     2026-11-08). A wire VALUE: digested, like a stream or a state;
+   *   - a key the stream's emitters never write. A key only an emitter with an unresolved
+   *     stream writes is not known on every stream (it was, and masked unclassified
+   *     additions): it is reported as such (`opaquekey_`); a key another stream carries
+   *     is named (`data_`); any other name is digested (`datakey_`).
+   *  Never the value of either. */
+  private observeAgentData(stream: string, data: Record<string, unknown>): void {
+    const phases = Object.hasOwn(KNOWN_AGENT_PHASES_BY_STREAM, stream)
+      ? KNOWN_AGENT_PHASES_BY_STREAM[stream]
+      : undefined;
+    const hasPhase = Object.hasOwn(data, "phase");
+    if (hasPhase) {
+      const phase = data.phase;
+      if (typeof phase !== "string") {
+        // The JavaScript type only: a fixed, content-free vocabulary.
+        this.bump(`agent.${stream}.phasetype_${phase === null ? "null" : Array.isArray(phase) ? "array" : typeof phase}`);
+      } else if (phases === undefined || !phases.has(phase)) {
+        this.bump(`agent.${stream}.phase_${this.digest(phase)}`);
+      }
+    }
+    const keys = Object.hasOwn(KNOWN_AGENT_DATA_KEYS_BY_STREAM, stream)
+      ? KNOWN_AGENT_DATA_KEYS_BY_STREAM[stream]
+      : undefined;
+    for (const key of Object.keys(data)) {
+      // The phase was judged above, by value; its key is not counted a second time.
+      if (key === "phase" && hasPhase) continue;
+      if (keys?.has(key)) continue;
+      if (OPAQUE_EMITTER_AGENT_DATA_KEYS.has(key) && SEGMENT_NAME.test(`opaquekey_${key}`)) {
+        this.bump(`agent.${stream}.opaquekey_${key}`);
+      } else if (INVENTORY_DATA_KEY_NAMES.has(key) && SEGMENT_NAME.test(`data_${key}`)) {
+        this.bump(`agent.${stream}.data_${key}`);
+      } else {
+        this.bump(`agent.${stream}.datakey_${this.digest(key)}`);
       }
     }
   }
@@ -1944,7 +2019,7 @@ class ProtocolDriftRegistry {
       // identifier, but `constructor.name` is attacker-influenceable in principle
       // (a thrown object from a dynamically named class), and this string is stored.
       const safeClass = exceptionClassName(err);
-      this.bump(`${EXCEPTION_PREFIX}${safeClass}@${site}.${exceptionFrameShape(frame, site)}`);
+      this.bump(`${EXCEPTION_PREFIX}${safeClass}@${site}.${exceptionFrameShape(frame, site, this.digest)}`);
     } catch {
       // The sensor itself failed. Count it as a detector failure rather than losing it,
       // and never rethrow into the caller's catch block.
@@ -1969,6 +2044,10 @@ class ProtocolDriftRegistry {
    *
    *  Total-catch, like every other sensor here: this runs on the handshake path, and a
    *  diagnostic that can break `connect` is worse than the blindness it cures.
+   *
+   *  Named in clear on purpose, unlike the digested names above: an announced family is
+   *  protocol vocabulary the gateway's own code defines (its feature list), not a payload
+   *  value, so the vocabulary-or-digest rule (SEGMENT_NAME) does not apply here.
    */
   observeAnnouncedEvents(announced: unknown): void {
     try {
@@ -1997,7 +2076,8 @@ class ProtocolDriftRegistry {
    *
    *  The classified set is passed IN rather than imported: this module is OpenClaw's, and
    *  the Hermes vocabulary has no business in it. Same containment, same total-catch, same
-   *  reserved budget.
+   *  reserved budget — and named in clear for the same reason: a capability name is the
+   *  provider's protocol vocabulary, not a payload.
    */
   observeAnnouncedCapabilities(
     declared: unknown,
@@ -2034,7 +2114,7 @@ class ProtocolDriftRegistry {
   observeUnknownValue(site: string, value: unknown): void {
     try {
       const raw = typeof value === "string" ? value : `<${typeof value}>`;
-      this.bump(`${containName(site, SAFE_NAME_MAX)}_${shortDigest(raw)}`);
+      this.bump(`${containName(site, SAFE_NAME_MAX)}_${this.digest(raw)}`);
     } catch {
       // A sensor must never break the reader it observes.
     }
@@ -2107,5 +2187,7 @@ class ProtocolDriftRegistry {
   }
 }
 
-/** Process-wide singleton: drift is a per-build observation, not per-session. */
-export const protocolDrift = new ProtocolDriftRegistry();
+/** Process-wide singleton: drift is a per-build observation, not per-session. Its digest
+ *  key is derived at construction from the deployment's ingest secret as the startup
+ *  configuration reads it (driftDigestKey) — random when none is configured. */
+export const protocolDrift = new ProtocolDriftRegistry(driftDigestKey(convexIngestSecretOrNull()));

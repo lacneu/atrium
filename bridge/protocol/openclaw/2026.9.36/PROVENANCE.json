@@ -654,6 +654,16 @@
       "constantsPath": "src/gateway/events.ts",
       "constants": "1bb49549e18fee5bfa564853aedaa804c2eea0b60663b3199b8d627f05aa959c",
       "events": 66
+    },
+    "agent-emissions.json": {
+      "upstreamPath": "src/infra/agent-events.ts",
+      "upstream": "b3654d45ecd5d358a934276b64e963fa31dfe8c2e65e94eda4728e1607170ff3",
+      "emissions": 342,
+      "sha256": "5664e52f6942f3330e4139d3b571934c7e4b4e1cbbb7b8e735678583ef9ed7cf",
+      "fullSha256": "b5af20b35cd0178fe67d07865cbd701c147be37c30d6ca46c534957469aa9f69",
+      "deriver": "scripts/lib/derive-agent-emissions.mjs",
+      "deriverSha256": "b56c2cf9abb057e6f6407dad5530d532828053940a3e87f2a06703b9a28035f7",
+      "schema": "atrium.agent-emissions/1"
     }
   }
 }
