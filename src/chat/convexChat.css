@@ -6127,6 +6127,21 @@ button.oc-perm__opt:disabled {
   width: 100%; background: transparent; cursor: pointer; gap: 0.25rem;
 }
 .oc-sidebar__group-head--btn:hover { color: var(--foreground); }
+/* A FINGER'S DENSITY (lot 10, decided 2026-11): where the primary pointer is a
+   finger, a chat row (36 px) and a folder's head (24 px) are 44 px tall, and
+   their controls' tap zones grow with them to 44 × 44 — still each within its
+   own row. A mouse keeps the dense list, and so does a touch-screen laptop
+   (its primary pointer is fine; its zones keep the rows' 36 and 24 px). */
+@media (pointer: coarse) {
+  .oc-chatitem {
+    min-height: 2.75rem;
+    --oc-hit-h: 2.75rem;
+  }
+  .oc-sidebar__group-head {
+    height: 2.75rem;
+    --oc-hit-h: 2.75rem;
+  }
+}
 .oc-chatitem--overlay {
   background: var(--sidebar-accent); box-shadow: var(--shadow, 0 4px 12px rgb(0 0 0 / 0.2));
   border-radius: var(--radius-md);

@@ -4,6 +4,7 @@ import { Tabs as TabsPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { revealInline } from "@/lib/revealInline"
+import { wheelToInline } from "@/lib/wheelToInline"
 
 function Tabs({
   className,
@@ -32,12 +33,18 @@ function Tabs({
 // clips vertically too (the triggers' hidden `after` underline sits 5 px below
 // them and would otherwise add a vertical scrollbar); the line variant shows that
 // underline, so it keeps its overflow visible.
+// The scrolling variant HIDES ITS SCROLLBAR (lot 10): where scrollbars always show
+// (Windows, or macOS set so) the bar took its height inside the list's 32 px and
+// squashed the triggers. The hidden triggers stay in reach: a trackpad's swipe,
+// Shift+wheel, the arrow keys (the active trigger is brought into view), and a
+// plain mouse wheel (below, `wheelToInline`).
 const tabsListVariants = cva(
   "group/tabs-list inline-flex w-fit max-w-full items-center justify-start rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
   {
     variants: {
       variant: {
-        default: "bg-muted overflow-x-auto overflow-y-hidden",
+        default:
+          "bg-muted overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         line: "gap-1 bg-transparent",
       },
     },
@@ -86,6 +93,31 @@ function TabsList({
     ro.observe(list)
     return () => ro.disconnect()
   }, [])
+  // A plain mouse wheel scrolls an overflowing list sideways, and gives the page
+  // its scroll back at either end (`wheelToInline`). A listener of its own, not
+  // `onWheel`: React's wheel listeners are passive and could not keep the page
+  // from scrolling under the list.
+  React.useEffect(() => {
+    const list = listRef.current
+    if (!list || variant !== "default") return
+    const onWheel = (e: WheelEvent) => {
+      if (list.getAttribute("aria-orientation") === "vertical") return
+      const next = wheelToInline({
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        deltaMode: e.deltaMode,
+        ctrlKey: e.ctrlKey,
+        scrollLeft: list.scrollLeft,
+        scrollWidth: list.scrollWidth,
+        clientWidth: list.clientWidth,
+      })
+      if (next === null) return
+      e.preventDefault()
+      list.scrollLeft = next
+    }
+    list.addEventListener("wheel", onWheel, { passive: false })
+    return () => list.removeEventListener("wheel", onWheel)
+  }, [variant])
   return (
     <TabsPrimitive.List
       ref={setRef}

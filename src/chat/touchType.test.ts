@@ -11,6 +11,8 @@
 // 3. Menu and list items a finger's height on a coarse pointer; the shared Button's
 //    tap zone grown like `.oc-hit`'s — without moving a Button placed by a utility.
 // 4. Keyboard hints hidden where the primary pointer is a finger (lot 9, C1).
+// 5. The sidebar's rows a finger's height where the primary pointer is a finger
+//    (lot 10), their zones grown with them; dense under a mouse.
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -214,5 +216,43 @@ describe("keyboard hints hidden where the primary pointer is a finger (C1)", () 
   // Decided 2026-11 (lot 7): no reordering of the Settings tabs by finger.
   test("the Settings tabs' reorder grips go the same way", () => {
     expect(hides("oc-settings-tabs__grip")).toBe(true);
+  });
+});
+
+describe("the sidebar's rows a finger's height (lot 10)", () => {
+  // Decided 2026-11: chat rows (36 px) and folder heads (24 px) at 44 px where the
+  // PRIMARY pointer is a finger; a mouse, and a touch-screen laptop, keep them dense.
+  const coarse = (sel: string) =>
+    ALL_RULES.filter((r) => r.media === "(pointer: coarse)" && r.selector === sel);
+  const anyMedia = (sel: string, re: RegExp) =>
+    ALL_RULES.filter((r) => r.selector === sel && re.test(r.body)).map((r) => r.media);
+
+  test("a chat row is 44 px tall and its controls' zones 44 px with it", () => {
+    const body = coarse(".oc-chatitem").map((r) => r.body).join("\n");
+    expect(body).toMatch(/min-height:\s*2\.75rem/);
+    expect(body).toMatch(/--oc-hit-h:\s*2\.75rem/);
+  });
+
+  test("a folder's head too", () => {
+    const body = coarse(".oc-sidebar__group-head").map((r) => r.body).join("\n");
+    expect(body).toMatch(/(?<![-\w])height:\s*2\.75rem/);
+    expect(body).toMatch(/--oc-hit-h:\s*2\.75rem/);
+  });
+
+  test("only where the primary pointer is a finger: a mouse keeps 24 px heads", () => {
+    expect(anyMedia(".oc-chatitem", /min-height:\s*2\.75rem/)).toEqual(["(pointer: coarse)"]);
+    expect(anyMedia(".oc-sidebar__group-head", /(?<![-\w])height:\s*2\.75rem/)).toEqual([
+      "(pointer: coarse)",
+    ]);
+    expect(anyMedia(".oc-sidebar__group-head", /(?<![-\w])height:\s*1\.5rem/)).toContain(null);
+  });
+
+  test("a touch-screen laptop keeps dense rows, so its zones keep to them", () => {
+    const touch = (sel: string) =>
+      ALL_RULES.filter((r) => isTouch(r.media) && r.media !== "(pointer: coarse)" && r.selector === sel)
+        .map((r) => r.body)
+        .join("\n");
+    expect(touch(".oc-chatitem")).toMatch(/--oc-hit-h:\s*2\.25rem/);
+    expect(touch(".oc-sidebar__group-head")).toMatch(/--oc-hit-h:\s*1\.5rem/);
   });
 });

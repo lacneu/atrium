@@ -61,6 +61,14 @@ describe("tab list containment", () => {
     expect(list).toContain("max-w-full");
   });
 
+  // Lot 10: where scrollbars always show (Windows, or macOS set so), the list's
+  // scrollbar took its height inside the 32 px row and squashed the triggers.
+  test("the scrolling list hides its scrollbar, in every engine", () => {
+    const list = classesOf(renderList("w-full"), "tabs-list");
+    expect(list).toContain("[scrollbar-width:none]");
+    expect(list).toContain("[&::-webkit-scrollbar]:hidden");
+  });
+
   test("the line variant keeps its underline visible (no vertical clip)", () => {
     const list = classesOf(renderList("", "line"), "tabs-list");
     expect(list).toContain("max-w-full");
