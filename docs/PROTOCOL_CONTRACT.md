@@ -186,7 +186,11 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   alias's writes may not reach it at all; a write a helper makes on one branch, in a
   callback it registers, or by `??=` may not happen, so what it would replace stays
   possible; what may run at any time (a callback, a loop body) is applied wherever it may
-  run and as often as it may. A reassignment that copies the object (`x = { ...x, k: v }`,
+  run, and at the end in two passes when their order matters (a limit stated below). What
+  a helper does after its first `await`, or in a generator, runs later than its call: in
+  order when the call is awaited, otherwise as one block that may or may not have run
+  before the send — all of it, in its order, never one write without the next. A
+  reassignment that copies the object (`x = { ...x, k: v }`,
   and `k: { ...x.k, … }` inside it) is the object with those writes, in order, never a copy
   nested in its successor. A payload sent through an alias (`const a = b`,
   `const { data } = b`) carries what was done to `b` up to the send, after the alias too. A
@@ -201,9 +205,12 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   unresolved, past the effect bound as well. The frame is then unresolved as a whole, never
   split into the paths where that code did nothing. A property that holds a function
   (declared as a property, its type with no `this:` parameter) is not a method: called on
-  the object, it runs the function it holds, with no effect through `this` — unless the
-  function its value resolves to is not an arrow (an unbound method copied into it, say), or
-  is a class field's arrow, and uses `this`: the call is then refused by name. Methods,
+  the object, it runs the function it holds, with no effect through `this` — unless one of
+  the values it may hold is a function that is not an arrow (an unbound method copied into
+  it, say), or a class field's arrow, and uses `this`, or a value the analysis cannot follow
+  (a call's result); every value is examined: each one its binding is given (initializer and
+  reassignments), both branches of a conditional, the operands of `??` and `||`. The call is
+  then refused by name. Methods,
   accessors and a function type that declares `this:` stay strict. A member reached only through
   a declared type (the checker sees its signature, no body) is code whose effects are not
   modeled, unless a per-version declaration names it read-only (`READ_ONLY_MEMBERS`, beside
@@ -222,6 +229,14 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   contract states. A literal stream is a fabricated frame; an agent event passed on with its
   own data (or its data plus a recorded rewrite) is a relay with its origins named; a call
   whose event or final payload cannot be evaluated is unresolved, and vendoring refuses it.
+  A relay is a value of the bus's own event type (`EVENT_TYPE`, `AgentEventPayload`,
+  declared in `ROOT_SOURCE`) or of a type made from it — an intersection with it, a standard
+  library transformation of it (`Omit<…>`, `Readonly<…>`), an alias of the sources naming
+  one of these —, and its data is its own only when read from such a value: a value that
+  merely has a `stream` and a `data` may be a frame the gateway made itself, and its call is
+  unresolved. A copy the standard library makes (`Object.assign`, `structuredClone`,
+  `JSON.parse(JSON.stringify(x))`, and `Object.freeze`, which hands its argument back) is
+  valued from its arguments, so a frame copied that way keeps its literal stream and keys.
   A sender only plugins can call (reached from the public plugin
   surface, with no call in the analysed sources) is an open entry: listed in `openSenders`
   with what the sender itself fixes, compared from one version to the next by the diff
@@ -285,7 +300,9 @@ the following:
 - an unresolved sender call: an event not evaluated, a payload not determined, a payload
   (or its data) handed beforehand to code whose effects are not modeled, or run as `this` by
   code not proven to leave it unchanged (a method, an accessor, a getter or a `toJSON` the
-  serialization runs), or a sender whose object escapes;
+  serialization runs), a payload with a stream and a data that is not of the bus's event
+  type, or a sender whose object escapes;
+- the bus's event type absent from `ROOT_SOURCE`: no relay could be told from a frame;
 - a listed sender absent;
 - a contract the signature does not bear out;
 - a candidate sender nobody listed;
@@ -322,12 +339,27 @@ aliasing beyond what it follows escape it by nature. In particular:
     (the code a bus emission's object runs as `this` likewise);
 - the order of what is done to an object is followed in the reference's own function and in
   each helper's own body; what runs in a callback or a loop is taken to run at any time and
-  any number of times, an over-approximation;
+  any number of times, an over-approximation; what a helper does after its first `await`
+  (or in a generator) is taken to run, or not, right after the call or at the end — an
+  over-approximation, since a continuation runs only once the caller gives way;
 - a reassignment that reads the binding without copying it in place (`x = f(x)`) and may
   not run is merged with the state it reads, which doubles the frame's variants each time:
   past five such merges per reference, the rest is an opaque contribution and a sender's
   call is unresolved (an evaluator bound); in a callback or a loop, such a reassignment is
-  applied once at the end, against the fullest state;
+  applied at the end only, against the fullest state;
+- what may run any number of times is applied at the end in two passes at most, never
+  until the object stops changing: a reassignment that reads the binding, repeated in a
+  loop or a callback, is followed through its first two applications only (`p = next(p)`
+  three times from `s0` derives `s0`, `s1` and `s2`, never `s3`), and a chain of more than
+  two events that may run in any order, each replacing what the next writes into (the
+  object, then a key of it, then into that key), is not followed in every order. A
+  reassignment that reads the binding only through another binding (`const n = next(p);
+  p = n`) is valued once, where it first runs; those of a binding handed to no call (read
+  for its properties only, `{ stream: u.stream }`) are each read against the binding's
+  first value, so neither a repetition nor a sequence where each reads the one before is
+  followed. The states past these are not derived: the bench's emission check (a captured
+  frame the inventory cannot vouch for) and the production drift detector (a stream,
+  phase or key the vocabulary does not know) are the nets for what they would change;
 - an accessor is known by the declarations the type checker sees: a property its type
   declares as a plain field is read as one, even where an object behind that type implements
   it with a getter;
@@ -336,10 +368,11 @@ aliasing beyond what it follows escape it by nature. In particular:
   `this:`) is code whose effects are not modeled;
 - a property that holds a function is taken to run the function it holds without `this`: an
   unbound method copied into such a property, which writes through `this`, is not seen where
-  the property's value cannot be resolved (a value handed through parameters or spreads) —
+  none of the property's values can be found (a value handed through parameters or spreads) —
   the bench's emission check and the production drift detector are the nets for what it
   would change;
-- a value known only by its declared type is an over-approximation.
+- a value known only by its declared type is an over-approximation — never a relay unless
+  that type is the bus's event type or made from it.
 
 The two nets below cover what the analysis cannot see, and the unmarked bus effects.
 

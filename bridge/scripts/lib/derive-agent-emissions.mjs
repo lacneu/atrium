@@ -92,6 +92,10 @@ export const ROOT_DISPATCHER = "dispatchAgentEvent";
 export const ROOT_LISTENER_ITERATOR = "iterateAgentEventListeners";
 /** Upstream's declared stream union — reported for reference, never used as the answer. */
 export const STREAM_TYPE = "AgentEventStream";
+/** The event the bus hands its listeners, declared in ROOT_SOURCE: a gateway frame is a
+ *  RELAY of a bus event only when its value is of this type, or made from it — never
+ *  because its type happens to have a `stream` and a `data`. */
+export const EVENT_TYPE = "AgentEventPayload";
 /** Members a gateway sender's payload is handed to before the send, reached only through a
  *  DECLARED type (the checker resolves the call to a signature with no body), whose
  *  implementation, reviewed at the version named, writes nothing into that argument. A
@@ -1513,33 +1517,61 @@ export function deriveAgentEmissions(input) {
       })
     );
   };
-  /** The function a value certainly is, followed through bindings, property reads and
-   *  methods: `{ fn, arrow, field }` (field: a class field's arrow, whose `this` is the
-   *  instance), `{ bound }` (`f.bind(…)`), or undefined when it resolves to none. */
-  const concreteFunction = (expr, depth = 0) => {
+  /** EVERY function a value may be, followed through bindings (their initializer and every
+   *  reassignment), both branches of a conditional, the operands of `??` `||` (`&&`: its
+   *  right), property reads and methods: `fns` (`{ fn, arrow, field }` — field: a class
+   *  field's arrow, whose `this` is the instance —, or `{ bound }` for `f.bind(…)`), and
+   *  `unknown`, what could not be followed (a parameter, a call's result, a signature). A
+   *  value that is no function (`undefined`, `null`) calls nothing. */
+  const functionValues = (expr, out = { fns: [], unknown: [] }, seen = new Set(), depth = 0) => {
     const u = expr && unwrapExpr(expr);
-    if (!u || depth > 6) return undefined;
-    if (ts.isArrowFunction(u)) return { fn: u, arrow: true, field: ts.isPropertyDeclaration(skipOuter(u).parent) };
-    if (ts.isFunctionExpression(u) || (ts.isMethodDeclaration(u) && u.body)) return { fn: u, arrow: false };
-    if (ts.isCallExpression(u)) {
+    if (!u || seen.has(u)) return out;
+    seen.add(u);
+    const text = () => u.getText().replace(/\s+/g, " ").slice(0, 60);
+    if (depth > 12) {
+      out.unknown.push(`${text()} (followed too far)`);
+      return out;
+    }
+    if (ts.isArrowFunction(u)) out.fns.push({ fn: u, arrow: true, field: ts.isPropertyDeclaration(skipOuter(u).parent) });
+    else if (ts.isFunctionExpression(u) || (ts.isMethodDeclaration(u) && u.body)) out.fns.push({ fn: u, arrow: false });
+    else if (u.kind === ts.SyntaxKind.NullKeyword || ts.isVoidExpression(u) || (ts.isIdentifier(u) && u.text === "undefined")) return out;
+    else if (ts.isConditionalExpression(u)) {
+      functionValues(u.whenTrue, out, seen, depth + 1);
+      functionValues(u.whenFalse, out, seen, depth + 1);
+    } else if (ts.isBinaryExpression(u) && (u.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || u.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      functionValues(u.left, out, seen, depth + 1);
+      functionValues(u.right, out, seen, depth + 1);
+    } else if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) functionValues(u.right, out, seen, depth + 1);
+    else if (ts.isCallExpression(u)) {
       const c = unwrapExpr(u.expression);
-      return ts.isPropertyAccessExpression(c) && c.name.text === "bind" ? { bound: true } : undefined;
-    }
-    let decls = [];
-    try {
-      if (ts.isIdentifier(u)) decls = declsOf(valueSymOf(u));
-      else if (ts.isPropertyAccessExpression(u)) decls = declsOf(checker.getSymbolAtLocation(u.name));
-      else if (ts.isElementAccessExpression(u) && isLiteralKey(u.argumentExpression)) decls = declsOf(checker.getSymbolAtLocation(u.argumentExpression));
-    } catch {
-      decls = [];
-    }
-    for (const d of decls) {
-      if ((ts.isFunctionDeclaration(d) || ts.isMethodDeclaration(d)) && d.body) return { fn: d, arrow: false };
-      const next = (ts.isVariableDeclaration(d) || ts.isPropertyDeclaration(d) || ts.isPropertyAssignment(d)) && d.initializer ? d.initializer : ts.isShorthandPropertyAssignment(d) ? d.name : undefined;
-      const r = next && concreteFunction(next, depth + 1);
-      if (r) return r;
-    }
-    return undefined;
+      if (ts.isPropertyAccessExpression(c) && c.name.text === "bind") out.fns.push({ bound: true });
+      else out.unknown.push(text());
+    } else if (ts.isIdentifier(u) || ts.isPropertyAccessExpression(u) || (ts.isElementAccessExpression(u) && isLiteralKey(u.argumentExpression))) {
+      let decls = [];
+      try {
+        if (ts.isIdentifier(u)) decls = declsOf(valueSymOf(u));
+        else decls = declsOf(checker.getSymbolAtLocation(ts.isPropertyAccessExpression(u) ? u.name : u.argumentExpression));
+      } catch {
+        decls = [];
+      }
+      if (decls.length === 0) out.unknown.push(text());
+      for (const d of decls) {
+        if (ts.isFunctionDeclaration(d) && (d.body || isLibDecl(d))) {
+          if (d.body) out.fns.push({ fn: d, arrow: false });
+        } else if (ts.isMethodDeclaration(d) && d.body) out.fns.push({ fn: d, arrow: false });
+        else if (ts.isVariableDeclaration(d) && ts.isIdentifier(d.name)) {
+          if (d.initializer) functionValues(d.initializer, out, seen, depth + 1);
+          // Every value the binding is given later, too.
+          for (const r of bindingWrites(d).reassigned) {
+            if (r.node && (r.op === ts.SyntaxKind.EqualsToken || LOGICAL_ASSIGN.has(r.op))) functionValues(r.node, out, seen, depth + 1);
+            else out.unknown.push(`a value given to ${d.name.text} at ${locOf(r.at)}`);
+          }
+        } else if ((ts.isPropertyDeclaration(d) || ts.isPropertyAssignment(d)) && d.initializer) functionValues(d.initializer, out, seen, depth + 1);
+        else if (ts.isShorthandPropertyAssignment(d)) functionValues(d.name, out, seen, depth + 1);
+        else out.unknown.push(`${text()} (${ts.SyntaxKind[d.kind]} at ${locOf(d)})`);
+      }
+    } else out.unknown.push(text());
+    return out;
   };
   /** What a property called on an object may hold: the values its declarations give it, the
    *  receiver's own literal gives it, and the writes to it on the receiver give it. */
@@ -1586,10 +1618,14 @@ export function deriveAgentEmissions(input) {
     if (decls.length === 0) return `method ${name} (${locOf(call)}) resolves to no declaration, code whose effects on it are not modeled`;
     const own = decls.filter((d) => !isLibDecl(d));
     if (own.length > 0 && own.every(isPropertyDecl) && callableWithoutThis(callee)) {
+      // Values seen: every one of them is followed; one not known among them refuses too.
       for (const node of propertyValues(call, name, own)) {
-        const f = concreteFunction(node);
-        if (!f || f.bound) continue;
-        if ((!f.arrow || f.field) && usesThis(f.fn)) return `property ${name} (${locOf(node)}) holds ${labelOf(f.fn)} (${locOf(f.fn)}), ${f.arrow ? "a class field's arrow" : "a function that is not an arrow"} that uses \`this\`: called on an object, it runs with that object as \`this\``;
+        const { fns, unknown } = functionValues(node);
+        if (unknown.length > 0) return `property ${name} (${locOf(node)}) may hold ${unknown[0]}, a value not known here: called on an object, it may run with that object as \`this\``;
+        for (const f of fns) {
+          if (f.bound) continue;
+          if ((!f.arrow || f.field) && usesThis(f.fn)) return `property ${name} (${locOf(node)}) holds ${labelOf(f.fn)} (${locOf(f.fn)}), ${f.arrow ? "a class field's arrow" : "a function that is not an arrow"} that uses \`this\`: called on an object, it runs with that object as \`this\``;
+        }
       }
       return undefined;
     }
@@ -1868,6 +1904,25 @@ export function deriveAgentEmissions(input) {
     for (let n = node.parent; n && n !== fn; n = n.parent) if (ts.isIterationStatement(n, false)) return true;
     return false;
   };
+  /** Where an async function's body first gives way (its first `await`, `for await`, or —
+   *  in an async generator — `yield`): what completes after it runs in a continuation, later
+   *  than the call. Infinity for a function that never gives way (or is not async). */
+  const firstAwaitOf = (fn) => {
+    if (!fn.body || !(fn.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return Infinity;
+    let at = Infinity;
+    const visit = (n) => {
+      if (n.pos >= at || (n !== fn.body && isFunctionLike(n))) return;
+      if (ts.isAwaitExpression(n) || ts.isYieldExpression(n) || (ts.isForOfStatement(n) && n.awaitModifier)) at = Math.min(at, n.getStart());
+      ts.forEachChild(n, visit);
+    };
+    visit(fn.body);
+    return at;
+  };
+  /** Is this call awaited where it is made (`await f(x)`)? Its continuations have then run. */
+  const awaitedCall = (call) => {
+    const p = skipOuter(call).parent;
+    return !!p && ts.isAwaitExpression(p);
+  };
   /** The call a reference is an argument of — the send it is evaluated for is no effect. */
   const callOfArgument = (ref) => {
     const outer = ref && skipOuter(ref);
@@ -1984,6 +2039,10 @@ export function deriveAgentEmissions(input) {
    *  under that key; one already under a key is two keys down and changes no recorded shape. */
   const reroot = (e, prefix) => {
     if (prefix.length === 0) return e;
+    if (e.kind === "block") {
+      const events = e.events.map((x) => reroot(x, prefix)).filter(Boolean);
+      return events.length > 0 ? { ...e, events } : undefined;
+    }
     if (e.kind === "top") return { ...e, kind: "deep", key: prefix[0] };
     if (e.kind === "capture") return { ...e, prefix: [...prefix, ...e.prefix] };
     return undefined;
@@ -2000,8 +2059,8 @@ export function deriveAgentEmissions(input) {
    *  send: `withoutSendEffects`). */
   function calleeEffects(call, argIndex, ctx, depth) {
     const text = calleeText(call);
-    const none = { seq: [], floating: [], unknowns: [] };
-    const unmodeled = (reason, at = null) => ({ seq: [], floating: [], unknowns: [{ reason, call: at }] });
+    const none = { seq: [], deferred: [], floating: [], unknowns: [] };
+    const unmodeled = (reason, at = null) => ({ seq: [], deferred: [], floating: [], unknowns: [{ reason, call: at }] });
     const decl = calleeDeclaration(call);
     if (!decl || !decl.body) {
       if (libNoEffect(call)) {
@@ -2075,15 +2134,21 @@ export function deriveAgentEmissions(input) {
       }
     }
     items.sort(byCompletion);
+    // What runs later than the call: a generator's whole body (it runs when iterated), an
+    // async function's body from its first await on (a continuation).
+    const generator = !!decl.asteriskToken;
+    const firstAwait = generator ? -1 : firstAwaitOf(decl);
     const seq = [];
+    const deferred = [];
     const floating = [];
     for (const it of items) {
-      // In the callee's own body, outside a loop: in order; else (a callback, a loop body)
-      // at any time. Certain when it runs on every call.
+      // In the callee's own body, outside a loop: in order (with the call, or after its first
+      // await); else (a callback, a loop body) at any time. Certain when it runs on every call.
       const ordered = enclosingFunction(it.node) === decl && !inLoopWithin(it.node, decl);
+      const target = !ordered ? floating : generator || it.node.end > firstAwait ? deferred : seq;
       const certain = ordered && unconditionalIn(it.node) && !it.rebound;
       if (it.e) {
-        (ordered ? seq : floating).push({ ...it.e, certain: certain && writeCertain(it.e) });
+        target.push({ ...it.e, certain: certain && writeCertain(it.e) });
         continue;
       }
       const c = it.call;
@@ -2092,14 +2157,24 @@ export function deriveAgentEmissions(input) {
       const via = (e) => [...(c.via ?? []), ...(e.via ?? [])];
       for (const s of sub.seq) {
         const e = reroot(s, it.prefix);
-        if (e) (ordered ? seq : floating).push({ ...e, via: via(e), certain: certain && e.certain && !c.uncertain });
+        if (e) target.push({ ...e, via: via(e), certain: target !== floating && certain && e.certain && !c.uncertain });
+      }
+      // The sub-callee's continuation: in order when it is awaited, else a block that may
+      // have run or not (all of it, in its order).
+      const later = sub.deferred.map((s) => reroot(s, it.prefix)).filter(Boolean).map((e) => ({ ...e, via: via(e) }));
+      if (awaitedCall(c.call) && !sub.generator) for (const e of later) target.push({ ...e, certain: target !== floating && certain && e.certain && !c.uncertain });
+      else if (later.length > 0) {
+        // It cannot run before the call: right after it, or after everything else.
+        const block = { kind: "block", events: later, certain: false, at: locOf(c.call) };
+        target.push(block);
+        floating.push({ ...block, endOnly: true });
       }
       for (const s of sub.floating) {
         const e = reroot(s, it.prefix);
         if (e) floating.push({ ...e, via: via(e), certain: false });
       }
     }
-    return { seq, floating, unknowns };
+    return { seq, deferred, floating, unknowns, generator };
   }
 
   /** Add property writes to an object value. A write's value is `av` when given, else its
@@ -2233,6 +2308,7 @@ export function deriveAgentEmissions(input) {
    *  an opaque contribution, the binding reassigned), or null (it replaces none). */
   const replacedKey = (e) => {
     if (e.kind === "reassign") return "*";
+    if (e.kind === "block") return e.events.some((x) => replacedKey(x) !== null) ? "*" : null;
     if (e.kind !== "top") return null;
     if (e.w.opaque || e.w.spread || e.w.key === undefined) return "*";
     return e.w.key;
@@ -2245,19 +2321,22 @@ export function deriveAgentEmissions(input) {
    *  replace, and at the end — as often as it may (two passes when it both replaces a key
    *  and writes into one, so that either order is covered). A floating reassignment that
    *  reads the binding (not a copy) is applied at the end only, against the fullest state:
-   *  the keys the writes before it add are in what it reads. An alias's event is skipped once
-   *  its key was certainly replaced after the alias took the object, and only possible when
-   *  it may have been. */
+   *  the keys the writes before it add are in what it reads. A continuation that may not
+   *  have run (a `block`: what an async callee does after its first await, unawaited) is
+   *  applied where its call is, all of it or none of it, and again at the end, after
+   *  everything else. An alias's event is skipped once its key was certainly replaced after
+   *  the alias took the object, and only possible when it may have been. */
   const foldEffects = (initial, plan, ctx, decl) => {
     const { seq } = plan;
-    const floating = plan.floating.filter((e) => !nestingReassign(e));
-    const atEnd = plan.floating.filter(nestingReassign);
+    const atEnd = plan.floating.filter((e) => nestingReassign(e) || e.endOnly);
+    const floating = plan.floating.filter((e) => !atEnd.includes(e));
     if (seq.length === 0 && floating.length === 0 && atEnd.length === 0) return initial;
     let state = initial;
     const detached = new Map(); // capture id → "c" (certainly on another object) | "m" (maybe)
     const prefixOf = new Map(); // capture id → the key path the alias took
     const floatKeys = new Set(floating.map(replacedKey).filter((k) => k !== null));
-    const passes = (floatKeys.size > 0 && floating.some((e) => e.kind === "deep" || e.kind === "capture")) || atEnd.length > 0 ? 2 : 1;
+    const intoKeys = (e) => e.kind === "deep" || e.kind === "capture" || (e.kind === "block" && e.events.some(intoKeys));
+    const passes = (floatKeys.size > 0 && floating.some(intoKeys)) || atEnd.length > 0 ? 2 : 1;
     // A reassignment whose value does not name the binding has one value, wherever it runs.
     const fixed = new Map();
     const detach = (e, certain) => {
@@ -2290,6 +2369,18 @@ export function deriveAgentEmissions(input) {
       const vs = viaState(e);
       if (vs === "c") return;
       const certain = sure && vs === undefined;
+      if (e.kind === "block") {
+        // A continuation: all of it in its order, or none of it. Run, then joined with the
+        // state it would have left as it was; what it detached it then only may have.
+        const before = state;
+        const statuses = new Map(detached);
+        for (const x of e.events) apply(x, x.certain);
+        if (!certain) {
+          state = union([before, state]);
+          for (const [id, s] of detached) if (s === "c" && statuses.get(id) !== "c") detached.set(id, "m");
+        }
+        return;
+      }
       if (e.kind === "reassign") {
         const plain = e.op === ts.SyntaxKind.EqualsToken;
         const selfCtx = () => ({ ...ctx, self: new Map([...(ctx.self ?? []), [decl, state]]) });
@@ -2421,6 +2512,17 @@ export function deriveAgentEmissions(input) {
           const e = reroot(s, c.path);
           // A write the callee makes on every call is as certain as the call itself.
           if (e) target.push({ ...e, via: via(e), certain: certain && e.certain && !c.uncertain });
+        }
+        // What the callee does after its first await (or as a generator) has run by the next
+        // statement only when the call is awaited; otherwise it is a block that may have run
+        // or not — all of it, in its order, never one write without the next.
+        const later = fx.deferred.map((s) => reroot(s, c.path)).filter(Boolean).map((e) => ({ ...e, via: via(e) }));
+        if (awaitedCall(c.call) && !fx.generator) for (const e of later) target.push({ ...e, certain: certain && e.certain && !c.uncertain });
+        else if (later.length > 0) {
+          // It cannot run before the call: right after it, or after everything else.
+          const block = { kind: "block", events: later, certain: false, at: locOf(c.call) };
+          target.push(block);
+          floating.push({ ...block, endOnly: true });
         }
         for (const s of fx.floating) {
           const e = reroot(s, c.path);
@@ -2619,22 +2721,64 @@ export function deriveAgentEmissions(input) {
     return typeFallback(id, `${id.text} is a ${ts.SyntaxKind[decl.kind]}`);
   }
 
+  /** An argument's key in the memory of calls. A value with nothing behind it compares by
+   *  what it is — a literal (and where it was read from), an absence, an opaque value with no
+   *  effect behind it, a value known by its declared type, a parameter hole with every field
+   *  that tells holes apart, a union of such — so the same hole or literal, rebuilt by each
+   *  evaluation, is the same argument. Anything that may hold code or a closure (an object, a
+   *  function, a call…) keeps its identity: two closures from one node capture different
+   *  things, and a callee that calls one, or writes into an object holding one, must never be
+   *  served the other's result. */
+  const memoArgKeys = new WeakMap();
+  const memoArgKey = (av) => {
+    if (!av || typeof av !== "object") return String(av);
+    const hit = memoArgKeys.get(av);
+    if (hit !== undefined) return hit;
+    let k;
+    switch (av.k) {
+      case "lit":
+        k = `${avKey(av)}@${av.src ?? ""}:${av.why ?? ""}`;
+        break;
+      case "absent":
+        k = "A";
+        break;
+      case "opaque":
+        k = av.unknowns ? `#${identity(av)}` : `${avKey(av)}${av.literals ? `:${JSON.stringify(av.literals)}` : ""}`;
+        break;
+      case "tobj":
+        k = `${avKey(av)}@${av.src ?? ""}:${av.why ?? ""}:${av.depth ?? ""}`;
+        break;
+      case "hole":
+        k = `${avKey(av)}:${av.rest ? "r" : ""}${av.restIndex ?? ""}:${av.typedFrom ? identity(av.typedFrom) : ""}:${(av.typedPath ?? []).join(".")}:${av.expr ? identity(av.expr) : ""}`;
+        break;
+      case "union":
+        k = `U(${av.opts.map(memoArgKey).sort().join("|")})`;
+        break;
+      default:
+        k = `#${identity(av)}`;
+    }
+    memoArgKeys.set(av, k);
+    return k;
+  };
   /** Inline a call to a function-like with a body: bind its parameters, union its returns. */
   function inlineCall(fnNode, argAVs, ctx, at) {
     if (ctx.depth >= MAX_INLINE_DEPTH) return opaque(`call nesting beyond ${MAX_INLINE_DEPTH} (evaluator bound)`, at);
     if (ctx.stack.has(fnNode)) return opaque(`recursive call of ${labelOf(fnNode)}`, at);
     if (!fnNode.body) return opaque(`${labelOf(fnNode)} has no body`, at);
-    // Same function, same argument values, no bound enclosing parameter: same result.
+    // Same function, the same arguments (`memoArgKey`), no bound enclosing parameter: same
+    // result. (Neither a binding's state inside its own reassignment nor a narrowing is
+    // carried into an inlined call: its body never reads one.)
     const memoable = !bindsTouch(fnNode.body, ctx);
+    const keys = memoable ? argAVs.map(memoArgKey) : undefined;
     if (memoable) {
       const list = inlineMemo.get(fnNode);
-      const hit = list?.find((m) => m.strict === !!ctx.strictEffects && m.args.length === argAVs.length && m.args.every((a, i) => a === argAVs[i]));
+      const hit = list?.find((m) => m.strict === !!ctx.strictEffects && m.keys.length === keys.length && m.keys.every((k, i) => k === keys[i]));
       if (hit) return hit.value;
     }
     const value = inlineCallUncached(fnNode, argAVs, ctx, at);
     if (memoable && !budget.exhausted) {
       const list = inlineMemo.get(fnNode) ?? [];
-      list.push({ args: argAVs, value, strict: !!ctx.strictEffects });
+      list.push({ keys, value, strict: !!ctx.strictEffects });
       if (list.length > 32) list.shift();
       inlineMemo.set(fnNode, list);
     }
@@ -2682,10 +2826,54 @@ export function deriveAgentEmissions(input) {
     }
     return d;
   };
+  /** Is this call resolved to a signature the standard library declares? */
+  const libDeclared = (call) => {
+    let d;
+    try {
+      d = checker.getResolvedSignature(call)?.declaration;
+    } catch {
+      return false;
+    }
+    return !!d && LIB_FILE_RE.test(d.getSourceFile().fileName);
+  };
+  const objectLike = (v) => v.k === "obj" || v.k === "tobj" || v.k === "hole" || v.k === "absent" || (v.k === "union" && v.opts.every(objectLike));
+  /** A copy the standard library makes of what it is handed — `Object.assign(target, …)`,
+   *  `structuredClone(x)`, `JSON.parse(JSON.stringify(x))` — and `Object.freeze(x)`, which
+   *  hands x back: valued from its arguments, with their provenance. A frame copied this way
+   *  keeps its literal stream and its keys; known by the copy's declared type only, it would
+   *  pass for whatever that type says (a relay, when it has a stream and a data). Undefined
+   *  for any other call, a callee the library does not declare, a target that is not an
+   *  object (`Object.assign(fn, …)`), or a value with a toJSON (what JSON copies is then its
+   *  result). */
+  const libraryCopy = (call, calleeExpr, ctx) => {
+    const name = ts.isIdentifier(calleeExpr) ? calleeExpr.text : ts.isPropertyAccessExpression(calleeExpr) ? calleeExpr.name.text : undefined;
+    const ownerNode = ts.isPropertyAccessExpression(calleeExpr) ? unwrapExpr(calleeExpr.expression) : undefined;
+    const owner = ownerNode && ts.isIdentifier(ownerNode) ? ownerNode.text : undefined;
+    const kind = owner === "Object" && (name === "assign" || name === "freeze") ? name : !ownerNode && name === "structuredClone" ? "clone" : owner === "JSON" && name === "parse" ? "json" : undefined;
+    const args = call.arguments ?? [];
+    if (!kind || args.length === 0 || args.some((a) => ts.isSpreadElement(a)) || !libDeclared(call)) return undefined;
+    if (kind === "assign") {
+      const vs = args.map((a) => ev(a, ctx));
+      if (!vs.every(objectLike)) return undefined;
+      return objFromEntries(vs.map((v, i) => ({ t: "spread", v, node: args[i] })), locOf(call));
+    }
+    if (kind === "freeze" || kind === "clone") return args.length === 1 ? ev(args[0], ctx) : undefined;
+    // JSON.parse(JSON.stringify(x)), with neither a reviver nor a replacer.
+    const inner = args.length === 1 ? unwrapExpr(args[0]) : undefined;
+    const ie = inner && ts.isCallExpression(inner) ? unwrapExpr(inner.expression) : undefined;
+    const stringify = !!ie && ts.isPropertyAccessExpression(ie) && ie.name.text === "stringify" && ts.isIdentifier(unwrapExpr(ie.expression)) && unwrapExpr(ie.expression).text === "JSON";
+    if (!stringify || inner.arguments.length !== 1 || ts.isSpreadElement(inner.arguments[0]) || !libDeclared(inner)) return undefined;
+    const v = ev(inner.arguments[0], ctx);
+    const toJSON = asUnion(getProp(v, "toJSON"));
+    if (toJSON.k !== "absent" && !(toJSON.k === "union" && toJSON.opts.every((o) => o.k === "absent"))) return undefined;
+    return v;
+  };
 
   function evCall(call, ctx) {
     const at = locOf(call);
     const calleeExpr = unwrapExpr(call.expression);
+    const copied = libraryCopy(call, calleeExpr, ctx);
+    if (copied) return copied;
     const argAVs = evalArgs(call.arguments, ctx);
     // A string method on a value this module tracks: keep the value (literal methods are
     // computed; a parameter stays a hole wrapped in `derived`).
@@ -3239,6 +3427,12 @@ export function deriveAgentEmissions(input) {
     );
   }
   if (dispatcher.parameters.length === 0) throw new Error(`${ROOT_DISPATCHER} takes no event parameter`);
+  const busEventSym = (() => {
+    for (const st of rootSf.statements) {
+      if ((ts.isTypeAliasDeclaration(st) || ts.isInterfaceDeclaration(st)) && st.name.text === EVENT_TYPE) return checker.getSymbolAtLocation(st.name);
+    }
+    throw new Error(`${ROOT_SOURCE}: no ${EVENT_TYPE} type — upstream renamed the event the bus hands its listeners, and a relay of it can no longer be told from a frame of the gateway's own`);
+  })();
   // Other notifiers of the module: listed so the reader sees what is OUT of the channel.
   const otherChannels = topFns
     .filter((s) => s !== dispatcher && s.body && callsTo(s, "notifyListeners"))
@@ -5404,7 +5598,8 @@ export function deriveAgentEmissions(input) {
     }
     return null;
   }
-  const isEventDataNode = (n) => !!n && (isAgentEventDataExpr(n) || isDataCopy(n));
+  // A relayed event's own data: read from a value of the bus's event type (or a copy of it).
+  const isEventDataNode = (n) => !!n && (isAgentEventDataExpr(n, { bus: true }) || isDataCopy(n, { bus: true }));
   function dataLeaves(av, depth) {
     if (depth > 16) return [{ kind: "unresolved", reason: "data provenance nested beyond 16 levels (evaluator bound)" }];
     switch (av.k) {
@@ -5436,7 +5631,7 @@ export function deriveAgentEmissions(input) {
         return out;
       }
       case "tobj":
-        if (isAgentEventType(av.type)) return [{ kind: "inherited" }];
+        if (isBusEventType(av.type)) return [{ kind: "inherited" }];
         return [{ kind: "unresolved", reason: `a relayed event's data from a value of declared type ${typeStr(av.type)}` }];
       case "hole":
       case "call":
@@ -5487,6 +5682,74 @@ export function deriveAgentEmissions(input) {
     const members = t.isUnion() ? t.types : [t];
     return members.length > 0 && members.every((m) => !!checker.getPropertyOfType(m, "stream") && !!checker.getPropertyOfType(m, "data"));
   };
+  /** Is `t` the bus's own event (EVENT_TYPE), or made from it: an intersection with it
+   *  (`AgentEventPayload & { spawnedBy?: string }`), a union of such, a type parameter bound
+   *  by one, an interface extending one, a standard library transformation of one
+   *  (`Readonly<…>`, `Omit<…>`)? A type that merely has a stream and a data is not: a value
+   *  of it may be a frame the gateway made itself. */
+  const derivesFromBus = (t0, depth = 0) => {
+    if (!t0 || depth > 8) return false;
+    let t;
+    try {
+      t = checker.getNonNullableType(t0);
+    } catch {
+      return false;
+    }
+    if (t.aliasSymbol === busEventSym || t.symbol === busEventSym) return true;
+    // An alias of the sources (`type Ev = Pick<AgentEventPayload, …>`): the type it names
+    // keeps only its own name; what it is made of is in its declaration.
+    const own = t.aliasSymbol?.declarations?.find((d) => ts.isTypeAliasDeclaration(d) && !LIB_FILE_RE.test(d.getSourceFile().fileName));
+    if (own && typeNodeDerivesFromBus(own.type, depth + 1)) return true;
+    if (t.isUnion()) return t.types.length > 0 && t.types.every((m) => derivesFromBus(m, depth + 1));
+    if (t.isIntersection()) return t.types.some((m) => derivesFromBus(m, depth + 1));
+    if (t.flags & ts.TypeFlags.TypeParameter) {
+      const c = checker.getBaseConstraintOfType(t);
+      return !!c && c !== t && derivesFromBus(c, depth + 1);
+    }
+    const aliasDecl = t.aliasSymbol?.declarations?.[0];
+    if (aliasDecl && LIB_FILE_RE.test(aliasDecl.getSourceFile().fileName) && t.aliasTypeArguments?.length) return derivesFromBus(t.aliasTypeArguments[0], depth + 1);
+    if (t.isClassOrInterface()) {
+      try {
+        return (checker.getBaseTypes(t) ?? []).some((b) => derivesFromBus(b, depth + 1));
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  };
+  /** The same, read from a type as written: a reference to the bus's event type, a standard
+   *  library transformation of one, an intersection with one, a union of such. */
+  const typeNodeDerivesFromBus = (node, depth) => {
+    if (!node || depth > 8) return false;
+    if (ts.isParenthesizedTypeNode(node)) return typeNodeDerivesFromBus(node.type, depth + 1);
+    if (ts.isIntersectionTypeNode(node)) return node.types.some((m) => typeNodeDerivesFromBus(m, depth + 1));
+    if (ts.isUnionTypeNode(node)) return node.types.length > 0 && node.types.every((m) => typeNodeDerivesFromBus(m, depth + 1));
+    if (ts.isTypeReferenceNode(node)) {
+      let sym;
+      try {
+        sym = checker.getSymbolAtLocation(node.typeName);
+        if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+      } catch {
+        sym = undefined;
+      }
+      if (!sym) return false;
+      if (sym === busEventSym) return true;
+      const decl = sym.declarations?.[0];
+      if (decl && LIB_FILE_RE.test(decl.getSourceFile().fileName)) return !!node.typeArguments?.length && typeNodeDerivesFromBus(node.typeArguments[0], depth + 1);
+    }
+    // A type literal (or a mapped type) is made of its own members.
+    if (ts.isTypeLiteralNode(node) || ts.isMappedTypeNode(node)) return false;
+    let t;
+    try {
+      t = checker.getTypeFromTypeNode(node);
+    } catch {
+      return false;
+    }
+    return derivesFromBus(t, depth + 1);
+  };
+  /** An agent event the bus emitted: shaped like one, and of its type. */
+  const isBusEventType = (t) => isAgentEventType(t) && derivesFromBus(t);
+  const notOfTheBus = (t) => `a value of declared type ${typeStr(t)}, which has a stream and a data but is not an event of the bus (${EVENT_TYPE}): a frame the gateway may have made itself`;
   /** The declared type at a property path (`.k`, `[]` for an element) below `t0`. */
   const typeAtPath = (t0, keys) => {
     let t = t0;
@@ -5589,13 +5852,15 @@ export function deriveAgentEmissions(input) {
         } catch {
           t = undefined;
         }
-        if (isAgentEventType(t)) return [{ kind: "parameter", hole: av, type: typeStr(t) }];
+        if (isBusEventType(t)) return [{ kind: "parameter", hole: av, type: typeStr(t) }];
+        if (isAgentEventType(t)) return [{ kind: "unresolved", reason: `${describe(av)}: ${notOfTheBus(t)}` }];
         return [{ kind: "unresolved", reason: `${describe(av)}, whose declared type ${t ? typeStr(t) : "is unknown"} is not an agent event` }];
       }
       case "tobj": {
         const st = scalarValues(tobjProp(av, "stream")).filter((s) => !s.absent);
         if (st.length > 0 && st.every((s) => typeof s.value === "string")) return st.map((s) => ({ kind: "literal", value: s.value }));
-        if (isAgentEventType(av.type)) return [{ kind: "typed", type: typeStr(av.type), at: av.at }];
+        if (isBusEventType(av.type)) return [{ kind: "typed", type: typeStr(av.type), at: av.at }];
+        if (isAgentEventType(av.type)) return [{ kind: "unresolved", reason: notOfTheBus(av.type) }];
         return [{ kind: "unresolved", reason: nested ? `a spread of declared type ${typeStr(av.type)} may set the stream` : `a value of declared type ${typeStr(av.type)}, not an agent event` }];
       }
       case "call": {
@@ -5605,7 +5870,8 @@ export function deriveAgentEmissions(input) {
         } catch {
           t = undefined;
         }
-        if (isAgentEventType(t)) return [{ kind: "typed", type: typeStr(t), at: av.at }];
+        if (isBusEventType(t)) return [{ kind: "typed", type: typeStr(t), at: av.at }];
+        if (isAgentEventType(t)) return [{ kind: "unresolved", reason: `${describe(av)}: ${notOfTheBus(t)}` }];
         return [{ kind: "unresolved", reason: describe(av) }];
       }
       default:
@@ -5655,8 +5921,9 @@ export function deriveAgentEmissions(input) {
       .sort();
     return added.length > 0 ? added : null;
   }
-  /** `x.data` where x's declared type has both `stream` and `data` (an agent event). */
-  function isAgentEventDataExpr(expr) {
+  /** `x.data` where x's declared type has both `stream` and `data` (an agent event); `bus`:
+   *  and is the bus's event type, or made from it (a relayed event's own data). */
+  function isAgentEventDataExpr(expr, { bus = false } = {}) {
     const e = unwrapExpr(expr);
     if (!ts.isPropertyAccessExpression(e) || e.name.text !== "data") return false;
     let t;
@@ -5665,19 +5932,19 @@ export function deriveAgentEmissions(input) {
     } catch {
       return false;
     }
-    return !!checker.getPropertyOfType(t, "stream") && !!checker.getPropertyOfType(t, "data");
+    return !!checker.getPropertyOfType(t, "stream") && !!checker.getPropertyOfType(t, "data") && (!bus || derivesFromBus(t));
   }
   /** An identifier bound to an event's data or to a copy of it (`let data = event.data`,
    *  `const data = { ...event.data }`). `copiesOnly`: only a copy — writing to the event's
-   *  own data object is a different (and unseen) mutation. */
-  function isDataCopy(expr, { copiesOnly = false } = {}) {
+   *  own data object is a different (and unseen) mutation. `bus`: of the bus's event type. */
+  function isDataCopy(expr, { copiesOnly = false, bus = false } = {}) {
     const e = unwrapExpr(expr);
     if (!ts.isIdentifier(e)) return false;
     const d = declsOf(valueSymOf(e))[0];
     if (!d || !ts.isVariableDeclaration(d) || !d.initializer) return false;
     const init = unwrapExpr(d.initializer);
-    if (ts.isObjectLiteralExpression(init)) return init.properties.some((p) => ts.isSpreadAssignment(p) && isAgentEventDataExpr(p.expression));
-    return !copiesOnly && isAgentEventDataExpr(init);
+    if (ts.isObjectLiteralExpression(init)) return init.properties.some((p) => ts.isSpreadAssignment(p) && isAgentEventDataExpr(p.expression, { bus }));
+    return !copiesOnly && isAgentEventDataExpr(init, { bus });
   }
   /** The conditions guarding a node, up to its function: each `{ stream?, phase?, negated }`
    *  collects the literals an enclosing `if`/ternary compares `.stream`/`.phase` (or a

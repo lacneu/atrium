@@ -362,8 +362,10 @@ export function lifecycle(runId: string) {
   "src/plugin-sdk/public.ts": `export { emitAgentEvent } from "../infra/agent-events.js";\n`,
   "src/gateway/server-chat.ts": `
 import { createGatewayBroadcaster } from "./server-broadcast.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
 type Broadcast = (event: string, payload: unknown) => void;
-type Ev = { runId: string; stream: string; data: Record<string, unknown> };
+// The bus event the gateway relays (a relay is of the bus event type, or made from it).
+type Ev = Pick<AgentEventPayload, "runId" | "stream" | "data">;
 export function relay(broadcast: Broadcast, evt: Ev, expected: number) {
   broadcast("agent", { runId: evt.runId, stream: "error", data: { reason: "seq gap", expected } });
   broadcast("agent", evt);
@@ -587,13 +589,15 @@ describe("deriveAgentEmissions — gateway senders are DISCOVERED by symbol and 
   // call's payload is the template with the call's arguments substituted.
   const CHAT = `
 import type { NodeRegistry } from "./node-registry.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
 type Ctx = {
   broadcast: (event: string, payload: unknown) => void;
   broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => void;
   nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
   registry: NodeRegistry;
 };
-type Ev = { runId: string; stream: string; data: Record<string, unknown> };
+// The bus event the handlers relay (a relay is of the bus event type, or made from it).
+type Ev = Pick<AgentEventPayload, "runId" | "stream" | "data">;
 declare function make(): unknown;
 declare function pick(): string;
 declare function pickEvent(): string;
@@ -2407,6 +2411,591 @@ export function thisTyped(b: Bound) {
     const reasons = reasonsIn("src/gateway/accessors-s.ts");
     expect(reasons.some((r) => /more than 3 calls.*getter effect/.test(r))).toBe(true);
     expect(reasons.some((r) => /more than 3 calls.*method stamp/.test(r))).toBe(true);
+  });
+});
+
+describe("deriveAgentEmissions — the fifth review's counterexamples (lot F)", () => {
+  const FILES: Record<string, string> = {
+    // 1. What a helper does after its first await, or in a generator, runs later than its
+    //    call: not before a send that does not wait for it; certain once the call is awaited.
+    "src/gateway/async-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+async function replaceLater(p: Frame) {
+  await 0;
+  p.stream = "x_async_after";
+  p.data = { late: 1 };
+}
+async function replaceAwaited(p: Frame) {
+  p.data.sync = 1;
+  await 0;
+  p.stream = "x_awaited_after";
+  p.data = { done: 1 };
+}
+function* replaceGen(p: Frame) {
+  p.stream = "x_gen_after";
+  p.data = { genLate: 1 };
+  yield 1;
+}
+export function notAwaited() {
+  const { broadcast } = createGatewayBroadcaster();
+  const p: Frame = { runId: "r", stream: "x_async_before", data: { early: 1 } };
+  void replaceLater(p);
+  broadcast("agent", p);
+  const g: Frame = { runId: "r", stream: "x_gen_before", data: { genEarly: 1 } };
+  replaceGen(g);
+  broadcast("agent", g);
+  const s: Frame = { runId: "r", stream: "x_sync_part", data: { e: 1 } };
+  void replaceAwaited(s);
+  broadcast("agent", s);
+}
+export async function awaited() {
+  const { broadcast } = createGatewayBroadcaster();
+  const p: Frame = { runId: "r", stream: "x_awaited_before", data: { e: 1 } };
+  await replaceAwaited(p);
+  broadcast("agent", p);
+}
+`,
+    // 2. Every value a function-typed property may hold is examined: a reassignment of the
+    //    binding it comes from, both branches of a conditional; a value that is not known
+    //    among known ones refuses too.
+    "src/gateway/values-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+type Actor = { runId: string; stream: string; data: Record<string, unknown>; act: () => void };
+declare function makeAct(): () => void;
+export function reassignedValue() {
+  const { broadcast } = createGatewayBroadcaster();
+  let act = () => {};
+  act = function (this: Frame) {
+    this.stream = "x_after_act";
+    this.data = { late: 1 };
+  };
+  const p: Actor = { runId: "r", stream: "x_act", data: { e: 1 }, act };
+  p.act();
+  broadcast("agent", p);
+}
+export function ternaryValue(cond: boolean) {
+  const { broadcast } = createGatewayBroadcaster();
+  const mutator = function (this: Frame) {
+    this.data = { late: 1 };
+  };
+  const q: Actor = { runId: "r", stream: "x_ternary_act", data: { e: 1 }, act: cond ? () => {} : mutator };
+  q.act();
+  broadcast("agent", q);
+}
+export function unknownValue() {
+  const { broadcast } = createGatewayBroadcaster();
+  const u: Actor = { runId: "r", stream: "x_unknown_act", data: { e: 1 }, act: makeAct() };
+  u.act();
+  broadcast("agent", u);
+}
+export function arrowsOnly(cond: boolean) {
+  const { broadcast } = createGatewayBroadcaster();
+  let act = () => {};
+  if (cond) act = () => undefined;
+  const a: Actor = { runId: "r", stream: "x_arrows_act", data: { a: 1 }, act: cond ? act : () => {} };
+  a.act();
+  broadcast("agent", a);
+}
+`,
+    // 3. LIMIT — what may run any number of times is applied at the end in two passes at most,
+    //    never until the object stops changing: the states past them are not derived. The
+    //    contract states it; the bench's emission check and the drift detector are its nets.
+    "src/gateway/loop-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+const next = (p: Frame): Frame => ({ ...p, stream: p.stream === "x_s0" ? "x_s1" : p.stream === "x_s1" ? "x_s2" : "x_s3", data: { k: 1 } });
+export function loopNext() {
+  const { broadcast } = createGatewayBroadcaster();
+  let p: Frame = { runId: "r", stream: "x_s0", data: {} };
+  for (let i = 0; i < 3; i++) p = next(p);
+  broadcast("agent", p);
+}
+const step = (p: Frame): Frame => ({ ...p, stream: p.stream === "x_v0" ? "x_v1" : p.stream === "x_v1" ? "x_v2" : "x_v3", data: { v: 1 } });
+export function throughBinding() {
+  const { broadcast } = createGatewayBroadcaster();
+  let v: Frame = { runId: "r", stream: "x_v0", data: {} };
+  for (let i = 0; i < 3; i++) {
+    const n = step(v);
+    v = n;
+  }
+  broadcast("agent", v);
+}
+export function untouchedLoop() {
+  const { broadcast } = createGatewayBroadcaster();
+  let u: Frame = { runId: "r", stream: "x_u0", data: {} };
+  for (let i = 0; i < 3; i++) u = { ...u, stream: u.stream === "x_u0" ? "x_u1" : u.stream === "x_u1" ? "x_u2" : "x_u3" };
+  broadcast("agent", { runId: "r", stream: u.stream, data: u.data });
+}
+export function untouchedSequence() {
+  const { broadcast } = createGatewayBroadcaster();
+  let w: Frame = { runId: "r", stream: "x_w0", data: {} };
+  w = { ...w, stream: w.stream === "x_w0" ? "x_w1" : "x_w9" };
+  w = { ...w, stream: w.stream === "x_w1" ? "x_w2" : "x_w9" };
+  broadcast("agent", { runId: "r", stream: w.stream, data: { w: 1 } });
+}
+export function chained(on: (cb: () => void) => void) {
+  const { broadcast } = createGatewayBroadcaster();
+  let c: Frame = { runId: "r", stream: "x_c0", data: { a: 1 } };
+  on(() => {
+    c.data.deep = 1;
+  });
+  on(() => {
+    c.data = { fresh: 1 };
+  });
+  on(() => {
+    c = { runId: "r", stream: "x_c1", data: {} };
+  });
+  broadcast("agent", c);
+}
+`,
+    // The memory of calls: one evaluation serves arguments that are the same value — never
+    // two closures from one node, which capture different things, called or held by an
+    // object the callee writes into.
+    "src/gateway/memo-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+function framed(cb: () => string): Frame {
+  return { runId: "r", stream: cb(), data: {} };
+}
+const make = (s: string) => () => s;
+export function twoCallbacks() {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", framed(make("x_cb_one")));
+  broadcast("agent", framed(make("x_cb_two")));
+}
+function settle(o: { get(): string; used?: boolean }): Frame {
+  o.used = true;
+  return { runId: "r", stream: o.get(), data: {} };
+}
+const holder = (s: string) => ({
+  get() {
+    return s;
+  },
+});
+export function twoHolders() {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", settle(holder("x_holder_one")));
+  broadcast("agent", settle(holder("x_holder_two")));
+}
+// The same literal argument in two branches that narrow a binding the callee reads.
+export function narrowedCalls(cond: boolean) {
+  const { broadcast } = createGatewayBroadcaster();
+  const e = cond ? { kind: "a" as const, tag: "x_n_a" } : { kind: "b" as const, tag: "x_n_b" };
+  const label = (suffix: string): Frame => ({ runId: "r", stream: e.tag, data: { suffix } });
+  broadcast("agent", e.kind === "a" ? label("s") : label("s"));
+}
+`,
+    // 4. A library copy is valued from its arguments, with their provenance; a relay is an
+    //    event of the bus's own type, not any value that has a stream and a data.
+    "src/gateway/assign-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
+export function assignCopy() {
+  const { broadcast } = createGatewayBroadcaster();
+  const p = { runId: "r", stream: "x_assign_before", data: { early: 1 } };
+  const q = Object.assign({}, p);
+  broadcast("agent", q);
+  const j = JSON.parse(JSON.stringify({ runId: "r", stream: "x_json_copy", data: { copied: 1 } }));
+  broadcast("agent", j);
+}
+export function relayShape(x: { runId: string; seq: number; ts: number; stream: string; data: Record<string, unknown> }) {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", x);
+}
+export function relayBus(evt: AgentEventPayload) {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", evt);
+}
+`,
+    // 4, the general cause: the other library copies, and a relay of a type made from the
+    //    bus's (an intersection, a standard library transformation).
+    "src/gateway/copy-general-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
+export function otherCopies() {
+  const { broadcast } = createGatewayBroadcaster();
+  // A binding's declared type widens the stream to string: only its value keeps the literal.
+  const f = { runId: "r", stream: "x_frozen", data: { f: 1 } };
+  broadcast("agent", Object.freeze(f));
+  broadcast("agent", structuredClone({ runId: "r", stream: "x_cloned", data: { c: 1 } }));
+}
+export function relayExtended(evt: AgentEventPayload & { spawnedBy?: string }) {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", evt);
+}
+export function relayOmitted(evt: Omit<AgentEventPayload, "seq" | "ts">) {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", evt);
+}
+`,
+    // 4, the general cause: a relayed event's data is its own only when it is read from a
+    //    value of the bus's type — not from any value with a stream and a data.
+    "src/gateway/relay-data-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
+export function relayForeignData(evt: AgentEventPayload, other: { stream: string; data: Record<string, unknown> }) {
+  const { broadcast } = createGatewayBroadcaster();
+  broadcast("agent", { ...evt, data: other.data });
+}
+`,
+  };
+  let inv7: Inventory;
+  type Fab = { file: string; function: string; stream?: string; keys?: string[]; reason?: string; line?: number };
+  type Relay = { file: string; function: string; origins: { kind: string; type?: string }[] };
+  const tf7 = () => inv7.transformations as unknown as { fabricated: Fab[]; unresolved: Fab[]; relays: Relay[] };
+  const keysOf = (stream: string) => tf7().fabricated.filter((g) => g.stream === stream).map((g) => g.keys);
+  const keysAt = (stream: string) => new Set(keysOf(stream).flat());
+  const reasonsIn = (file: string) => tf7().unresolved.filter((u) => u.file === file).map((u) => u.reason ?? "");
+  beforeAll(() => {
+    inv7 = derive({
+      root: "/virtual-upstream",
+      files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...FILES },
+      tsconfig: TSCONFIG,
+      // The DOM library declares structuredClone, as @types/node does upstream.
+      compilerOptions: { lib: ["lib.es2022.d.ts", "lib.dom.d.ts"] },
+    });
+  });
+
+  it("1. what a helper does after its first await, or in a generator, may not have run at a send that does not wait for it", () => {
+    expect(keysOf("x_async_before")).toEqual([["early"]]);
+    expect(keysOf("x_async_after")).toEqual([["late"]]);
+    expect(keysOf("x_gen_before")).toEqual([["genEarly"]]);
+    expect(keysOf("x_gen_after")).toEqual([["genLate"]]);
+    // The part before the first await runs with the call.
+    expect(keysOf("x_sync_part")).toEqual([["e", "sync"]]);
+    // The continuation replaces the data after the synchronous write, never before it.
+    expect(keysOf("x_awaited_after").some((k) => JSON.stringify(k) === '["done","sync"]')).toBe(false);
+  });
+
+  it("1. awaited, the helper has finished: its writes are certain", () => {
+    expect(keysOf("x_awaited_before")).toEqual([]);
+    expect(keysOf("x_awaited_after").some((k) => JSON.stringify(k) === '["done"]')).toBe(true);
+  });
+
+  it("2. every value a function-typed property may hold is examined, and an unknown one among known ones refuses", () => {
+    const reasons = reasonsIn("src/gateway/values-s.ts");
+    expect(reasons.some((r) => /property act .*holds .*a function that is not an arrow that uses `this`/.test(r) && /reassignedValue/.test(r))).toBe(true);
+    expect(reasons.some((r) => /property act .*holds ternaryValue > mutator/.test(r))).toBe(true);
+    expect(reasons.some((r) => /property act .*may hold makeAct\(\)/.test(r))).toBe(true);
+    expect(keysOf("x_act")).toEqual([]);
+    expect(keysOf("x_ternary_act")).toEqual([]);
+    expect(keysOf("x_unknown_act")).toEqual([]);
+    expect(keysOf("x_arrows_act")).toEqual([["a"]]);
+  });
+
+  it("3. LIMIT — what may run any number of times is applied in two passes at most: the states past them are not derived", () => {
+    // `p = next(p)` three times from x_s0: followed through two applications, so x_s3 is not
+    // derived. A limit the contract states, not a refusal: nothing is unresolved.
+    for (const s of ["x_s0", "x_s1", "x_s2"]) expect(keysOf(s).length, s).toBeGreaterThan(0);
+    expect(keysOf("x_s3")).toEqual([]);
+    // Read through another binding (`const n = step(v); v = n`): valued once, where it first runs.
+    expect(keysOf("x_v1").length).toBeGreaterThan(0);
+    expect(keysOf("x_v2")).toEqual([]);
+    // A binding handed to no call: each reassignment read against its first value, in a loop
+    // or in a sequence.
+    expect(keysOf("x_u1").length).toBeGreaterThan(0);
+    expect(keysOf("x_u2")).toEqual([]);
+    expect(keysOf("x_w9").length).toBeGreaterThan(0);
+    expect(keysOf("x_w2")).toEqual([]);
+    // Three callbacks, each replacing what the next writes into: not every order.
+    expect(keysOf("x_c1").some((k) => JSON.stringify(k) === '["deep","fresh"]')).toBe(false);
+    expect(reasonsIn("src/gateway/loop-s.ts")).toEqual([]);
+  });
+
+  it("the memory of calls shares one evaluation only between arguments that are the same value: never two closures", () => {
+    for (const s of ["x_cb_one", "x_cb_two", "x_holder_one", "x_holder_two"]) expect(keysOf(s).length, s).toBeGreaterThan(0);
+    // Nor across two branches that narrow a binding the callee reads.
+    expect(keysOf("x_n_a").length).toBeGreaterThan(0);
+    expect(keysOf("x_n_b").length).toBeGreaterThan(0);
+  });
+
+  it("4. a library copy is valued from its arguments: the local frame stays fabricated", () => {
+    expect(keysOf("x_assign_before")).toEqual([["early"]]);
+    expect(keysOf("x_json_copy")).toEqual([["copied"]]);
+    expect(tf7().relays.filter((r) => r.file === "src/gateway/assign-s.ts" && r.function === "assignCopy")).toEqual([]);
+  });
+
+  it("4. a relay is an event of the bus's own type, not any value with a stream and a data", () => {
+    const relays = tf7().relays.filter((r) => r.file === "src/gateway/assign-s.ts");
+    expect(relays.map((r) => r.function)).toEqual(["relayBus"]);
+    expect(reasonsIn("src/gateway/assign-s.ts").some((r) => /not an event of the bus/.test(r))).toBe(true);
+  });
+
+  it("4. the other library copies are valued from their arguments too, and a relay may be of a type made from the bus's", () => {
+    expect(keysOf("x_frozen")).toEqual([["f"]]);
+    expect(keysOf("x_cloned")).toEqual([["c"]]);
+    const relays = tf7().relays.filter((r) => r.file === "src/gateway/copy-general-s.ts").map((r) => r.function).sort();
+    expect(relays).toEqual(["relayExtended", "relayOmitted"]);
+  });
+
+  it("4. a relayed event's data read from a value not of the bus's type is the gateway's own", () => {
+    expect(reasonsIn("src/gateway/relay-data-s.ts").some((r) => /replaces a relayed event's data/.test(r))).toBe(true);
+  });
+
+  it("4. a bus without its event type refuses the derivation: no relay could be told from a frame", () => {
+    const files = { ...TRANSPORT, "src/infra/agent-events.ts": BUS.replace(/AgentEventPayload/g, "BusEvent"), "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]! };
+    expect(() => derive({ root: "/virtual-upstream", files, tsconfig: TSCONFIG, compilerOptions: OPTIONS })).toThrow(/no AgentEventPayload type/);
+  });
+});
+
+describe("deriveAgentEmissions — upstream's lifecycle terminal backstop is a state machine of three kinds (lot F)", () => {
+  // src/auto-reply/reply/agent-lifecycle-terminal.ts (all 194 lines) at 2026.9.36, verbatim but for its
+  // package import; the helpers it imports declared with their upstream signatures. Its
+  // state is reassigned in closures — pending (beginAttempt :77), written into (note :93-94),
+  // emitted (:97, :175), captured with an event prepared from it (capture :166-167) — and
+  // the emit's prepareTerminal spreads pending.metadata (:110-115).
+  const FILES: Record<string, string> = {
+    "src/auto-reply/reply/agent-lifecycle-terminal.ts": `import { readStringValue } from "../../shared/string-coerce.js";
+import { classifyOAuthRefreshFailureError } from "../../agents/auth-profiles/oauth-refresh-failure.js";
+import { renderAgentHarnessPreflightUserMessage } from "../../agents/embedded-agent-helpers/user-facing-text.js";
+import { getFailoverErrorCode } from "../../agents/failover/error.js";
+import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
+import { AGENT_RUN_RESTART_ABORT_STOP_REASON } from "../../agents/run-termination.js";
+import { emitAgentEvent } from "../../infra/agent-events.js";
+import { formatErrorMessage } from "../../infra/errors.js";
+
+export type AgentLifecycleTerminalBackstop = {
+  beginAttempt: () => void;
+  capture: AgentLifecycleTerminalBackstop["emit"];
+  emit: (
+    phase: "end" | "error",
+    resultOrError: unknown,
+    extraData?: Record<string, unknown>,
+  ) => void;
+  getDeferredError: () => string | undefined;
+  note: (evt: { stream: string; data: Record<string, unknown> }) => void;
+};
+
+type PendingLifecycleTerminal = {
+  kind: "pending";
+  deferredError?: string;
+  metadata: Record<string, unknown>;
+};
+
+type LifecycleTerminalState =
+  | PendingLifecycleTerminal
+  | { kind: "captured"; event: Parameters<typeof emitAgentEvent>[0] }
+  | { kind: "emitted" };
+
+const DEFERRED_TERMINAL_METADATA_KEYS = [
+  "stopReason",
+  "yielded",
+  "timeoutPhase",
+  "providerStarted",
+  "aborted",
+  "livenessState",
+  "replayInvalid",
+  "errorObservation",
+  "assistantTranscriptIdempotencyKey",
+] as const;
+
+export function resolveAgentLifecycleTerminalMetadata(meta: unknown): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  if (!meta || typeof meta !== "object") {
+    return metadata;
+  }
+  const record = meta as Record<string, unknown>;
+  for (const key of DEFERRED_TERMINAL_METADATA_KEYS) {
+    if (Object.hasOwn(record, key)) {
+      metadata[key] = record[key];
+    }
+  }
+  return metadata;
+}
+
+export function createAgentLifecycleTerminalBackstop(params: {
+  runId: string;
+  sessionKey?: string;
+  startedAt?: number;
+  getLifecycleGeneration: () => string;
+  onTerminalEvent?: (event: Parameters<typeof emitAgentEvent>[0]) => void;
+  resolveTerminationFields: (error?: unknown) => {
+    aborted?: true;
+    stopReason?: string;
+    timeoutPhase?: string;
+  };
+}): AgentLifecycleTerminalBackstop {
+  let state: LifecycleTerminalState = { kind: "pending", metadata: {} };
+  // Preparation can fail before a lifecycle start. Capture its real boundary
+  // without signaling readiness; an observed model start replaces it below.
+  let startedAt = params.startedAt ?? Date.now();
+  const beginAttempt = () => {
+    if (state.kind !== "emitted") {
+      state = { kind: "pending", metadata: {} };
+    }
+  };
+
+  const note = (evt: { stream: string; data: Record<string, unknown> }) => {
+    if (state.kind === "emitted" || evt.stream !== "lifecycle") {
+      return;
+    }
+    const phase = readStringValue(evt.data.phase);
+    if (phase === "start") {
+      beginAttempt();
+      if (typeof evt.data.startedAt === "number") {
+        startedAt = evt.data.startedAt;
+      }
+    }
+    if (phase === "finishing" && state.kind === "pending") {
+      state.deferredError = readStringValue(evt.data.error) ?? state.deferredError;
+      Object.assign(state.metadata, resolveAgentLifecycleTerminalMetadata(evt.data));
+    }
+    if (phase === "end" || phase === "error") {
+      state = { kind: "emitted" };
+    }
+  };
+
+  const prepareTerminal = (
+    pending: PendingLifecycleTerminal,
+    phase: "end" | "error",
+    resultOrError: unknown,
+    extraData?: Record<string, unknown>,
+  ): Parameters<typeof emitAgentEvent>[0] => {
+    const terminationFields = params.resolveTerminationFields(
+      phase === "error" ? resultOrError : undefined,
+    );
+    const restartAbort = terminationFields.stopReason === AGENT_RUN_RESTART_ABORT_STOP_REASON;
+    const data: Record<string, unknown> = {
+      ...pending.metadata,
+      phase: restartAbort ? "end" : phase,
+      endedAt: Date.now(),
+      startedAt,
+    };
+    if (restartAbort) {
+      data.aborted = true;
+      data.stopReason = AGENT_RUN_RESTART_ABORT_STOP_REASON;
+    } else if (phase === "error") {
+      const oauthFailure = classifyOAuthRefreshFailureError(resultOrError);
+      data.error =
+        renderAgentHarnessPreflightUserMessage(resultOrError) ??
+        renderFailoverCodeUserCopy(getFailoverErrorCode(resultOrError)) ??
+        (oauthFailure?.summary ? \`⚠️ \${oauthFailure.summary}\` : undefined) ??
+        formatErrorMessage(resultOrError);
+      if (oauthFailure?.summary) {
+        data.errorObservation = {
+          ...(oauthFailure.provider ? { provider: oauthFailure.provider } : {}),
+          ...(oauthFailure.reason ? { failoverReason: oauthFailure.reason } : {}),
+          providerRuntimeFailureKind: "auth_refresh",
+          ...(oauthFailure.errorType ? { providerErrorType: oauthFailure.errorType } : {}),
+          ...(oauthFailure.status ? { httpStatus: oauthFailure.status } : {}),
+        };
+      }
+      Object.assign(data, terminationFields);
+    } else {
+      const meta =
+        resultOrError && typeof resultOrError === "object" && "meta" in resultOrError
+          ? (resultOrError as { meta?: Record<string, unknown> }).meta
+          : undefined;
+      Object.assign(data, resolveAgentLifecycleTerminalMetadata(meta));
+      if (terminationFields.aborted === true) {
+        data.aborted = true;
+      }
+      if (terminationFields.stopReason && !readStringValue(data.stopReason)) {
+        data.stopReason = terminationFields.stopReason;
+      }
+    }
+    if (extraData) {
+      Object.assign(data, extraData);
+    }
+    return {
+      runId: params.runId,
+      lifecycleGeneration: params.getLifecycleGeneration(),
+      ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+      stream: "lifecycle",
+      data,
+    };
+  };
+
+  const capture: AgentLifecycleTerminalBackstop["capture"] = (phase, resultOrError, extraData) => {
+    if (state.kind === "pending") {
+      // Record bounded terminal facts before awaited bookkeeping can change
+      // the abort signal, lifecycle generation, or subsequent workflow outcome.
+      const event = prepareTerminal(state, phase, resultOrError, extraData);
+      state = { kind: "captured", event };
+    }
+  };
+  const emit: AgentLifecycleTerminalBackstop["emit"] = (phase, resultOrError, extraData) => {
+    const current = state;
+    if (current.kind === "emitted") {
+      return;
+    }
+    state = { kind: "emitted" };
+    const event =
+      current.kind === "captured"
+        ? current.event
+        : prepareTerminal(current, phase, resultOrError, extraData);
+    // Captured candidates can still be replaced by retries. Only publication
+    // settles execution; delivery and yielded-parent continuation remain separate.
+    const settled = { ...event, data: { ...event.data, executionSettled: true } };
+    emitAgentEvent(settled);
+    params.onTerminalEvent?.(settled);
+  };
+
+  return {
+    beginAttempt,
+    capture,
+    emit,
+    getDeferredError: () => (state.kind === "pending" ? state.deferredError : undefined),
+    note,
+  };
+}
+`,
+    "src/shared/string-coerce.ts": `export function readStringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+`,
+    "src/agents/auth-profiles/oauth-refresh-failure.ts": `type OAuthRefreshFailure = { summary?: string; provider?: string; reason?: string; errorType?: string; status?: number };
+export declare function classifyOAuthRefreshFailureError(err: unknown): OAuthRefreshFailure | null;
+`,
+    "src/agents/embedded-agent-helpers/user-facing-text.ts": `export declare function renderAgentHarnessPreflightUserMessage(error: unknown): string | undefined;
+`,
+    "src/agents/failover/error.ts": `export declare function getFailoverErrorCode(err: unknown): string | undefined;
+`,
+    "src/agents/failover/user-copy.ts": `export declare const renderFailoverCodeUserCopy: (code: unknown) => string | undefined;
+`,
+    "src/agents/run-termination.ts": `export const AGENT_RUN_RESTART_ABORT_STOP_REASON = "restart_abort";
+`,
+    "src/infra/errors.ts": `export declare function formatErrorMessage(err: unknown): string;
+`,
+    "src/agents/backstop-caller.ts": `import { createAgentLifecycleTerminalBackstop, resolveAgentLifecycleTerminalMetadata } from "../auto-reply/reply/agent-lifecycle-terminal.js";
+declare function onRunEvents(listener: (evt: { stream: string; data: Record<string, unknown> }) => void): void;
+type Result = { meta: Record<string, unknown> & { error?: { message: string } } };
+export async function runWithBackstop(runId: string, run: () => Promise<Result>) {
+  const terminal = createAgentLifecycleTerminalBackstop({
+    runId,
+    getLifecycleGeneration: () => "g1",
+    resolveTerminationFields: (error) => (error ? { aborted: true, stopReason: "error" } : {}),
+  });
+  onRunEvents((evt) => terminal.note(evt));
+  terminal.beginAttempt();
+  const result = await run();
+  terminal.capture("end", result);
+  const error = result.meta.error?.message ?? terminal.getDeferredError();
+  terminal.emit(error ? "error" : "end", error ? new Error(error) : result, { ...resolveAgentLifecycleTerminalMetadata(result.meta) });
+}
+`,
+  };
+  let invB: Inventory;
+  beforeAll(() => {
+    invB = derive({ root: "/virtual-upstream", files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...FILES }, tsconfig: TSCONFIG, compilerOptions: OPTIONS });
+  });
+  type Un = { file: string; reason: string };
+  const unresolvedB = () => (invB.transformations as unknown as { unresolved: Un[] }).unresolved;
+
+  it("its emit is derived without an evaluator bound", () => {
+    // The transport fixtures' own sends aside (their event is a parameter of the transport).
+    expect(unresolvedB().filter((u) => !u.file.startsWith("src/gateway/")).map((u) => `${u.file}: ${u.reason}`)).toEqual([]);
+    expect(JSON.stringify(invB.emissions)).not.toMatch(/evaluator bound/);
+  });
+
+  it("its terminal rows carry the backstop's keys", () => {
+    const rows = invB.emissions.filter((e) => /backstop-caller\.ts/.test(e.key));
+    expect(rows.every((r) => r.stream === "lifecycle"), JSON.stringify(rows.map((r) => r.key))).toBe(true);
+    expect(rows.length).toBeGreaterThan(0);
+    const keys = new Set(rows.flatMap((r) => r.keys.map((k) => k.key)));
+    for (const k of ["phase", "endedAt", "startedAt", "executionSettled"]) expect(keys.has(k), k).toBe(true);
   });
 });
 
