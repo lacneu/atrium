@@ -1,5 +1,5 @@
 {
-  "$comment": "WHERE the bridge reads each protocol schema's payload (or builds it, for a *Params schema): named functions of bridge/src, or a whole file when the file reads nothing else. Consumed by the coverage truth guard (test/coverage-truth.test.ts, V3): inside these sites a field name is THAT schema's field, so a field the PROMISED version's coverage manifest declares gap or ignored and that a site touches is a false declaration — unless the entry declares the reader (knownReaders) or the group declares the name a homonym at that site (another object's field, with why). The guard also refuses a schema the bridge reads (a handled field) that is neither scoped here nor listed in `unscoped` with why; `unscoped` can only shrink (FROZEN_UNSCOPED in the test). `emissionStreams` ties a coverage schema that describes agent `data` to its stream in the emission registry (protocol/openclaw/emissions/<version>.json), whose classification it must not contradict.",
+  "$comment": "WHERE the bridge reads each protocol schema's payload (or builds it, for a *Params schema): named functions of bridge/src, or a whole file when the file reads nothing else. Consumed by the coverage truth guard (test/coverage-truth.test.ts, V3): inside these sites a field name is THAT schema's field, so a field the PROMISED version's coverage manifest declares gap or ignored and that a site touches is a false declaration — unless the access is ADMITTED (a gap whose knownReaders token is exactly `<receiver>.<field>` in that file) or EXCEPTED here. An exception names ONE concrete access: the field, the site (file + function) and the receivers it is read through (the text before `.field`, without casts or `?.`). Without `branch` it says those receivers are another object (a homonym): refused when one of them carries a HANDLED field of the schema anywhere in the group (that receiver is the payload, aliases included). With `branch` ({receiver, field}) it says the field is read only on branches of that discriminant the schema never takes: the schema's own literal for it is read from the VENDORED schema (never declared here), and every access must be provably unreachable when the discriminant equals it (under a test that excludes it, or after `if (…R.field === own…) return`). The guard also refuses a schema the bridge reads (a handled field) that is neither scoped here nor listed in `unscoped` with why; `unscoped` can only shrink (FROZEN_UNSCOPED in the test). `emissionStreams` ties a coverage schema that describes agent `data` to its stream in the emission registry (protocol/openclaw/emissions/<version>.json), whose classification it must not contradict.",
   "groups": [
     {
       "name": "chat events",
@@ -8,12 +8,13 @@
         { "file": "src/providers/openclaw/normalizer.ts", "fn": "handleChat" },
         { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }
       ],
-      "homonyms": {
-        "ChatFinalEvent.agentId": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); a final returns before it",
-        "ChatAbortedEvent.agentId": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); an aborted frame returns before it",
-        "ChatErrorEvent.agentId": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); an error frame returns before it",
-        "ChatStatusEvent.agentId": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); a status frame returns before it"
-      }
+      "exceptions": [
+        { "field": "ChatFinalEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); a final returns before it" },
+        { "field": "ChatAbortedEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); an aborted frame returns before it" },
+        { "field": "ChatErrorEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); an error frame returns before it" },
+        { "field": "ChatStatusEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); a status frame returns before it" },
+        { "field": "ChatAbortedEvent.errorMessage", "site": { "file": "src/providers/openclaw/normalizer.ts", "fn": "handleChat" }, "receivers": ["payload"], "branch": { "receiver": "payload", "field": "state" }, "why": "handleChat reads errorMessage for state error only: the aborted branch finalizes and returns before the read (the gap: an abort's cancellation reason is dropped)" }
+      ]
     },
     {
       "name": "agent event envelope",
@@ -23,21 +24,21 @@
         { "file": "src/providers/openclaw/normalizer.ts", "fn": "handleAgent" },
         { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectAgent" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "handshake",
       "schemas": ["HelloOk", "ConnectParams"],
       "sites": [{ "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connect" }],
-      "homonyms": {
-        "HelloOk.type": "`frame.type` at this site is the response ENVELOPE's discriminant (res / event), read before the hello-ok payload; the payload's own `type` is not read"
-      }
+      "exceptions": [
+        { "field": "HelloOk.type", "site": { "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connect" }, "receivers": ["frame"], "why": "`frame.type` at this site is the response ENVELOPE's discriminant (res / event), read before the hello-ok payload; the payload's own `type` is not read" }
+      ]
     },
     {
       "name": "shutdown notice",
       "schemas": ["ShutdownEvent"],
       "sites": [{ "file": "src/providers/openclaw/connection-end.ts", "fn": "readShutdownNotice" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "chat history",
@@ -50,7 +51,7 @@
         { "file": "src/providers/openclaw/follow-up-mode.ts", "fn": "readSessionRunFacts" },
         { "file": "src/providers/openclaw/openclaw-client.ts", "fn": "onLiveTextGap" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "session row",
@@ -61,9 +62,9 @@
         { "file": "src/providers/openclaw/models-roster.ts", "fn": "parseSessionMeta" },
         { "file": "src/server.ts", "fn": "createdByProfile" }
       ],
-      "homonyms": {
-        "SessionRow.label": "`label` at this site is a thinking level's label (`o.label` of thinkingLevels), not the session's own label"
-      }
+      "exceptions": [
+        { "field": "SessionRow.label", "site": { "file": "src/providers/openclaw/models-roster.ts", "fn": "parseSessionMeta" }, "receivers": ["o"], "why": "`label` at this site is a thinking level's label (`o.label` of thinkingLevels), not the session's own label" }
+      ]
     },
     {
       "name": "agents roster",
@@ -72,9 +73,9 @@
         { "file": "src/server.ts", "fn": "normalizeOpenClawAgent" },
         { "file": "src/server.ts", "fn": "discoverAgents" }
       ],
-      "homonyms": {
-        "AgentSummary.kind": "`config.kind` at this site is the bridge's own instance configuration (openclaw / hermes), not an agent row's kind"
-      }
+      "exceptions": [
+        { "field": "AgentSummary.kind", "site": { "file": "src/server.ts", "fn": "discoverAgents" }, "receivers": ["config"], "why": "`config.kind` at this site is the bridge's own instance configuration (openclaw / hermes), not an agent row's kind" }
+      ]
     },
     {
       "name": "models roster",
@@ -83,7 +84,7 @@
         { "file": "src/providers/openclaw/models-roster.ts", "fn": "dedupeModels" },
         { "file": "src/providers/openclaw/models-roster.ts", "fn": "askModels" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "agent files",
@@ -92,7 +93,7 @@
         { "file": "src/conf.ts", "fn": "fileMeta" },
         { "file": "src/conf.ts", "fn": "fileGet" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "cron jobs",
@@ -101,15 +102,15 @@
         { "file": "src/core/cron-manage.ts", "fn": "normalizeCronJobDetail" },
         { "file": "src/server.ts", "fn": "fetchCronJobs" }
       ],
-      "homonyms": {
-        "CronJob.sessionKey": "`.sessionKey` at this site is the job OWNER's (owner.sessionKey, kept as ownerSessionKey), not the job's own sessionKey"
-      }
+      "exceptions": [
+        { "field": "CronJob.sessionKey", "site": { "file": "src/core/cron-manage.ts", "fn": "normalizeCronJobDetail" }, "receivers": ["owner"], "why": "`.sessionKey` at this site is the job OWNER's (owner.sessionKey, kept as ownerSessionKey), not the job's own sessionKey" }
+      ]
     },
     {
       "name": "cron runs",
       "schemas": ["CronRunLogEntry"],
       "sites": [{ "file": "src/core/cron-manage.ts", "fn": "normalizeCronRunEntries" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "question requests",
@@ -123,7 +124,7 @@
         { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "replayQuestions" },
         { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "onQuestion" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "question resolutions",
@@ -132,7 +133,7 @@
         { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionResolved" },
         { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "onQuestionResolved" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "approval presentations",
@@ -146,7 +147,7 @@
         { "file": "src/core/agent-requests.ts", "fn": "scopeSummary" },
         { "file": "src/core/agent-requests.ts", "fn": "readDecisions" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "approval snapshots",
@@ -155,67 +156,67 @@
         "ExpiredApprovalSnapshot", "CancelledApprovalSnapshot", "TerminalApprovalSnapshot"
       ],
       "sites": [{ "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalTerminalStatus" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "knowledge session actions",
       "schemas": ["PluginsSessionActionResult", "PluginsSessionActionSuccessResult", "PluginsSessionActionFailureResult"],
       "sites": [{ "file": "src/providers/openclaw/knowledge-policy.ts", "fn": null }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "widget documents",
       "schemas": ["CanvasDocumentViewResult", "CanvasDocumentViewParams"],
       "sites": [{ "file": "src/providers/openclaw/canvas-view.ts", "fn": null }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "chat abort params",
       "schemas": ["ChatAbortParams"],
       "sites": [{ "file": "src/core/rpc-params.ts", "fn": "chatAbortParams" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "chat history params",
       "schemas": ["ChatHistoryParams"],
       "sites": [{ "file": "src/core/rpc-params.ts", "fn": "chatHistoryParams" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "session key params",
       "schemas": ["SessionsDescribeParams", "SessionsResetParams", "SessionsCompactParams"],
       "sites": [{ "file": "src/core/rpc-params.ts", "fn": "sessionsGetParams" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "talk create params",
       "schemas": ["TalkClientCreateParams"],
       "sites": [{ "file": "src/core/rpc-params.ts", "fn": "talkClientCreateParams" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "talk tool-call params",
       "schemas": ["TalkClientToolCallParams"],
       "sites": [{ "file": "src/core/rpc-params.ts", "fn": "talkToolCallParams" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "capped message read params",
       "schemas": ["ChatMessageGetParams"],
       "sites": [{ "file": "src/session.ts", "fn": "readMessage" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "agent request answers",
       "schemas": ["QuestionResolveParams", "ApprovalResolveParams"],
       "sites": [{ "file": "src/agent-request-respond.ts", "fn": "respondOpenClaw" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "agent database refusal",
       "schemas": ["AgentDatabaseAdmissionRefusal"],
       "sites": [{ "file": "src/core/failure-classifier.ts", "fn": "gatewayOwnRefusal" }],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "config patch params",
@@ -224,13 +225,13 @@
         { "file": "src/conf.ts", "fn": "performConfigDefaultsOp" },
         { "file": "src/providers/openclaw/knowledge-policy.ts", "fn": "performKnowledgeDefaultOp" }
       ],
-      "homonyms": {}
+      "exceptions": []
     },
     {
       "name": "session create params",
       "schemas": ["SessionsCreateParams"],
       "sites": [{ "file": "src/server.ts", "fn": "createSession" }],
-      "homonyms": {}
+      "exceptions": []
     }
   ],
   "unscoped": {

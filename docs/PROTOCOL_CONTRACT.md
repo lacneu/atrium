@@ -116,10 +116,15 @@ the truth ratchet anchors a token present in the comment-stripped source and car
 a proof. A `gap` or `ignored` entry may not be read where its schema is read:
 `bridge/protocol/openclaw/read-sites.json` names, per schema, the functions that read
 its payload (or build it, for a `*Params` schema), and the test collects, through the
-TypeScript parser, the property names each of those functions touches. A field the
-manifest declares unread and that one of its schema's read sites touches is refused,
-unless the entry declares the reader (`knownReaders`) or the read sites declare the name
-a homonym there, with why. A schema the bridge reads with no read site is refused too;
+TypeScript parser, the property names each of those functions touches and the receiver
+each is read through. A field the manifest declares unread and that one of its schema's
+read sites touches is refused, access by access, unless that very access is admitted (a
+`gap` whose `knownReaders` token is `<receiver>.<field>` in that file) or excepted. An
+exception names one concrete access — field, site, receivers — and is checked: a
+homonym is refused when one of its receivers reads a handled field of the schema (that
+receiver is the payload); a branch exception holds only when every access is provably
+unreachable for the schema's own discriminant value, read from the vendored schema. A
+schema the bridge reads with no read site is refused too;
 the schemas still built inline in multi-purpose functions are listed, with the reason,
 and that list can only shrink.
 
@@ -142,7 +147,12 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   fabricates on the channel, the keys it rewrites after emission, and the chat
   content-part types its display projection produces. Its completeness is accounted:
   every identifier spelled like an emitter is classified, and vendoring refuses an
-  inventory that leaves one unaccounted. The vendoring script writes it beside the
+  inventory that leaves one unaccounted. A gateway sender's payload is classified on its
+  evaluated form, whatever its syntax (inline, through a binding, through a helper's
+  parameter): a literal stream is a fabricated frame, an agent event passed on unchanged
+  is a relay with its origins named, and anything else is listed as unresolved, which
+  vendoring refuses. A content-part type the projection compares after normalizing it
+  (`trim`, `lowercase`) is recorded with that normalization. The vendoring script writes it beside the
   schemas; `PROVENANCE.json` records its fingerprint (`sha256`), the extractor's full
   output (`fullSha256`) and the extractor itself (`deriverSha256`), and
   `vendor-integrity.test.ts` recomputes the fingerprint and the summary.
@@ -160,9 +170,14 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
 - **The drift detector's known vocabulary** (`agent-emission-vocabulary.ts`: streams,
   phases per stream, keys per stream, content-part types) is generated from the
   vendored inventories (`bridge/scripts/emission-vocabulary.mjs --write`) and compared
-  to them element by element. On a known stream, a `data.phase` value outside it is
-  counted digested (`agent.<stream>.phase_<digest>`) and a `data` key outside it by name
-  (`agent.<stream>.data_<key>`) — never a value, never content.
+  to them element by element. Knowledge is per stream: a key only an emitter of
+  unresolved stream writes is known on no stream. On a known stream, any `data.phase`
+  its emitters do not write — on a stream that declares no phase included — is counted
+  digested (`agent.<stream>.phase_<digest>`); a `data` key its emitters do not write is
+  counted as `opaquekey_<key>` when only an unresolved emitter writes it, as
+  `data_<key>` when another stream carries it, and digested (`datakey_<digest>`)
+  otherwise. A content-part type is known exactly or under the projection's
+  normalization. Never a value, never content.
 - **On the live bench**, every captured agent frame must exist in the inventory (a
   core-stream frame it cannot vouch for means the extractor missed an emitter), and
   the inventoried pairs no capture shows are listed as the scenarios still to write.
@@ -178,6 +193,16 @@ CONNECTED gateway's hello version.
 
 - Unknown event/field → bounded counter + ONE SOC2-safe log line (shape only,
   never content) + exposed on `/compat` as `protocolDrift`.
+- A name appears in a shape only when it is vocabulary — spelled by the vendored
+  schemas or emission inventories. Any other name or value (a field, a key, a phase, a
+  stream, a state, a content-part type) appears as a digest: HMAC-SHA256, truncated to
+  32 bits, under a key derived from the deployment's ingest secret
+  (`HMAC-SHA256(BRIDGE_INGEST_SECRET, "atrium-drift-digest-v1")`). The same value gives
+  the same digest across restarts and across the bridges of one deployment, and nobody
+  without the secret can recompute one; rotating the secret changes every digest once.
+  Without the secret (tests, development) the key is random per process. Announced event
+  families and capabilities are named as announced: they are the gateway's protocol
+  vocabulary, not payload values.
 - **Frames are NEVER rejected.** Unknown fields flow through exactly as today
   (robustness first — the gateway may legitimately be newer than the bridge).
 - Deterministic: same frame → same classification; counters reset per process.

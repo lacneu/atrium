@@ -1409,7 +1409,9 @@ export function deriveAgentEmissions(input) {
     const entries = [];
     for (const p of node.properties) {
       if (ts.isSpreadAssignment(p)) {
-        entries.push({ t: "spread", v: ev(p.expression, ctx) });
+        // The node rides along: whether a spread can set a key is asked of its declared
+        // type (the gateway's sender classification), not only of its evaluated value.
+        entries.push({ t: "spread", v: ev(p.expression, ctx), node: p.expression });
       } else if (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) || ts.isMethodDeclaration(p) || ts.isGetAccessorDeclaration(p) || ts.isSetAccessorDeclaration(p)) {
         let key;
         const nm = p.name;
@@ -2682,12 +2684,13 @@ export function deriveAgentEmissions(input) {
   // data) and the gateway (src/gateway — it adds the accumulated `text` to assistant
   // deltas, strips tool results for node subscribers, and FABRICATES frames of its own).
   // Found by shape, anchored on types: an object rebuilt from an agent event's `data`.
-  const transformations = deriveTransformations();
   function deriveTransformations() {
     const fabricated = [];
     const relays = [];
+    const unresolved = [];
     const rewrites = [];
     const removals = [];
+    const senderRows = { fabricated, unresolved };
     for (const sf of sourceFiles) {
       const rel = relOfFile(sf);
       const scope = rel === ROOT_SOURCE ? "bus" : rel.startsWith(GATEWAY_DIR) ? "gateway" : null;
@@ -2701,43 +2704,31 @@ export function deriveAgentEmissions(input) {
             // The event-name position of a sender: the callee's parameter at this index
             // is named `event` (GatewayBroadcastFn, GatewayBroadcastToConnIdsFn, the
             // node sender and the live-payload helper all spell it so).
-            let paramName;
+            let params;
             try {
-              paramName = checker.getResolvedSignature(n)?.parameters?.[i]?.name;
+              params = checker.getResolvedSignature(n)?.parameters;
             } catch {
-              paramName = undefined;
+              params = undefined;
             }
-            if (paramName !== "event") return;
-            const payload = n.arguments[i + 1];
-            const callee = unwrapExpr(n.expression).getText().replace(/\s+/g, "");
-            const pv = payload ? ev(payload, ROOT_CTX) : ABSENT;
-            const literal = payload && ts.isObjectLiteralExpression(unwrapExpr(payload));
-            if (literal && getProp(pv, "stream").k !== "absent") {
-              for (const v of eventVariants(pv)) {
-                for (const st of scalarValues(getProp(v, "stream"))) {
-                  if (st.absent) continue;
-                  for (const d of dataVariants(getProp(v, "data"))) {
-                    const { keys, opaques } = keysOf(d);
-                    const phases = keys.has("phase") ? scalarValues(getProp(d, "phase")) : [{ value: null, absent: true }];
-                    for (const ph of phases) {
-                      fabricated.push({
-                        stream: st.opaque ? null : st.value,
-                        phase: ph.absent ? null : ph.value ?? null,
-                        phaseAbsent: !!ph.absent,
-                        keys: [...keys.keys()].sort(),
-                        dataOpaque: opaques.map((o) => ({ reason: o.reason, origin: o.at ?? null })),
-                        file: rel,
-                        line: lineOf(n),
-                        function: labelOf(enclosingFunction(n)),
-                        sender: callee,
-                      });
-                    }
-                  }
-                }
-              }
-            } else {
-              relays.push({ file: rel, line: lineOf(n), function: labelOf(enclosingFunction(n)), sender: callee, payload: payload ? payload.getText().replace(/\s+/g, " ").slice(0, 80) : null });
+            if (params?.[i]?.name !== "event") return;
+            // The payload is the parameter the sender NAMES `payload` — not the next
+            // argument: `sendLivePayload(event, sessionKey, payload)` puts a session key
+            // there, which made its payload invisible.
+            const named = params.findIndex((p) => p.name === "payload");
+            const payloadIndex = named >= 0 ? named : i + 1;
+            const payload = n.arguments[payloadIndex];
+            const site = { file: rel, line: lineOf(n), function: labelOf(enclosingFunction(n)), sender: unwrapExpr(n.expression).getText().replace(/\s+/g, "") };
+            const text = payload ? payload.getText().replace(/\s+/g, " ").slice(0, 80) : null;
+            if (!payload) {
+              unresolved.push({ ...site, payload: null, via: [], reason: `no argument at the sender's payload position (#${payloadIndex})` });
+              return;
             }
+            const origins = [];
+            // One evaluation budget per sender site, as per emission site.
+            budget.steps = 0;
+            budget.exhausted = false;
+            classifySenderPayload(ev(payload, ROOT_CTX), { site, at: site, text, via: [], depth: 0, visited: new Set(), origins, rows: senderRows });
+            if (origins.length > 0) relays.push({ ...site, payload: text, origins: dedupeRows(origins).sort((x, y) => cmp(JSON.stringify(x), JSON.stringify(y))) });
           });
         }
         // `data: { ...e.data, k }` — keys added to a copy of an event's data.
@@ -2780,8 +2771,311 @@ export function deriveAgentEmissions(input) {
       };
       visit(sf);
     }
-    const sortRows = (rows) => rows.sort((a, b) => cmp(`${a.file}:${String(a.line).padStart(6, "0")}:${JSON.stringify(a)}`, `${b.file}:${String(b.line).padStart(6, "0")}:${JSON.stringify(b)}`));
-    return { fabricated: sortRows(fabricated), relays: sortRows(relays), dataRewrites: sortRows(rewrites), dataRemovals: sortRows(removals) };
+    const sortRows = (rows) => dedupeRows(rows).sort((a, b) => cmp(`${a.file}:${String(a.line).padStart(6, "0")}:${JSON.stringify(a)}`, `${b.file}:${String(b.line).padStart(6, "0")}:${JSON.stringify(b)}`));
+    return { fabricated: sortRows(fabricated), relays: sortRows(relays), unresolved: sortRows(unresolved), dataRewrites: sortRows(rewrites), dataRemovals: sortRows(removals) };
+  }
+
+  // ---- what a gateway sender puts on the `agent` channel --------------------------------
+  //
+  // Classified on the EVALUATED payload, whatever its syntax: a literal passed through a
+  // binding, a helper's parameter or a conditional is the same frame as one written inline
+  // (the review's `const extra = {…}; broadcast("agent", extra)` was a relay before). The
+  // stream decides, read the way an object spread reads it — the LAST entry that can set
+  // it wins, and whether a spread can set it is asked of its declared type first:
+  //   - a literal                → a frame the gateway FABRICATES (`fabricated`, with its keys);
+  //   - the `stream` of a value whose declared type is an agent event, passed on unchanged:
+  //       · a parameter          → the helper's CALLERS are classified the same way (a literal
+  //                                one passes in is fabricated); where the helper escapes
+  //                                (passed as a value, exported, unnamed) the parameter is an
+  //                                ENTRY of the relay, listed as its origin;
+  //       · any other value      → a TYPED origin of the relay (read from state, returned by
+  //                                a call nobody can inline): listed, since nothing proves it
+  //                                came from the bus;
+  //   - anything else (a computed or absent stream, an untyped payload, a bound reached)
+  //                              → `unresolved`, which the vendoring refuses.
+  const MAX_SENDER_CALLER_DEPTH = 4;
+  const viaOf = (at) => `${at.file}:${at.line} \`${at.function}\``;
+  function classifySenderPayload(av, c) {
+    const variants = eventVariants(av).filter((v) => v.k !== "absent");
+    if (variants.length === 0) {
+      c.rows.unresolved.push({ ...c.site, ...locFields(c.at), payload: c.text, via: c.via.map(viaOf), reason: "the payload evaluates to nothing on every path" });
+      return;
+    }
+    for (const v of variants) {
+      const leaves = streamLeaves(v, 0, false);
+      if (leaves.length === 0) leaves.push({ kind: "unresolved", reason: "a frame that sets no stream" });
+      for (const leaf of leaves) {
+        if (leaf.kind === "literal") pushFabricated(v, leaf.value, c);
+        else if (leaf.kind === "parameter") followParameter(leaf.hole, leaf.type, c);
+        else if (leaf.kind === "typed") c.origins.push({ kind: "typed", type: leaf.type, at: leaf.at ?? null, via: c.via.map(viaOf) });
+        else c.rows.unresolved.push({ ...c.site, ...locFields(c.at), payload: c.text, via: c.via.map(viaOf), reason: leaf.reason });
+      }
+    }
+  }
+  const locFields = (at) => ({ file: at.file, line: at.line, function: at.function });
+  function pushFabricated(v, stream, c) {
+    for (const d of dataVariants(getProp(v, "data"))) {
+      const { keys, opaques } = keysOf(d);
+      const phases = keys.has("phase") ? scalarValues(getProp(d, "phase")) : [{ value: null, absent: true }];
+      for (const ph of phases) {
+        c.rows.fabricated.push({
+          stream,
+          phase: ph.absent ? null : ph.value ?? null,
+          phaseAbsent: !!ph.absent,
+          keys: [...keys.keys()].sort(),
+          dataOpaque: opaques.map((o) => ({ reason: o.reason, origin: o.at ?? null })),
+          ...locFields(c.at),
+          sender: c.site.sender,
+          ...(c.via.length > 0 ? { via: c.via.map(viaOf) } : {}),
+        });
+      }
+    }
+  }
+  /** Is `t` (every alternative of it) an agent event — a type with `stream` and `data`? */
+  const isAgentEventType = (t0) => {
+    if (!t0) return false;
+    let t;
+    try {
+      t = checker.getNonNullableType(t0);
+    } catch {
+      return false;
+    }
+    const members = t.isUnion() ? t.types : [t];
+    return members.length > 0 && members.every((m) => !!checker.getPropertyOfType(m, "stream") && !!checker.getPropertyOfType(m, "data"));
+  };
+  /** The declared type at a property path (`.k`, `[]` for an element) below `t0`. */
+  const typeAtPath = (t0, keys) => {
+    let t = t0;
+    for (const k of keys) {
+      if (!t) return undefined;
+      if (k === "...") continue;
+      try {
+        t = checker.getNonNullableType(t);
+        if (k === "[]") {
+          t = checker.getIndexTypeOfType(t, ts.IndexKind.Number) ?? undefined;
+          continue;
+        }
+        const p = checker.getPropertyOfType(t, k);
+        if (!p) return undefined;
+        const d = p.valueDeclaration ?? p.declarations?.[0];
+        t = d ? checker.getTypeOfSymbolAtLocation(p, d) : checker.getTypeOfSymbol(p);
+      } catch {
+        return undefined;
+      }
+    }
+    return t;
+  };
+  /** Can a spread entry set `key`? "no" / "maybe" / "always" — from the declared type of
+   *  the spread expression when there is one, else from its evaluated value. */
+  function spreadSets(e, key) {
+    if (e.node) {
+      let t;
+      try {
+        t = checker.getTypeAtLocation(e.node);
+      } catch {
+        t = undefined;
+      }
+      if (t && !(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))) {
+        const members = t.isUnion() ? t.types : [t];
+        let some = false;
+        let all = true;
+        for (const m of members) {
+          let has = false;
+          let required = false;
+          try {
+            const p = checker.getPropertyOfType(m, key);
+            if (p) {
+              has = true;
+              required = (p.flags & ts.SymbolFlags.Optional) === 0;
+            } else if (checker.getIndexInfosOfType(m).some((x) => x.keyType.flags & (ts.TypeFlags.String | ts.TypeFlags.TemplateLiteral))) {
+              has = true;
+            }
+          } catch {
+            has = true;
+          }
+          if (has) some = true;
+          if (!(has && required)) all = false;
+        }
+        return !some ? "no" : all ? "always" : "maybe";
+      }
+    }
+    const sub = getProp(e.v, key);
+    if (sub.k === "absent") return "no";
+    return sub.k === "union" && sub.opts.some((o) => o.k === "absent") ? "maybe" : "always";
+  }
+  /** Where the `stream` of one event variant comes from: literal, parameter, typed, or
+   *  unresolved leaves (an object can mix them across its alternatives). Empty when
+   *  nothing sets it — for a SPREAD (`nested`) that means "falls through to the entries
+   *  before it", and only the whole frame is refused for it (classifySenderPayload). */
+  function streamLeaves(av, depth, nested) {
+    if (depth > 16) return [{ kind: "unresolved", reason: "stream provenance nested beyond 16 levels (evaluator bound)" }];
+    switch (av.k) {
+      case "absent":
+        return [];
+      case "union":
+        return av.opts.flatMap((o) => streamLeaves(o, depth + 1, nested));
+      case "guard":
+        return [...streamLeaves(av.t, depth + 1, nested), ...streamLeaves(av.f, depth + 1, nested)];
+      case "obj": {
+        const out = [];
+        for (let i = av.entries.length - 1; i >= 0; i -= 1) {
+          const e = av.entries[i];
+          if (e.t === "prop") {
+            if (e.key !== "stream") continue;
+            out.push(...streamValueLeaves(propVal(e), depth + 1));
+            if (!e.opt) return out;
+          } else if (e.t === "keyopaque") {
+            out.push({ kind: "unresolved", reason: `a computed key (${e.text}) may set the stream` });
+            return out;
+          } else if (e.t === "spread") {
+            const sets = spreadSets(e, "stream");
+            if (sets === "no") continue;
+            const sub = streamLeaves(e.v, depth + 1, true);
+            out.push(...sub);
+            if (sets === "always" && sub.length > 0) return out;
+          }
+        }
+        return out;
+      }
+      case "hole": {
+        if (av.rest || av.restIndex !== undefined) return [{ kind: "unresolved", reason: `${describe(av)}: a rest parameter` }];
+        let t;
+        try {
+          t = typeAtPath(checker.getTypeAtLocation(av.param), av.path);
+        } catch {
+          t = undefined;
+        }
+        if (isAgentEventType(t)) return [{ kind: "parameter", hole: av, type: typeStr(t) }];
+        return [{ kind: "unresolved", reason: `${describe(av)}, whose declared type ${t ? typeStr(t) : "is unknown"} is not an agent event` }];
+      }
+      case "tobj": {
+        const st = scalarValues(tobjProp(av, "stream")).filter((s) => !s.absent);
+        if (st.length > 0 && st.every((s) => typeof s.value === "string")) return st.map((s) => ({ kind: "literal", value: s.value }));
+        if (isAgentEventType(av.type)) return [{ kind: "typed", type: typeStr(av.type), at: av.at }];
+        return [{ kind: "unresolved", reason: nested ? `a spread of declared type ${typeStr(av.type)} may set the stream` : `a value of declared type ${typeStr(av.type)}, not an agent event` }];
+      }
+      case "call": {
+        let t;
+        try {
+          t = av.node ? checker.getTypeAtLocation(av.node) : undefined;
+        } catch {
+          t = undefined;
+        }
+        if (isAgentEventType(t)) return [{ kind: "typed", type: typeStr(t), at: av.at }];
+        return [{ kind: "unresolved", reason: describe(av) }];
+      }
+      default:
+        return [{ kind: "unresolved", reason: describe(av) }];
+    }
+  }
+  /** An explicit `stream:` value: a literal, or an agent event's own stream re-stated. */
+  function streamValueLeaves(v, depth) {
+    const out = [];
+    const visit = (x) => {
+      switch (x.k) {
+        case "union":
+          for (const o of x.opts) visit(o);
+          return;
+        case "guard":
+          visit(x.t);
+          visit(x.f);
+          return;
+        case "lit":
+          if (typeof x.v === "string") out.push({ kind: "literal", value: x.v });
+          else out.push({ kind: "unresolved", reason: `a non-string stream ${JSON.stringify(x.v)}` });
+          return;
+        case "absent":
+          return;
+        case "hole":
+          if (x.path[x.path.length - 1] === "stream") {
+            out.push(...streamLeaves({ ...x, path: x.path.slice(0, -1) }, depth + 1, false));
+            return;
+          }
+          out.push({ kind: "unresolved", reason: `a computed stream: ${describe(x)}` });
+          return;
+        default:
+          out.push({ kind: "unresolved", reason: `a computed stream: ${describe(x)}` });
+      }
+    };
+    visit(v);
+    return out;
+  }
+  /** A parameter the stream is inherited from: classify what its callers pass, and name
+   *  the helper as an ENTRY where callers can reach it unseen. */
+  function followParameter(h, type, c) {
+    const key = `${locOf(h.fn)}#${h.idx}#${h.path.join(".")}`;
+    if (c.visited.has(key)) return;
+    const visited = new Set([...c.visited, key]);
+    const refs = functionReferences(h.fn);
+    const param = `${h.param.name.getText().slice(0, 40)}${h.path.length ? `.${h.path.join(".")}` : ""}`;
+    if (refs.escapes.length > 0 || refs.calls.length === 0) {
+      c.origins.push({
+        kind: "parameter",
+        function: labelOf(h.fn),
+        parameter: param,
+        type,
+        entries: refs.escapes.length > 0 ? refs.escapes : [{ at: locOf(h.fn), how: "no reference in the analysed sources" }],
+        via: c.via.map(viaOf),
+      });
+    }
+    if (refs.calls.length === 0) return;
+    if (c.depth >= MAX_SENDER_CALLER_DEPTH) {
+      c.rows.unresolved.push({ ...c.site, ...locFields(c.at), payload: c.text, via: c.via.map(viaOf), reason: `the callers of ${labelOf(h.fn)} lie beyond ${MAX_SENDER_CALLER_DEPTH} levels (classifier bound)` });
+      return;
+    }
+    for (const call of refs.calls) {
+      const at = { file: fileOf(call), line: lineOf(call), function: labelOf(enclosingFunction(call)) };
+      const arg = call.arguments[h.idx];
+      const argAV = arg ? ev(arg, ROOT_CTX) : h.param.initializer ? ev(h.param.initializer, ROOT_CTX) : ABSENT;
+      classifySenderPayload(getPath(argAV, h.path), {
+        ...c,
+        at,
+        text: arg ? arg.getText().replace(/\s+/g, " ").slice(0, 80) : null,
+        via: [...c.via, c.at],
+        depth: c.depth + 1,
+        visited,
+      });
+    }
+  }
+  /** The direct calls of a function, and the references through which it ESCAPES. */
+  const referencesCache = new Map();
+  function functionReferences(fn) {
+    if (referencesCache.has(fn)) return referencesCache.get(fn);
+    let nameNode;
+    if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name && ts.isIdentifier(fn.name)) nameNode = fn.name;
+    else {
+      const p = skipOuter(fn).parent;
+      if (p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) && p.initializer && unwrapExpr(p.initializer) === fn) nameNode = p.name;
+    }
+    let out;
+    if (!nameNode || ts.isMethodDeclaration(fn)) {
+      out = { calls: [], escapes: [{ at: locOf(fn), how: nameNode ? "a method: its callers go through its object" : "not bound to a name: its callers are whoever receives it" }] };
+    } else {
+      const sym = resolveSym(nameNode);
+      const calls = [];
+      const escapes = [];
+      for (const sf of filesMentioning(nameNode.text)) {
+        if (!sfByRel.has(relOfFile(sf))) continue;
+        for (const id of identifiersOf(sf).get(nameNode.text) ?? []) {
+          if (id === nameNode || valueSymOf(id) !== sym) continue;
+          const p = id.parent;
+          if (p && (ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isImportClause(p) || ts.isNamespaceImport(p))) continue;
+          const outer = skipOuter(id);
+          if (outer.parent && ts.isCallExpression(outer.parent) && outer.parent.expression === outer) {
+            calls.push(outer.parent);
+            continue;
+          }
+          escapes.push({ at: locOf(id), how: `referenced as a value (${ts.SyntaxKind[outer.parent?.kind] ?? "?"})` });
+        }
+      }
+      const decl = ts.isFunctionDeclaration(fn) ? fn : nameNode.parent;
+      const exported = !!decl && (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0;
+      if (exported) escapes.push({ at: locOf(nameNode), how: "exported: callers outside the analysed sources are unseen" });
+      calls.sort((a, b) => cmp(locOf(a), locOf(b)));
+      out = { calls, escapes: dedupeRows(escapes).sort((a, b) => cmp(`${a.at}|${a.how}`, `${b.at}|${b.how}`)) };
+    }
+    referencesCache.set(fn, out);
+    return out;
   }
   /** The keys an object literal adds on top of a spread `isBase` accepts; null when it
    *  spreads no such base or adds nothing. */
@@ -2868,6 +3162,9 @@ export function deriveAgentEmissions(input) {
     return conds;
   }
 
+  // Called here, below every binding the sender classification reads (they are `const`).
+  const transformations = deriveTransformations();
+
   // ---- 7. chat content parts (section 2) -------------------------------------------------
   //
   // The `type` values of `message.content[]` parts the display projection hands to clients.
@@ -2885,9 +3182,10 @@ export function deriveAgentEmissions(input) {
     const inModules = (node) => modules.includes(node.getSourceFile());
     const fabricated = new Map();
     const recognized = new Map();
-    const note = (map, type, at, how) => {
+    const note = (map, type, at, how, fold = []) => {
       const list = map.get(type) ?? [];
-      if (!list.some((x) => x.at === at && x.how === how)) list.push({ at, how });
+      const f = fold.join("+");
+      if (!list.some((x) => x.at === at && x.how === how && (x.fold ?? "") === f)) list.push({ at, how, ...(f ? { fold: f } : {}) });
       map.set(type, list);
     };
     // -- block variables: by data flow from a `content` array --------------------------------
@@ -2942,25 +3240,40 @@ export function deriveAgentEmissions(input) {
       const u = unwrapExpr(e);
       return !!u && ts.isPropertyAccessExpression(u) && u.name.text === "type" && isBlockExpr(u.expression);
     };
-    /** Literals a helper compares its input with, following nested helpers. */
-    const helperLiterals = (fn, depth, seen = new Set()) => {
+    /** Literals a helper compares its input with, following nested helpers — each with the
+     *  NORMALIZATION the input went through before the comparison (`fold`): upstream
+     *  compares tool block types as `type.trim().toLowerCase()`, so `toolResult` is the
+     *  literal `toolresult` and a reader that only knew the literal spelling called it
+     *  drift. `inFold` is what the callers applied before handing the value in; `input`
+     *  is the index of the parameter that receives it. */
+    const helperLiterals = (fn, depth, seen = new Set(), inFold = [], input = 0) => {
       const out = [];
-      if (!fn?.body || depth > 3 || seen.has(fn)) return out;
-      seen.add(fn);
+      const seenKey = `${fn ? locOf(fn) : ""}|${inFold.join("+")}|${input}`;
+      if (!fn?.body || depth > 3 || seen.has(seenKey)) return out;
+      seen.add(seenKey);
+      const fold = (e) => foldOf(e, fn, input);
       const visit = (n) => {
         // `typeof type === "string"` is a guard on the JavaScript type, not a content type.
         if (ts.isBinaryExpression(n) && [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken].includes(n.operatorToken.kind) && !ts.isTypeOfExpression(unwrapExpr(n.left)) && !ts.isTypeOfExpression(unwrapExpr(n.right))) {
-          for (const side of [n.left, n.right]) {
+          for (const [side, other] of [[n.left, n.right], [n.right, n.left]]) {
             const u = unwrapExpr(side);
-            if (u && ts.isStringLiteral(u)) out.push({ value: u.text, at: locOf(u) });
+            if (!u || !ts.isStringLiteral(u)) continue;
+            const f = fold(other);
+            out.push({ value: u.text, at: locOf(u), fold: f === null ? [] : [...inFold, ...f] });
           }
         }
         if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "test" && ts.isRegularExpressionLiteral(unwrapExpr(n.expression.expression))) {
-          for (const alt of regexAlternatives(unwrapExpr(n.expression.expression).text) ?? []) out.push({ value: alt, at: locOf(n) });
+          const f = n.arguments[0] ? fold(n.arguments[0]) : null;
+          for (const alt of regexAlternatives(unwrapExpr(n.expression.expression).text) ?? []) out.push({ value: alt, at: locOf(n), fold: f === null ? [] : [...inFold, ...f] });
         }
         if (ts.isCallExpression(n)) {
           const d = calleeDeclaration(n);
-          if (d && d !== fn) out.push(...helperLiterals(d, depth + 1, seen));
+          if (d && d !== fn) {
+            // The nested helper's input: the first argument derived from ours.
+            const k = n.arguments.findIndex((a) => fold(a) !== null);
+            const f = k >= 0 ? fold(n.arguments[k]) : null;
+            out.push(...helperLiterals(d, depth + 1, seen, f === null ? inFold : [...inFold, ...f], k >= 0 ? k : 0));
+          }
         }
         if (!isFunctionLike(n) || n === fn) ts.forEachChild(n, visit);
       };
@@ -3000,8 +3313,8 @@ export function deriveAgentEmissions(input) {
           } else {
             const d = calleeDeclaration(n);
             if (d) {
-              const lits = helperLiterals(d, 0);
-              for (const l of lits) note(recognized, l.value, `${rel}:${lineOf(n)}`, `helper ${labelOf(d)} (${l.at})`);
+              const lits = helperLiterals(d, 0, new Set(), [], n.arguments.findIndex((a) => isBlockTypeRead(a)));
+              for (const l of lits) note(recognized, l.value, `${rel}:${lineOf(n)}`, `helper ${labelOf(d)} (${l.at})`, l.fold);
               if (lits.length === 0) notes.push({ at: `${rel}:${lineOf(n)}`, reason: `a block type is handed to ${labelOf(d)}, which compares it with no literal` });
             } else notes.push({ at: `${rel}:${lineOf(n)}`, reason: `a block type is handed to ${callee.getText().slice(0, 60)}, which does not resolve` });
           }
@@ -3010,7 +3323,7 @@ export function deriveAgentEmissions(input) {
       };
       visit(sf);
     }
-    const toList = (map) => [...map.entries()].sort((a, b) => cmp(a[0], b[0])).map(([type, sites]) => ({ type, sites: sites.sort((x, y) => cmp(`${x.at}|${x.how}`, `${y.at}|${y.how}`)) }));
+    const toList = (map) => [...map.entries()].sort((a, b) => cmp(a[0], b[0])).map(([type, sites]) => ({ type, sites: sites.sort((x, y) => cmp(`${x.at}|${x.how}|${x.fold ?? ""}`, `${y.at}|${y.how}|${y.fold ?? ""}`)) }));
     return {
       modules: modules.map((sf) => relOfFile(sf)),
       fabricated: toList(fabricated),
@@ -3018,6 +3331,71 @@ export function deriveAgentEmissions(input) {
       passThrough: "content parts of any other type pass through unchanged when the projection does not rewrite them; that set is the transcript's, not enumerable here",
       notes: dedupeRows(notes).sort((a, b) => cmp(a.at, b.at)),
     };
+  }
+  /** The normalizations (`trim`, `lowercase`) a value went through from parameter #`input`
+   *  of `fn`, in order; null when it is not provably derived from that parameter. Followed
+   *  through `const` bindings, string methods, a ternary whose other branch is a literal,
+   *  and a call whose returns all normalize the argument the same way. */
+  function foldOf(expr, fn, input, depth = 0) {
+    if (!expr || depth > 8) return null;
+    const u = unwrapExpr(expr);
+    if (!u) return null;
+    if (ts.isIdentifier(u)) {
+      const d = declsOf(valueSymOf(u))[0];
+      if (!d) return null;
+      if (ts.isParameter(d)) return d === fn.parameters[input] && ts.isIdentifier(d.name) ? [] : null;
+      if (ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && d.initializer && enclosingFunction(d) === fn && (d.parent.flags & ts.NodeFlags.Const) !== 0) {
+        return foldOf(d.initializer, fn, input, depth + 1);
+      }
+      return null;
+    }
+    if (ts.isCallExpression(u) && ts.isPropertyAccessExpression(u.expression) && u.arguments.length === 0) {
+      const m = u.expression.name.text;
+      const step = m === "trim" ? "trim" : m === "toLowerCase" || m === "toLocaleLowerCase" ? "lowercase" : undefined;
+      if (step) {
+        const r = foldOf(u.expression.expression, fn, input, depth + 1);
+        return r === null ? null : [...r, step];
+      }
+    }
+    if (ts.isCallExpression(u)) {
+      const g = calleeDeclaration(u);
+      if (!g || g === fn) return null;
+      const k = u.arguments.findIndex((a) => foldOf(a, fn, input, depth + 1) !== null);
+      if (k < 0) return null;
+      const r = foldOf(u.arguments[k], fn, input, depth + 1);
+      const rf = returnFold(g, k, depth + 1);
+      return rf === null ? null : [...r, ...rf];
+    }
+    if (ts.isConditionalExpression(u)) {
+      const branches = [u.whenTrue, u.whenFalse].filter((b) => !ts.isStringLiteralLike(unwrapExpr(b)));
+      if (branches.length === 0) return null;
+      const folds = branches.map((b) => foldOf(b, fn, input, depth + 1));
+      if (folds.some((f) => f === null)) return null;
+      return folds.every((f) => f.join("+") === folds[0].join("+")) ? folds[0] : null;
+    }
+    return null;
+  }
+  /** The normalization every return of `g` applies to its parameter #`k`; null otherwise. */
+  function returnFold(g, k, depth) {
+    if (!g.body) return null;
+    const rets = [];
+    if (!ts.isBlock(g.body)) rets.push(g.body);
+    else {
+      let bare = false;
+      const walk = (n) => {
+        if (n !== g && isFunctionLike(n)) return;
+        if (ts.isReturnStatement(n)) {
+          if (n.expression) rets.push(n.expression);
+          else bare = true;
+        }
+        ts.forEachChild(n, walk);
+      };
+      walk(g.body);
+      if (bare) return null;
+    }
+    const folds = rets.filter((e) => !ts.isStringLiteralLike(unwrapExpr(e))).map((e) => foldOf(e, g, k, depth));
+    if (folds.length === 0 || folds.some((f) => f === null)) return null;
+    return folds.every((f) => f.join("+") === folds[0].join("+")) ? folds[0] : null;
   }
   /** Does an object literal end up in a content array? */
   function flowsIntoContent(lit0) {
@@ -3367,7 +3745,8 @@ function main(argv) {
   const c = inv.completeness;
   process.stderr.write(
     `emissions: ${inv.emissions.length} rows, ${Object.keys(inv.summary).length} streams; family: ${inv.family.length}; ` +
-      `opaque: ${inv.opaque.length}; escapes: ${inv.escapes.length}; identifiers ${c.identifiers} = matched ${c.matched} + homonyms ${c.homonyms} (unaccounted ${c.unaccounted})\n`,
+      `opaque: ${inv.opaque.length}; escapes: ${inv.escapes.length}; identifiers ${c.identifiers} = matched ${c.matched} + homonyms ${c.homonyms} (unaccounted ${c.unaccounted}); ` +
+      `gateway senders: fabricated ${inv.transformations.fabricated.length}, relays ${inv.transformations.relays.length}, unresolved ${inv.transformations.unresolved.length}\n`,
   );
 }
 

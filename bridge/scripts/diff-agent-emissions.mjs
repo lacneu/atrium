@@ -207,6 +207,21 @@ export function diffInventories(a, b) {
   const fmtFab = (g) => `\`${g.stream} / ${g.phaseAbsent ? "-" : g.phase}\` [${g.keys.join(", ")}] by \`${g.sender}\` at ${g.file}:${g.line} \`${g.function}\``;
   list("Gateway-fabricated frames added", b.transformations.fabricated.filter((g) => !ga.has(fabricatedId(g))), fmtFab);
   list("Gateway-fabricated frames removed", a.transformations.fabricated.filter((g) => !gb.has(fabricatedId(g))), fmtFab);
+  // Senders the deriver could not classify (the vendoring refuses them), and where each
+  // relay's event comes from — line-free, so a shift is not a change.
+  const unresolvedId = (u) => `${u.file}|${u.function}|${u.sender}|${u.reason}`;
+  const uA = a.transformations.unresolved ?? [];
+  const uB = b.transformations.unresolved ?? [];
+  const fmtUn = (u) => `${u.file}:${u.line} \`${u.function}\` → \`${u.sender}\`(${u.payload ?? "∅"}): ${u.reason}`;
+  list("Unresolved sender payloads added", uB.filter((u) => !new Set(uA.map(unresolvedId)).has(unresolvedId(u))), fmtUn);
+  list("Unresolved sender payloads gone", uA.filter((u) => !new Set(uB.map(unresolvedId)).has(unresolvedId(u))), fmtUn);
+  const originText = (o) => (o.kind === "parameter" ? `entry \`${o.function}\`(${o.parameter})` : o.kind === "typed" ? `declared type \`${o.type}\`` : o.kind);
+  const relayId = (r) => `${r.file}|${r.function}|${r.sender}|${[...new Set((r.origins ?? []).map(originText))].sort().join(";")}`;
+  const rlA = new Set((a.transformations.relays ?? []).map(relayId));
+  const rlB = new Set((b.transformations.relays ?? []).map(relayId));
+  const fmtRelay = (r) => `\`${r.sender}\` at ${r.file}:${r.line} \`${r.function}\`: ${[...new Set((r.origins ?? []).map(originText))].sort().join(", ") || "no origin named"}`;
+  list("Relay sites added or changed", (b.transformations.relays ?? []).filter((r) => !rlA.has(relayId(r))), fmtRelay);
+  list("Relay sites removed or changed", (a.transformations.relays ?? []).filter((r) => !rlB.has(relayId(r))), fmtRelay);
   const guardText = (gs) => (gs ?? []).map((g) => `${g.negated ? "not " : ""}${[g.stream ? `stream∈{${g.stream.join(",")}}` : "", g.phase ? `phase∈{${g.phase.join(",")}}` : ""].filter(Boolean).join(" & ")}`).join("; ");
   const rwId = (g) => `${g.scope}|${g.file}|${g.function}|${(g.added ?? [g.removed]).join(",")}|${guardText(g.guard)}`;
   const ra = new Set([...a.transformations.dataRewrites, ...a.transformations.dataRemovals].map(rwId));
@@ -223,6 +238,11 @@ export function diffInventories(a, b) {
     list(`${field} types added`, setDiff(tb, ta));
     list(`${field} types removed`, setDiff(ta, tb));
   }
+  // A type compared AFTER a normalization (`trim+lowercase`) admits other spellings: a fold
+  // that appears or goes changes what the detector calls known.
+  const foldsOf = (inv) => new Set(inv.chatContentParts.recognized.flatMap((r) => r.sites.filter((s) => s.fold).map((s) => `${r.type} under ${s.fold}`)));
+  list("recognized type folds added", setDiff(foldsOf(b), foldsOf(a)));
+  list("recognized type folds removed", setDiff(foldsOf(a), foldsOf(b)));
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n")}\n`;
 }
 

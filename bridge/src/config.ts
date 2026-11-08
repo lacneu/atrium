@@ -252,6 +252,17 @@ export interface BridgeConfig {
 
 class ConfigError extends Error {}
 
+/** The shared secret the bridge presents to the Convex ingest endpoint
+ *  (`convexIngestSecret`, BRIDGE_INGEST_SECRET — the variable loadConfig and
+ *  loadSharedConfig require), read the same way (trimmed), or null when unset: for a
+ *  consumer that DERIVES from it without failing a process that has none (tests, a
+ *  development shell) — the drift detector's digest key (protocol-drift.ts). The value is
+ *  never logged. */
+export function convexIngestSecretOrNull(env: NodeJS.ProcessEnv = process.env): string | null {
+  const value = (env.BRIDGE_INGEST_SECRET ?? "").trim();
+  return value || null;
+}
+
 function requireEnv(name: string): string {
   const value = (process.env[name] ?? "").trim();
   if (!value) {

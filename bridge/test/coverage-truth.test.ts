@@ -29,7 +29,7 @@ import { COMPAT_MANIFEST } from "../src/compat.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { stripComments } from "../scripts/lib/derive-event-catalogue.mjs";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { touchedNames } from "../scripts/lib/touched-names.mjs";
+import { aliasClosure, schemaLiteral, touchedNames, unreachableWhen } from "../scripts/lib/touched-names.mjs";
 import { promisedVersion, vendoredVersions } from "./helpers/vendored.js";
 
 interface FieldEntry {
@@ -415,18 +415,33 @@ interface ReadSite {
   file: string;
   fn: string | null;
 }
+/** ONE concrete access the guard is told is not the payload field's read: the field, the
+ *  site, the receivers it is read through, and — for a branch — the discriminant whose
+ *  own value (the schema's, vendored) makes every access unreachable. */
+interface ReadException {
+  field: string;
+  site: ReadSite;
+  receivers: string[];
+  branch?: { receiver: string; field: string };
+  why: string;
+}
 interface ReadSiteGroup {
   name: string;
   schemas: string[];
   sites: ReadSite[];
-  homonyms: Record<string, string>;
+  exceptions: ReadException[];
 }
 interface ReadSites {
   groups: ReadSiteGroup[];
   unscoped: Record<string, string>;
   emissionStreams: Record<string, string>;
 }
-type Touched = { reads: Set<string>; writes: Set<string> };
+type Touched = {
+  reads: Set<string>;
+  writes: Set<string>;
+  receivers: Map<string, Set<string>>;
+  aliases: Map<string, string>;
+};
 
 /** Schemas the bridge reads without a declared read site yet. A COPY, like the truth
  *  floor: the JSON list may shrink freely, but growing it — reading a schema nobody
@@ -452,32 +467,110 @@ const READ_SITES = JSON.parse(
   readFileSync(new URL("../protocol/openclaw/read-sites.json", import.meta.url), "utf-8"),
 ) as ReadSites;
 
+/** The receiver a WRITE (an object-literal key of a `*Params` builder) is counted under. */
+const WRITE = "<object literal>";
+const siteId = (s: ReadSite): string => `${s.file}${s.fn ? `#${s.fn}` : ""}`;
+const sameSite = (a: ReadSite, b: ReadSite): boolean => a.file === b.file && a.fn === b.fn;
+
+const SOURCES = new Map<string, string>();
 const TOUCHED = new Map<string, { functions: Map<string, Touched>; file: Touched }>();
-function touchedAt(site: ReadSite): Touched | null {
-  if (!/^src\/[A-Za-z0-9_./-]+\.ts$/.test(site.file) || site.file.includes("%") || site.file.includes("..")) {
-    return null;
-  }
-  const at = new URL(`../${site.file}`, import.meta.url);
+function sourceOf(file: string): string | null {
+  if (!/^src\/[A-Za-z0-9_./-]+\.ts$/.test(file) || file.includes("%") || file.includes("..")) return null;
+  const at = new URL(`../${file}`, import.meta.url);
   if (!existsSync(at)) return null;
+  if (!SOURCES.has(file)) SOURCES.set(file, readFileSync(at, "utf-8"));
+  return SOURCES.get(file)!;
+}
+function touchedAt(site: ReadSite): Touched | null {
+  const text = sourceOf(site.file);
+  if (text === null) return null;
   let t = TOUCHED.get(site.file);
   if (t === undefined) {
-    t = touchedNames(readFileSync(at, "utf-8"), site.file) as { functions: Map<string, Touched>; file: Touched };
+    t = touchedNames(text, site.file) as { functions: Map<string, Touched>; file: Touched };
     TOUCHED.set(site.file, t);
   }
   return site.fn === null ? t.file : (t.functions.get(site.fn) ?? null);
 }
 
-/** The names a group's sites touch for one schema, with where: reads, plus the
- *  object-literal keys when the schema is one the bridge SENDS (`*Params`). */
-function touchedFor(group: ReadSiteGroup, schema: string): Map<string, string[]> {
-  const out = new Map<string, string[]>();
+/** Through what each name is touched at a site, for one schema: its read receivers, plus
+ *  WRITE when the schema is one the bridge SENDS (`*Params`) and the site builds the key. */
+function receiversAt(t: Touched, schema: string, name: string): string[] {
+  const out = [...(t.receivers.get(name) ?? [])];
+  if (schema.endsWith("Params") && t.writes.has(name)) out.push(WRITE);
+  return out;
+}
+
+/** The receivers that ARE the schema's payload in a group: every receiver one of its
+ *  HANDLED fields is read through, at any of the group's sites, closed over renamings
+ *  (`const e = evt`). A homonym naming one of them names the payload itself. */
+function payloadReceivers(group: ReadSiteGroup, schema: string, manifest: Manifest): Set<string> {
+  const handled = Object.entries(manifest.schemas[schema]?.fields ?? {})
+    .filter(([, e]) => e.status === "handled")
+    .map(([f]) => f);
+  const out = new Set<string>();
   for (const site of group.sites) {
     const t = touchedAt(site);
     if (t === null) continue;
-    const names = schema.endsWith("Params") ? [...t.reads, ...t.writes] : [...t.reads];
-    for (const n of names) out.set(n, [...(out.get(n) ?? []), `${site.file}${site.fn ? `#${site.fn}` : ""}`]);
+    const seeds = new Set<string>();
+    for (const f of handled) for (const r of t.receivers.get(f) ?? []) seeds.add(r);
+    for (const r of aliasClosure(seeds, t.aliases) as Set<string>) out.add(r);
   }
   return out;
+}
+
+/** The vendored literal a schema declares for a property (its discriminant), read from
+ *  the promised version's schema sources — or null. */
+const VENDORED_DIR = (v: string): URL => new URL(`../protocol/openclaw/${v}/`, import.meta.url);
+function vendoredLiteral(version: string, schema: string, property: string): string | null {
+  const dir = VENDORED_DIR(version);
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".ts")).sort()) {
+    const text = readFileSync(new URL(f, dir), "utf-8");
+    if (!text.includes(`${schema}Schema`)) continue;
+    const lit = schemaLiteral(text, f, schema, property) as string | null;
+    if (lit !== null) return lit;
+  }
+  return null;
+}
+
+/** Why an exception does not hold, or null when it does. */
+function exceptionFault(group: ReadSiteGroup, x: ReadException, manifest: Manifest, version: string): string | null {
+  const [schema, field] = x.field.split(".") as [string, string | undefined];
+  const at = `${group.name}: exception ${x.field} at ${x.site ? siteId(x.site) : "?"}`;
+  if (field === undefined || !group.schemas.includes(schema)) return `${at} names a schema outside the group`;
+  const e = manifest.schemas[schema]?.fields?.[field];
+  if (e === undefined || e.status === "handled") return `${at} is not a gap/ignored field`;
+  if (!x.site || !group.sites.some((s) => sameSite(s, x.site))) return `${at}: the site is not one of the group's`;
+  if ((x.why ?? "").trim().length < 10) return `${at} says why`;
+  const t = touchedAt(x.site);
+  if (t === null) return `${at}: the site does not exist`;
+  if (!Array.isArray(x.receivers) || x.receivers.length === 0) return `${at} names no receiver — an exception is one concrete access`;
+  const actual = new Set(receiversAt(t, schema, field));
+  for (const r of x.receivers) if (!actual.has(r)) return `${at}: \`${r}.${field}\` is not touched there (stale)`;
+  if (x.branch === undefined) {
+    const payload = payloadReceivers(group, schema, manifest);
+    for (const r of x.receivers) {
+      if (payload.has(r)) return `${at}: \`${r}\` carries handled ${schema} fields in this group — it IS the payload, not a homonym`;
+    }
+    return null;
+  }
+  const b = x.branch;
+  if (manifest.schemas[schema]?.fields?.[b.field]?.status !== "handled") {
+    return `${at}: the discriminant ${schema}.${b.field} is not a handled field of the schema`;
+  }
+  // The schema's OWN value, read from its vendored source — never declared here, so an
+  // exception cannot name a branch the schema takes.
+  const own = vendoredLiteral(version, schema, b.field);
+  if (own === null) return `${at}: ${schema} declares no literal ${b.field} in the vendored schema`;
+  if (x.site.fn === null) return `${at}: a branch is proved inside a function, not a whole file`;
+  const g = unreachableWhen(sourceOf(x.site.file), x.site.file, x.site.fn, field, x.receivers, b, own) as {
+    accesses: number;
+    unguarded: number[];
+  };
+  if (g.accesses === 0) return `${at}: no access of ${field} through the declared receivers`;
+  if (g.unguarded.length > 0) {
+    return `${at}: line(s) ${g.unguarded.join(", ")} can read it when \`${b.receiver}.${b.field}\` is ${JSON.stringify(own)} — ${schema}'s own value`;
+  }
+  return null;
 }
 
 describe("coverage-truth V3 — a field declared unread is not read at its schema's read sites", () => {
@@ -485,13 +578,15 @@ describe("coverage-truth V3 — a field declared unread is not read at its schem
   const manifest = manifestOf(PROMISED);
   const scoped = new Map<string, ReadSiteGroup>();
   for (const g of READ_SITES.groups) for (const s of g.schemas) scoped.set(s, g);
+  const valid = (g: ReadSiteGroup): ReadException[] =>
+    (g.exceptions ?? []).filter((x) => exceptionFault(g, x, manifest, PROMISED) === null);
 
   it("every read site exists — a site that names nothing scopes nothing", () => {
     const bad: string[] = [];
     for (const g of READ_SITES.groups) {
       if (g.sites.length === 0) bad.push(`${g.name}: no site`);
       for (const site of g.sites) {
-        if (touchedAt(site) === null) bad.push(`${g.name}: ${site.file}${site.fn ? `#${site.fn}` : ""} not found`);
+        if (touchedAt(site) === null) bad.push(`${g.name}: ${siteId(site)} not found`);
       }
     }
     expect(bad).toEqual([]);
@@ -532,42 +627,50 @@ describe("coverage-truth V3 — a field declared unread is not read at its schem
     expect(grown, "the unscoped list grew — scope the schema instead (or edit FROZEN_UNSCOPED, a review event)").toEqual([]);
   });
 
-  it("TRUTH: no gap/ignored field is touched at its schema's read sites", () => {
+  it("TRUTH: no gap/ignored field is touched at its schema's read sites, access by access", () => {
+    // Each access is (site, receiver). It is excused by an exception that names exactly
+    // that access and HOLDS (below), or — for a gap — admitted by a knownReader whose
+    // token is that very access in that file. A name-level exception excused every read
+    // of the name at the site, the payload's own included: declaring the real
+    // `AgentEvent.isHeartbeat` read a "homonym" made the guard pass (review, 2026-11-08).
     const bad: string[] = [];
     for (const g of READ_SITES.groups) {
+      const exceptions = valid(g);
       for (const schema of g.schemas) {
-        const touched = touchedFor(g, schema);
         for (const [field, e] of Object.entries(manifest.schemas[schema]?.fields ?? {})) {
           if (e.status === "handled") continue;
-          const at = touched.get(field);
-          if (at === undefined) continue;
-          if (g.homonyms[`${schema}.${field}`] !== undefined) continue;
-          const declared = new Set((e.knownReaders ?? []).map((r) => r.file));
-          const undeclared = at.filter((where) => !declared.has(`bridge/${where.split("#")[0]}`));
-          if (undeclared.length === 0) continue;
-          bad.push(
-            `${PROMISED} ${schema}.${field}: declared ${e.status} but ${[...new Set(undeclared)].join(", ")} reads it — ` +
-              `correct the status, declare the reader (knownReaders), or declare the name a homonym at that site`,
-          );
+          for (const site of g.sites) {
+            const t = touchedAt(site);
+            if (t === null) continue;
+            for (const r of receiversAt(t, schema, field)) {
+              if (exceptions.some((x) => x.field === `${schema}.${field}` && sameSite(x.site, site) && x.receivers.includes(r))) continue;
+              const admitted =
+                e.status === "gap" &&
+                (e.knownReaders ?? []).some((k) => k.file === `bridge/${site.file}` && k.token === `${r}.${field}`);
+              if (admitted) continue;
+              bad.push(
+                `${PROMISED} ${schema}.${field}: declared ${e.status} but ${siteId(site)} reads it through \`${r}\` — ` +
+                  `correct the status, admit the read (a gap's knownReader with token "${r}.${field}"), or declare that access an exception`,
+              );
+            }
+          }
         }
       }
     }
     expect(bad).toEqual([]);
   });
 
-  it("every homonym declaration is real: the name is touched there, declared unread, and explained", () => {
+  it("every exception holds: one concrete access, real, and not the payload's own read", () => {
     const bad: string[] = [];
     for (const g of READ_SITES.groups) {
-      for (const [path, why] of Object.entries(g.homonyms)) {
-        const [schema, field] = path.split(".") as [string, string];
-        if (!g.schemas.includes(schema)) {
-          bad.push(`${g.name}: homonym ${path} names a schema outside the group`);
-          continue;
-        }
-        const e = manifest.schemas[schema]?.fields?.[field];
-        if (e === undefined || e.status === "handled") bad.push(`${g.name}: homonym ${path} is not a gap/ignored field`);
-        if (!touchedFor(g, schema).has(field)) bad.push(`${g.name}: homonym ${path} is not touched by the group's sites (stale)`);
-        if ((why ?? "").trim().length < 10) bad.push(`${g.name}: homonym ${path} says why`);
+      // The name-level form (`homonyms: {"Schema.field": why}`) excused every read of the
+      // name at every site, the payload's own included; it is refused, not ignored.
+      const extra = Object.keys(g).filter((k) => !["name", "schemas", "sites", "exceptions"].includes(k));
+      if (extra.length > 0) bad.push(`${g.name}: unknown key(s) ${extra.join(", ")} — exceptions are concrete accesses`);
+      if (!Array.isArray(g.exceptions)) bad.push(`${g.name}: no exceptions list`);
+      for (const x of g.exceptions ?? []) {
+        const fault = exceptionFault(g, x, manifest, PROMISED);
+        if (fault !== null) bad.push(fault);
       }
     }
     expect(bad).toEqual([]);

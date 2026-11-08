@@ -13,16 +13,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_EMISSION_VOCABULARY_VERSIONS,
-  KNOWN_AGENT_ANY_STREAM_DATA_KEYS,
   KNOWN_AGENT_DATA_KEYS_BY_STREAM,
   KNOWN_AGENT_PHASES_BY_STREAM,
   KNOWN_AGENT_STREAMS,
   KNOWN_CHAT_CONTENT_PART_TYPES,
+  KNOWN_CHAT_CONTENT_PART_TYPES_FOLDED,
+  OPAQUE_EMITTER_AGENT_DATA_KEYS,
 } from "../src/providers/openclaw/agent-emission-vocabulary.js";
 import * as drift from "../src/providers/openclaw/protocol-drift.js";
 import { promisedVersion } from "./helpers/vendored.js";
 // @ts-expect-error — plain .mjs helper, no types
-import { inventoryPairs, runtimeVocabulary } from "../scripts/lib/emission-vocabulary.mjs";
+import { inventoryPairs, isKnownContentPartType, runtimeVocabulary } from "../scripts/lib/emission-vocabulary.mjs";
 // @ts-expect-error — plain .mjs script, no types
 import { expectedModule, inventoryVersions } from "../scripts/emission-vocabulary.mjs";
 
@@ -30,8 +31,9 @@ type Vocab = {
   streams: string[];
   phasesByStream: Record<string, string[]>;
   keysByStream: Record<string, string[]>;
-  anyStreamKeys: string[];
+  opaqueEmitterKeys: string[];
   chatContentPartTypes: string[];
+  chatContentPartFolds: Record<string, string[]>;
 };
 
 const VERSIONS = inventoryVersions() as string[];
@@ -69,11 +71,37 @@ describe("agent vocabulary == the vendored emission inventories", () => {
     for (const [stream, keys] of Object.entries(VOCAB.keysByStream)) {
       expect(sorted(KNOWN_AGENT_DATA_KEYS_BY_STREAM[stream]!), stream).toEqual(keys);
     }
-    expect(sorted(KNOWN_AGENT_ANY_STREAM_DATA_KEYS)).toEqual(VOCAB.anyStreamKeys);
+    expect(sorted(OPAQUE_EMITTER_AGENT_DATA_KEYS)).toEqual(VOCAB.opaqueEmitterKeys);
   });
 
-  it("chat content-part types, element by element", () => {
+  it("a key only an unresolved-stream emitter writes is known on NO stream (review, 2026-11-08)", () => {
+    // They used to be known on EVERY stream, and masked any unclassified addition of the
+    // same name: `usage` carrying `result` reported nothing. A key is known on a stream only
+    // where a row of that stream writes it.
+    expect(OPAQUE_EMITTER_AGENT_DATA_KEYS.has("result"), "the case this guards must exist").toBe(true);
+    expect(KNOWN_AGENT_DATA_KEYS_BY_STREAM.usage!.has("result")).toBe(false);
+    expect(KNOWN_AGENT_PHASES_BY_STREAM.usage!.size, "usage declares no phase").toBe(0);
+  });
+
+  it("chat content-part types, element by element — exact and folded", () => {
     expect(sorted(KNOWN_CHAT_CONTENT_PART_TYPES)).toEqual(VOCAB.chatContentPartTypes);
+    expect(recordOf(KNOWN_CHAT_CONTENT_PART_TYPES_FOLDED)).toEqual(VOCAB.chatContentPartFolds);
+  });
+
+  it("the detector and the bench check fold a content type exactly as upstream compares it", () => {
+    // Upstream compares tool block types as `type.trim().toLowerCase()`: `toolResult` IS
+    // `toolresult` there, and calling it drift was a false finding (review, 2026-11-08).
+    const folded = Object.values(VOCAB.chatContentPartFolds).flat();
+    expect(folded, "the 2026.9.36 projection folds its tool types").toContain("toolresult");
+    for (const spelled of ["toolResult", "ToolCall", " tool_use ", "TOOL_RESULT"]) {
+      expect(drift.isKnownChatContentPartType(spelled), spelled).toBe(true);
+      expect(isKnownContentPartType(spelled, VOCAB), spelled).toBe(true);
+    }
+    // …and only those: an exact-only literal does not fold, and nothing else is admitted.
+    for (const other of ["Text", "IMAGE", "toolResults", "tool-result", ""]) {
+      expect(drift.isKnownChatContentPartType(other), other).toBe(false);
+      expect(isKnownContentPartType(other, VOCAB), other).toBe(false);
+    }
   });
 
   it("the detector reads THESE sets — one definition, re-exported", () => {

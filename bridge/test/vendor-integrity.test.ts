@@ -429,6 +429,19 @@ describe("vendored protocol integrity", () => {
         expect(body.completeness.matched + body.completeness.homonyms).toBe(
           body.completeness.identifiers,
         );
+        // …and its second refusal: every gateway sender's payload is classified —
+        // fabricated, or an agent event passed on unchanged with its origins named. An
+        // unresolved one could put anything on the channel; a payload passed through a
+        // binding used to be filed as a relay and its frame lost (review, 2026-11-08).
+        const tf = body.transformations as {
+          unresolved?: unknown[];
+          relays?: { origins?: { kind: string }[] }[];
+        };
+        expect(Array.isArray(tf.unresolved), "the inventory has no transformations.unresolved list").toBe(true);
+        expect(tf.unresolved, "a gateway sender payload is unresolved").toEqual([]);
+        for (const r of tf.relays ?? []) {
+          expect((r.origins ?? []).length, "a relay with no origin named").toBeGreaterThan(0);
+        }
         // The summary is a function of the rows; an edited row with a stale summary (or
         // the reverse) is caught by recomputing it.
         expect(JSON.stringify(summarize(body)), "summary disagrees with the rows").toBe(

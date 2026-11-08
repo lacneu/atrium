@@ -618,6 +618,29 @@ if (unaccounted !== 0) {
 if (!Array.isArray(emissionsInventory.emissions) || emissionsInventory.emissions.length === 0) {
   throw new Error(`the emission inventory found no emission at v${version}`);
 }
+// A gateway sender whose payload the deriver could not classify — neither a frame it
+// fabricates (literal stream) nor an agent event passed on unchanged — could put anything
+// on the channel. Counted and REFUSED, never left out: before, a payload passed through a
+// binding was filed as a relay and its frame vanished from the inventory.
+const unresolvedSenders = emissionsInventory.transformations?.unresolved;
+if (!Array.isArray(unresolvedSenders)) {
+  throw new Error(`the emission inventory has no transformations.unresolved list at v${version} (extractor older than this vendoring?)`);
+}
+if (unresolvedSenders.length > 0) {
+  const kept = path.join(os.tmpdir(), `agent-emissions-refused-${version}.json`);
+  fs.writeFileSync(kept, emissionsFullText);
+  throw new Error(
+    `${unresolvedSenders.length} gateway sender payload(s) at v${version} are neither fabricated nor an unchanged agent event — ` +
+      `refusing to vendor an inventory that cannot say what they send (derived inventory kept at ${kept}):\n` +
+      unresolvedSenders.map((u) => `  - ${u.file}:${u.line} \`${u.function}\` via ${u.sender}(${u.payload ?? "∅"}): ${u.reason}`).join("\n"),
+  );
+}
+console.error(
+  `[vendor] gateway senders: ${emissionsInventory.transformations.fabricated.length} fabricated frame(s), ` +
+    `${emissionsInventory.transformations.relays.length} relay site(s) (${emissionsInventory.transformations.relays
+      .flatMap((r) => r.origins ?? [])
+      .filter((o) => o.kind === "typed").length} origin(s) known by declared type only)`,
+);
 const emissionsRootRaw = readUpstream(ROOT_SOURCE);
 const emissionsDeriverSha = (() => {
   const h = createHash("sha256");

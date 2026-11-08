@@ -499,6 +499,152 @@ describe("deriveAgentEmissions — after the emitter", () => {
   });
 });
 
+describe("deriveAgentEmissions — a gateway sender is classified on its EVALUATED payload", () => {
+  // Review defect (2026-11-08): only an object literal written inline at the sender was a
+  // fabricated frame; `const extra = {…}; broadcast("agent", extra)` was filed as a relay
+  // and its frame vanished from the inventory, silently.
+  const SENDERS = `
+type Broadcast = (event: string, payload: unknown) => void;
+type Ev = { runId: string; stream: string; data: Record<string, unknown> };
+declare function make(): unknown;
+declare function pick(): string;
+declare function openRecord(): Record<string, unknown>;
+export function viaBinding(broadcast: Broadcast, evt: Ev) {
+  const extra = { runId: evt.runId, stream: "x_extra", data: { k: 1 } };
+  broadcast("agent", extra);
+}
+function sendHelper(broadcast: Broadcast, payload: Ev) {
+  broadcast("agent", payload);
+}
+export function relayViaHelper(broadcast: Broadcast, evt: Ev) {
+  sendHelper(broadcast, evt);
+}
+export function fabricateViaHelper(broadcast: Broadcast, runId: string) {
+  sendHelper(broadcast, { runId, stream: "x_helper", data: { h: 1 } });
+}
+export function liveSender(broadcast: Broadcast, evt: Ev, sessionKey: string) {
+  const sendLive = (event: string, key: string, payload: unknown) => broadcast(event, payload);
+  sendLive("agent", sessionKey, evt);
+}
+function snapshotRecord(k: string): Record<string, unknown> {
+  return { ...(k ? { label: k } : {}), sessionKey: k };
+}
+export function recordSpread(broadcast: Broadcast, evt: Ev, sk: string) {
+  broadcast("agent", sk ? { ...evt, ...snapshotRecord(sk) } : evt);
+}
+export function typedCall(broadcast: Broadcast, get: () => Ev) {
+  broadcast("agent", get());
+}
+export function untyped(broadcast: Broadcast) {
+  broadcast("agent", make());
+}
+export function computedStream(broadcast: Broadcast, evt: Ev) {
+  broadcast("agent", { ...evt, stream: pick() });
+}
+export function openSpread(broadcast: Broadcast, evt: Ev) {
+  broadcast("agent", { ...evt, ...openRecord() });
+}
+`;
+  let senders: Inventory;
+  type Relay = { function: string; payload: string; origins: { kind: string; function?: string; entries?: { how: string }[] }[] };
+  type Unresolved = { function: string; reason: string };
+  const tf = () => senders.transformations as unknown as {
+    fabricated: { stream: string; keys: string[]; function: string; via?: string[] }[];
+    relays: Relay[];
+    unresolved: Unresolved[];
+  };
+  beforeAll(() => {
+    senders = derive({
+      root: "/virtual-upstream",
+      files: { "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, "src/gateway/server-chat.ts": SENDERS },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+  });
+
+  it("a literal reached through a binding or a helper's parameter is a FABRICATED frame", () => {
+    const fab = tf().fabricated.map((g) => [g.stream, g.keys.join(","), g.function, g.via ?? []]);
+    expect(fab).toEqual([
+      ["x_extra", "k", "viaBinding", []],
+      ["x_helper", "h", "fabricateViaHelper", [expect.stringContaining("`sendHelper`")]],
+    ]);
+  });
+
+  it("a relay names where its event comes from: the entry parameter, or a declared type only", () => {
+    const relays = new Map(tf().relays.map((r) => [r.function, r]));
+    // The helper's own parameter is resolved by its callers; the entry is theirs.
+    expect(relays.get("sendHelper")?.origins).toEqual([expect.objectContaining({ kind: "parameter", function: "relayViaHelper" })]);
+    // The payload is the parameter NAMED payload, not the next argument.
+    expect(relays.get("liveSender > sendLive")).toBeUndefined();
+    expect(relays.get("liveSender")?.payload).toBe("evt");
+    // A spread of an open record that the evaluator reads as setting no stream.
+    expect(relays.get("recordSpread")?.origins.map((o) => o.kind)).toEqual(["parameter"]);
+    expect(relays.get("typedCall")?.origins).toEqual([expect.objectContaining({ kind: "typed" })]);
+  });
+
+  it("anything else is UNRESOLVED and counted — never omitted, never a relay by default", () => {
+    const un = tf().unresolved.map((u) => [u.function, u.reason]);
+    expect(un).toEqual([
+      ["untyped", expect.stringContaining("declared type is unknown")],
+      ["computedStream", expect.stringMatching(/^a computed stream/)],
+      ["openSpread", expect.stringContaining("may set the stream")],
+    ]);
+  });
+});
+
+describe("deriveAgentEmissions — the normalization upstream applies before comparing a content type", () => {
+  // Review defect (2026-11-08): upstream compares tool block types as
+  // `type.trim().toLowerCase()`, so a `toolResult` block is recognized; the inventory kept
+  // only the literal spelling and the detector called it drift.
+  it("records a fold with the literal it applies to, and none on an exact comparison", () => {
+    const folded = derive({
+      root: "/virtual-upstream",
+      files: {
+        "src/infra/agent-events.ts": BUS,
+        "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!,
+        "src/chat/tool-content.ts": `
+function normalizeToolContentType(value: unknown): string {
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+export function isToolResultContentType(value: unknown): boolean {
+  const type = normalizeToolContentType(value);
+  return type === "toolresult" || type === "tool_result";
+}
+`,
+        "src/gateway/chat-display-projection.canvas.ts": `
+import { isToolResultContentType } from "../chat/tool-content.js";
+export function isToolResultHistoryBlockType(type: unknown): boolean {
+  return typeof type === "string" && isToolResultContentType(type.trim());
+}
+function isCanvas(type: unknown): boolean {
+  return type === "canvas";
+}
+export function project(message: { content: { type?: unknown }[] }) {
+  for (const block of message.content) {
+    if (isToolResultHistoryBlockType(block.type)) return 1;
+    if (isCanvas(block.type)) return 3;
+    if (block.type === "toolCall") return 2;
+  }
+  return 0;
+}
+`,
+      },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+    const recognized = (folded.chatContentParts.recognized as { type: string; sites: { fold?: string }[] }[]).map((r) => [
+      r.type,
+      [...new Set(r.sites.map((s) => s.fold ?? "exact"))],
+    ]);
+    expect(recognized).toEqual([
+      ["canvas", ["exact"]],
+      ["toolCall", ["exact"]],
+      ["tool_result", ["trim+lowercase"]],
+      ["toolresult", ["trim+lowercase"]],
+    ]);
+  });
+});
+
 describe("deriveAgentEmissions — stable output", () => {
   it("is byte-identical across runs, and its row key carries no line number", () => {
     const again = derive({ root: "/virtual-upstream", files: UPSTREAM, tsconfig: TSCONFIG, compilerOptions: OPTIONS });

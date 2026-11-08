@@ -4,10 +4,10 @@
 // test/emission-vocabulary.test.ts recomputes every set and compares it element by element.
 //
 // The protocol drift detector (protocol-drift.ts) judges each inbound `agent` frame
-// against these: a stream, a phase or a `data` key absent from them is a value the
-// vendored upstream never emits — counted by NAME (keys) or by digest (wire values),
-// never with content. The union over the inventories is the rule KNOWN_AGENT_FIELDS
-// follows: what a supported gateway emits is not drift.
+// against these, PER STREAM: a stream, a phase or a `data` key absent from them is one
+// the vendored upstream never emits there — counted by digest, or by name when the name is
+// the inventory's own, never with content. The union over the inventories is the rule
+// KNOWN_AGENT_FIELDS follows: what a supported gateway emits is not drift.
 
 /** The versions whose inventories these sets are the union of. */
 export const AGENT_EMISSION_VOCABULARY_VERSIONS: readonly string[] = ["2026.9.36"];
@@ -182,18 +182,28 @@ export const KNOWN_AGENT_DATA_KEYS_BY_STREAM: Readonly<Record<string, ReadonlySe
   ]),
 };
 
-/** `data` keys of emitters whose stream the derivation could not resolve, and that name
- *  no candidate stream: they may arrive on any stream. */
-export const KNOWN_AGENT_ANY_STREAM_DATA_KEYS: ReadonlySet<string> = new Set([
+/** `data` keys of emitters whose stream the derivation could not resolve. Known on NO
+ *  stream: an unresolved emitter COULD have added one, so the detector reports it apart
+ *  (`opaquekey_`) instead of letting it pass on every stream. */
+export const OPAQUE_EMITTER_AGENT_DATA_KEYS: ReadonlySet<string> = new Set([
   "args", "commandBearing", "cwd", "durationMs", "exitCode", "isError", "itemId", "name",
   "output", "partialResult", "phase", "pluginId", "pluginName", "result", "status",
   "summary", "title", "toolCallId", "value",
 ]);
 
 /** Chat `message.content[].type` values the gateway's display projection fabricates or
- *  recognizes. */
+ *  recognizes, spelled exactly as its literals are. */
 export const KNOWN_CHAT_CONTENT_PART_TYPES: ReadonlySet<string> = new Set([
   "attachment", "audio", "canvas", "image", "input_text", "output_text", "reasoning",
   "redacted_thinking", "text", "thinking", "toolCall", "tool_call", "tool_result",
   "tool_use", "toolcall", "toolresult", "tooluse", "video",
 ]);
+
+/** Literals the projection compares a block's type with after NORMALIZING it, per
+ *  normalization chain (`trim`, `lowercase`, applied in order): a wire type is known
+ *  when its normalized form is one of them (`toolResult` → `toolresult`). */
+export const KNOWN_CHAT_CONTENT_PART_TYPES_FOLDED: Readonly<Record<string, ReadonlySet<string>>> = {
+  "trim+lowercase": new Set([
+    "tool_call", "tool_result", "tool_use", "toolcall", "toolresult", "tooluse",
+  ]),
+};

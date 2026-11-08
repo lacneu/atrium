@@ -121,10 +121,50 @@ export function streamKeys(pairs) {
   return out;
 }
 
-/** Chat content-part types the gateway's display projection fabricates or recognizes. */
+/** Chat content-part types the gateway's display projection fabricates or recognizes,
+ *  spelled exactly as its literals are. */
 export function chatContentPartTypes(inv) {
   const cp = inv.chatContentParts ?? {};
   return [...new Set([...(cp.fabricated ?? []), ...(cp.recognized ?? [])].map((x) => x.type))].sort(cmp);
+}
+
+/** The normalization steps a content-part fold may name, in the order they apply. */
+export const CONTENT_PART_FOLD_STEPS = ["trim", "lowercase"];
+
+/** Literals the projection compares a block's type with AFTER normalizing it (a site's
+ *  `fold`, e.g. `trim+lowercase` — upstream lowercases tool block types, so `toolResult`
+ *  is its `toolresult`): fold → the literals compared under it. */
+export function chatContentPartFolds(inv) {
+  const out = new Map();
+  for (const r of inv.chatContentParts?.recognized ?? []) {
+    for (const site of r.sites ?? []) {
+      if (!site.fold) continue;
+      const steps = site.fold.split("+");
+      if (steps.some((x) => !CONTENT_PART_FOLD_STEPS.includes(x))) {
+        throw new Error(`content-part fold ${JSON.stringify(site.fold)} at ${site.at} names a step this vocabulary cannot apply`);
+      }
+      if (!out.has(site.fold)) out.set(site.fold, new Set());
+      out.get(site.fold).add(r.type);
+    }
+  }
+  return out;
+}
+
+/** Apply a fold to a wire type, step by step (the runtime's `foldContentPartType`). */
+export function foldContentPartType(fold, type) {
+  let out = type;
+  for (const step of fold.split("+")) {
+    if (step === "trim") out = out.trim();
+    else if (step === "lowercase") out = out.toLowerCase();
+    else return "\u0000";
+  }
+  return out;
+}
+
+/** Is a content part's type known — exactly, or under a fold the projection applies? */
+export function isKnownContentPartType(type, vocab) {
+  if (vocab.chatContentPartTypes.includes(type)) return true;
+  return Object.entries(vocab.chatContentPartFolds).some(([fold, types]) => types.includes(foldContentPartType(fold, type)));
 }
 
 const isLiteral = (s) => !s.startsWith("<");
@@ -136,16 +176,21 @@ const isLiteral = (s) => !s.startsWith("<");
  *    skips those before it looks them up);
  *  - `phasesByStream`: per literal stream, its literal phases (no `-`, no `<opaque>`);
  *  - `keysByStream`: per literal stream, every key any of its pairs carries;
- *  - `anyStreamKeys`: keys of rows whose stream the deriver could not resolve and that name
- *    no candidate streams — they may arrive on any stream; rows that DO name candidates
- *    (a closed union of literals) give their keys to those streams instead;
- *  - `chatContentPartTypes`.
+ *  - `opaqueEmitterKeys`: keys of rows whose stream the deriver could not resolve. NOT
+ *    known on any stream — they were, as "keys that may arrive on any stream", and that
+ *    masked every unclassified addition of the same name (review, 2026-11-08): a key is
+ *    known on a stream only where a row of that stream writes it. The detector reports
+ *    these apart (`opaquekey_`), as names an unresolved emitter could have added;
+ *  - `chatContentPartTypes` (exact literals) and `chatContentPartFolds` (fold → literals).
+ *  Rows of an opaque stream contribute no phase and no key to any stream: their candidate
+ *  literals are the literal members of an OPEN union, not a closed set.
  *  Every list is sorted, so two derivations compare element by element. */
 export function runtimeVocabulary(inventories) {
   const phases = new Map();
   const keys = new Map();
-  const anyStream = new Set();
+  const opaqueEmitter = new Set();
   const parts = new Set();
+  const folds = new Map();
   const streamEntry = (s) => {
     if (!phases.has(s)) phases.set(s, new Set());
     if (!keys.has(s)) keys.set(s, new Set());
@@ -160,26 +205,22 @@ export function runtimeVocabulary(inventories) {
     }
     for (const e of inv.emissions ?? []) {
       if (e.stream !== null && e.stream !== undefined) continue;
-      const candidates = Array.isArray(e.streamOpaque?.literals) ? e.streamOpaque.literals : [];
-      if (candidates.length === 0) {
-        for (const k of e.keys ?? []) anyStream.add(k.key);
-        continue;
-      }
-      for (const s of candidates) {
-        streamEntry(s);
-        if (!e.phaseAbsent && e.phase !== null && e.phase !== undefined) phases.get(s).add(String(e.phase));
-        for (const k of e.keys ?? []) keys.get(s).add(k.key);
-      }
+      for (const k of e.keys ?? []) opaqueEmitter.add(k.key);
     }
     for (const t of chatContentPartTypes(inv)) parts.add(t);
+    for (const [fold, types] of chatContentPartFolds(inv)) {
+      if (!folds.has(fold)) folds.set(fold, new Set());
+      for (const t of types) folds.get(fold).add(t);
+    }
   }
   const sortedMap = (m) => Object.fromEntries([...m.keys()].sort(cmp).map((s) => [s, [...m.get(s)].sort(cmp)]));
   return {
     streams: [...phases.keys()].sort(cmp),
     phasesByStream: sortedMap(phases),
     keysByStream: sortedMap(keys),
-    anyStreamKeys: [...anyStream].sort(cmp),
+    opaqueEmitterKeys: [...opaqueEmitter].sort(cmp),
     chatContentPartTypes: [...parts].sort(cmp),
+    chatContentPartFolds: sortedMap(folds),
   };
 }
 

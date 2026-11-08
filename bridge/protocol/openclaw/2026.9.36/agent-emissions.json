@@ -27722,23 +27722,97 @@
         "line": 1163,
         "function": "createAgentEventHandler > sendAgentPayload",
         "sender": "sendLivePayload",
-        "payload": "sessionKey"
+        "payload": "payload",
+        "origins": [
+          {
+            "kind": "parameter",
+            "function": "createAgentEventHandler > handleEvent",
+            "parameter": "event",
+            "type": "AgentEventPayload",
+            "entries": [
+              {
+                "at": "src/gateway/server-chat.ts:1765",
+                "how": "referenced as a value (CallExpression)"
+              }
+            ],
+            "via": [
+              "src/gateway/server-chat.ts:1163 `createAgentEventHandler > sendAgentPayload`",
+              "src/gateway/server-chat.ts:1260 `createAgentEventHandler > sendOrBufferAgentTextEvent`"
+            ]
+          },
+          {
+            "kind": "parameter",
+            "function": "createAgentEventHandler > handleEvent",
+            "parameter": "event",
+            "type": "AgentEventPayload",
+            "entries": [
+              {
+                "at": "src/gateway/server-chat.ts:1765",
+                "how": "referenced as a value (CallExpression)"
+              }
+            ],
+            "via": [
+              "src/gateway/server-chat.ts:1163 `createAgentEventHandler > sendAgentPayload`"
+            ]
+          },
+          {
+            "kind": "typed",
+            "type": "AgentEventPayload & { spawnedBy?: string | undefined; }",
+            "at": "src/gateway/server-chat.ts:1175",
+            "via": [
+              "src/gateway/server-chat.ts:1163 `createAgentEventHandler > sendAgentPayload`"
+            ]
+          }
+        ]
       },
       {
         "file": "src/gateway/server-chat.ts",
         "line": 1330,
         "function": "createAgentEventHandler > sendNodeToolPayload",
         "sender": "nodeSendToSession",
-        "payload": "nodePayload"
+        "payload": "nodePayload",
+        "origins": [
+          {
+            "kind": "parameter",
+            "function": "createAgentEventHandler > handleEvent",
+            "parameter": "event",
+            "type": "AgentEventPayload",
+            "entries": [
+              {
+                "at": "src/gateway/server-chat.ts:1765",
+                "how": "referenced as a value (CallExpression)"
+              }
+            ],
+            "via": [
+              "src/gateway/server-chat.ts:1330 `createAgentEventHandler > sendNodeToolPayload`"
+            ]
+          }
+        ]
       },
       {
         "file": "src/gateway/server-chat.ts",
         "line": 1555,
         "function": "createAgentEventHandler > handleEvent",
         "sender": "broadcastToConnIds",
-        "payload": "sessionKey ? { ...agentPayload, ...buildSessionEventSnapshot(sessionKey, undefin"
+        "payload": "sessionKey ? { ...agentPayload, ...buildSessionEventSnapshot(sessionKey, undefin",
+        "origins": [
+          {
+            "kind": "parameter",
+            "function": "createAgentEventHandler > handleEvent",
+            "parameter": "event",
+            "type": "AgentEventPayload",
+            "entries": [
+              {
+                "at": "src/gateway/server-chat.ts:1765",
+                "how": "referenced as a value (CallExpression)"
+              }
+            ],
+            "via": []
+          }
+        ]
       }
     ],
+    "unresolved": [],
     "dataRewrites": [
       {
         "scope": "gateway",
@@ -28191,23 +28265,28 @@
         "sites": [
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:249",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.commentary.ts:130",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:183",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:283",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:608",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           }
         ]
       },
@@ -28216,31 +28295,38 @@
         "sites": [
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:119",
-            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:249",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.commentary.ts:130",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:183",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:185",
-            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:283",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:608",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           }
         ]
       },
@@ -28249,23 +28335,28 @@
         "sites": [
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:249",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.commentary.ts:130",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:183",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:283",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:608",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           }
         ]
       },
@@ -28274,23 +28365,28 @@
         "sites": [
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:249",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.commentary.ts:130",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:183",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:283",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:608",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           }
         ]
       },
@@ -28299,31 +28395,38 @@
         "sites": [
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:119",
-            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:249",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.commentary.ts:130",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:183",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:185",
-            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolResultHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:283",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:608",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:30)",
+            "fold": "trim+lowercase"
           }
         ]
       },
@@ -28332,23 +28435,28 @@
         "sites": [
           {
             "at": "src/gateway/chat-display-projection.canvas.ts:249",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.commentary.ts:130",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:183",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:283",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           },
           {
             "at": "src/gateway/chat-display-projection.sanitize.ts:608",
-            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)"
+            "how": "helper isToolHistoryBlockType (src/chat/tool-content.ts:24)",
+            "fold": "trim+lowercase"
           }
         ]
       },
