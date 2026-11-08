@@ -142,12 +142,14 @@ function boundedDeadline(now: number, expiresAt: number | undefined): number {
   return now + DEFAULT_REQUEST_TTL_MS;
 }
 
-/** A deadline a sighting gives, when it is still ahead (and within the bound): else none —
- *  never a default in its place (a reopening must not outlive the gateway's deadline). */
+/** A deadline a sighting gives, while the request may still wait at the gateway — up to the
+ *  sweep's grace past it, the bound Atrium closes a request on its own clock by (our clock
+ *  may run ahead of the gateway's) — and within the bound: else none, never a default in
+ *  its place (a reopening must not outlive the gateway's deadline and that grace). */
 function snapshotDeadline(now: number, expiresAt: number | undefined): number | null {
   return typeof expiresAt === "number" &&
     Number.isFinite(expiresAt) &&
-    expiresAt > now &&
+    expiresAt > now - EXPIRY_SWEEP_GRACE_MS &&
     expiresAt <= now + MAX_REQUEST_TTL_MS
     ? Math.round(expiresAt)
     : null;
@@ -310,8 +312,12 @@ export const upsertFromBridge = internalMutation({
         // until the deadline the gateway gives now; the answer that failed is forgotten. A
         // real verdict stays. Decided on the row as read in THIS transaction: a verdict
         // committed concurrently makes Convex run it again on that verdict, never over it.
-        // Only until the deadline THIS sighting gives, still ahead: an old snapshot written
-        // late, its deadline past, reopens nothing — and no default deadline replaces it.
+        // Only under the deadline THIS sighting gives, and while the request may still wait
+        // (snapshotDeadline): an old snapshot written late, past that deadline and the
+        // sweep's grace, reopens nothing — and no default deadline replaces it. Within the
+        // grace the card is pending again but no longer answerable: it holds the utility jobs
+        // (lib/utilityHold.ts) until the gateway's word or the sweep closes it (codex,
+        // integrated review of 0.103.5, pass 3).
         const reopenedAt = Date.now();
         const deadline = snapshotDeadline(reopenedAt, args.expiresAt);
         if (closedByAtrium(same) && deadline !== null) {
@@ -958,11 +964,18 @@ export const prepareAnswer = internalMutation({
     }
     const now = Date.now();
     if (row.expiresAt <= now) {
-      // RETURNED, not thrown: a throw would roll this settle back with it, and the
-      // row would keep offering an answer the agent can no longer receive. Atrium's clock,
+      // Past its deadline: no answer leaves — the OpenClaw Control UI offers none either. The
+      // card is CLOSED only past the sweep's grace, as everywhere Atrium closes a request on
+      // its own clock: within it the gateway may still wait (its clock may run behind ours),
+      // and the card keeps holding the utility jobs (lib/utilityHold.ts) until the gateway's
+      // word or the sweep closes it (codex, integrated review of 0.103.5, pass 3).
+      // RETURNED, not thrown: a throw would roll that close back with it, and the row
+      // would keep offering an answer the agent can no longer receive. Atrium's clock,
       // not the gateway's verdict (see expiredLocally).
-      await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now, expiredLocally: true });
-      await clearNotification(ctx, row);
+      if (row.expiresAt <= now - EXPIRY_SWEEP_GRACE_MS) {
+        await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now, expiredLocally: true });
+        await clearNotification(ctx, row);
+      }
       return { refused: "AGENT_REQUEST_EXPIRED" };
     }
 
@@ -1178,11 +1191,16 @@ export const revertAnswer = internalMutation({
     const row = await ctx.db.get(requestId);
     if (row === null || row.status !== "submitting") return null;
     const now = Date.now();
-    const expired = row.expiresAt <= now;
+    // Closed only past the sweep's grace, as everywhere Atrium closes a request on its own
+    // clock: within it the card is pending again, no longer answerable (its deadline has
+    // passed) but still holding the utility jobs while the gateway may still wait (codex,
+    // integrated review of 0.103.5, pass 3).
+    const expired = row.expiresAt <= now - EXPIRY_SWEEP_GRACE_MS;
     await ctx.db.patch(requestId, {
       status: expired ? "expired" : "pending",
       updatedAt: now,
-      // Past its deadline by OUR clock: not the gateway's verdict (see expiredLocally).
+      // Past its deadline and the grace by OUR clock: not the gateway's verdict (see
+      // expiredLocally).
       ...(expired ? { resolvedAt: now, expiredLocally: true } : {}),
       failureCode: failureCode.slice(0, 64),
       resolvedByUserId: undefined,

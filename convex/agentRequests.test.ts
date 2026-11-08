@@ -838,7 +838,23 @@ describe("the person answers", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test("an expired request is refused and settled, not sent", async () => {
+  test("an expired request is refused and settled, not sent — past its deadline and the sweep's grace", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, requestId } = await pendingQuestion(t);
+    await t.run((ctx) => ctx.db.patch(requestId, { expiresAt: Date.now() - EXPIRY_SWEEP_GRACE_MS - 1 }));
+    const out = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .action(api.agentRequests.answer, {
+        requestId,
+        answers: [{ id: "format", values: ["PDF"] }],
+      });
+    expect(out).toEqual({ ok: false, reason: "AGENT_REQUEST_EXPIRED" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const row = await t.run((ctx) => ctx.db.get(requestId));
+    expect(row!.status).toBe("expired");
+  });
+
+  test("…within that grace, refused and not sent all the same, but left pending: the gateway may still wait (codex, integrated review of 0.103.5, pass 3)", async () => {
     const t = convexTest(schema, modules);
     const { userId, requestId } = await pendingQuestion(t);
     await t.run((ctx) => ctx.db.patch(requestId, { expiresAt: Date.now() - 1 }));
@@ -850,8 +866,9 @@ describe("the person answers", () => {
       });
     expect(out).toEqual({ ok: false, reason: "AGENT_REQUEST_EXPIRED" });
     expect(fetchMock).not.toHaveBeenCalled();
-    const row = await t.run((ctx) => ctx.db.get(requestId));
-    expect(row!.status).toBe("expired");
+    const row = (await t.run((ctx) => ctx.db.get(requestId)))!;
+    expect(row.status).toBe("pending");
+    expect(row.expiredLocally).toBeUndefined();
   });
 
   test("skipping a question tells the agent to carry on without an answer", async () => {
@@ -2086,30 +2103,57 @@ describe("only the gateway's word closes a card for good", () => {
     expect(await answer(t, userId, id!)).toEqual({ ok: true, status: "allowed" });
   });
 
-  test("…and so is one an answer found past its deadline", async () => {
+  test("…and so is one an answer found past its deadline and the sweep's grace", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId } = await seed(t);
     const { id } = await record(t, chatId);
-    await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - 1 }));
+    await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - EXPIRY_SWEEP_GRACE_MS - 1 }));
     expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "AGENT_REQUEST_EXPIRED" });
     expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
     await record(t, chatId, { providerSeenSeq: 20 });
     expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("pending");
   });
 
-  test("…and one whose deadline passed while the refused answer was on the wire", async () => {
+  test("…while within that grace, the refused answer leaves the card open (pass 3)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId);
+    await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - 1 }));
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "AGENT_REQUEST_EXPIRED" });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row.status).toBe("pending");
+    expect(row.expiredLocally).toBeUndefined();
+    expect(row.resolvedByUserId).toBeUndefined();
+  });
+
+  test("…and one whose deadline and grace passed while the refused answer was on the wire", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId } = await seed(t);
     const { id } = await record(t, chatId);
     fetchMock.mockImplementationOnce(async () => {
-      // The deadline passes by OUR clock while the bridge is asked.
-      await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - 1 }));
+      // The deadline and its grace pass by OUR clock while the bridge is asked.
+      await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - EXPIRY_SWEEP_GRACE_MS - 1 }));
       return new Response(JSON.stringify({ ok: false, error: { code: "session_unavailable" } }), { status: 503 });
     });
     expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "session_unavailable" });
     expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
     await record(t, chatId, { providerSeenSeq: 20 });
     expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("pending");
+  });
+
+  test("…while one whose deadline passed on the wire, within the grace, is back to pending, not closed (pass 3)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId);
+    fetchMock.mockImplementationOnce(async () => {
+      await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - 1 }));
+      return new Response(JSON.stringify({ ok: false, error: { code: "session_unavailable" } }), { status: 503 });
+    });
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "session_unavailable" });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row).toMatchObject({ status: "pending", failureCode: "session_unavailable" });
+    expect(row.expiredLocally).toBeUndefined();
+    expect(row.resolvedByUserId).toBeUndefined();
   });
 
   // The gateway's own expiry, settled from its stream, lands only on a `pending` row (never
@@ -2156,8 +2200,9 @@ describe("only the gateway's word closes a card for good", () => {
     await answer(t, userId, id!);
     const closed = (await t.run((ctx) => ctx.db.get(id!)))!;
     expect(closed.closedByGateway).toBeUndefined();
-    // …and a write whose deadline is past, or that names none: still closed, deadline kept.
-    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 });
+    // …and a write whose deadline is past, and its grace, or that names none: still closed,
+    // deadline kept.
+    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - EXPIRY_SWEEP_GRACE_MS - 1_000 });
     await record(t, chatId, { providerSeenSeq: 12, expiresAt: undefined });
     const row = (await t.run((ctx) => ctx.db.get(id!)))!;
     expect(row.status).toBe("expired");
@@ -2173,8 +2218,28 @@ describe("only the gateway's word closes a card for good", () => {
     const { chatId } = await seed(t);
     const { id } = await record(t, chatId, { providerSeenSeq: 10 });
     await sweepNow(t, id!);
-    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 });
+    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - EXPIRY_SWEEP_GRACE_MS - 1_000 });
     expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
+  });
+
+  test("a sighting within the grace past its deadline reopens a card Atrium closed — pending, not answerable, holding the jobs — never one the gateway closed (pass 3)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    await sweepNow(t, id!);
+    const deadline = Date.now() - 1_000;
+    await record(t, chatId, { providerSeenSeq: 11, expiresAt: deadline });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row).toMatchObject({ status: "pending", expiresAt: deadline });
+    expect(row.expiredLocally).toBeUndefined();
+    // Not offered to anyone: its deadline has passed.
+    expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
+    // The gateway's own word, once given, is never undone by such a sighting.
+    await t.mutation(internal.agentRequests.settleFromBridge, {
+      chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status: "expired",
+    });
+    await record(t, chatId, { providerSeenSeq: 12, expiresAt: Date.now() - 500 });
+    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("expired");
   });
 
   // UPGRADE FROM 0.103.4: its bridge answered `request_gone` for a socket absent or closed,

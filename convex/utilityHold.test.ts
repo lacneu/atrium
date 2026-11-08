@@ -427,6 +427,42 @@ describe("a utility job is held while an approval waits on its instance", () => 
     expect(sends()).toBe(1);
   });
 
+  test("an answer refused past the deadline, within the grace, leaves the approval holding (codex, integrated review of 0.103.5, pass 3)", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t);
+    const chatId = await otherConversation(t);
+    const approval = await seedRequest(t, chatId, { expiresAt: T0 - 1 });
+    const owner = (await t.run((ctx) => ctx.db.get(chatId)))!.userId;
+    expect(
+      await t
+        .withIdentity({ subject: `${owner}|session` })
+        .action(api.agentRequests.answer, { requestId: approval, decision: "allow-once" }),
+    ).toEqual({ ok: false, reason: "AGENT_REQUEST_EXPIRED" });
+    expect((await t.run((ctx) => ctx.db.get(approval)))!.status).toBe("pending");
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(0);
+  });
+
+  test("…and so does an answer that failed on the wire as the deadline passed", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t);
+    const chatId = await otherConversation(t);
+    const approval = await seedRequest(t, chatId);
+    const owner = (await t.run((ctx) => ctx.db.get(chatId)))!.userId;
+    fetchMock.mockImplementationOnce(async () => {
+      await t.run((ctx) => ctx.db.patch(approval, { expiresAt: Date.now() - 1 }));
+      return new Response(JSON.stringify({ ok: false, error: { code: "session_unavailable" } }), { status: 503 });
+    });
+    expect(
+      await t
+        .withIdentity({ subject: `${owner}|session` })
+        .action(api.agentRequests.answer, { requestId: approval, decision: "allow-once" }),
+    ).toEqual({ ok: false, reason: "session_unavailable" });
+    expect((await t.run((ctx) => ctx.db.get(approval)))!.status).toBe("pending");
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(0);
+  });
+
   test("…and so does one the bridge records late, within that grace: pending with its own deadline, until the grace ends", async () => {
     const t = convexTest(schema, modules);
     const job = await seedJob(t);
