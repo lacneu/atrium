@@ -25,8 +25,12 @@ the inventory described below.
   across a deployment's bridges, so one unknown value stays one row of the report; without it
   (tests, development), it changes with each process.
 - **The protocol coverage shown in the Bridge settings is checked against what the bridge
-  actually reads.** Thirty-nine fields declared unread were in fact read and now show as handled,
-  and the reasons given for the others were corrected where they were wrong.
+  actually reads.** Forty-eight fields declared unread were in fact read and now show as handled,
+  among them the fields of an approval snapshot that tell which conversation it belongs to, and
+  the reasons given for the others were corrected where they were wrong.
+- **An approval card answers only the request the gateway holds under its kind.** A command or
+  plugin card that the gateway records as a system-agent approval is refused, instead of being
+  checked against the system agent: consistent data never produces that mismatch.
 
 **Rollback:** redeploy the 0.103.5 bridge image. Convex is unchanged, so nothing else moves.
 

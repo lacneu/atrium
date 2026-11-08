@@ -6,146 +6,146 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "agent-request-approval-replay",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "approval-wait-vs-utility-job",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "approval-wait-vs-existing-session-claim",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "utility-hold-frames",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     },
     {
       "id": "emission-check",
       "ok": true,
-      "chat": "cae626878c23f093"
+      "chat": "d85d54533adb35de"
     }
   ],
   "verdict": "GO",
-  "at": "2026-11-08T17:42:16.053Z",
+  "at": "2026-11-08T18:50:28.353Z",
   "scenarios": [
     "agent-request-approval-replay",
     "agent-request-exec-approval",
@@ -215,12 +215,12 @@
     "emission-check": "openclaw"
   },
   "flags": [],
-  "atriumSha": "78d78e7da85bddce0afc0e5797cf5a4541642715",
+  "atriumSha": "e0f16824348e0cf65c924c2a110e9d15baf168c9",
   "worktree": {
-    "dirty": true,
-    "deltaSha256": "fc8e6ed9b91fa2eefa655a32311e932eed8e468e4c00125afdbe724cd39eba54"
+    "dirty": false,
+    "deltaSha256": null
   },
-  "supportDigest": "3ec450b2f017a1187f9c8a8a20c6758f0543e996b0833de136a9f3918b3a3928",
+  "supportDigest": "e0b13ecd34fbee2444e6ff622fd0ed1626c43c59fa623ed9f3fb074de165974c",
   "authMode": "token",
   "bridgeVersion": "0.103.4",
   "vendoredSha256": "d326866980554b03ae372878cc8d4d6a098387da5b27edd26155cf2365c2cf95"
