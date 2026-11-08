@@ -31,6 +31,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id, type TableNames } from "./_generated/dataModel";
 import { writeTraceEvent } from "./observability";
 import { isChatBusy } from "./lib/outboxQueue";
+import { utilityJobActive, type UtilityCancelReason } from "./lib/utilityHold";
 import { requireActive } from "./lib/access";
 import { resolveSummarizerTarget } from "./agents";
 import { resolveTargetForChat } from "./routing";
@@ -102,9 +103,12 @@ async function ensureSummarizerChat(
     )
     .first();
   if (existing) {
+    // Never re-bound under a job in progress: its pending row would follow the binding
+    // to the new target (lib/utilityHold.utilityJobActive). The next job re-binds.
     if (
-      existing.instanceName !== target.instanceName ||
-      existing.agentId !== target.agentId
+      (existing.instanceName !== target.instanceName ||
+        existing.agentId !== target.agentId) &&
+      !(await utilityJobActive(ctx, existing))
     ) {
       await ctx.db.patch(existing._id, {
         instanceName: target.instanceName,
@@ -1019,6 +1023,8 @@ async function scheduleSummarizeJob(
       messageId: msgId,
       text,
       attachmentIds: [],
+      // This job's target, fixed now: every dispatch of the row checks it (schema).
+      utilityJob: { instanceName: target.instanceName, agentId: target.agentId, lockedAt: now },
       status: "pending" as const,
       // Dispatched immediately → the in-flight window opens now (see
       // schema.outbox.pendingSince: it is what lets the reconciler tell a live
@@ -1179,6 +1185,38 @@ export async function correlateSummarize(
     );
   }
   return true;
+}
+
+/**
+ * WITHDRAW a summarize job that was never sent (bridge.cancelUtilityJob): its lock and
+ * nonce released, its undispatched rows swept, a `cancel` trace naming the reason. NOT a
+ * failure — no backoff, no failure count: nothing ran, and the next trigger of the
+ * conversation (a turn's end, the next summary of a chain) asks for it again as usual.
+ */
+export async function cancelSummarizeForChat(
+  ctx: MutationCtx,
+  hiddenChat: Doc<"chats">,
+  reason: UtilityCancelReason,
+): Promise<void> {
+  const job = hiddenChat.pendingSummarize;
+  if (!job) return;
+  await ctx.db.patch(hiddenChat._id, { pendingSummarize: undefined });
+  try {
+    await writeTraceEvent(ctx, {
+      kind: "chat.summary",
+      direction: "internal",
+      principalType: "user",
+      principalId: hiddenChat.userId,
+      chatId: job.targetChatId,
+      correlationId: summaryCorrelationId(job.targetChatId, job.createdAt),
+      meta: JSON.stringify({ op: "cancel", reason }),
+    });
+  } catch {
+    // best-effort trace
+  }
+  await ctx.scheduler.runAfter(0, internal.chatSummaries.cleanupSummarizerChat, {
+    hiddenChatId: hiddenChat._id,
+  });
 }
 
 /**

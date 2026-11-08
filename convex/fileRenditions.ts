@@ -39,6 +39,7 @@ import {
 import { resolveConverterTarget } from "./agents";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { isChatBusy } from "./lib/outboxQueue";
+import { utilityJobActive } from "./lib/utilityHold";
 import { isTrashed } from "./lib/trash";
 import { transcriptStoredText } from "./lib/transcriptProjection";
 import { FILE_JOB_MAX_DEFER_MS, uploadInFlightIn } from "./lib/fileJobs";
@@ -233,9 +234,14 @@ async function ensureConverterChat(
     .filter((q) => q.eq(q.field("kind"), "converter"))
     .first();
   if (existing) {
+    // Never re-bound under a conversion in progress (lib/utilityHold.utilityJobActive):
+    // its pending row would follow the binding, and one held for an approval would carry
+    // its file to the NEW target when it resumes. A request for another target queues
+    // its rendition; drainNextRendition re-binds when this conversion has settled.
     if (
-      existing.instanceName !== target.instanceName ||
-      existing.agentId !== target.agentId
+      (existing.instanceName !== target.instanceName ||
+        existing.agentId !== target.agentId) &&
+      !(await utilityJobActive(ctx, existing))
     ) {
       await ctx.db.patch(existing._id, {
         instanceName: target.instanceName,
@@ -392,6 +398,7 @@ export const requestRendition = mutation({
         sourceStorageId,
         filename: file.filename,
         mimeType: file.mimeType,
+        target,
       });
     }
     return { status: "pending" };
@@ -410,6 +417,8 @@ async function dispatchRenditionTurn(
     sourceStorageId: Id<"_storage">;
     filename: string;
     mimeType: string;
+    /** The converter the rendition was requested for — the job's immutable target. */
+    target: { instanceName: string; agentId: string };
   },
 ): Promise<void> {
   const now = Date.now();
@@ -440,6 +449,8 @@ async function dispatchRenditionTurn(
     clientMessageId: `convert-${job.renditionId}-${now}`,
     messageId: msgId,
     text: prompt,
+    // This job's target, fixed now: every dispatch of the row checks it (schema).
+    utilityJob: { instanceName: job.target.instanceName, agentId: job.target.agentId, lockedAt: now },
     // The source file rides the turn as an ATTACHMENT — the dispatch resolves it
     // to base64 (inline) or a shared-fs reference (both providers).
     attachmentIds: [job.sourceStorageId],
@@ -497,6 +508,7 @@ async function drainNextRendition(
     sourceStorageId: next.sourceStorageId,
     filename: next.sourceFilename,
     mimeType: next.sourceMimeType,
+    target: { instanceName: next.converterInstance, agentId: next.converterAgentId },
   });
 }
 

@@ -3,11 +3,11 @@
 ## [0.103.5] — Approvals from sub-agents, after a reconnection and past ten minutes, safe from Atrium's background work
 
 Patch release. The bridge and the Convex functions change; the frontend does not. The schema
-gains an index (`agentRequests.by_instance_and_status`) and two optional fields
-(`outbox.utilityHoldSince`, `fileRenditions.dispatchHeldAt`); nothing needs migrating. Deploy
-**Convex first, then the bridge image**: either half works with the other half of 0.103.4
-during the rollout. Validated on the live bench on OpenClaw 2026.9.36, with Hermes 0.21.7, in
-token and in trusted-proxy authentication.
+gains an index (`agentRequests.by_instance_and_status`) and three optional fields
+(`outbox.utilityHoldSince`, `outbox.utilityJob`, `fileRenditions.dispatchHeldAt`); nothing needs
+migrating. Deploy **Convex first, then the bridge image**: either half works with the other half
+of 0.103.4 during the rollout. Validated on the live bench on OpenClaw 2026.9.36, with Hermes
+0.21.7, in token and in trusted-proxy authentication.
 
 - **A sub-agent's approval is shown in the conversation that started it.** When an agent
   delegated work to a sub-agent and that sub-agent needed your approval to run a command, the
@@ -48,11 +48,21 @@ token and in trusted-proxy authentication.
   command you had allowed could then end refused as `approval-request-failed`. These jobs now
   wait while an approval is pending on the same OpenClaw instance, and a summary also waits
   while the conversation it summarizes is still working (an answer in progress, a sub-agent
-  running). They start on their own once nothing holds them, and at the latest 35 minutes after
-  they began waiting — so a preview or a document fetch asked for during an approval can take
-  that much longer to appear. The messages of your conversations are never held, and Hermes
-  instances are not concerned. A held job is traced once, as an `openclaw.dispatch` event with
-  `dispatchStatus: "deferred"` and its reason (`approval_pending` or `source_busy`).
+  running). They start on their own once nothing holds them — so a preview or a document fetch
+  asked for during an approval can take that much longer to appear. A job still held 35 minutes
+  after it began waiting is withdrawn, never sent: a summary is attempted again after the
+  conversation's next answer, while a preview, a document fetch or a curation ends as failed.
+  The messages of your conversations are never held, and Hermes instances are not concerned. A
+  held job is traced once, as an `openclaw.dispatch` event with `dispatchStatus: "deferred"` and
+  its reason (`approval_pending` or `source_busy`); a withdrawn one with
+  `dispatchStatus: "cancelled"` and its reason (`approval_still_pending`, `source_still_busy` or
+  `target_changed`).
+- **A background job is never sent to another instance than the one it was asked for.** Each
+  job now keeps the instance and agent it was asked for, and is withdrawn unsent if its hidden
+  conversation no longer points there when it is about to leave. That conversation is also no
+  longer moved to another instance while one of its jobs is in progress: the move waits for the
+  next job. In 0.103.4, a PDF preview asked for a file of another instance at the very moment a
+  first conversion was leaving could send the first file to that other instance's converter.
 - **With trusted-proxy authentication, a new connection no longer breaks a pending approval.**
   On the first message of each gateway connection — a new conversation, a reconnection, the
   bridge restarting, a conversation left idle for 15 minutes — the bridge claimed the
@@ -76,8 +86,8 @@ index and optional fields, and its functions accept every call a 0.103.4 bridge 
 migrate in either direction. After a rollback, sub-agent approvals are not shown, a missed card
 does not come back, the approval wait stops at 10 minutes, a retried failure shows an error again,
 and with trusted-proxy authentication a new connection can again break a pending approval. Do
-**not** redeploy Convex 0.103.4 once 0.103.5 has held a job: its schema rejects the documents
-that carry the new fields, so that deploy fails.
+**not** redeploy Convex 0.103.4 once 0.103.5 has run a background job: its schema rejects the
+documents that carry the new fields, so that deploy fails.
 
 ## [0.103.4] — A long conversation of heavy turns opens again
 

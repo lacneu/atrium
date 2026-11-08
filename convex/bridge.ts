@@ -105,7 +105,9 @@ import {
 import {
   UTILITY_CHAT_KINDS,
   UTILITY_HOLD_MAX_MS,
+  utilityLockCreatedAt,
   utilitySessionHold,
+  type UtilityCancelReason,
   type UtilityHoldReason,
 } from "./lib/utilityHold";
 import {
@@ -113,7 +115,7 @@ import {
   scheduleCallWindowDrain,
 } from "./lib/talkFreeze";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
-import { failSummarizeForChat } from "./chatSummaries";
+import { cancelSummarizeForChat, failSummarizeForChat } from "./chatSummaries";
 import { providerSessionClearPatch } from "./lib/providerSession";
 import { compareOrder } from "./lib/messageOrder";
 import { composeChainedPrompt } from "./lib/rehydration";
@@ -164,8 +166,9 @@ async function traceDispatch(
      *  ABSENT deliberately counts as user-facing. */
     chatKind?: string | null;
     /** `deferred`: a utility job's dispatch held by the utility hold (lib/utilityHold.ts),
-     *  written once per job, on its first hold, with the hold's `reason`. */
-    dispatchStatus: "sent" | "failed" | "deferred";
+     *  written once per job, on its first hold, with the hold's `reason`. `cancelled`: a
+     *  utility job withdrawn without being sent, with its `reason` (bridge.cancelUtilityJob). */
+    dispatchStatus: "sent" | "failed" | "deferred" | "cancelled";
     target?: { instanceName?: string; agentId?: string };
     /** How the instance authenticates to its gateway. Says whether the gateway saw
      *  a NAMED person behind this turn or the single shared operator — the first
@@ -1976,56 +1979,102 @@ export const reparkIfBusy = internalMutation({
 /** A dispatch the utility hold kept back (see applyUtilityHold). */
 type UtilityHeld = { kind: "held"; reason: UtilityHoldReason; retryAt: number; first: boolean };
 
-/** What the utility hold decided for one dispatch attempt (see holdUtilityDispatch). */
-type UtilityDispatchVerdict = { kind: "send" } | { kind: "gone" } | UtilityHeld;
+/** A utility job withdrawn without being sent (see cancelUtilityJob). */
+type UtilityCancelled = { kind: "cancelled"; reason: UtilityCancelReason };
+
+/** What the utility gate decided for one dispatch attempt (see holdUtilityDispatch). */
+type UtilityDispatchVerdict = { kind: "send" } | { kind: "gone" } | UtilityHeld | UtilityCancelled;
 
 /** Pending renditions of one user re-armed per hold — the user's conversions run one at
  *  a time on a single converter chat, so a handful at most are ever waiting. */
 const HELD_RENDITIONS_REARMED = 50;
 
 /**
- * THE UTILITY HOLD at dispatch (lib/utilityHold.ts): a hidden utility job's session is
- * not created while a person decides an approval on the same OpenClaw instance, nor,
- * for a summary, while the conversation it summarizes is still working.
+ * THE UTILITY GATE at dispatch, before anything is loaded (lib/utilityHold.ts). For a
+ * hidden utility job:
+ * - its target: the row carries the one it was enqueued for (`utilityJob`), and a
+ *   dispatch or a chat that no longer routes there withdraws the job — the chat is shared
+ *   by the user's jobs, and its content must never follow a binding made for another one;
+ * - on OpenClaw (`holdApplies`), the hold: not while a person decides an approval on the
+ *   same instance, nor, for a summary, while the conversation it summarizes works.
  *
  * A held row stays `pending` — the job keeps its lock and its nonce, so the correlation
  * of its reply is untouched — and its dispatch is scheduled again at `retryAt`. Its
  * `pendingSince` is re-stamped so the stalled-dispatch reconciler
  * (outboxReconcile.STALLED_PENDING_MS) does not take a deliberate wait for a dead
  * dispatch; the conversions waiting on the user's converter chat are re-armed the same
- * way for the rendition timeout. Past UTILITY_HOLD_MAX_MS from the first hold the job is
- * sent: the approval it waited for has expired upstream.
+ * way for the rendition timeout. The last gate asks all of it again (lastGateBeforeSend).
  */
 export const holdUtilityDispatch = internalMutation({
-  args: { outboxId: v.id("outbox"), instanceName: v.string() },
-  handler: async (ctx, { outboxId, instanceName }): Promise<UtilityDispatchVerdict> => {
+  args: {
+    outboxId: v.id("outbox"),
+    target: v.object({ instanceName: v.string(), agentId: v.string() }),
+    holdApplies: v.boolean(),
+  },
+  handler: async (ctx, { outboxId, target, holdApplies }): Promise<UtilityDispatchVerdict> => {
     const row = await ctx.db.get(outboxId);
     if (row === null || row.status !== "pending") return { kind: "gone" };
     const chat = await ctx.db.get(row.chatId);
     if (chat === null) return { kind: "send" };
-    return (await applyUtilityHold(ctx, row, chat, instanceName)) ?? { kind: "send" };
+    return (await utilityGate(ctx, row, chat, target, holdApplies)) ?? { kind: "send" };
   },
 });
 
 /**
- * Decide the utility hold for one PENDING row of `chat` and, when it holds, apply it: the
- * row re-stamped, the user's waiting conversions re-armed, the dispatch scheduled again.
- * Null = not held (not a utility job, the bound passed, or nothing holds it). Asked by the
- * dispatch before it loads anything (holdUtilityDispatch) and again by the last gate,
- * after the attachments are read and encoded (lastGateBeforeSend): an approval raised
- * in between must hold the job just the same.
+ * The gate for one PENDING row of `chat`, about to leave for `target`: null = send
+ * (not a utility job, or nothing withholds it); otherwise the job was withdrawn or held,
+ * and the row's next step is already arranged. Asked by the dispatch before it loads
+ * anything (holdUtilityDispatch) and again by the last gate, after the attachments are
+ * read and encoded (lastGateBeforeSend): what changed in between counts just the same.
+ */
+async function utilityGate(
+  ctx: MutationCtx,
+  row: Doc<"outbox">,
+  chat: Doc<"chats">,
+  target: { instanceName: string; agentId: string },
+  holdApplies: boolean,
+): Promise<UtilityHeld | UtilityCancelled | null> {
+  if (chat.kind === undefined || !UTILITY_CHAT_KINDS.has(chat.kind)) return null;
+  // Every provider: crossing instances is the leak, whatever the gateway. Both the
+  // target this dispatch resolved and the chat's binding as read NOW must still be the
+  // job's: at the last gate the chat is re-read in the transaction that lets the send go.
+  const job = row.utilityJob;
+  if (
+    job !== undefined &&
+    (job.instanceName !== target.instanceName ||
+      job.agentId !== target.agentId ||
+      job.instanceName !== chat.instanceName ||
+      job.agentId !== chat.agentId)
+  ) {
+    return await cancelUtilityJob(ctx, row, chat, "target_changed");
+  }
+  if (!holdApplies) return null;
+  return await applyUtilityHold(ctx, row, chat, target.instanceName);
+}
+
+/**
+ * Decide the utility hold for one PENDING utility row and apply it: held (the row
+ * re-stamped, the user's waiting conversions re-armed, the dispatch scheduled again),
+ * withdrawn past the bound, or null — nothing holds it, it leaves.
+ *
+ * The approvals are ALWAYS read, past the bound too: the bound only decides what happens
+ * to a job still held when it is reached, never whether to look. Such a job is NEVER
+ * sent — it is withdrawn (cancelUtilityJob):
+ * - an approval still open (a long one, or approvals in a row): sending would create the
+ *   very session that breaks it;
+ * - only its conversation still busy (a summary): withdrawn too. That conversation is
+ *   where the next approval is likeliest to come from, and after 35 minutes of work it is
+ *   no less likely; a summary withdrawn loses nothing — the conversation's next trigger
+ *   asks for it again from the same watermark — while a summary sent now may cost a
+ *   person the command they allow.
  */
 async function applyUtilityHold(
   ctx: MutationCtx,
   row: Doc<"outbox">,
   chat: Doc<"chats">,
   instanceName: string,
-): Promise<UtilityHeld | null> {
-  if (chat.kind === undefined || !UTILITY_CHAT_KINDS.has(chat.kind)) return null;
+): Promise<UtilityHeld | UtilityCancelled | null> {
   const now = Date.now();
-  if (row.utilityHoldSince !== undefined && now - row.utilityHoldSince >= UTILITY_HOLD_MAX_MS) {
-    return null;
-  }
   const sourceChatId =
     chat.kind === "summarizer" ? chat.pendingSummarize?.targetChatId : undefined;
   const hold = await utilitySessionHold(
@@ -2034,6 +2083,14 @@ async function applyUtilityHold(
     now,
   );
   if (hold === null) return null;
+  if (row.utilityHoldSince !== undefined && now - row.utilityHoldSince >= UTILITY_HOLD_MAX_MS) {
+    return await cancelUtilityJob(
+      ctx,
+      row,
+      chat,
+      hold.reason === "approval_pending" ? "approval_still_pending" : "source_still_busy",
+    );
+  }
   await ctx.db.patch(row._id, {
     pendingSince: now,
     ...(row.utilityHoldSince === undefined ? { utilityHoldSince: now } : {}),
@@ -2054,6 +2111,50 @@ async function applyUtilityHold(
     retryAt: hold.retryAt,
     first: row.utilityHoldSince === undefined,
   };
+}
+
+/**
+ * WITHDRAW a utility job that was never sent: the row closed (`failed`, nothing left for
+ * the gateway), and the job's own lock released with the named reason — the summary's
+ * lock and nonce without a failure backoff (chatSummaries.cancelSummarizeForChat), the
+ * documentary fetch, curation or rendition failed with that reason, as a dispatch failure
+ * releases them. Only the lock THIS row was enqueued under (`utilityJob.lockedAt`): a lock
+ * a later job took is that job's. Then the chat's next queued send may go.
+ */
+async function cancelUtilityJob(
+  ctx: MutationCtx,
+  row: Doc<"outbox">,
+  chat: Doc<"chats">,
+  reason: UtilityCancelReason,
+): Promise<UtilityCancelled> {
+  await ctx.db.patch(row._id, { status: "failed" });
+  const lockedAt = utilityLockCreatedAt(chat);
+  const ownsLock =
+    lockedAt !== undefined && (row.utilityJob === undefined || row.utilityJob.lockedAt === lockedAt);
+  if (ownsLock) {
+    switch (chat.kind) {
+      case "summarizer":
+        await cancelSummarizeForChat(ctx, chat, reason);
+        break;
+      case "documentary":
+        await failDocumentaryFetchForChat(ctx, chat, reason);
+        break;
+      case "curator":
+        await ctx.runMutation(internal.agentFileCuration.failCurationForChat, {
+          chatId: chat._id,
+          reason,
+        });
+        break;
+      case "converter":
+        await ctx.runMutation(internal.fileRenditions.failRenditionForChat, {
+          chatId: chat._id,
+          reason,
+        });
+        break;
+    }
+  }
+  await drainNextQueued(ctx, row.chatId);
+  return { kind: "cancelled", reason };
 }
 
 async function reparkRowIfBusy(ctx: MutationCtx, outboxId: Id<"outbox">): Promise<boolean> {
@@ -2129,6 +2230,7 @@ export const lastGateBeforeSend = internalMutation({
     | { kind: "gone" }
     | { kind: "reparked" }
     | UtilityHeld
+    | UtilityCancelled
     | { kind: "refused"; agentLeftRoom?: true }
     | { kind: "permission_refused" }
     | { kind: "knowledge_refused"; revision: number }
@@ -2151,14 +2253,18 @@ export const lastGateBeforeSend = internalMutation({
       .query("instances")
       .withIndex("by_name", (q) => q.eq("name", target.instanceName))
       .first();
-    // THE UTILITY HOLD, asked again at the last moment (lib/utilityHold.ts). The dispatch
-    // asked it before loading anything, but reading and encoding a conversion's file takes
-    // time, and an approval raised meanwhile would see this job's session created during
-    // its wait. OpenClaw only, like the first check.
-    if ((targetInstance?.kind ?? "openclaw") === "openclaw") {
-      const held = await applyUtilityHold(ctx, row, chat, target.instanceName);
-      if (held !== null) return held;
-    }
+    // THE UTILITY GATE, asked again at the last moment (utilityGate): the dispatch asked
+    // it before loading anything, but reading and encoding a conversion's file takes
+    // time — an approval raised meanwhile, or the chat re-bound for another job, counts
+    // just the same. The hold on OpenClaw only, like the first check.
+    const gated = await utilityGate(
+      ctx,
+      row,
+      chat,
+      target,
+      (targetInstance?.kind ?? "openclaw") === "openclaw",
+    );
+    if (gated !== null) return gated;
     const senderId = row.userId as Id<"users">;
     const refusal = await senderRefusal(ctx, {
       chatId: chat._id,
@@ -2877,18 +2983,29 @@ export const dispatch = internalAction({
         authMode: routing.authMode,
       });
     };
-    if (
-      routing.provider === "openclaw" &&
-      routing.chatKind !== null &&
-      UTILITY_CHAT_KINDS.has(routing.chatKind)
-    ) {
-      const held: UtilityDispatchVerdict = await ctx.runMutation(
+    const traceUtilityCancel = async (cancelled: UtilityCancelled): Promise<void> => {
+      await traceDispatch(ctx, {
+        outboxId,
+        chatId: row.chatId,
+        chatKind: routing.chatKind,
+        dispatchStatus: "cancelled",
+        reason: cancelled.reason,
+        target: holdTarget,
+        authMode: routing.authMode,
+      });
+    };
+    if (routing.chatKind !== null && UTILITY_CHAT_KINDS.has(routing.chatKind)) {
+      const gated: UtilityDispatchVerdict = await ctx.runMutation(
         internal.bridge.holdUtilityDispatch,
-        { outboxId, instanceName: routing.target.instanceName },
+        { outboxId, target: holdTarget, holdApplies: routing.provider === "openclaw" },
       );
-      if (held.kind === "gone") return;
-      if (held.kind === "held") {
-        await traceUtilityHold(held);
+      if (gated.kind === "gone") return;
+      if (gated.kind === "held") {
+        await traceUtilityHold(gated);
+        return;
+      }
+      if (gated.kind === "cancelled") {
+        await traceUtilityCancel(gated);
         return;
       }
     }
@@ -3145,6 +3262,10 @@ export const dispatch = internalAction({
       });
       if (gate.kind === "held") {
         await traceUtilityHold(gate);
+        return;
+      }
+      if (gate.kind === "cancelled") {
+        await traceUtilityCancel(gate);
         return;
       }
       if (gate.kind === "gone" || gate.kind === "reparked") return;

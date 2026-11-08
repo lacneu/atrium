@@ -27,9 +27,9 @@
 // an approval Atrium never sees, and the round trip between this decision and the
 // bridge's session creation. Only an upstream fix closes those.
 
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { projectedGatewayHoldUntil } from "./outboxQueue";
+import { isChatBusy, projectedGatewayHoldUntil } from "./outboxQueue";
 
 /** The hidden chat kinds whose dispatch creates a fresh gateway session per job. */
 export const UTILITY_CHAT_KINDS: ReadonlySet<string> = new Set([
@@ -43,11 +43,23 @@ export const UTILITY_CHAT_KINDS: ReadonlySet<string> = new Set([
 export const UTILITY_HOLD_RECHECK_MS = 15_000;
 
 /**
- * Longest a job is held, counted from its first hold. Above the 30 minutes an exec
- * approval stays open by default upstream: past it the approval has expired and holding
- * the job longer protects nobody, so it is dispatched.
+ * Longest a job is held, counted from its first hold: above the 30 minutes an exec
+ * approval stays open by default upstream. Past it the job is never sent while
+ * something still holds it — it is cancelled (bridge.cancelUtilityJob); a job nothing
+ * holds any more simply leaves.
  */
 export const UTILITY_HOLD_MAX_MS = 35 * 60_000;
+
+/**
+ * Why a utility job was withdrawn without being sent — the curated code its lock is
+ * released with (a rendition's `failureReason`, a curation's, a documentary fetch's, a
+ * summary's `cancel` trace):
+ * - `target_changed`: the hidden chat no longer routes to the target the job was
+ *   enqueued for; sending would carry its content elsewhere;
+ * - `approval_still_pending`: past the bound, an approval of the instance is still open;
+ * - `source_still_busy`: past the bound, the summarized conversation is still working.
+ */
+export type UtilityCancelReason = "target_changed" | "approval_still_pending" | "source_still_busy";
 
 /** Open requests read per status when asking about an instance — a bound on the read,
  *  far above what is ever open at once (the expiry sweep closes rows past their
@@ -152,4 +164,32 @@ async function sourceConversationWorking(
     if (running !== null) return true;
   }
   return (await projectedGatewayHoldUntil(ctx, chatId, now)) !== null;
+}
+
+/** The `createdAt` of the job lock a hidden chat holds now (its kind's own lock), or
+ *  undefined when no job holds it. */
+export function utilityLockCreatedAt(chat: Doc<"chats">): number | undefined {
+  switch (chat.kind) {
+    case "summarizer":
+      return chat.pendingSummarize?.createdAt;
+    case "documentary":
+      return chat.pendingFetch?.createdAt;
+    case "curator":
+      return chat.pendingCurate?.createdAt;
+    case "converter":
+      return chat.pendingConvert?.createdAt;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Does a hidden utility chat have a job in progress — a lock, or a dispatch, a reply or
+ * a run still under way? Such a chat is never re-bound to another target: the job's
+ * pending row would follow the binding (each dispatch reads it), and the rebinding is
+ * left to the start of the next job.
+ */
+export async function utilityJobActive(ctx: QueryCtx, chat: Doc<"chats">): Promise<boolean> {
+  if (utilityLockCreatedAt(chat) !== undefined) return true;
+  return await isChatBusy(ctx, chat._id);
 }

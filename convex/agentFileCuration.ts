@@ -58,6 +58,8 @@ import {
   type PromptInjectionConfig,
 } from "./lib/promptInjections";
 import { cleanupHiddenChatContent } from "./chatSummaries";
+import { isChatBusy } from "./lib/outboxQueue";
+import { utilityJobActive } from "./lib/utilityHold";
 import { notifyUser } from "./notifications";
 
 const CURATABLE_SET: ReadonlySet<string> = new Set(CURATABLE_FILES);
@@ -111,9 +113,12 @@ async function ensureCuratorChat(
     )
     .first();
   if (existing) {
+    // Never re-bound under a job in progress: its pending row would follow the binding
+    // to the new target (lib/utilityHold.utilityJobActive). The next job re-binds.
     if (
-      existing.instanceName !== target.instanceName ||
-      existing.agentId !== target.agentId
+      (existing.instanceName !== target.instanceName ||
+        existing.agentId !== target.agentId) &&
+      !(await utilityJobActive(ctx, existing))
     ) {
       await ctx.db.patch(existing._id, {
         instanceName: target.instanceName,
@@ -243,7 +248,13 @@ export const dispatchCuration = internalMutation({
         q.eq("userId", userId).eq("kind", "curator"),
       )
       .first();
-    if (existingCurator?.pendingCurate) {
+    // …and not while the chat is still BUSY with an earlier job (a dispatch or a reply
+    // under way after its lock was released), like the other hidden jobs: a new job
+    // would re-bind the chat under that job's still-pending row.
+    if (
+      existingCurator?.pendingCurate ||
+      (existingCurator && (await isChatBusy(ctx, existingCurator._id)))
+    ) {
       return { ok: false, reason: "in_flight" };
     }
     const hidden = await ensureCuratorChat(ctx, userId, target, now);
@@ -305,6 +316,8 @@ export const dispatchCuration = internalMutation({
       messageId: msgId,
       text: prompt,
       attachmentIds: [],
+      // This job's target, fixed now: every dispatch of the row checks it (schema).
+      utilityJob: { instanceName: target.instanceName, agentId: target.agentId, lockedAt: now },
       status: "pending" as const,
       // Dispatched immediately → the in-flight window opens now (see
       // schema.outbox.pendingSince: it is what lets the reconciler tell a live

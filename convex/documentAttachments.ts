@@ -29,6 +29,7 @@ import { resolveDocumentaryTarget } from "./agents";
 import { writeTraceEvent } from "./observability";
 import { stripGatewayMediaId } from "./lib/mediaName";
 import { isChatBusy } from "./lib/outboxQueue";
+import { utilityJobActive, type UtilityCancelReason } from "./lib/utilityHold";
 import { isFindableDocumentItem } from "./lib/provenance";
 import { isTrashed } from "./lib/trash";
 import {
@@ -90,10 +91,13 @@ async function ensureDocumentaryChat(
     .filter((q) => q.eq(q.field("kind"), "documentary"))
     .first();
   if (existing) {
-    // Keep the binding current (the entitled documentary agent may have changed).
+    // Keep the binding current (the entitled documentary agent may have changed) —
+    // but never under a fetch in progress: its pending row would follow the binding
+    // to the new target (lib/utilityHold.utilityJobActive). The next fetch re-binds.
     if (
-      existing.instanceName !== target.instanceName ||
-      existing.agentId !== target.agentId
+      (existing.instanceName !== target.instanceName ||
+        existing.agentId !== target.agentId) &&
+      !(await utilityJobActive(ctx, existing))
     ) {
       await ctx.db.patch(existing._id, {
         instanceName: target.instanceName,
@@ -305,6 +309,8 @@ export const attachDocuments = mutation({
       messageId: msgId,
       text,
       attachmentIds: [],
+      // This fetch's target, fixed now: every dispatch of the row checks it (schema).
+      utilityJob: { instanceName: target.instanceName, agentId: target.agentId, lockedAt: now },
       status: "pending" as const,
       // Dispatched immediately → the in-flight window opens now (see
       // schema.outbox.pendingSince: it is what lets the reconciler tell a live
@@ -457,7 +463,7 @@ export async function correlateDocumentaryFetch(
 export async function failDocumentaryFetchForChat(
   ctx: MutationCtx,
   hiddenChat: Doc<"chats">,
-  reason: "dispatch_error" | "stuck_stream" = "dispatch_error",
+  reason: "dispatch_error" | "stuck_stream" | UtilityCancelReason = "dispatch_error",
 ): Promise<void> {
   const pending = hiddenChat.pendingFetch;
   if (!pending) return;

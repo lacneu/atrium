@@ -4334,6 +4334,14 @@ export default defineSchema({
     // the hold; `pendingSince` is re-stamped at every re-check so the reconciler does
     // not read a deliberate wait as a stalled dispatch.
     utilityHoldSince: v.optional(v.number()),
+    // A hidden utility job's IMMUTABLE target, fixed when the job was enqueued, and the
+    // `createdAt` of the job lock it was enqueued under. Every dispatch of the row (the
+    // first send, a resumption after a hold, the last gate) checks the hidden chat still
+    // routes to this target: the chat is shared by the user's jobs, and one re-bound for
+    // a later job must never carry this job's prompt or file to another instance.
+    utilityJob: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string(), lockedAt: v.number() }),
+    ),
     // The EPHEMERAL routing segment this dispatch used (beginTurnRouting's returned
     // `segment`), remembered ONLY so a dispatch whose ack was lost can still be
     // CONFIRMED later: the normal path calls `confirmTurnRouting` right after the

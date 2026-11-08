@@ -8,12 +8,13 @@
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { UTILITY_HOLD_MAX_MS, UTILITY_HOLD_RECHECK_MS } from "./lib/utilityHold";
 import { STALLED_PENDING_MS } from "./outboxReconcile";
 import { RENDITION_TIMEOUT_MS } from "./fileRenditions";
+import { summaryCorrelationId } from "./chatSummaries";
 
 const modules = import.meta.glob("./**/*.ts");
 type Tt = TestConvex<typeof schema>;
@@ -90,6 +91,9 @@ async function seedJob(
     /** A converter job's file, riding the turn as its attachment (read and encoded by
      *  the dispatch before the last gate). */
     attachment?: Blob;
+    /** The row carries the target it was enqueued for, as every creator now writes it
+     *  (`lockedAt` defaults to the chat's lock, T0). */
+    utilityJob?: { lockedAt?: number };
   } = {},
 ) {
   const instanceName = opts.instanceName ?? INSTANCE;
@@ -210,8 +214,17 @@ async function seedJob(
       status: "pending" as const,
       pendingSince: opts.pendingSince ?? T0,
       ...(opts.utilityHoldSince !== undefined ? { utilityHoldSince: opts.utilityHoldSince } : {}),
+      ...(opts.utilityJob !== undefined
+        ? {
+            utilityJob: {
+              instanceName,
+              agentId: "olivier",
+              lockedAt: opts.utilityJob.lockedAt ?? T0,
+            },
+          }
+        : {}),
     });
-    return { userId, sourceChatId, chatId, outboxId, renditionId };
+    return { userId, sourceChatId, chatId, outboxId, renditionId, curationId };
   });
 }
 
@@ -291,6 +304,27 @@ async function dispatchTraces(t: Tt) {
   return rows
     .filter((r) => r.kind === "openclaw.dispatch")
     .map((r) => JSON.parse(r.meta ?? "{}") as Record<string, unknown>);
+}
+
+/** A summary's lifecycle traces: the nonce each one names, and what it says. */
+async function summaryTraces(t: Tt) {
+  const rows = await t.run((ctx) => ctx.db.query("traceEvents").collect());
+  return rows
+    .filter((r) => r.kind === "chat.summary")
+    .map((r) => ({
+      correlationId: r.correlationId,
+      ...(JSON.parse(r.meta ?? "{}") as Record<string, unknown>),
+    }));
+}
+
+/** The summary state of a conversation — where a failure's backoff would be written. */
+async function summaryRow(t: Tt, chatId: Id<"chats">) {
+  return await t.run((ctx) =>
+    ctx.db
+      .query("chatSummaries")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .unique(),
+  );
 }
 
 describe("a utility job is held while an approval waits on its instance", () => {
@@ -538,15 +572,39 @@ describe("a summary also waits for the conversation it summarizes", () => {
 
 describe("the hold is bounded and keeps the watchdogs honest", () => {
   // The bound is literal on purpose: it must stay above the 30 minutes an exec approval
-  // waits upstream by default, or a job would be sent into the very wait it protects.
-  test("35 minutes after its first hold, the job leaves even if an approval still waits", async () => {
+  // waits upstream by default, or a job would be withdrawn while the usual wait runs.
+  test("35 minutes after its first hold, an approval still open: never sent — withdrawn, lock and nonce released, the reason traced (codex review of lot A+B, pass 2)", async () => {
     expect(UTILITY_HOLD_MAX_MS).toBe(35 * MIN);
     const t = convexTest(schema, modules);
-    const job = await seedJob(t, { utilityHoldSince: T0 - 35 * MIN });
+    const job = await seedJob(t, { utilityHoldSince: T0 - 35 * MIN, utilityJob: {} });
+    // Raised just now — the next of a run of approvals: the job has waited for the
+    // bound, this approval has not, and sending would break it all the same.
     await seedRequest(t, await otherConversation(t));
+
     await dispatch(t, job.outboxId);
-    expect(sends()).toBe(1);
-    expect((await outbox(t, job.outboxId))!.status).toBe("sent");
+
+    expect(sends()).toBe(0);
+    expect((await outbox(t, job.outboxId))!.status).toBe("failed");
+    expect(await scheduledDispatches(t)).toHaveLength(0);
+    const hidden = await t.run((ctx) => ctx.db.get(job.chatId));
+    expect(hidden!.pendingSummarize).toBeUndefined();
+    expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "cancelled")).toEqual([
+      expect.objectContaining({
+        reason: "approval_still_pending",
+        chatKind: "summarizer",
+        instanceName: INSTANCE,
+      }),
+    ]);
+    // The summary's nonce is closed by its own trace — a cancel, not a failure: no
+    // backoff, the conversation's next trigger asks for it again as usual.
+    expect(await summaryTraces(t)).toEqual([
+      {
+        correlationId: summaryCorrelationId(job.sourceChatId, T0),
+        op: "cancel",
+        reason: "approval_still_pending",
+      },
+    ]);
+    expect(await summaryRow(t, job.sourceChatId)).toBeNull();
   });
 
   test("…and is still held a moment before, past the 30 minutes of an exec approval", async () => {
@@ -558,6 +616,75 @@ describe("the hold is bounded and keeps the watchdogs honest", () => {
     expect(sends()).toBe(0);
     // The hold keeps its origin: re-checks do not extend the bound.
     expect((await outbox(t, job.outboxId))!.utilityHoldSince).toBe(since);
+  });
+
+  test("…a conversion withdrawn at the bound fails its rendition with that reason, and the next file goes", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, {
+      kind: "converter",
+      utilityHoldSince: T0 - 35 * MIN,
+      utilityJob: {},
+    });
+    const next = await t.run(async (ctx) =>
+      ctx.db.insert("fileRenditions", {
+        sourceStorageId: await ctx.storage.store(new Blob([new Uint8Array([4])])),
+        chatId: job.sourceChatId,
+        userId: job.userId,
+        sourceFilename: "sheet.xlsx",
+        sourceMimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        status: "pending" as const,
+        converterInstance: INSTANCE,
+        converterAgentId: "olivier",
+        createdAt: T0 - MIN,
+        updatedAt: T0 - MIN,
+      }),
+    );
+    await seedRequest(t, await otherConversation(t));
+
+    await dispatch(t, job.outboxId);
+
+    expect(sends()).toBe(0);
+    const rendition = await t.run((ctx) => ctx.db.get(job.renditionId!));
+    expect(rendition).toMatchObject({ status: "failed", failureReason: "approval_still_pending" });
+    // The next file takes the chat, under its own job and its own hold budget.
+    const hidden = await t.run((ctx) => ctx.db.get(job.chatId));
+    expect(hidden!.pendingConvert?.renditionId).toBe(next);
+  });
+
+  test("at the bound, nothing holds it any more: it simply leaves", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, { utilityHoldSince: T0 - 35 * MIN, utilityJob: {} });
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(1);
+    expect((await outbox(t, job.outboxId))!.status).toBe("sent");
+  });
+
+  test("at the bound, only the conversation it summarizes still works: withdrawn as well, without a failure backoff", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, { utilityHoldSince: T0 - 35 * MIN, utilityJob: {} });
+    await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId: job.sourceChatId,
+        userId: job.userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: T0,
+      }),
+    );
+
+    await dispatch(t, job.outboxId);
+
+    expect(sends()).toBe(0);
+    expect((await outbox(t, job.outboxId))!.status).toBe("failed");
+    expect((await t.run((ctx) => ctx.db.get(job.chatId)))!.pendingSummarize).toBeUndefined();
+    expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "cancelled")).toEqual([
+      expect.objectContaining({ reason: "source_still_busy", chatKind: "summarizer" }),
+    ]);
+    expect(await summaryTraces(t)).toEqual([
+      expect.objectContaining({ op: "cancel", reason: "source_still_busy" }),
+    ]);
+    expect(await summaryRow(t, job.sourceChatId)).toBeNull();
   });
 
   test("a held row is not settled as a stalled dispatch", async () => {
@@ -753,3 +880,438 @@ describe("the rendition timeout continues past a page of held conversions (codex
   });
 });
 
+
+describe("a utility job keeps the target it was enqueued for (codex review of lot A+B, pass 2)", () => {
+  const BRIDGE_A = "https://bridge-a.test";
+  const BRIDGE_B = "https://bridge-b.test";
+  const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+  /** POSTs that reached the `/send` of one bridge. */
+  function sendsTo(bridgeUrl: string): number {
+    return fetchMock.mock.calls.filter(([url]) => String(url) === `${bridgeUrl}/send`).length;
+  }
+
+  /** Two OpenClaw instances, each with its own bridge and its designated converter, and
+   *  a user with one Office file in a conversation on each. */
+  async function seedTwoConverters(t: Tt) {
+    return await t.run(async (ctx) => {
+      for (const [name, bridgeUrl] of [
+        [INSTANCE, BRIDGE_A],
+        ["elsewhere", BRIDGE_B],
+      ] as const) {
+        await ctx.db.insert("instances", {
+          name,
+          gatewayUrl: "ws://gw",
+          kind: "openclaw" as const,
+          bridgeUrl,
+          config: { converterAgentId: "convbot" },
+        });
+        await ctx.db.insert("agents", {
+          instanceName: name,
+          agentId: "convbot",
+          source: "discovered" as const,
+          presentInLastOk: true,
+          enabled: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+      }
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
+      const fileOn = async (instanceName: string): Promise<Id<"_storage">> => {
+        const chatId = await ctx.db.insert("chats", {
+          userId,
+          instanceName,
+          agentId: "convbot",
+          updatedAt: 1,
+        });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user" as const,
+          status: "complete" as const,
+          text: "a deck",
+          updatedAt: 1,
+        });
+        const storageId = await ctx.storage.store(new Blob([new Uint8Array([1, 2, 3])]));
+        await ctx.db.insert("files", {
+          userId,
+          chatId,
+          messageId,
+          storageId,
+          filename: "deck.pptx",
+          mimeType: PPTX,
+          kind: "file" as const,
+          direction: "inbound" as const,
+          createdAt: 1,
+        });
+        return storageId;
+      };
+      return { userId, fileA: await fileOn(INSTANCE), fileB: await fileOn("elsewhere") };
+    });
+  }
+
+  async function converterChats(t: Tt) {
+    return await t.run((ctx) =>
+      ctx.db
+        .query("chats")
+        .filter((q) => q.eq(q.field("kind"), "converter"))
+        .collect(),
+    );
+  }
+
+  test("codex's reproduction: a conversion held on A, a file of B opened meanwhile — the chat stays on A, B waits its turn, and the held file leaves for A, never B", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedTwoConverters(t);
+    const as = t.withIdentity({ subject: `${seeded.userId}|session` });
+    const approval = await seedRequest(t, await otherConversation(t));
+
+    await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: seeded.fileA });
+    const rowA = await t.run(async (ctx) => (await ctx.db.query("outbox").collect())[0]!);
+    expect(rowA.utilityJob).toEqual({ instanceName: INSTANCE, agentId: "convbot", lockedAt: T0 });
+    await dispatch(t, rowA._id);
+    expect(sends()).toBe(0); // held: an approval waits on A
+
+    vi.setSystemTime(T0 + 5_000);
+    await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: seeded.fileB });
+    // Never re-bound under the held job: B's rendition is queued behind it.
+    const [converter] = await converterChats(t);
+    expect(converter!.instanceName).toBe(INSTANCE);
+    expect(await t.run((ctx) => ctx.db.query("outbox").collect())).toHaveLength(1);
+    const renditionB = await t.run(async (ctx) =>
+      (await ctx.db.query("fileRenditions").collect()).find(
+        (r) => r.sourceStorageId === seeded.fileB,
+      ),
+    );
+    expect(renditionB).toMatchObject({ status: "pending", converterInstance: "elsewhere" });
+
+    // The approval is settled; the held job resumes — to A.
+    await t.run((ctx) => ctx.db.patch(approval, { status: "allowed" }));
+    vi.setSystemTime(T0 + UTILITY_HOLD_RECHECK_MS);
+    await dispatch(t, rowA._id);
+    expect(sendsTo(BRIDGE_A)).toBe(1);
+    expect(sendsTo(BRIDGE_B)).toBe(0);
+    expect((await outbox(t, rowA._id))!.status).toBe("sent");
+
+    // A settles; only then is the chat re-bound — for B's own job, to B.
+    await t.mutation(internal.fileRenditions.failRenditionForChat, {
+      chatId: converter!._id,
+      reason: "timeout",
+    });
+    const [rebound] = await converterChats(t);
+    expect(rebound!.instanceName).toBe("elsewhere");
+    expect(rebound!.pendingConvert?.renditionId).toBe(renditionB!._id);
+    const rowB = await t.run(async (ctx) =>
+      (await ctx.db.query("outbox").collect()).find((r) => r.status === "pending"),
+    );
+    expect(rowB!.utilityJob).toMatchObject({ instanceName: "elsewhere", agentId: "convbot" });
+    await dispatch(t, rowB!._id);
+    expect(sendsTo(BRIDGE_B)).toBe(1);
+    expect(sendsTo(BRIDGE_A)).toBe(1);
+  });
+
+  test("a chat re-bound elsewhere under a held job: the resumption withdraws it — nothing sent, the rendition failed with the reason, the next file goes to its own target", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, { kind: "converter", utilityHoldSince: T0 - MIN, utilityJob: {} });
+    await seedInstance(t, "elsewhere");
+    const next = await t.run(async (ctx) =>
+      ctx.db.insert("fileRenditions", {
+        sourceStorageId: await ctx.storage.store(new Blob([new Uint8Array([4])])),
+        chatId: job.sourceChatId,
+        userId: job.userId,
+        sourceFilename: "sheet.xlsx",
+        sourceMimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        status: "pending" as const,
+        converterInstance: "elsewhere",
+        converterAgentId: "olivier",
+        createdAt: T0 - MIN,
+        updatedAt: T0 - MIN,
+      }),
+    );
+    // Re-bound by any path, while the job waited.
+    await t.run((ctx) => ctx.db.patch(job.chatId, { instanceName: "elsewhere" }));
+
+    await dispatch(t, job.outboxId);
+
+    expect(sends()).toBe(0);
+    expect((await outbox(t, job.outboxId))!.status).toBe("failed");
+    const rendition = await t.run((ctx) => ctx.db.get(job.renditionId!));
+    expect(rendition).toMatchObject({ status: "failed", failureReason: "target_changed" });
+    expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "cancelled")).toEqual([
+      expect.objectContaining({ reason: "target_changed", chatKind: "converter" }),
+    ]);
+    // The lock is released, and the next file starts its own job, for its own target.
+    const hidden = await t.run((ctx) => ctx.db.get(job.chatId));
+    expect(hidden!.pendingConvert?.renditionId).toBe(next);
+    const nextRow = await t.run(async (ctx) =>
+      (await ctx.db.query("outbox").collect()).find((r) => r.status === "pending"),
+    );
+    expect(nextRow!.utilityJob).toMatchObject({ instanceName: "elsewhere", agentId: "olivier" });
+  });
+
+  test("re-bound while its file is read: the last gate withdraws it, nothing is sent", async () => {
+    const t = convexTest(schema, modules);
+    const blob = new Blob([new Uint8Array([7, 7, 7])]);
+    const original = blob.arrayBuffer.bind(blob);
+    let onRead: (() => Promise<void>) | null = null;
+    Object.defineProperty(blob, "arrayBuffer", {
+      value: async () => {
+        const act = onRead;
+        onRead = null;
+        if (act !== null) await act();
+        return await original();
+      },
+    });
+    const job = await seedJob(t, { kind: "converter", attachment: blob, utilityJob: {} });
+    await seedInstance(t, "elsewhere");
+    // Armed once the job is stored (storing it reads it too).
+    onRead = async () => {
+      await t.run((ctx) => ctx.db.patch(job.chatId, { instanceName: "elsewhere" }));
+    };
+
+    await dispatch(t, job.outboxId);
+
+    expect(onRead).toBeNull(); // the first check passed: the file WAS read
+    expect(sends()).toBe(0);
+    const row = await outbox(t, job.outboxId);
+    expect(row!.status).toBe("failed");
+    expect(row!.sentToInstance).toBeUndefined();
+    const rendition = await t.run((ctx) => ctx.db.get(job.renditionId!));
+    expect(rendition).toMatchObject({ status: "failed", failureReason: "target_changed" });
+    expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "cancelled")).toEqual([
+      expect.objectContaining({ reason: "target_changed" }),
+    ]);
+  });
+
+  test("on Hermes too: the target is checked whatever the provider", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, { instanceKind: "hermes", utilityJob: {} });
+    await seedInstance(t, "elsewhere", { kind: "hermes" });
+    await t.run((ctx) => ctx.db.patch(job.chatId, { instanceName: "elsewhere" }));
+
+    await dispatch(t, job.outboxId);
+
+    expect(sends()).toBe(0);
+    expect((await outbox(t, job.outboxId))!.status).toBe("failed");
+    expect((await t.run((ctx) => ctx.db.get(job.chatId)))!.pendingSummarize).toBeUndefined();
+    expect(await summaryTraces(t)).toEqual([
+      expect.objectContaining({ op: "cancel", reason: "target_changed" }),
+    ]);
+  });
+
+  test("a lock a later job took is that job's: withdrawing an older row leaves it", async () => {
+    const t = convexTest(schema, modules);
+    // The row was enqueued under an earlier lock; the chat's lock (T0) is another job's.
+    const job = await seedJob(t, { kind: "converter", utilityJob: { lockedAt: T0 - 5 * MIN } });
+    await seedInstance(t, "elsewhere");
+    await t.run((ctx) => ctx.db.patch(job.chatId, { instanceName: "elsewhere" }));
+
+    await dispatch(t, job.outboxId);
+
+    expect(sends()).toBe(0);
+    expect((await outbox(t, job.outboxId))!.status).toBe("failed");
+    const hidden = await t.run((ctx) => ctx.db.get(job.chatId));
+    expect(hidden!.pendingConvert?.renditionId).toBe(job.renditionId);
+    expect((await t.run((ctx) => ctx.db.get(job.renditionId!)))!.status).toBe("pending");
+  });
+
+  test("a curation asked for another instance while the curator chat still works: refused, the chat is not re-bound", async () => {
+    const t = convexTest(schema, modules);
+    // An earlier job whose lock is gone but whose row has not left: the chat works.
+    const job = await seedJob(t, { kind: "curator", utilityJob: {} });
+    await t.run((ctx) => ctx.db.patch(job.chatId, { pendingCurate: undefined }));
+    await seedInstance(t, "elsewhere");
+    await t.run((ctx) =>
+      ctx.db.insert("agents", {
+        instanceName: "elsewhere",
+        agentId: "curbot",
+        source: "discovered" as const,
+        presentInLastOk: true,
+        enabled: true,
+        types: ["curator"],
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      }),
+    );
+
+    const res = await t.mutation(internal.agentFileCuration.dispatchCuration, {
+      instanceName: "elsewhere",
+      agentId: "curbot",
+      name: "MEMORY.md",
+      content: "notes",
+      baseUpdatedAtMs: null,
+      budgetChars: 4_000,
+      trigger: "manual",
+      userId: job.userId,
+    });
+
+    expect(res).toEqual({ ok: false, reason: "in_flight" });
+    const hidden = await t.run((ctx) => ctx.db.get(job.chatId));
+    expect(hidden!.instanceName).toBe(INSTANCE);
+    // The earlier row is untouched, still bound for its own target.
+    expect((await outbox(t, job.outboxId))!.status).toBe("pending");
+  });
+});
+
+describe("every creator stamps its job's target on the row, under the lock it takes", () => {
+  /** The hidden chat of `kind` and its one outbox row. */
+  async function jobOf(t: Tt, userId: Id<"users">, kind: JobKind) {
+    return await t.run(async (ctx) => {
+      const chat = (
+        await ctx.db
+          .query("chats")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .collect()
+      ).find((c) => c.kind === kind)!;
+      const rows = await ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) => q.eq("chatId", chat._id).eq("status", "pending"))
+        .collect();
+      return { chat, rows };
+    });
+  }
+
+  test("a summary", async () => {
+    const t = convexTest(schema, modules);
+    await seedInstance(t, INSTANCE);
+    const { userId, chatId } = await t.run(async (ctx) => {
+      // A bridge that echoes the turn's session: the engine runs (chatSummaries).
+      await ctx.db.insert("bridgeCompat", {
+        key: "singleton",
+        reachable: true,
+        bridgeVersion: "0.20.0",
+        turnSessionEcho: true,
+        protocolVersion: 2,
+        compat: null,
+        targets: [],
+        fetchedAt: 1,
+      });
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        instanceName: INSTANCE,
+        agentId: "olivier",
+        updatedAt: 1,
+      });
+      for (let i = 0; i < 24; i++) {
+        await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+          status: "complete" as const,
+          text: `m${i} ${"x".repeat(1_200)}`,
+          updatedAt: 1,
+        });
+      }
+      return { userId, chatId };
+    });
+    await t.mutation(internal.chatSummaries.maybeScheduleSummarize, { chatId });
+    const { chat, rows } = await jobOf(t, userId, "summarizer");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.utilityJob).toEqual({
+      instanceName: INSTANCE,
+      agentId: "olivier",
+      lockedAt: chat.pendingSummarize!.createdAt,
+    });
+  });
+
+  test("a documentary fetch", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sourceMessageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
+      await ctx.db.insert("instances", { name: INSTANCE, gatewayUrl: "ws://gw" });
+      await ctx.db.insert("agents", {
+        instanceName: INSTANCE,
+        agentId: "doc",
+        source: "discovered" as const,
+        presentInLastOk: true,
+        enabled: true,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        types: ["documentary"],
+      });
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName: INSTANCE,
+        agentId: "doc",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+      const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1 });
+      const sourceMessageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "reply",
+        updatedAt: 1,
+      });
+      await ctx.db.insert("messageParts", {
+        messageId: sourceMessageId,
+        order: 0,
+        part: {
+          kind: "provenance" as const,
+          v: 1,
+          pluginId: "p",
+          source: "rag",
+          group: "documents" as const,
+          items: [{ file_name: "guide.md" }],
+        },
+      });
+      return { userId, sourceMessageId };
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    await as.mutation(api.documentAttachments.attachDocuments, {
+      sourceMessageId,
+      items: [{ entryKey: "k|guide", reference: "guide.md" }],
+    });
+    const { chat, rows } = await jobOf(t, userId, "documentary");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.utilityJob).toEqual({
+      instanceName: INSTANCE,
+      agentId: "doc",
+      lockedAt: chat.pendingFetch!.createdAt,
+    });
+  });
+
+  test("a curation", async () => {
+    const t = convexTest(schema, modules);
+    await seedInstance(t, INSTANCE);
+    const userId = await t.run(async (ctx) => {
+      await ctx.db.insert("agents", {
+        instanceName: INSTANCE,
+        agentId: "curbot",
+        source: "discovered" as const,
+        presentInLastOk: true,
+        enabled: true,
+        types: ["curator"],
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
+      return userId;
+    });
+    const res = await t.mutation(internal.agentFileCuration.dispatchCuration, {
+      instanceName: INSTANCE,
+      agentId: "curbot",
+      name: "MEMORY.md",
+      content: "notes",
+      baseUpdatedAtMs: null,
+      budgetChars: 4_000,
+      trigger: "manual",
+      userId,
+    });
+    expect(res.ok).toBe(true);
+    const { chat, rows } = await jobOf(t, userId, "curator");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.utilityJob).toEqual({
+      instanceName: INSTANCE,
+      agentId: "curbot",
+      lockedAt: chat.pendingCurate!.createdAt,
+    });
+  });
+});
