@@ -39,6 +39,7 @@ import {
   readOpenClawApprovalPresentation,
   readOpenClawApprovalRequested,
   readOpenClawApprovalResolved,
+  readOpenClawApprovalSnapshotOrigin,
   readOpenClawApprovalTerminal,
   readOpenClawApprovalTerminalStatus,
   readOpenClawQuestionRequested,
@@ -402,8 +403,9 @@ export class OpenClawAgentRequestObserver {
   }
 
   // APPROVALS ARE KEPT BY IDENTITY — the id and the generation its announcement names
-  // (approval-identity.ts): a reused id is another request, and nothing below marks, waits
-  // on or settles it in the old one's name.
+  // (approval-identity.ts): an id names one request upstream, and the generation dates a
+  // verdict that reaches Convex before its card; nothing below marks, waits on or settles a
+  // request in another generation's name.
   /** The generations announced for each id — read off the announcement before any network
    *  read, and kept when a write fails — each marked once seen decided: a resolution, which
    *  names none, is about the one still waiting, else the only one known (`attach`). */
@@ -624,6 +626,19 @@ export class OpenClawAgentRequestObserver {
           await new Promise((r) => setTimeout(r, APPROVAL_READ_RETRY_MS[attempt]));
         }
       }
+      // The snapshot is used only when it is about the request its announcement named — the
+      // same generation when the announcement gave one, and this conversation's own session
+      // when the snapshot names one. Ids are unique per request upstream
+      // (approval-identity.ts): this refuses no snapshot of ours, and any other creates no
+      // card, settles nothing and holds nothing.
+      const refusal = this.snapshotRefusal(got, generation);
+      if (refusal !== null) {
+        if (this.ownsSighting(key, sighting)) this.recordedApprovals.delete(a.id, generation);
+        console.log(
+          `[agent-request] approval snapshot ignored chat=${this.deps.chatId} reason=${refusal}`,
+        );
+        return;
+      }
       const presented = readOpenClawApprovalPresentation(got);
       if (presented === null) {
         // Already decided: its one resolution broadcast may never have reached this socket
@@ -709,17 +724,40 @@ export class OpenClawAgentRequestObserver {
   private async confirmDeny(
     id: string,
     resolvedBy: string | null,
+    generation: ApprovalGeneration,
   ): Promise<"denied" | "expired" | "cancelled"> {
     try {
       const got = payloadOf(
         await this.deps.gateway.request("approval.get", { id }, OBSERVER_RPC_TIMEOUT_MS),
       );
-      const status = readOpenClawApprovalTerminalStatus(got);
-      if (status === "expired" || status === "cancelled" || status === "denied") return status;
+      // Only a snapshot of THIS request says which (see snapshotRefusal).
+      const refusal = this.snapshotRefusal(got, generation);
+      if (refusal !== null) {
+        console.log(
+          `[agent-request] approval snapshot ignored chat=${this.deps.chatId} reason=${refusal}`,
+        );
+      } else {
+        const status = readOpenClawApprovalTerminalStatus(got);
+        if (status === "expired" || status === "cancelled" || status === "denied") return status;
+      }
     } catch {
       /* fall through to the resolver rule */
     }
     return resolvedBy === null ? "expired" : "denied";
+  }
+
+  /**
+   * Why an `approval.get` snapshot is NOT about the request its announcement named, or null
+   * when it is: it names another session than this conversation's (`session`), or another
+   * generation than the announced one, when that is known (`generation`). A closed
+   * vocabulary: what is logged names neither the session nor the request.
+   */
+  private snapshotRefusal(got: unknown, generation: ApprovalGeneration): "session" | "generation" | null {
+    const origin = readOpenClawApprovalSnapshotOrigin(got);
+    if (origin === null) return null;
+    if (origin.sessionKey !== null && !this.ours(origin.sessionKey)) return "session";
+    if (generation !== null && origin.createdAtMs !== generation) return "generation";
+    return null;
   }
 
   private async onApprovalResolved(event: string, payload: unknown): Promise<void> {
@@ -750,7 +788,9 @@ export class OpenClawAgentRequestObserver {
         // Its verdict already LANDED (the terminal snapshot's settle, or an earlier write):
         // a write saved — Convex's settle is idempotent either way.
         if (written === SETTLED_FROM_SNAPSHOT || this.settledApprovals.has(id, generation)) return;
-        const verdict = r.denyUnconfirmed ? await this.confirmDeny(id, r.resolvedBy ?? null) : null;
+        const verdict = r.denyUnconfirmed
+          ? await this.confirmDeny(id, r.resolvedBy ?? null, generation)
+          : null;
         const status = verdict ?? r.status;
         await this.settleDurably({
           chatId: this.deps.chatId,

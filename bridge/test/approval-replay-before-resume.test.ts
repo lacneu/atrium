@@ -280,10 +280,9 @@ describe("a resumed turn is held by its run's approval, though the replay listed
   });
 });
 
-// A reused id is ANOTHER request: the gateway takes an explicit approval id from its caller
-// (src/gateway/server-methods/exec-approval.ts:172, 292-298 at v2026.9.36) and may give it
-// again once it has forgotten the old one. The new request carries another generation
-// (`createdAtMs`), and no mark of the old one blocks it (approval-identity.ts).
+// A case the gateway does not produce: upstream mints an approval id per request and refuses
+// a second record under one (approval-identity.ts, which cites it). These pin the identity rule
+// for its own sake — a mark names an id AND a generation, and blocks only that identity.
 describe("a new generation of an id is never blocked by the old one's decision", () => {
   /** A — decided — then B under the same id, 300 s later, on the run that resumes. */
   const LEFT_A = 300;
@@ -305,7 +304,7 @@ describe("a new generation of an id is never blocked by the old one's decision",
     await flush();
     await obs.observe(execApprovalResolvedFrame(first));
     await flush();
-    // The gateway forgets A and gives its id to B.
+    // B: the same id under another generation (hypothetical upstream).
     pending.splice(0, pending.length, second);
     await obs.observe(execApprovalRequestedFrame(second));
     await flush();

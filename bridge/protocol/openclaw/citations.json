@@ -3097,6 +3097,54 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/bash-tools.exec-host-shared.ts:209",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/bash-tools.exec-host-shared.ts",
+      "lines": [
+        [
+          209,
+          209
+        ]
+      ],
+      "literals": [
+        "const approvalId = crypto.randomUUID();"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/bash-tools.exec-host-node.ts:329",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/bash-tools.exec-host-node.ts",
+      "lines": [
+        [
+          329,
+          329
+        ]
+      ],
+      "literals": [
+        "const approvalId = randomUUID();"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/node-invoke-plugin-approval.ts:184",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/node-invoke-plugin-approval.ts",
+      "lines": [
+        [
+          184,
+          184
+        ]
+      ],
+      "literals": [
+        "`plugin:${randomUUID()}`"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "src/gateway/server-methods/exec-approval.ts:172,292-299",
       "repo": "upstream",
       "tag": "2026.9.36",
@@ -3114,6 +3162,22 @@
       "literals": [
         "const explicitId = p.id ?? null;",
         "approval id already pending"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/operator-approval-store.kernel.ts:140",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/operator-approval-store.kernel.ts",
+      "lines": [
+        [
+          140,
+          140
+        ]
+      ],
+      "literals": [
+        ".onConflict((conflict) => conflict.column(\"approval_id\").doNothing()),"
       ]
     },
     {

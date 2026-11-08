@@ -1370,12 +1370,15 @@ remains its net (12 min without a write closes the bubble `stream_orphaned`).
 - **The Control UI shows a descendant's approval in its ancestor's pane**, marked with the
   raising session (`ui/src/pages/chat/session-approval-projection.ts:31-48`,
   `ui/src/components/exec-approval-card.ts:400-408`).
-- **An approval id can be given again.** The gateway takes an explicit id from the caller of
-  `exec.approval.request` and refuses it only while a record under it still exists
-  (`src/gateway/server-methods/exec-approval.ts:172,292-299`); every record carries its
-  creation time, `createdAtMs`, on its broadcast, its pending-list entry and its snapshot. The
-  resolution broadcast carries the id, the decision and the request, not the creation time
-  (`src/gateway/server-methods/approval-shared.ts:59-65`).
+- **An approval id names one request.** The gateway mints it at random for each request
+  (`src/agents/bash-tools.exec-host-shared.ts:209`, `src/agents/bash-tools.exec-host-node.ts:329`,
+  `src/gateway/node-invoke-plugin-approval.ts:184`); an explicit id from the caller of
+  `exec.approval.request` is refused while a record under it exists
+  (`src/gateway/server-methods/exec-approval.ts:172,292-299`), and the durable registry refuses a
+  second record under an existing id (`src/gateway/operator-approval-store.kernel.ts:140`). Every
+  record carries its creation time, `createdAtMs`, on its broadcast, its pending-list entry and
+  its snapshot. The resolution broadcast carries the id, the decision and the request, not the
+  creation time (`src/gateway/server-methods/approval-shared.ts:59-65`).
 
 ### Atrium behavior and verdict
 
@@ -1392,13 +1395,14 @@ owner, not the audience the gateway fixed — and an inexact rule lets one conve
 or answer another's request. Showing those approvals in the parent means consuming
 `session.approval` itself.
 
-**An approval is identified by its id and its creation time**, everywhere: the bridge's
-memories of a decided approval (the observer, the turn's hold), the Convex card and the
-verdict Convex keeps for a card not recorded yet. A write of an identity already recorded is
-that card, whatever order the writes arrive in; the same id with another creation time is
-another request, never held, released or settled by the old one's decision. A resolution is
-attached to the creation time announced for its id that is still waiting, else to the only
-one known.
+**An approval is keyed by its id and its creation time**, everywhere: the bridge's memories
+of a decided approval (the observer, the turn's hold), the Convex card and the verdict Convex
+keeps for a card not recorded yet. With ids unique per request upstream, the creation time
+adds nothing to which request an id names; it dates a verdict that reaches Convex before its
+card, and an `approval.get` snapshot is used only when it is the announced request's — the same
+creation time, and the conversation's own session when the snapshot names one. A write of a
+request already recorded is that card, whatever order the writes arrive in. A resolution is
+attached to the creation time announced for its id.
 
 ## Conformance summary
 

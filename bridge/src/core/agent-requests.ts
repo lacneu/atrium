@@ -433,6 +433,25 @@ export function readOpenClawApprovalResolved(
   };
 }
 
+/**
+ * Which request an `approval.get` snapshot says it is about: its generation (`createdAtMs`,
+ * on every snapshot) and the raising session when it names one — a terminal snapshot's
+ * reviewer-safe `source.sessionKey`, a pending one's `sourceSessionKey` (set only on a
+ * session-scoped projection): packages/gateway-protocol/src/schema/approvals.ts
+ * ApprovalHistorySourceAttributionSchema, PendingApprovalSnapshotSchema at v2026.9.36. Null
+ * when there is no snapshot object at all.
+ */
+export function readOpenClawApprovalSnapshotOrigin(
+  getResult: unknown,
+): { createdAtMs: number | null; sessionKey: string | null } | null {
+  const snapshot = obj(obj(getResult)?.approval) ?? obj(getResult);
+  if (snapshot === null) return null;
+  return {
+    createdAtMs: num(snapshot.createdAtMs) ?? null,
+    sessionKey: str(obj(snapshot.source)?.sessionKey) ?? str(snapshot.sourceSessionKey) ?? null,
+  };
+}
+
 /** The terminal status an `approval.get` snapshot records, when it has one. */
 export function readOpenClawApprovalTerminalStatus(
   getResult: unknown,

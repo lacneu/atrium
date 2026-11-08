@@ -281,7 +281,8 @@ export const upsertFromBridge = internalMutation({
     // An OpenClaw APPROVAL is one request per id AND generation — its creation time
     // (bridge/src/providers/openclaw/approval-identity.ts): a write of a generation already
     // recorded — a replay, or the late write of another socket or bridge process, whatever
-    // it saw later — IS that card, never a new one. A reused id carries another generation.
+    // it saw later — IS that card, never a new one. (Upstream mints an approval id per
+    // request and refuses a second record under one: another generation never comes.)
     const approvalGeneration =
       args.source.startsWith("openclaw.") &&
       incomingFamily === "approval" &&

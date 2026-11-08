@@ -1966,6 +1966,8 @@ describe("a verdict that reaches Convex before its card", () => {
     expect(await agentRequestNotes(t)).toHaveLength(1);
   });
 
+  // Hypothetical upstream (an approval id names one request, bridge/src/providers/openclaw/
+  // approval-identity.ts): pins that another generation is never taken for this one's card.
   test("a REAL reuse — the id given again under another generation — is a new pending card, asked anew", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seed(t);

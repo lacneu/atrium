@@ -1,10 +1,11 @@
 // AN APPROVAL'S IDENTITY IS ITS ID AND ITS GENERATION (lot « trames 1 », pass 6).
 //
-// The gateway may give an explicit approval id again once it has forgotten the old request
-// (src/gateway/server-methods/exec-approval.ts:172, 292-299 at v2026.9.36); each request
-// carries its creation time. One rule for every memory of a decided approval: a mark names
-// an identity and blocks only that identity; what names no generation (a resolution, a run
-// frame) is about the one announced and still waiting, else the only one known.
+// Upstream mints an approval id per request and refuses a second record under one (the
+// citations are in approval-identity.ts): the generation, the request's creation time, dates a
+// verdict that reaches Convex before its card. One rule for every memory of a decided approval
+// all the same: a mark names an identity and blocks only that identity; what names no
+// generation (a resolution, a run frame) is about the one announced and still waiting, else
+// the only one known.
 import { describe, expect, it } from "vitest";
 
 import {

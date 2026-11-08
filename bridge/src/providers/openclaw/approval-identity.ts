@@ -2,12 +2,18 @@
 //
 // The generation is the gateway's creation time of the request (`createdAtMs`: on its
 // broadcast, on each pending-list entry, on its `approval.get` snapshot), the key Convex
-// gives a card (convex/agentRequests.ts). The gateway takes an explicit approval id from
-// the caller (src/gateway/server-methods/exec-approval.ts:172, refused only while a record
-// under it still exists, 292-298 at v2026.9.36) and may give it again once the old request
-// is forgotten: the same id with ANOTHER generation is another request, never held, released
-// or settled by the old one's marks. The same id and generation is the same request, however
-// late or however often it is seen.
+// gives a card (convex/agentRequests.ts).
+//
+// UPSTREAM, AN ID NAMES ONE REQUEST (v2026.9.36). Each is minted at random for its request —
+// src/agents/bash-tools.exec-host-shared.ts:209 (`crypto.randomUUID()`),
+// src/agents/bash-tools.exec-host-node.ts:329, src/gateway/node-invoke-plugin-approval.ts:184
+// (`plugin:${randomUUID()}`) — and the durable registry refuses a second record under an
+// existing id (src/gateway/operator-approval-store.kernel.ts:140, `onConflict(approval_id)
+// .doNothing()`, then `conflict`). So an id never comes back with another generation, and the
+// generation adds nothing to WHICH request an id names: what it is needed for is to date a
+// verdict that reaches Convex before its card (convex/agentRequests.ts keepResolution), and to
+// check that an `approval.get` snapshot is the announced request's. Keying every mark by the
+// full identity costs nothing while ids are unique, and keeps one rule everywhere.
 //
 // One rule for every memory of a decided approval (the observer's, the run manager's, the
 // normalizer's): a mark names an identity, and blocks only that identity. A resolution

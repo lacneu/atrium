@@ -522,6 +522,54 @@ describe("a TERMINAL snapshot settles this conversation's card, once", () => {
   });
 });
 
+// A snapshot is used only when it is about the request its announcement named: the same
+// generation, and this conversation's own session when the snapshot names one. Upstream ids
+// are unique per request (approval-identity.ts), so this never refuses a snapshot of ours; a
+// snapshot of anything else creates no card, settles nothing and holds nothing.
+describe("an `approval.get` snapshot of another request produces nothing", () => {
+  const otherGeneration = { ...own, createdAtMs: CREATED + 1 };
+  it.each<[string, Record<string, unknown>, "session" | "generation"]>([
+    ["pending, of another generation", pendingApprovalGet(otherGeneration), "generation"],
+    [
+      "pending, projected for another session",
+      { approval: { ...(pendingApprovalGet(own).approval as Record<string, unknown>), sourceSessionKey: OTHER_PARENT } },
+      "session",
+    ],
+    ["terminal, naming another session", terminalApprovalGet({ ...own, sessionKey: OTHER_PARENT }, { status: "allowed", decision: "allow-once" }), "session"],
+    ["terminal, of another generation", terminalApprovalGet(otherGeneration, { status: "denied" }), "generation"],
+  ])("%s: no card, no settle, no wait — and a log naming neither", async (_label, snapshot, reason) => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const t = setup({ pending: { exec: [own] }, snapshots: { [own.approvalId]: snapshot } });
+    await t.obs.replayPending();
+    await t.flush();
+    expect(t.upserts).toEqual([]);
+    expect(t.settles).toEqual([]);
+    expect(t.released).toEqual([]);
+    // Only the announcement's own hold: nothing from the snapshot (no deadline, no release).
+    expect(t.requested.map(([id, f]) => [id, f.hold])).toEqual([[own.approvalId, true]]);
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    expect(lines).toContain(`[agent-request] approval snapshot ignored chat=c1 reason=${reason}`);
+    const all = lines.join("\n");
+    for (const secret of [PARENT, OTHER_PARENT, own.approvalId]) expect(all).not.toContain(secret);
+  });
+
+  it("…nor tells a `deny` from an expiry: the resolver rule decides instead", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const t = setup();
+    await t.obs.observe(execApprovalRequestedFrame(own));
+    await t.flush();
+    expect(t.upserts).toHaveLength(1);
+    // Its resolution says `deny` (a person's, or an expiry); the snapshot read to tell which
+    // names another session: it is not used.
+    t.answerApprovalGet(own.approvalId, terminalApprovalGet({ ...own, sessionKey: OTHER_PARENT }, { status: "expired" }));
+    await t.obs.observe(execApprovalResolvedFrame(own, "deny"));
+    await t.flush();
+    expect(t.settles).toEqual([
+      { chatId: "c1", providerRequestId: own.approvalId, family: "approval", providerCreatedAt: CREATED, status: "denied", decision: "deny" },
+    ]);
+  });
+});
+
 describe("the memory of a held verdict only saves work", () => {
   it("a card write that failed is not retried once its verdict is held — no gateway read for it", async () => {
     vi.useFakeTimers();
@@ -643,6 +691,7 @@ describe("the terminal state does not depend on the order of two sockets' writes
   });
 });
 
+// Hypothetical upstream (an id names one request, approval-identity.ts): pins the identity rule.
 describe("a reused id is another request on this socket too (approval-identity.ts)", () => {
   it("A decided and held, then B under the same id and a new generation: B's card is written, and its resolution settles B", async () => {
     const convex = new FakeConvex();
@@ -653,7 +702,7 @@ describe("a reused id is another request on this socket too (approval-identity.t
     await t.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
     await t.flush();
     expect(convex.cards.get(`${own.approvalId}@${CREATED}`)).toEqual({ status: "allowed", decision: "allow-once" });
-    // The gateway forgets A and gives its id to B: `approval.get` answers B now.
+    // B under the same id and another generation: `approval.get` answers B now.
     t.answerApprovalGet(own.approvalId, pendingApprovalGet(reused));
     await t.obs.observe(execApprovalRequestedFrame(reused));
     await t.flush();
