@@ -3766,6 +3766,10 @@ export default defineSchema({
      *  answer that failed past it), never by the gateway. Not a verdict: a sighting of the
      *  same request the gateway says still waits reopens it (upsertFromBridge). */
     expiredLocally: v.optional(v.boolean()),
+    /** Closed on the GATEWAY's word in answer to ours: a `request_gone` the bridge read from
+     *  or was refused by the gateway (`saidBy: "gateway"`, every OpenClaw one since 0.103.5).
+     *  A verdict, never reopened as a closure of Atrium's. */
+    closedByGateway: v.optional(v.boolean()),
   })
     .index("by_chat_and_created", ["chatId", "createdAt"])
     .index("by_chat_and_status", ["chatId", "status"])

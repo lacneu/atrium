@@ -6,6 +6,7 @@ import {
   parseRespondBody,
   respondHermes,
   respondOpenClaw,
+  respondPayload,
   type RespondBody,
 } from "../src/agent-request-respond.js";
 import { questionShape } from "../src/core/agent-requests.js";
@@ -103,7 +104,7 @@ describe("OpenClaw questions", () => {
         body({ answers: [{ id: "token", values: ["x"] }], questionShape: '[["token",false,false,[],null,[null,"Jeton ?",[],null,null]]]' }),
         other.gw, false, LIVE,
       ),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(other.calls.map(([m]) => m)).toEqual(["question.get"]);
     // The same question: answered.
     const same = recorder({ "question.get": { question: record }, "question.resolve": { status: "answered" } });
@@ -140,7 +141,7 @@ describe("OpenClaw questions", () => {
         }),
         g.gw, false, LIVE,
       ),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(g.calls.map(([m]) => m)).toEqual(["question.get"]);
   });
 
@@ -165,7 +166,7 @@ describe("OpenClaw questions", () => {
         }),
         g.gw, false, LIVE,
       ),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(g.calls.map(([m]) => m)).toEqual(["question.get"]);
   });
 
@@ -208,11 +209,11 @@ describe("OpenClaw questions", () => {
   it("…while the gateway's OWN word still closes the card, the session away or not", async () => {
     const approval = body({ source: "openclaw.exec", approvalKind: "exec", decision: "allow-once", providerRequestId: "ap_1" } as Partial<RespondBody>);
     const decided = recorder({ "approval.get": { approval: { id: "ap_1", status: "allowed", createdAtMs: 1_000, presentation: { agentId: "denis" } } } });
-    expect(await respondOpenClaw(approval, decided.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "allowed" });
+    expect(await respondOpenClaw(approval, decided.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "allowed", saidBy: "gateway" });
     const unknown = recorder({ "approval.get": new Error("unknown approval id") });
-    expect(await respondOpenClaw(approval, unknown.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    expect(await respondOpenClaw(approval, unknown.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     const forgotten = recorder({ "question.get": new Error("question ask_1 was not found") });
-    expect(await respondOpenClaw(body({}), forgotten.gw, false, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    expect(await respondOpenClaw(body({}), forgotten.gw, false, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     // The gateway not reached at all: a transport failure, retryable, never a verdict.
     const down = recorder({ "approval.get": new Error("socket closed") });
     expect(await respondOpenClaw(approval, down.gw, true, undefined)).toEqual({ ok: false, httpStatus: 502, code: "gateway_unreachable" });
@@ -242,7 +243,7 @@ describe("OpenClaw questions", () => {
       "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 2_000 } },
     });
     const out = await respondOpenClaw(body({ providerCreatedAt: 1_000, answers: [{ id: "format", values: ["PDF"] }] }), gw, false, LIVE);
-    expect(out).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    expect(out).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(calls.map(([m]) => m)).toEqual(["question.get"]);
     // Same generation: answered.
     const same = recorder({
@@ -254,14 +255,14 @@ describe("OpenClaw questions", () => {
     const ap = recorder({ "approval.get": { approval: { status: "pending", createdAtMs: 5, presentation: { kind: "exec", agentId: "denis" } } } });
     expect(
       await respondOpenClaw(body({ source: "openclaw.exec", providerRequestId: "ap-1", approvalKind: "exec", decision: "allow-once", providerCreatedAt: 4 }), ap.gw, false, LIVE),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
   });
 
   it("a question already settled says HOW, for the card to show", async () => {
     const { gw } = recorder({
       "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "answered", createdAtMs: 1_000 } },
     });
-    expect(await respondOpenClaw(body({}), gw, false, LIVE)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "answered" });
+    expect(await respondOpenClaw(body({}), gw, false, LIVE)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "answered", saidBy: "gateway" });
   });
 
   it("the gateway's own refusals map to our vocabulary", async () => {
@@ -274,6 +275,7 @@ describe("OpenClaw questions", () => {
       httpStatus: 409,
       code: "request_gone",
       status: "expired",
+      saidBy: "gateway",
     });
     const invalid = recorder({
       "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 1_000 } },
@@ -373,7 +375,7 @@ describe("OpenClaw approvals", () => {
     });
     expect(
       await respondOpenClaw(body({ source: "openclaw.plugin", providerRequestId: "ap-1", approvalKind: "plugin", decision: "allow-once" }), gw, false, LIVE),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "denied" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "denied", saidBy: "gateway" });
   });
 });
 
@@ -408,6 +410,33 @@ describe("incomplete gateway replies are never a confirmation", () => {
       ok: false,
       httpStatus: 502,
       code: "gateway_error",
+    });
+  });
+});
+
+// What the route answers Convex (server.ts): an OpenClaw `request_gone` carries the
+// gateway's word — Convex keeps such a closure for good (convex/agentRequests.ts
+// closedByGateway) — and nothing else claims it.
+describe("the route's reply (respondPayload)", () => {
+  it("carries the gateway's word with an OpenClaw `request_gone`, and only there", async () => {
+    expect(respondPayload({ ok: true })).toEqual({ ok: true });
+    const decided = recorder({
+      "approval.get": { approval: { id: "ap_1", status: "expired", createdAtMs: 1_000, presentation: { agentId: "denis" } } },
+    });
+    const approval = body({ source: "openclaw.exec", approvalKind: "exec", decision: "allow-once", providerRequestId: "ap_1" } as Partial<RespondBody>);
+    expect(respondPayload(await respondOpenClaw(approval, decided.gw, true, LIVE))).toEqual({
+      ok: false,
+      error: { code: "request_gone", status: "expired", saidBy: "gateway" },
+    });
+    expect(respondPayload({ ok: false, httpStatus: 503, code: "session_unavailable" })).toEqual({
+      ok: false,
+      error: { code: "session_unavailable" },
+    });
+    // A Hermes prompt no live turn holds: Atrium's own inference, never said to be the gateway's.
+    const hermes = body({ provider: "hermes", source: "hermes.clarify", providerRequestId: "clr_1", answers: [{ id: "answer", values: ["x"] }] });
+    expect(respondPayload(await respondHermes(hermes, async () => ({})))).toEqual({
+      ok: false,
+      error: { code: "request_gone", status: "expired" },
     });
   });
 });

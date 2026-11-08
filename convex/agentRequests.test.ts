@@ -2127,6 +2127,56 @@ describe("only the gateway's word closes a card for good", () => {
     expect(row!.expiredLocally).toBeUndefined();
   });
 
+  // Codex, pass 10: an OLD socket read `approval.get` still pending, then lost its socket while
+  // its write was retried; meanwhile an answer got the gateway's `request_gone` (expired), and
+  // the expiry's broadcast was missed. The late write must not reopen the card.
+  test("a pending snapshot, then an expiry the gateway confirmed in answer to ours, then that snapshot's late write: the card stays expired, its deadline untouched", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    bridgeSays(409, { code: "request_gone", status: "expired", saidBy: "gateway" });
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "request_gone" });
+    const closed = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(closed).toMatchObject({ status: "expired", closedByGateway: true });
+    // The snapshot's deadline: past by now (it expired)…
+    expect(await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 })).toEqual({ id, created: false });
+    // …or still ahead when it was read: the gateway's word stands either way.
+    expect(await record(t, chatId, { providerSeenSeq: 12, expiresAt: Date.now() + 10 * 60_000 })).toEqual({ id, created: false });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row.status).toBe("expired");
+    expect(row.expiresAt).toBe(closed.expiresAt);
+  });
+
+  test("a sighting whose own deadline is past reopens nothing — and no default deadline stands in for it", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    // A card Atrium closed itself (a 0.103.4 bridge's `request_gone`: no gateway word)…
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    bridgeSays(409, { code: "request_gone", status: "expired" });
+    await answer(t, userId, id!);
+    const closed = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(closed.closedByGateway).toBeUndefined();
+    // …and a write whose deadline is past, or that names none: still closed, deadline kept.
+    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 });
+    await record(t, chatId, { providerSeenSeq: 12, expiresAt: undefined });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row.status).toBe("expired");
+    expect(row.expiresAt).toBe(closed.expiresAt);
+    // One whose deadline is ahead does reopen it, until that deadline (the upgrade, below).
+    const ahead = Date.now() + 10 * 60_000;
+    await record(t, chatId, { providerSeenSeq: 13, expiresAt: ahead });
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "pending", expiresAt: ahead });
+  });
+
+  test("…as for a card our clock expired", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    await sweepNow(t, id!);
+    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 });
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
+  });
+
   // UPGRADE FROM 0.103.4: its bridge answered `request_gone` for a socket absent or closed,
   // without asking the gateway, and completeAnswer (unchanged since) closed the card
   // `expired`, with no `expiredLocally` — but still naming who answered (closedByAtrium).

@@ -142,6 +142,17 @@ function boundedDeadline(now: number, expiresAt: number | undefined): number {
   return now + DEFAULT_REQUEST_TTL_MS;
 }
 
+/** A deadline a sighting gives, when it is still ahead (and within the bound): else none —
+ *  never a default in its place (a reopening must not outlive the gateway's deadline). */
+function snapshotDeadline(now: number, expiresAt: number | undefined): number | null {
+  return typeof expiresAt === "number" &&
+    Number.isFinite(expiresAt) &&
+    expiresAt > now &&
+    expiresAt <= now + MAX_REQUEST_TTL_MS
+    ? Math.round(expiresAt)
+    : null;
+}
+
 /** Mark the owner's notification for a request read once it no longer waits. */
 /** The request's notification, gone with it (a cascade): a bell entry linking to a
  *  deleted conversation, unread forever, is worse than none (codex P3). */
@@ -299,12 +310,15 @@ export const upsertFromBridge = internalMutation({
         // until the deadline the gateway gives now; the answer that failed is forgotten. A
         // real verdict stays. Decided on the row as read in THIS transaction: a verdict
         // committed concurrently makes Convex run it again on that verdict, never over it.
-        if (closedByAtrium(same)) {
-          const reopenedAt = Date.now();
+        // Only until the deadline THIS sighting gives, still ahead: an old snapshot written
+        // late, its deadline past, reopens nothing — and no default deadline replaces it.
+        const reopenedAt = Date.now();
+        const deadline = snapshotDeadline(reopenedAt, args.expiresAt);
+        if (closedByAtrium(same) && deadline !== null) {
           await ctx.db.patch(same._id, {
             status: "pending",
             updatedAt: reopenedAt,
-            expiresAt: boundedDeadline(reopenedAt, args.expiresAt),
+            expiresAt: deadline,
             resolvedAt: undefined,
             expiredLocally: undefined,
             failureCode: undefined,
@@ -729,14 +743,17 @@ export const settleFromBridge = internalMutation({
  * the sweep's unstuck path clear it (:940-947, :1310-1316). A gateway expiry
  * (settleFromBridge) never lands over our answer in flight (`ours` + expired: not applied,
  * :577-583), so only on a `pending` row, which never carries an answerer — it stays closed.
- * A reply `request_gone` the gateway itself gave for a terminal record is kept the same way,
- * and is reopened only by a later `approval.get` of the same request still pending, which a
- * terminal record never gives.
+ * Since 0.103.5 the bridge asks the gateway before it says `request_gone`, and says so
+ * (`saidBy: "gateway"`): such a closure is marked `closedByGateway` and is a verdict. A
+ * `request_gone` from an older bridge carries no such word — during the upgrade too — and is
+ * read as before. Reopened, in every case, only by a sighting whose own deadline is still
+ * ahead (upsertFromBridge).
  */
 function closedByAtrium(row: Doc<"agentRequests">): boolean {
   return (
     row.status === "expired" &&
-    (row.expiredLocally === true || (row.resolvedByUserId !== undefined && row.resolvedElsewhere !== true))
+    (row.expiredLocally === true ||
+      (row.resolvedByUserId !== undefined && row.resolvedElsewhere !== true && row.closedByGateway !== true))
   );
 }
 
@@ -1083,8 +1100,11 @@ export const completeAnswer = internalMutation({
     status: terminalStatusValidator,
     /** The gateway reported the request already settled by someone else. */
     elsewhere: v.optional(v.boolean()),
+    /** The bridge says the GATEWAY said the request no longer waits (`saidBy: "gateway"`):
+     *  a verdict (closedByGateway). */
+    byGateway: v.optional(v.boolean()),
   },
-  handler: async (ctx, { requestId, status, elsewhere }) => {
+  handler: async (ctx, { requestId, status, elsewhere, byGateway }) => {
     const row = await ctx.db.get(requestId);
     if (row === null) return null;
     // A broadcast may have settled it first — keep that verdict. But not its AUTHOR:
@@ -1105,6 +1125,7 @@ export const completeAnswer = internalMutation({
       ...(elsewhere === true
         ? { resolvedElsewhere: true, resolvedByUserId: undefined, answers: undefined, decision: undefined }
         : {}),
+      ...(byGateway === true ? { closedByGateway: true } : {}),
     });
     await clearNotification(ctx, row);
     await trace(ctx, row.chatId, {
@@ -1240,7 +1261,7 @@ export const answer = action({
           ...(args.secret !== undefined && args.skip !== true ? { secret: args.secret } : {}),
         }),
       });
-      let payload: { ok?: unknown; error?: { code?: unknown; status?: unknown } } = {};
+      let payload: { ok?: unknown; error?: { code?: unknown; status?: unknown; saidBy?: unknown } } = {};
       try {
         payload = (await res.json()) as typeof payload;
       } catch {
@@ -1263,6 +1284,9 @@ export const answer = action({
           requestId: prep.requestId,
           status: goneStatus ?? "expired",
           elsewhere: goneStatus === "answered" || goneStatus === "allowed" || goneStatus === "denied",
+          // A bridge before 0.103.5 says no such thing: its `request_gone` may be its own
+          // inference (a socket away), and the card stays reopenable (closedByAtrium).
+          byGateway: payload.error?.saidBy === "gateway",
         });
         return { ok: false, reason: "request_gone" };
       }

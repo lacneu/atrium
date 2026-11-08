@@ -316,6 +316,7 @@ import {
   parseRespondBody,
   respondHermes,
   respondOpenClaw,
+  respondPayload,
   type RespondOutcome,
 } from "./agent-request-respond.js";
 import { errForLog } from "./core/log-safe-error.js";
@@ -7070,17 +7071,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       console.log(
         `[agent-request] respond chat=${body.chatId} source=${body.source} skip=${body.skip} -> ${outcome.ok ? "ok" : outcome.code}`,
       );
-      if (outcome.ok) {
-        sendJson(res, 200, { ok: true });
-      } else {
-        sendJson(res, outcome.httpStatus, {
-          ok: false,
-          error: {
-            code: outcome.code,
-            ...(outcome.status !== undefined ? { status: outcome.status } : {}),
-          },
-        });
-      }
+      sendJson(res, outcome.ok ? 200 : outcome.httpStatus, respondPayload(outcome));
       return;
     }
 
