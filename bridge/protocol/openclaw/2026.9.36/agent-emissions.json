@@ -1877,7 +1877,7 @@
       "template": [
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"assistant\"",
@@ -1915,7 +1915,7 @@
       "template": [
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"assistant\"",
@@ -2034,11 +2034,11 @@
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"assistant\"",
@@ -2140,7 +2140,7 @@
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"item\"",
@@ -2211,7 +2211,7 @@
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"item\"",
@@ -2402,7 +2402,7 @@
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"item\"",
@@ -2500,7 +2500,7 @@
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | arg0 | {...arg0, text, delta, replace, itemId} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | {...∅ | arg0 | {...arg0, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"item\"",
@@ -2727,11 +2727,11 @@
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, mediaUrls, managedMediaUrls, phase} | {...{text, delta, mediaUrls, managedMediaUrls, phase}, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"assistant\"",
-          "data": "{...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | ∅"
+          "data": "{...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | <AssistantStreamData> | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | {...∅ | {text, delta, replace, phase} | {...{text, delta, replace, phase}, text, delta, replace, itemId}, delta} | ∅"
         },
         {
           "stream": "\"assistant\"",
@@ -2771,11 +2771,7 @@
       "template": [
         {
           "stream": "\"lifecycle\"",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg2 | ∅}, executionSettled}"
-        },
-        {
-          "stream": "∅",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg2 | ∅}, executionSettled}"
+          "data": "{...{...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | {...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg2 | ∅}, executionSettled}"
         }
       ],
       "via": [
@@ -2799,11 +2795,7 @@
       "template": [
         {
           "stream": "\"lifecycle\"",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg2 | ∅}, executionSettled}"
-        },
-        {
-          "stream": "∅",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg2 | ∅}, executionSettled}"
+          "data": "{...{...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | {...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...arg(createAgentLifecycleTerminalBackstop)0.resolveTerminationFields(…) | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg2 | ∅}, executionSettled}"
         }
       ],
       "via": [
@@ -2877,23 +2869,15 @@
       "template": [
         {
           "stream": "\"lifecycle\"",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg0.timing.measure(…).terminal.metadata | ∅}, executionSettled}"
+          "data": "{...{...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | {...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg0.timing.measure(…).terminal.metadata | ∅}, executionSettled}"
         },
         {
           "stream": "\"lifecycle\"",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...{...arg0.timing.measure(…).terminal.metadata, terminalReply} | arg0.timing.measure(…).terminal.metadata | ∅}, executionSettled}"
+          "data": "{...{...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | {...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...{...arg0.timing.measure(…).terminal.metadata, terminalReply} | arg0.timing.measure(…).terminal.metadata | ∅}, executionSettled}"
         },
         {
           "stream": "\"lifecycle\"",
           "data": "{phase, error, endedAt, ...arg0.timing.measure(…).terminal.metadata, executionSettled}"
-        },
-        {
-          "stream": "∅",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg0.timing.measure(…).terminal.metadata | ∅}, executionSettled}"
-        },
-        {
-          "stream": "∅",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...{...arg0.timing.measure(…).terminal.metadata, terminalReply} | arg0.timing.measure(…).terminal.metadata | ∅}, executionSettled}"
         }
       ],
       "via": [
@@ -2918,23 +2902,15 @@
       "template": [
         {
           "stream": "\"lifecycle\"",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg0.fallbackResult.terminal.metadata | ∅}, executionSettled}"
+          "data": "{...{...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | {...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg0.fallbackResult.terminal.metadata | ∅}, executionSettled}"
         },
         {
           "stream": "\"lifecycle\"",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...{...arg0.fallbackResult.terminal.metadata, terminalReply} | arg0.fallbackResult.terminal.metadata | ∅}, executionSettled}"
+          "data": "{...{...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | {...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...{...arg0.fallbackResult.terminal.metadata, terminalReply} | arg0.fallbackResult.terminal.metadata | ∅}, executionSettled}"
         },
         {
           "stream": "\"lifecycle\"",
           "data": "{phase, error, endedAt, ...arg0.fallbackResult.terminal.metadata, executionSettled}"
-        },
-        {
-          "stream": "∅",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg0.fallbackResult.terminal.metadata | ∅}, executionSettled}"
-        },
-        {
-          "stream": "∅",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...{...arg0.fallbackResult.terminal.metadata, terminalReply} | arg0.fallbackResult.terminal.metadata | ∅}, executionSettled}"
         }
       ],
       "via": [
@@ -2960,15 +2936,11 @@
       "template": [
         {
           "stream": "\"lifecycle\"",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg1 | ∅}, executionSettled}"
+          "data": "{...{...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | {...{...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | {...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg1 | ∅}, executionSettled}"
         },
         {
           "stream": "\"lifecycle\"",
           "data": "{phase, error, endedAt, ...arg1, executionSettled}"
-        },
-        {
-          "stream": "∅",
-          "data": "{...{...{}, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...∅ | <Record<string, unknown>>} | ∅ | {...{...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅} | ∅, phase, endedAt, startedAt, aborted?, stopReason?, error?, errorObservation?, ...<{ aborted?: true | undefined; stopReason?: string | undefined; timeoutPhase?: string | undefined; }> | ∅, ...{} | {stopReason?, yielded?, timeoutPhase?, providerStarted?, aborted?, livenessState?, replayInvalid?, errorObservation?, assistantTranscriptIdempotencyKey?} | ∅, aborted?, stopReason?, ...arg1 | ∅}, executionSettled}"
         }
       ],
       "via": [
@@ -4082,7 +4054,7 @@
       "phaseAbsent": false,
       "phaseOpaque": {
         "pattern": null,
-        "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+        "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
         "origin": "src/agents/agent-harness-completion-custody.ts:194",
         "literals": null
       },
@@ -4095,7 +4067,7 @@
       ],
       "dataOpaque": [
         {
-          "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+          "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
           "origin": "src/agents/agent-harness-completion-custody.ts:194"
         }
       ],
@@ -4141,7 +4113,7 @@
       "phaseAbsent": false,
       "phaseOpaque": {
         "pattern": null,
-        "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+        "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
         "origin": "src/agents/agent-harness-completion-custody.ts:194",
         "literals": null
       },
@@ -4154,7 +4126,7 @@
       ],
       "dataOpaque": [
         {
-          "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+          "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
           "origin": "src/agents/agent-harness-completion-custody.ts:194"
         }
       ],
@@ -4300,7 +4272,7 @@
       "phaseAbsent": false,
       "phaseOpaque": {
         "pattern": null,
-        "reason": "declared type Omit<AgentEventPayload, \"seq\" | \"ts\">: declared type Record<string, unknown> has an index signature",
+        "reason": "declared type Omit<AgentEventPayload, \"ts\" | \"seq\">: declared type Record<string, unknown> has an index signature",
         "origin": "src/infra/agent-events.ts:573",
         "literals": null
       },
@@ -4313,7 +4285,7 @@
       ],
       "dataOpaque": [
         {
-          "reason": "declared type Omit<AgentEventPayload, \"seq\" | \"ts\">: declared type Record<string, unknown> has an index signature",
+          "reason": "declared type Omit<AgentEventPayload, \"ts\" | \"seq\">: declared type Record<string, unknown> has an index signature",
           "origin": "src/infra/agent-events.ts:573"
         }
       ],
@@ -16359,870 +16331,6 @@
       ]
     },
     {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,terminalReceipt,terminalReply,timeoutPhase,yielded|src/auto-reply/reply/agent-runner-execution.ts|executeAgentTurnInternalLoop",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "terminalReceipt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "terminalReply",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        }
-      ],
-      "file": "src/auto-reply/reply/agent-runner-execution.ts",
-      "function": "executeAgentTurnInternalLoop",
-      "emitter": "executeAgentFallbackCycle",
-      "chain": [
-        "executeAgentFallbackCycle",
-        "settleAgentFallbackCycle",
-        "settleAgentFallbackCycle > emitSettledLifecycleError",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/auto-reply",
-      "lines": [
-        315
-      ]
-    },
-    {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,timeoutPhase,yielded|src/agents/embedded-agent-runner/run-orchestrator.ts|runEmbeddedAgentInternal > enqueueSession(#0) > enqueueGlobal(#0)",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        }
-      ],
-      "file": "src/agents/embedded-agent-runner/run-orchestrator.ts",
-      "function": "runEmbeddedAgentInternal > enqueueSession(#0) > enqueueGlobal(#0)",
-      "emitter": "createAgentLifecycleTerminalBackstop > emit",
-      "chain": [
-        "createAgentLifecycleTerminalBackstop > emit",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/agents",
-      "lines": [
-        714,
-        737
-      ]
-    },
-    {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,timeoutPhase,yielded|src/auto-reply/reply/agent-lifecycle-terminal.ts|createAgentLifecycleTerminalBackstop > emit",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": [
-        "its object is passed to code outside the analysed sources",
-        "its object is used as BinaryExpression"
-      ],
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        },
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > emit: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:179"
-        }
-      ],
-      "file": "src/auto-reply/reply/agent-lifecycle-terminal.ts",
-      "function": "createAgentLifecycleTerminalBackstop > emit",
-      "emitter": "createAgentLifecycleTerminalBackstop > emit",
-      "chain": [
-        "createAgentLifecycleTerminalBackstop > emit",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "open",
-      "area": "src/auto-reply",
-      "lines": [
-        190
-      ]
-    },
-    {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,timeoutPhase,yielded|src/auto-reply/reply/agent-runner-error-handler.ts|handleAgentExecutionError > resolveReplyOperationAbortAction",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        }
-      ],
-      "file": "src/auto-reply/reply/agent-runner-error-handler.ts",
-      "function": "handleAgentExecutionError > resolveReplyOperationAbortAction",
-      "emitter": "createAgentLifecycleTerminalBackstop > emit",
-      "chain": [
-        "createAgentLifecycleTerminalBackstop > emit",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/auto-reply",
-      "lines": [
-        124
-      ]
-    },
-    {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,timeoutPhase,yielded|src/auto-reply/reply/agent-runner-error-handler.ts|handleAgentExecutionError > settleFailure",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        }
-      ],
-      "file": "src/auto-reply/reply/agent-runner-error-handler.ts",
-      "function": "handleAgentExecutionError > settleFailure",
-      "emitter": "createAgentLifecycleTerminalBackstop > emit",
-      "chain": [
-        "createAgentLifecycleTerminalBackstop > emit",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/auto-reply",
-      "lines": [
-        94
-      ]
-    },
-    {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,timeoutPhase,yielded|src/auto-reply/reply/agent-runner-error-handler.ts|handleAgentExecutionError",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        }
-      ],
-      "file": "src/auto-reply/reply/agent-runner-error-handler.ts",
-      "function": "handleAgentExecutionError",
-      "emitter": "createAgentLifecycleTerminalBackstop > emit",
-      "chain": [
-        "createAgentLifecycleTerminalBackstop > emit",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/auto-reply",
-      "lines": [
-        144,
-        213,
-        226
-      ]
-    },
-    {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,timeoutPhase,yielded|src/auto-reply/reply/agent-runner-fallback-settlement.ts|settleAgentFallbackCycle",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        }
-      ],
-      "file": "src/auto-reply/reply/agent-runner-fallback-settlement.ts",
-      "function": "settleAgentFallbackCycle",
-      "emitter": "settleAgentFallbackCycle > emitSettledLifecycleError",
-      "chain": [
-        "settleAgentFallbackCycle > emitSettledLifecycleError",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/auto-reply",
-      "lines": [
-        99,
-        121
-      ]
-    },
-    {
-      "key": "lifecycle|-|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,timeoutPhase,yielded|src/cron/isolated-agent/run.ts|runCronIsolatedAgentTurn > withPreparedModelRuntimePluginGenerationScope(#1) > withPluginRuntimeGenerationScope(#1)",
-      "stream": "lifecycle",
-      "streamOpaque": null,
-      "streamSource": "syntax",
-      "phase": null,
-      "phaseAbsent": true,
-      "phaseOpaque": null,
-      "phaseSource": null,
-      "keys": [
-        {
-          "key": "aborted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "assistantTranscriptIdempotencyKey",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "endedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "error",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "errorObservation",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "executionSettled",
-          "optional": false,
-          "src": "syntax"
-        },
-        {
-          "key": "livenessState",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "phase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "providerStarted",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "replayInvalid",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "startedAt",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "stopReason",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "timeoutPhase",
-          "optional": true,
-          "src": "syntax"
-        },
-        {
-          "key": "yielded",
-          "optional": true,
-          "src": "syntax"
-        }
-      ],
-      "dataAbsent": false,
-      "dataMaybeAbsent": false,
-      "open": null,
-      "dataOpaque": [
-        {
-          "reason": "closure parameter #2 of createAgentLifecycleTerminalBackstop > capture: declared type Record<string, unknown> has an index signature",
-          "origin": "src/auto-reply/reply/agent-lifecycle-terminal.ts:166"
-        }
-      ],
-      "file": "src/cron/isolated-agent/run.ts",
-      "function": "runCronIsolatedAgentTurn > withPreparedModelRuntimePluginGenerationScope(#1) > withPluginRuntimeGenerationScope(#1)",
-      "emitter": "createAgentLifecycleTerminalBackstop > emit",
-      "chain": [
-        "createAgentLifecycleTerminalBackstop > emit",
-        "emitAgentEvent",
-        "emitAgentEventIfCurrent",
-        "dispatchAgentEvent"
-      ],
-      "how": "call",
-      "area": "src/cron",
-      "lines": [
-        274,
-        297
-      ]
-    },
-    {
       "key": "lifecycle|<opaque>|aborted,assistantTranscriptIdempotencyKey,endedAt,error,errorObservation,executionSettled,livenessState,phase,providerStarted,replayInvalid,startedAt,stopReason,terminalReceipt,terminalReply,timeoutPhase,yielded|src/auto-reply/reply/agent-runner-execution.ts|executeAgentTurnInternalLoop",
       "stream": "lifecycle",
       "streamOpaque": null,
@@ -17249,7 +16357,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17274,7 +16382,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17289,7 +16397,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17371,7 +16479,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17396,7 +16504,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17411,7 +16519,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17482,7 +16590,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17507,7 +16615,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17522,7 +16630,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17599,7 +16707,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17624,7 +16732,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17639,7 +16747,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17709,7 +16817,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17734,7 +16842,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17749,7 +16857,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17819,7 +16927,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17844,7 +16952,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17859,7 +16967,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17931,7 +17039,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17956,7 +17064,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -17971,7 +17079,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18042,7 +17150,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18067,7 +17175,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18082,7 +17190,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18192,7 +17300,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18217,7 +17325,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18232,7 +17340,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18309,7 +17417,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18334,7 +17442,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18349,7 +17457,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18415,7 +17523,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18440,7 +17548,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18455,7 +17563,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18527,7 +17635,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18552,7 +17660,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18567,7 +17675,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18632,7 +17740,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18657,7 +17765,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18672,7 +17780,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18737,7 +17845,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18762,7 +17870,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18777,7 +17885,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18844,7 +17952,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18869,7 +17977,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18884,7 +17992,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18950,7 +18058,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18975,7 +18083,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -18990,7 +18098,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -19985,7 +19093,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20010,7 +19118,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20025,7 +19133,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20102,7 +19210,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20127,7 +19235,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20142,7 +19250,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20208,7 +19316,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20233,7 +19341,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20248,7 +19356,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20320,7 +19428,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20345,7 +19453,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20360,7 +19468,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20425,7 +19533,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20450,7 +19558,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20465,7 +19573,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20530,7 +19638,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20555,7 +19663,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20570,7 +19678,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20637,7 +19745,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20662,7 +19770,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20677,7 +19785,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20743,7 +19851,7 @@
         },
         {
           "key": "endedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20768,7 +19876,7 @@
         },
         {
           "key": "phase",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -20783,7 +19891,7 @@
         },
         {
           "key": "startedAt",
-          "optional": true,
+          "optional": false,
           "src": "syntax"
         },
         {
@@ -26844,7 +25952,7 @@
       "line": 47,
       "function": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "what": "data",
-      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/agents/agent-harness-completion-custody.ts:194",
       "emitter": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "stream": null
@@ -26854,7 +25962,7 @@
       "line": 47,
       "function": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "what": "phase",
-      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/agents/agent-harness-completion-custody.ts:194",
       "emitter": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "stream": null
@@ -26883,7 +25991,7 @@
       "line": 173,
       "function": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "what": "data",
-      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/agents/agent-harness-completion-custody.ts:194",
       "emitter": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "stream": null
@@ -26893,7 +26001,7 @@
       "line": 173,
       "function": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "what": "phase",
-      "reason": "declared type Pick<Omit<AgentEventPayload, \"seq\" | \"ts\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Pick<Omit<AgentEventPayload, \"ts\" | \"seq\">, \"stream\" | \"data\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/agents/agent-harness-completion-custody.ts:194",
       "emitter": "createAgentHarnessCompletionEventSink()→createAgentHarnessCompletionEventSink > <returned>",
       "stream": null
@@ -27385,7 +26493,7 @@
       "line": 572,
       "function": "emitAgentEvent",
       "what": "data",
-      "reason": "declared type Omit<AgentEventPayload, \"seq\" | \"ts\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Omit<AgentEventPayload, \"ts\" | \"seq\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/infra/agent-events.ts:573",
       "emitter": "emitAgentEvent",
       "stream": null
@@ -27395,7 +26503,7 @@
       "line": 572,
       "function": "emitAgentEvent",
       "what": "phase",
-      "reason": "declared type Omit<AgentEventPayload, \"seq\" | \"ts\">: declared type Record<string, unknown> has an index signature",
+      "reason": "declared type Omit<AgentEventPayload, \"ts\" | \"seq\">: declared type Record<string, unknown> has an index signature",
       "origin": "src/infra/agent-events.ts:573",
       "emitter": "emitAgentEvent",
       "stream": null
@@ -28203,16 +27311,6 @@
         "dispatchAgentEvent"
       ],
       "shapes": [
-        {
-          "streams": [],
-          "keys": [
-            {
-              "key": "executionSettled",
-              "optional": false
-            }
-          ],
-          "dataFromCaller": true
-        },
         {
           "streams": [
             {
@@ -31316,44 +30414,22 @@
       }
     },
     "lifecycle": {
-      "sites": 113,
+      "sites": 100,
       "phases": {
-        "-": {
-          "sites": 13,
-          "keys": {
-            "aborted": "optional",
-            "assistantTranscriptIdempotencyKey": "optional",
-            "endedAt": "optional",
-            "error": "optional",
-            "errorObservation": "optional",
-            "executionSettled": "always",
-            "livenessState": "optional",
-            "phase": "optional",
-            "providerStarted": "optional",
-            "replayInvalid": "optional",
-            "startedAt": "optional",
-            "stopReason": "optional",
-            "terminalReceipt": "optional",
-            "terminalReply": "optional",
-            "timeoutPhase": "optional",
-            "yielded": "optional"
-          },
-          "opaqueData": 8
-        },
         "<opaque>": {
           "sites": 13,
           "keys": {
             "aborted": "optional",
             "assistantTranscriptIdempotencyKey": "optional",
-            "endedAt": "optional",
+            "endedAt": "always",
             "error": "optional",
             "errorObservation": "optional",
             "executionSettled": "always",
             "livenessState": "optional",
-            "phase": "optional",
+            "phase": "always",
             "providerStarted": "optional",
             "replayInvalid": "optional",
-            "startedAt": "optional",
+            "startedAt": "always",
             "stopReason": "optional",
             "terminalReceipt": "optional",
             "terminalReply": "optional",
@@ -31377,13 +30453,13 @@
             "aborted": "optional",
             "assistantTranscriptIdempotencyKey": "optional",
             "completionSource": "optional",
-            "endedAt": "optional",
+            "endedAt": "always",
             "error": "optional",
             "errorObservation": "optional",
             "executionSettled": "optional",
             "executionStarted": "optional",
             "livenessState": "optional",
-            "phase": "optional",
+            "phase": "always",
             "providerStarted": "optional",
             "replayInvalid": "optional",
             "startedAt": "optional",
@@ -31404,15 +30480,15 @@
             "aborted": "optional",
             "assistantTranscriptIdempotencyKey": "optional",
             "completionSource": "optional",
-            "endedAt": "optional",
+            "endedAt": "always",
             "error": "optional",
             "errorObservation": "optional",
             "executionSettled": "optional",
             "livenessState": "optional",
-            "phase": "optional",
+            "phase": "always",
             "providerStarted": "optional",
             "replayInvalid": "optional",
-            "startedAt": "optional",
+            "startedAt": "always",
             "status": "optional",
             "stopReason": "optional",
             "terminalDelivery": "optional",

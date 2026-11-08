@@ -176,21 +176,48 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   template of every sender the callee may hold, each with the call's arguments substituted
   for its own parameters, so it is the final form, with every spread and field replacement
   the wrappers applied, and with what was done to the payload before the send: its writes
-  (one key down included, through an alias included), and the effects of the functions it
-  was handed to, read from their bodies. A payload sent through an alias (`const a = b`,
+  (one key down included, through an alias included), its reassignments (a parameter's
+  too), the effects of the functions it was handed to, read from their bodies, and the code
+  that runs with it as `this`. They apply in the order they run: a key reassigned holds the
+  new object only, whatever was written into the old one before; a helper's writes take
+  their place at its call, in its own order; an alias keeps writing the object it took, so
+  its writes stop reaching the payload once that key (or the binding) certainly holds a new
+  object (`x.data = d`, or `x = { ...x }`, may leave it the same one), and a reassigned
+  alias's writes may not reach it at all; a write a helper makes on one branch, in a
+  callback it registers, or by `??=` may not happen, so what it would replace stays
+  possible; what may run at any time (a callback, a loop body) is applied wherever it may
+  run and as often as it may. A reassignment that copies the object (`x = { ...x, k: v }`,
+  and `k: { ...x.k, … }` inside it) is the object with those writes, in order, never a copy
+  nested in its successor. A payload sent through an alias (`const a = b`,
   `const { data } = b`) carries what was done to `b` up to the send, after the alias too. A
   sender's payload, or its data, handed before the send to code whose effects are not
   modeled makes the call unresolved; handed to a frame sender, it keeps its shape, since a
-  send is a delivery and the transport's body is not analysed. A member reached only through
+  send is a delivery and the transport's body is not analysed. Code that runs with the
+  payload or its data as `this` — a method called on it, an accessor read or written on it,
+  a getter a copy of it runs, a getter or a `toJSON` the transport's serialization runs — is
+  an effect too: proven to leave the object as it was (a library method, or a body that
+  writes nothing through `this`, lets `this` go nowhere, hands what it holds only to code
+  that reads it, and reaches only methods and accessors proven alike), or the call is
+  unresolved, past the effect bound as well. The frame is then unresolved as a whole, never
+  split into the paths where that code did nothing. A property that holds a function
+  (declared as a property, its type with no `this:` parameter) is not a method: called on
+  the object, it runs the function it holds, with no effect through `this` — unless the
+  function its value resolves to is not an arrow (an unbound method copied into it, say), or
+  is a class field's arrow, and uses `this`: the call is then refused by name. Methods,
+  accessors and a function type that declares `this:` stay strict. A member reached only through
   a declared type (the checker sees its signature, no body) is code whose effects are not
   modeled, unless a per-version declaration names it read-only (`READ_ONLY_MEMBERS`, beside
   `SENDER_ROOTS` in the extractor): the type and member, the argument, the upstream
-  evidence, and the fingerprint (`sha256`) of every body that evidence rests on. The
-  declaration holds only while it is checked true at the version derived: each body present
-  and unchanged, the member still declared, the named factory still providing it, and no
-  other object of the analysed sources providing it; otherwise the derivation refuses and the
-  entry is reviewed again. At 2026.9.36 it names `ChatRunState.recordProgressEvent`, which
-  copies the event (JSON round trip) and writes nothing into it. A bus emission's object takes
+  evidence, the fingerprint (`sha256`) of every body that evidence rests on, and which of
+  those bodies the factory hands out as the member (`implementation.fn`). The declaration
+  holds only while it is checked true at the version derived: each body present and
+  unchanged, the member still declared, the named factory still providing it with that very
+  body (the function each of its providers hands out, resolved, never presumed), that body's
+  binding never reassigned, no other object of the analysed sources providing the member,
+  and no write anywhere to a property so named, by name or by literal key; otherwise the
+  derivation refuses and the entry is reviewed again. At 2026.9.36 it names
+  `ChatRunState.recordProgressEvent`, which copies the event (JSON round trip) and writes
+  nothing into it. A bus emission's object takes
   the same writes and modeled effects; an effect not modeled there is a limit the soundness
   contract states. A literal stream is a fabricated frame; an agent event passed on with its
   own data (or its data plus a recorded rewrite) is a relay with its origins named; a call
@@ -256,14 +283,16 @@ the following:
 
 - an unaccounted reference;
 - an unresolved sender call: an event not evaluated, a payload not determined, a payload
-  (or its data) handed beforehand to code whose effects are not modeled, or a sender whose
-  object escapes;
+  (or its data) handed beforehand to code whose effects are not modeled, or run as `this` by
+  code not proven to leave it unchanged (a method, an accessor, a getter or a `toJSON` the
+  serialization runs), or a sender whose object escapes;
 - a listed sender absent;
 - a contract the signature does not bear out;
 - a candidate sender nobody listed;
 - a transport moved;
 - a read-only member declaration that no longer holds: a body changed or absent, the member
-  or its factory gone, another object providing the member.
+  or its factory gone, another object providing the member, the factory handing out another
+  function than the reviewed body, that body's binding reassigned, a write to the member.
 
 The inventory it refused is kept for examination. The extractor is corrected, never the
 inventory.
@@ -289,8 +318,27 @@ aliasing beyond what it follows escape it by nature. In particular:
   function, whatever the depth); a callee that writes into it there, and code outside the
   analysed sources at any depth:
   - make a sender's call unresolved, naming what was reached;
-  - are not marked on a bus emission's object: its row carries the keys the evaluator sees;
-- the evaluator is flow-insensitive beyond straight-line code before the send;
+  - are not marked on a bus emission's object: its row carries the keys the evaluator sees
+    (the code a bus emission's object runs as `this` likewise);
+- the order of what is done to an object is followed in the reference's own function and in
+  each helper's own body; what runs in a callback or a loop is taken to run at any time and
+  any number of times, an over-approximation;
+- a reassignment that reads the binding without copying it in place (`x = f(x)`) and may
+  not run is merged with the state it reads, which doubles the frame's variants each time:
+  past five such merges per reference, the rest is an opaque contribution and a sender's
+  call is unresolved (an evaluator bound); in a callback or a loop, such a reassignment is
+  applied once at the end, against the fullest state;
+- an accessor is known by the declarations the type checker sees: a property its type
+  declares as a plain field is read as one, even where an object behind that type implements
+  it with a getter;
+- a method is proven harmless only from a body the analysis reads: one known only by a
+  declared type (an interface member declared as a method, or a function type that declares
+  `this:`) is code whose effects are not modeled;
+- a property that holds a function is taken to run the function it holds without `this`: an
+  unbound method copied into such a property, which writes through `this`, is not seen where
+  the property's value cannot be resolved (a value handed through parameters or spreads) —
+  the bench's emission check and the production drift detector are the nets for what it
+  would change;
 - a value known only by its declared type is an over-approximation.
 
 The two nets below cover what the analysis cannot see, and the unmarked bus effects.

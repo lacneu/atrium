@@ -74,7 +74,7 @@ type ReadOnlyMember = {
   member: string;
   argument: number;
   declaredIn: string;
-  implementation: { file: string; factory: string };
+  implementation: { file: string; factory: string; fn: string };
   reviewedAt: string;
   evidence: string;
   bodies: { file: string; fn: string; sha256: string }[];
@@ -1837,7 +1837,7 @@ export function wire() {
     member: "record",
     argument: 1,
     declaredIn: "src/gateway/run-state.ts",
-    implementation: { file: "src/gateway/run-state.ts", factory: "createRunState" },
+    implementation: { file: "src/gateway/run-state.ts", factory: "createRunState", fn: "createRunState > record" },
     reviewedAt: "test",
     evidence: "createRunState's record copies the event through JSON (copyEvent) and stores the copy.",
     bodies: [
@@ -1882,11 +1882,531 @@ export function wire() {
     expect(() => run(gone, [ENTRY])).toThrow(/RunState\.record: the declared member is absent/);
   });
 
+  // Codex pass 4 (lot E): the reviewed body must BE the member the factory hands out.
+  const MUTATOR = `const mutator = (runId: string, event: Ev, extra?: Ev) => {
+    void [runId, extra];
+    event.stream = "changed";
+    event.data.lost = 1;
+  };`;
+  it("a factory that returns another function than the reviewed body refuses the derivation", () => {
+    const swapped = { ...FILES, "src/gateway/run-state.ts": runState(RECORD).replace("  return { record };", `  ${MUTATOR}\n  return { record: mutator };`) };
+    expect(() => run(swapped, [ENTRY])).toThrow(/RunState\.record: createRunState hands out .*mutator.*, not the reviewed createRunState > record/);
+  });
+
+  it("a member written after the factory returns it, by name or by literal key, refuses the derivation", () => {
+    for (const write of ["state.record = mutator;", 'state["record"] = mutator;']) {
+      const later = { ...FILES, "src/gateway/use-q.ts": `${USE}\nexport function swap(state: RunState) {\n  ${MUTATOR.replace(/: Ev/g, ": { stream: string; data: Record<string, unknown> }")}\n  ${write}\n}\n` };
+      expect(() => run(later, [ENTRY]), write).toThrow(/RunState\.record: (another object provides it|the member is assigned) \(src\/gateway\/use-q\.ts:\d+\)/);
+    }
+  });
+
+  it("a reviewed body whose binding is reassigned refuses the derivation", () => {
+    const reassigned = { ...FILES, "src/gateway/run-state.ts": runState(RECORD).replace("  const record = ", "  let record = ").replace("  return { record };", `  ${MUTATOR}\n  record = mutator;\n  return { record };`) };
+    expect(() => run(reassigned, [ENTRY])).toThrow(/RunState\.record: the binding of the reviewed body is reassigned/);
+  });
+
   it("upstream's declaration names the member, its argument and three locked bodies", () => {
     const entries = deriver.READ_ONLY_MEMBERS as ReadOnlyMember[];
     expect(entries.map((e) => `${e.type}.${e.member}#${e.argument}`)).toEqual(["ChatRunState.recordProgressEvent#1"]);
     expect(entries[0]!.bodies.map((b) => b.fn)).toEqual(["createChatRunState > recordProgressEvent", "updateChatRunProgressSnapshot", "captureProgressEvent"]);
+    expect(entries[0]!.implementation.fn).toBe("createChatRunState > recordProgressEvent");
     for (const b of entries[0]!.bodies) expect(b.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("deriveAgentEmissions — the fourth review's counterexamples (lot E)", () => {
+  const chain = (prefix: string, type: string, last: string) =>
+    Array.from({ length: 5 }, (_, i) => `function ${prefix}${i}(x: ${type}): unknown {\n  return ${i < 4 ? `${prefix}${i + 1}(x)` : last};\n}`).join("\n");
+  const FILES: Record<string, string> = {
+    // 1. What is done to an object applies in the order it runs: a key reassigned after a
+    //    write one key down holds the new object only; a helper's writes take their place in
+    //    that order; an alias of the old object writes the old object; a reassignment of the
+    //    binding (or of a parameter) replaces what came before it.
+    "src/gateway/order-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+declare function defer(cb: () => void): void;
+function replaceData(p: Frame) {
+  p.data = { helperKey: 1 };
+}
+function innerReplace(x: Frame) {
+  x.data = { innerKey: 1 };
+}
+function maybeReplace(x: Frame, c: boolean) {
+  if (c) innerReplace(x);
+}
+function replaceLater(x: Frame) {
+  defer(() => {
+    x.data = { lateKey: 1 };
+  });
+}
+function nestThenReplace(x: Frame) {
+  x.data.inner = 1;
+  x.data = { replacedInHelper: 1 };
+}
+export function ordered(c: boolean) {
+  const { broadcast } = createGatewayBroadcaster();
+  const p: Frame = { runId: "r", stream: "x_order", data: {} };
+  p.data = { initial: 1 };
+  p.data.oldKey = 1;
+  p.data = { actualKey: 1 };
+  broadcast("agent", p);
+  const q: Frame = { runId: "r", stream: "x_order_helper", data: { a: 1 } };
+  q.data.before = 1;
+  replaceData(q);
+  q.data.after = 1;
+  broadcast("agent", q);
+  const r: Frame = { runId: "r", stream: "x_order_alias", data: { b: 1 } };
+  const d = r.data;
+  r.data = { fresh: 1 };
+  d.old = 1;
+  broadcast("agent", r);
+  const s: Frame = { runId: "r", stream: "x_cond_helper", data: { kept: 1 } };
+  maybeReplace(s, c);
+  broadcast("agent", s);
+  const t: Frame = { runId: "r", stream: "x_late_helper", data: { now: 1 } };
+  replaceLater(t);
+  broadcast("agent", t);
+  const u: Frame = { runId: "r", stream: "x_logical", data: { kept: 1 } };
+  u.data ??= { replaced: 1 };
+  broadcast("agent", u);
+  let v: Frame = { runId: "r", stream: "x_rebind", data: { first: 1 } };
+  v.data = { stale: 1 };
+  v = { runId: "r", stream: "x_rebind", data: { second: 1 } };
+  broadcast("agent", v);
+  let w: Frame = { runId: "r", stream: "x_alias_rebind", data: { w1: 1 } };
+  const kept = w;
+  w = { runId: "r", stream: "x_alias_rebind", data: { w2: 1 } };
+  kept.data = { detached: 1 };
+  broadcast("agent", w);
+  const f: Frame = { runId: "r", stream: "x_floating", data: { f0: 1 } };
+  defer(() => {
+    f.data = { fx: 1 };
+  });
+  f.data.fk = 1;
+  broadcast("agent", f);
+  const g: Frame = { runId: "r", stream: "x_floating_pair", data: { g0: 1 } };
+  defer(() => {
+    g.data.gk = 1;
+  });
+  defer(() => {
+    g.data = { gn: 1 };
+  });
+  broadcast("agent", g);
+  const l: Frame = { runId: "r", stream: "x_loop", data: { l0: 1 } };
+  for (const n of [1, 2]) {
+    void n;
+    l.data.lk = 1;
+    l.data = { lnew: 1 };
+  }
+  broadcast("agent", l);
+  const h: Frame = { runId: "r", stream: "x_helper_order", data: { h0: 1 } };
+  nestThenReplace(h);
+  broadcast("agent", h);
+  const y: Frame = { runId: "r", stream: "x_alias_reassigned", data: { y0: 1 } };
+  let yy: Frame = y;
+  yy = { runId: "r", stream: "other", data: {} };
+  yy.data = { elsewhere: 1 };
+  broadcast("agent", y);
+  const z: Frame = { runId: "r", stream: "x_pattern", data: { z0: 1 } };
+  [z.data] = [{ zp: 1 }];
+  broadcast("agent", z);
+}
+function relayCopy(evt: Frame) {
+  const { broadcast } = createGatewayBroadcaster();
+  evt = { ...evt, data: { ...evt.data, added: 1 } };
+  broadcast("agent", evt);
+}
+function relayStream(stream?: string) {
+  const { broadcast } = createGatewayBroadcaster();
+  stream = stream ?? "x_param_default";
+  broadcast("agent", { runId: "r", stream, data: { d: 1 } });
+}
+export function wireParams() {
+  relayCopy({ runId: "r", stream: "x_param_reassign", data: { orig: 1 } });
+  relayStream();
+  relayStream("x_param_given");
+}
+`,
+    // 1. (pass 12) A binding reassigned with a copy of itself, on branches: upstream's
+    //    \`params = { ...params, … }\` (src/agents/cli-runner/prepare.ts, ten times) — each
+    //    such reassignment is the binding plus what it adds, never a copy nested in the next.
+    "src/gateway/accumulate-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+declare function defer(cb: () => void): void;
+export function accumulate(params: Frame, flags: boolean[]) {
+  const { broadcast } = createGatewayBroadcaster();
+${Array.from({ length: 24 }, (_, i) => `  if (flags[${i}]) params = { ...params, data: { ...params.data, a${i}: 1 } };`).join("\n")}
+  params.data.last = 1;
+  broadcast("agent", params);
+  defer(() => broadcast("agent", { ...params, stream: "x_accumulate_later" }));
+}
+const withKey = (p: Frame, k: string): Frame => ({ ...p, data: { ...p.data, [k]: 1 } });
+export function accumulateByHelper(params: Frame, flags: boolean[]) {
+  const { broadcast } = createGatewayBroadcaster();
+${Array.from({ length: 10 }, (_, i) => `  if (flags[${i}]) params = withKey(params, "h${i}");`).join("\n")}
+  broadcast("agent", params);
+}
+export function accumulateLater(params: Frame) {
+  const { broadcast } = createGatewayBroadcaster();
+  defer(() => {
+    params = withKey(params, "late");
+  });
+${Array.from({ length: 12 }, (_, i) => `  params.data.d${i} = 1;`).join("\n")}
+  broadcast("agent", params);
+}
+export function wireAccumulate(flags: boolean[]) {
+  accumulate({ runId: "r", stream: "x_accumulate", data: { base: 1 } }, flags);
+  accumulateByHelper({ runId: "r", stream: "x_accumulate_helper", data: { base: 1 } }, flags);
+  accumulateLater({ runId: "r", stream: "x_accumulate_floating", data: { base: 1 } });
+}
+export function sameObject() {
+  const { broadcast } = createGatewayBroadcaster();
+  const s: Frame = { runId: "r", stream: "x_same_object", data: { s0: 1 } };
+  const sd = s.data;
+  s.data = sd;
+  sd.kept = 1;
+  broadcast("agent", s);
+  let c: Frame = { runId: "r", stream: "x_shallow_copy", data: { c0: 1 } };
+  const cd = c.data;
+  c = { ...c };
+  cd.shared = 1;
+  broadcast("agent", c);
+}
+`,
+    // 1. (pass 13) A reassignment that reaches the binding through another one (upstream's
+    //    lifecycle backstop, src/auto-reply/reply/agent-lifecycle-terminal.ts:166-167:
+    //    \`const event = prepareTerminal(state, …); state = { kind: "captured", event }\`).
+    "src/cases/backstop-bus.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+type State = { kind: string; metadata: Record<string, unknown>; event?: { stream: string; data: Record<string, unknown> } };
+export function backstop(runId: string) {
+  let state: State = { kind: "pending", metadata: { m0: 1 } };
+  const prepare = (s: State) => ({ stream: "x_indirect", data: { ...s.metadata, phase: "end" } });
+  const note = () => {
+    state.metadata.noted = 1;
+  };
+  const capture = () => {
+    const event = prepare(state);
+    state = { kind: "captured", metadata: {}, event };
+  };
+  const emit = () => {
+    const current = state;
+    const event = current.event ?? prepare(current);
+    emitAgentEvent({ runId, stream: event.stream, data: event.data });
+  };
+  note();
+  capture();
+  emit();
+}
+`,
+    "src/cases/order-bus.ts": `
+import { emitAgentEvent } from "../infra/agent-events.js";
+export function orderedBus(runId: string) {
+  const e: { data: Record<string, unknown> } = { data: {} };
+  e.data = { a: 1 };
+  e.data.b = 1;
+  emitAgentEvent({ runId, stream: "x_order_bus", data: e.data });
+}
+`,
+    // 3. Code that runs with the object as \`this\` — a method called on it, an accessor read
+    //    or written on it, an accessor its type declares (run by a copy or the transport's
+    //    serialization) — is an effect: proven absent, or the send refuses (past the bound too).
+    "src/gateway/accessors-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+const makeGetter = (stream: string) => ({ runId: "r", stream, data: { g: 1 } as Record<string, unknown>, get effect() { this.data.lost = 1; return 1; } });
+const makeStamper = (stream: string) => ({ runId: "r", stream, data: { m: 1 } as Record<string, unknown>, stamp() { this.data.stamped = 1; } });
+const makeReader = (stream: string) => ({ runId: "r", stream, data: { k: 1 } as Record<string, unknown>, describe() { return this.stream; }, get label() { return this.stream; } });
+const makeSetter = (stream: string) => ({ runId: "r", stream, data: { s: 1 } as Record<string, unknown>, set tag(v: string) { this.data.tagged = v; } });
+type Getterful = ReturnType<typeof makeGetter>;
+type Stampful = ReturnType<typeof makeStamper>;
+type Hooked = { runId: string; stream: string; data: Record<string, unknown>; touch(): void };
+type Plain = { runId: string; stream: string; data: Record<string, unknown> };
+type Boxed = { payload: Plain; poke(): void };
+${chain("g", "Getterful", "x.effect")}
+${chain("m", "Stampful", "x.stamp()")}
+export function accessors(hooked: Hooked, plain: Plain) {
+  const { broadcast } = createGatewayBroadcaster();
+  const p = makeGetter("x_getter");
+  void p.effect;
+  broadcast("agent", p);
+  const q = makeStamper("x_method");
+  q.stamp();
+  broadcast("agent", q);
+  const ok = makeReader("x_reader");
+  ok.describe();
+  void ok.label;
+  broadcast("agent", ok);
+  const st = makeSetter("x_setter");
+  st.tag = "t";
+  broadcast("agent", { runId: "r", stream: "x_setter", data: st.data });
+  const deepGetter = makeGetter("x_deep_getter");
+  g0(deepGetter);
+  broadcast("agent", { runId: "r", stream: "x_deep_getter", data: deepGetter.data });
+  const deepMethod = makeStamper("x_deep_method");
+  m0(deepMethod);
+  broadcast("agent", { runId: "r", stream: "x_deep_method", data: deepMethod.data });
+  hooked.touch();
+  broadcast("agent", { runId: "r", stream: "x_hooked", data: hooked.data });
+  plain.data.toString();
+  broadcast("agent", { runId: "r", stream: "x_plain", data: plain.data });
+  const box: Boxed = { payload: { runId: "r", stream: "x_box", data: { k: 1 } }, poke() { this.payload.data.poked = 1; } };
+  box.poke();
+  broadcast("agent", box.payload);
+  broadcast("agent", { runId: "r", stream: "x_serialized", data: { get late(): number { (this as Record<string, unknown>).seen = 1; return 1; } } });
+  broadcast("agent", { runId: "r", stream: "x_serialized_plain", data: { get calm(): number { return 1; } } });
+}
+`,
+    // 3. (pass 13, decided) A PROPERTY holding a function is called as the function it holds:
+    //    upstream's six forms are classified; a method copied unbound into one, or a class
+    //    field's arrow, that uses \`this\` refuses by name; a function type with \`this:\` is strict.
+    "src/gateway/property-calls-s.ts": `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Frame = { runId: string; stream: string; data: Record<string, unknown> };
+type RespondFn = (ok: boolean, payload?: unknown, error?: unknown) => void;
+type Pending = {
+  respond: RespondFn;
+  requestEventName: string;
+  requestEvent: { id: string };
+  afterDecision?: (decision: string | null) => Promise<void> | void;
+  register: (cb: (decision: string) => Promise<void>) => void;
+};
+// upstream's handlePendingApprovalRequest (src/gateway/server-methods/approval-shared.ts:284)
+async function handlePending(params: Pending) {
+  const { broadcast } = createGatewayBroadcaster();
+  params.register(async (decision) => {
+    if (params.afterDecision) await params.afterDecision(decision);
+    params.respond(true, { decision });
+  });
+  broadcast(params.requestEventName, params.requestEvent);
+}
+// upstream's handlePendingApprovalRequestWithDelivery (approval-request-delivery.ts:76-101)
+function viaDelivery(pending: Omit<Pending, "requestEventName" | "afterDecision">, kind: "exec" | "plugin", afterDecision?: (d: string | null) => void) {
+  return handlePending({ ...pending, requestEventName: \`\${kind}.approval.requested\`, afterDecision: async (decision) => { await afterDecision?.(decision); } });
+}
+// system-agent-approval.ts:333 (respond: () => undefined)
+export function direct(register: Pending["register"]) {
+  return handlePending({ respond: () => undefined, requestEventName: "openclaw.approval.requested", requestEvent: { id: "1" }, register });
+}
+// exec-approval.ts:449, plugin-approval.ts:259, environments.session-exec-approval.ts:80: the dispatcher's respond, handed on
+export function rpcExec({ respond, register }: { respond: RespondFn; register: Pending["register"] }) {
+  return viaDelivery({ respond, requestEvent: { id: "2" }, register }, "exec");
+}
+export function rpcPlugin({ respond, register }: { respond: RespondFn; register: Pending["register"] }) {
+  return viaDelivery({ respond, requestEvent: { id: "3" }, register }, "plugin");
+}
+export function sessionExec({ respond, register }: { respond: RespondFn; register: Pending["register"] }) {
+  return viaDelivery({ respond, requestEvent: { id: "4" }, register }, "exec");
+}
+// node-invoke-plugin-approval.ts:198 (const respond: RespondFn = () => {})
+export function nodeInvoke(register: Pending["register"]) {
+  const respond: RespondFn = () => {};
+  return viaDelivery({ respond, requestEvent: { id: "5" }, register }, "plugin");
+}
+// server-chat.ts:1181-1185 (buffered.isCurrent?.(), isCurrent a bound arrow, server-chat.ts:1335)
+type Buffered = { isCurrent?: () => boolean; payload: Frame };
+const shouldProcess = (runId: string) => runId.length > 0;
+export function flushBuffered() {
+  const { broadcast } = createGatewayBroadcaster();
+  const buffered: Buffered = { isCurrent: shouldProcess.bind(null, "r"), payload: { runId: "r", stream: "x_buffered", data: { b: 1 } } };
+  if (buffered.isCurrent?.() === false) return;
+  broadcast("agent", buffered.payload);
+}
+type Holder = { runId: string; stream: string; data: Record<string, unknown>; mark: () => void };
+export function plainFunction() {
+  const { broadcast } = createGatewayBroadcaster();
+  const h: Holder = { runId: "r", stream: "x_plain_fn", data: { p: 1 }, mark: function () { void 0; } };
+  h.mark();
+  broadcast("agent", h);
+}
+class Recorder {
+  data: Record<string, unknown> = {};
+  stamp() {
+    this.data.stamped = 1;
+  }
+}
+export function copiedUnbound() {
+  const { broadcast } = createGatewayBroadcaster();
+  const rec = new Recorder();
+  const h: Holder = { runId: "r", stream: "x_unbound", data: { u: 1 }, mark: rec.stamp };
+  h.mark();
+  broadcast("agent", h);
+}
+class Panel {
+  data: Record<string, unknown> = { f0: 1 };
+  touchField = () => {
+    this.data.f = 1;
+  };
+}
+export function fieldArrow() {
+  const { broadcast } = createGatewayBroadcaster();
+  const panel = new Panel();
+  panel.touchField();
+  broadcast("agent", { runId: "r", stream: "x_field_arrow", data: panel.data });
+}
+type Bound = { runId: string; stream: string; data: Record<string, unknown>; touch: (this: Bound) => void };
+export function thisTyped(b: Bound) {
+  const { broadcast } = createGatewayBroadcaster();
+  b.touch();
+  broadcast("agent", { runId: "r", stream: "x_this_typed", data: b.data });
+}
+`,
+  };
+  let inv6: Inventory;
+  type Fab = { file: string; function: string; stream?: string; keys?: string[]; reason?: string };
+  const tf6 = () => inv6.transformations as unknown as { fabricated: Fab[]; unresolved: Fab[] };
+  const keysOf = (stream: string) => tf6().fabricated.filter((g) => g.stream === stream).map((g) => g.keys);
+  const hasRow = (stream: string, keys: string[]) => keysOf(stream).some((k) => JSON.stringify(k) === JSON.stringify(keys));
+  const reasonsIn = (file: string) => tf6().unresolved.filter((u) => u.file === file).map((u) => u.reason ?? "");
+  beforeAll(() => {
+    inv6 = derive({
+      root: "/virtual-upstream",
+      files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]!, ...FILES },
+      tsconfig: TSCONFIG,
+      compilerOptions: OPTIONS,
+    });
+  });
+
+  it("1. a key reassigned after a write one key down holds the new object only", () => {
+    expect(keysOf("x_order")).toEqual([["actualKey"]]);
+    expect(inv6.emissions.filter((e) => e.stream === "x_order_bus").map(keyList)).toEqual([["a", "b"]]);
+  });
+
+  it("1. a helper's write takes its place in the order: what came before it on the old object is gone", () => {
+    expect(keysOf("x_order_helper")).toEqual([["after", "helperKey"]]);
+    // …and the helper's own writes run in their order too.
+    expect(keysOf("x_helper_order")).toEqual([["replacedInHelper"]]);
+  });
+
+  it("1. an alias of the old object writes the old object, not the new one", () => {
+    expect(keysOf("x_order_alias")).toEqual([["fresh"]]);
+    expect(keysOf("x_alias_rebind")).toEqual([["w2"]]);
+    // An alias reassigned may hold another object: what it writes may not reach this one.
+    expect(hasRow("x_alias_reassigned", ["y0"])).toBe(true);
+  });
+
+  it("1. a write by a destructuring assignment is a write, its value not read", () => {
+    const rows = tf6().fabricated.filter((g) => g.stream === "x_pattern") as unknown as { keys: string[]; dataOpaque: unknown[] }[];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      expect(r.keys).not.toContain("z0");
+      expect(r.dataOpaque.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("1. a reassignment of the binding replaces what was written before it", () => {
+    expect(keysOf("x_rebind")).toEqual([["second"]]);
+  });
+
+  it("1. a write a helper makes only on one branch, or in a callback, or by `??=`, may not happen: what it would replace stays possible", () => {
+    expect(hasRow("x_cond_helper", ["kept"]) && hasRow("x_cond_helper", ["innerKey"])).toBe(true);
+    expect(hasRow("x_late_helper", ["now"]) && hasRow("x_late_helper", ["lateKey"])).toBe(true);
+    expect(hasRow("x_logical", ["kept"])).toBe(true);
+  });
+
+  it("1. a write that may run at any time (a callback, a loop) is applied wherever it may run, as often as it may", () => {
+    // f.data replaced by the callback before or after f.data.fk, or never.
+    for (const keys of [["f0", "fk"], ["fk", "fx"], ["fx"]]) expect(hasRow("x_floating", keys), keys.join()).toBe(true);
+    // Two callbacks in either order: gn then gk gives both keys.
+    expect(keysOf("x_floating_pair").some((k) => k!.includes("gn") && k!.includes("gk"))).toBe(true);
+    expect(keysOf("x_loop").some((k) => k!.includes("lnew"))).toBe(true);
+    expect(keysOf("x_loop").some((k) => k!.includes("l0"))).toBe(true);
+  });
+
+  const keysAt = (stream: string) => new Set(keysOf(stream).flat());
+  it("1. a binding reassigned with a copy of itself on many branches is the binding plus what each adds, in linear size", () => {
+    for (const stream of ["x_accumulate", "x_accumulate_later"]) {
+      const keys = keysAt(stream);
+      for (const k of ["base", "last", ...Array.from({ length: 24 }, (_, i) => `a${i}`)]) expect(keys.has(k), `${stream} ${k}`).toBe(true);
+    }
+  });
+
+  it("1. a reassignment that reads the binding through a helper, past the bound, refuses the frame by name", () => {
+    expect(reasonsIn("src/gateway/accumulate-s.ts").some((r) => /more than 5 reassignments of params that read it and may not run \(evaluator bound\)/.test(r))).toBe(true);
+    expect(reasonsIn("src/gateway/accumulate-s.ts").some((r) => /event variants/.test(r))).toBe(false);
+  });
+
+  it("1. a reassignment in a callback that reads the binding runs against the fullest state, once at the end", () => {
+    const keys = keysAt("x_accumulate_floating");
+    for (const k of ["base", "late", ...Array.from({ length: 12 }, (_, i) => `d${i}`)]) expect(keys.has(k), k).toBe(true);
+    // Not merged before each of the twelve writes: the bound is never reached there.
+    expect(tf6().unresolved.filter((u) => String((u as { payload?: string }).payload ?? "").includes("accumulateLater"))).toEqual([]);
+  });
+
+  it("1. a reassignment that reaches the binding through another binding reads its state, not a recursion", () => {
+    const rows = inv6.emissions.filter((e) => e.stream === "x_indirect");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rows)).not.toMatch(/recursive definition of state/);
+    const keys = new Set(rows.flatMap((r) => r.keys.map((k) => k.key)));
+    for (const k of ["m0", "noted", "phase"]) expect(keys.has(k), k).toBe(true);
+  });
+
+  it("1. an alias stays on the object when what is put back may be that same object", () => {
+    expect(keysAt("x_same_object").has("kept")).toBe(true);
+    expect(keysAt("x_shallow_copy").has("shared")).toBe(true);
+  });
+
+  it("1. a parameter reassigned before the send: the frame carries the new value", () => {
+    expect(keysOf("x_param_reassign")).toEqual([["added", "orig"]]);
+    // `stream ?? default` over a parameter: the default at every call (an over-approximation
+    // where the caller passes one), the caller's value where it does.
+    expect(keysOf("x_param_default").length).toBeGreaterThan(0);
+    expect(keysOf("x_param_default").every((k) => JSON.stringify(k) === '["d"]')).toBe(true);
+    expect(keysOf("x_param_given")).toEqual([["d"]]);
+  });
+
+  it("3. a getter, a setter or a method that may change the object makes the send UNRESOLVED; one that only reads does not", () => {
+    const reasons = reasonsIn("src/gateway/accessors-s.ts");
+    for (const re of [/getter effect/, /method stamp/, /setter tag/, /method touch/]) expect(reasons.some((r) => re.test(r)), String(re)).toBe(true);
+    expect(keysOf("x_getter")).toEqual([]);
+    expect(keysOf("x_method")).toEqual([]);
+    expect(keysOf("x_setter")).toEqual([]);
+    expect(keysOf("x_hooked")).toEqual([]);
+    expect(keysOf("x_reader")).toEqual([["k"]]);
+    expect(keysOf("x_plain")).toEqual([[]]);
+  });
+
+  it("3. a payload read from an object code not modeled ran on is unresolved as a whole, no path of it fabricated", () => {
+    expect(keysOf("x_box")).toEqual([]);
+    expect(reasonsIn("src/gateway/accessors-s.ts").some((r) => /method poke .*has no body/.test(r))).toBe(true);
+  });
+
+  it("3. a getter the frame's data declares runs when the transport serializes it: the send refuses, unless it only reads", () => {
+    expect(keysOf("x_serialized")).toEqual([]);
+    expect(reasonsIn("src/gateway/accessors-s.ts").some((r) => /getter late/.test(r) && /serializ/.test(r))).toBe(true);
+    expect(keysOf("x_serialized_plain")).toEqual([["calm"]]);
+  });
+
+  it("3. a property holding a function is called as the function it holds: upstream's six forms are classified", () => {
+    const unresolved = tf6().unresolved.filter((u) => u.file === "src/gateway/property-calls-s.ts");
+    expect(unresolved.filter((u) => /respond|afterDecision|register|isCurrent|approval/.test(u.reason ?? ""))).toEqual([]);
+    // Only the three refusals the file is written for (the copied method, the field's arrow,
+    // the `this:`-typed member): every other send of it is classified.
+    expect(unresolved).toHaveLength(3);
+    expect(keysOf("x_buffered")).toEqual([["b"]]);
+    expect(keysOf("x_plain_fn")).toEqual([["p"]]);
+  });
+
+  it("3. a method copied unbound into a function-typed property, or a class field's arrow, that uses `this` refuses by name", () => {
+    const reasons = reasonsIn("src/gateway/property-calls-s.ts");
+    expect(reasons.some((r) => /property mark .*holds Recorder\.stamp .*a function that is not an arrow that uses `this`/.test(r))).toBe(true);
+    expect(reasons.some((r) => /property touchField .*holds Panel\.touchField .*a class field's arrow that uses `this`/.test(r))).toBe(true);
+    expect(keysOf("x_unbound")).toEqual([]);
+    expect(keysOf("x_field_arrow")).toEqual([]);
+  });
+
+  it("3. a function type that declares `this:` stays strict", () => {
+    expect(reasonsIn("src/gateway/property-calls-s.ts").some((r) => /method touch .*has no body in the analysed sources/.test(r))).toBe(true);
+    expect(keysOf("x_this_typed")).toEqual([]);
+  });
+
+  it("3. past the effect bound too: a chain that ends on a getter or a method refuses", () => {
+    expect(keysOf("x_deep_getter")).toEqual([]);
+    expect(keysOf("x_deep_method")).toEqual([]);
+    const reasons = reasonsIn("src/gateway/accessors-s.ts");
+    expect(reasons.some((r) => /more than 3 calls.*getter effect/.test(r))).toBe(true);
+    expect(reasons.some((r) => /more than 3 calls.*method stamp/.test(r))).toBe(true);
   });
 });
 
