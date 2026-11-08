@@ -65,18 +65,18 @@ describe("dialog content: never taller than the visible screen", () => {
     // replaces the default scroll — and the height cap stays.
     const out = classes(
       dialogContentClassName,
-      "oc-search-palette top-[12vh] translate-y-0 max-w-xl gap-0 overflow-hidden p-0",
+      "oc-search-palette translate-y-0 max-w-xl gap-0 overflow-hidden p-0",
     );
     expect(out).toContain("overflow-hidden");
     expect(out).not.toContain("overflow-y-auto");
     expect(out).toContain(DIALOG_CAP);
   });
 
-  test("an explicit height from the caller wins over the default cap", () => {
-    // NOT `max-h-none`: tailwind-merge 3.6 does not know it and would keep both
-    // (no caller uses it today). To lift the cap, a call site sets its own height
-    // in its CSS class — unlayered CSS wins over these utilities, as the
-    // full-screen agent-file editor already does.
+  test("tailwind-merge would let a caller's max-h-* replace the cap — which is why none may pass one", () => {
+    // Lot 18: a layer's height is never lifted by its call site. A view that wants
+    // less writes `min(its cap, the bound)` in its stylesheet rule; neither a
+    // utility in its className nor a rule of its own may replace the bound
+    // (safeAreas.test.ts, "no view rule sizes a layer past its bound").
     const out = classes(dialogContentClassName, "max-h-[90vh]");
     expect(out).toContain("max-h-[90vh]");
     expect(out).not.toContain(DIALOG_CAP);

@@ -43,8 +43,11 @@ function PopoverTrigger({
 // chosen side (`--radix-popover-content-available-height`, collision padding
 // included): a long popover scrolls inside it instead of running off the screen,
 // where its last rows were simply unreachable on a phone (the session settings
-// popover ended 26 px below a 740 px screen, 404 px below a landscape one). A
-// caller's own `max-h-*` / `overflow-*` still wins (tailwind-merge). The z-index
+// popover ended 26 px below a 740 px screen, 404 px below a landscape one). That
+// room is measured on the visual viewport: the iOS keyboard is already out of it.
+// A caller's own `overflow-*` still wins (tailwind-merge); its height cap never
+// does — a view that wants less writes `min(its cap, this room)` in its stylesheet
+// (safeAreas.test.ts). The z-index
 // utility stays on the element, after its `data-slot`: overlayLayer.test.ts pairs
 // the two by position to prove the surface is raised by the app's layer rule.
 export const popoverContentClassName =

@@ -725,4 +725,3 @@ describe("createRestyleHub — the page restyles what is measured (lot 14)", () 
     expect(() => hub.subscribe(() => {})()).not.toThrow();
   });
 });
-

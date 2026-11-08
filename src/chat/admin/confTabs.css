@@ -111,8 +111,7 @@
   flex-direction: column;
   width: calc(100vw - 2rem);
   max-width: 72rem;
-  height: calc(100dvh - 2rem - var(--oc-kb, 0px));
-  max-height: none;
+  height: calc(var(--oc-layer-room) - 2rem);
 }
 
 .oc-afiles__source {
@@ -685,7 +684,7 @@
   color: var(--muted-foreground);
 }
 .oc-dtp__timeopts {
-  max-height: 220px;
+  max-height: min(220px, var(--radix-select-content-available-height, 220px));
 }
 
 /* ── Scheduled: view toggle + generic calendar surface ───────────────────── */

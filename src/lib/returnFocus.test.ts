@@ -21,7 +21,7 @@ import {
   captureOpening,
   closeLayerFocus,
   closeLayerOfKind,
-  closingWithin,
+  createLayerTracker,
   createFocusHistory,
   focusPlaced,
   installFocusHistory,
@@ -30,6 +30,8 @@ import {
   openerFor,
   openerOf,
   openingOf,
+  openWithin,
+  pruneDetached,
   regionsOf,
   returnFocusOrder,
   triggerOpening,
@@ -546,138 +548,432 @@ describe("the layout switched while the layer was open: the opener's twin (lot 1
   });
 });
 
+/** A content Radix renders where React cannot reach the document: a closed
+ *  Select's items, portaled into a DocumentFragment. */
+function fragmentNode(doc: FakeDoc): FakeEl {
+  const fragment = new FakeEl(doc, "#document-fragment");
+  return fragment.add("div");
+}
+
 describe("layers closing together: the innermost decides (lot 17)", () => {
   /** The drawer (a sheet) opened from the top bar's toggle, with a folder's ⋯ in
-   *  its sidebar; the folder's menu opened from that ⋯ — both in the open layers,
-   *  as the shared contents register them when they mount. */
+   *  its sidebar; the folder's menu opened from that ⋯. Each content has its
+   *  tracker, as the shared contents do, on a registry of their own. */
   function drawerWithMenu() {
     const p = page();
+    const open: OpenLayers = new Map();
     const toggle = p.doc.body.add("button");
+    toggle.focus();
+    const history = historyOf(toggle);
     const drawer = p.doc.body.add("div", { role: "dialog", "data-state": "open" });
     const folderMenu = drawer.add("button", { id: "folder-menu-d", "data-focus-key": "sidebar:folder-menu:p1" });
     const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "folder-menu-d" });
-    const open: OpenLayers = new Map();
-    open.set(drawer as unknown as Element, openingOf(asEl(toggle)));
-    open.set(menu as unknown as Element, triggerOpening(menu as unknown as Element, asDoc(p.doc)));
-    return { ...p, toggle, drawer, folderMenu, menu, open };
+    const drawerTracker = createLayerTracker("dialog", open, history, asDoc(p.doc));
+    const menuTracker = createLayerTracker("menu", open, history, asDoc(p.doc));
+    drawerTracker.attach(drawer as unknown as Element);
+    menuTracker.attach(menu as unknown as Element);
+    return { ...p, open, toggle, drawer, folderMenu, menu, drawerTracker, menuTracker };
   }
 
-  /** Wider than the drawer layout: the drawer leaves with the menu opened from it,
-   *  the column renders its own folder ⋯. */
-  function switchLayout(p: ReturnType<typeof drawerWithMenu>) {
+  /** Wider than the drawer layout, in React's order: the removed tree's refs are
+   *  detached from its root down (the drawer, then the menu), then its nodes leave
+   *  the page; the column renders its own folder ⋯. */
+  function switchLayout(p: ReturnType<typeof drawerWithMenu>, menuToo = true) {
+    p.drawerTracker.attach(null);
+    if (menuToo) p.menuTracker.attach(null);
     p.drawer.remove();
-    p.menu.remove();
+    if (menuToo) p.menu.remove();
+    p.doc.activeElement = p.doc.body;
     return p.sidebar.add("button", { "data-focus-key": "sidebar:folder-menu:p1" });
   }
 
-  const close = (
-    p: ReturnType<typeof drawerWithMenu>,
-    which: "drawer" | "menu",
-    open: OpenLayers = p.open,
-  ) => {
-    const event = new FakeEvent();
-    const layer = (which === "drawer" ? p.drawer : p.menu) as unknown as Element;
-    if (which === "drawer") {
-      closeLayerOfKind("dialog", event, layer, open.get(layer) ?? null, false, () => asEls(p.toggle), asDoc(p.doc), open);
-    } else {
-      closeLayerOfKind("menu", event, layer, open.get(layer) ?? null, false, undefined, asDoc(p.doc), open);
-    }
-    open.delete(layer);
-    return event;
-  };
+  const drawerFallbacks = (p: ReturnType<typeof drawerWithMenu>) => () => asEls(p.toggle);
 
   test("the drawer closes first (React cleans a removed tree from its root): the menu's trigger twin — not the toggle", () => {
     const p = drawerWithMenu();
     const twin = switchLayout(p);
-    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([p.open.get(p.menu as unknown as Element)]);
-    const drawerClosed = close(p, "drawer");
+    const drawerClosed = new FakeEvent();
+    p.drawerTracker.close(drawerClosed, drawerFallbacks(p));
     expect(p.doc.activeElement).toBe(twin);
     expect(drawerClosed.defaultPrevented).toBe(true);
     // Then the menu: the guard keeps the twin — nothing moves it again.
-    const menuClosed = close(p, "menu");
+    const menuClosed = new FakeEvent();
+    p.menuTracker.close(menuClosed, undefined);
     expect(p.doc.activeElement).toBe(twin);
     expect(menuClosed.defaultPrevented).toBe(true);
-    expect(p.toggle.focusCalls).toBe(0);
+    expect(p.toggle.focusCalls).toBe(1);
   });
 
   test("in the other order, the same place: the menu's rule, then the drawer's guard", () => {
     const p = drawerWithMenu();
     const twin = switchLayout(p);
-    close(p, "menu");
+    p.menuTracker.close(new FakeEvent(), undefined);
     expect(p.doc.activeElement).toBe(twin);
-    close(p, "drawer");
+    p.drawerTracker.close(new FakeEvent(), drawerFallbacks(p));
     expect(p.doc.activeElement).toBe(twin);
-    expect(p.toggle.focusCalls).toBe(0);
   });
 
-  test("témoin: the menu closed before the switch (its entry gone) — the drawer's own rule, its toggle", () => {
+  test("témoin: the menu closed before the switch — the drawer's own rule, its toggle", () => {
     const p = drawerWithMenu();
-    p.open.delete(p.menu as unknown as Element);
-    switchLayout(p);
-    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([]);
-    close(p, "drawer");
+    p.menuTracker.attach(null);
+    p.menu.remove();
+    p.menuTracker.close(new FakeEvent(), undefined);
+    switchLayout(p, false);
+    expect(openWithin(p.drawer as unknown as Element, p.open)).toEqual([]);
+    p.drawerTracker.close(new FakeEvent(), drawerFallbacks(p));
     expect(p.doc.activeElement).toBe(p.toggle);
   });
 
   test("no twin of the menu's trigger: the drawer's own rule follows", () => {
     const p = drawerWithMenu();
+    p.drawerTracker.attach(null);
+    p.menuTracker.attach(null);
     p.drawer.remove();
     p.menu.remove();
-    close(p, "drawer");
+    p.drawerTracker.close(new FakeEvent(), drawerFallbacks(p));
     expect(p.doc.activeElement).toBe(p.toggle);
   });
 
   test("a layer opened from the drawer but still on the page (the agent picker) is not closing: the guard keeps the focus in it", () => {
     const p = drawerWithMenu();
-    p.open.delete(p.menu as unknown as Element);
     const drawerNewChat = p.drawer.add("button", { "data-focus-key": "sidebar:new-chat" });
     const picker = dialog(p.doc);
-    p.open.set(picker.content as unknown as Element, openingOf(asEl(drawerNewChat)));
+    const pickerTracker = createLayerTracker("dialog", p.open, historyOf(drawerNewChat, picker.input), asDoc(p.doc));
+    pickerTracker.attach(picker.content as unknown as Element);
     picker.input.focus();
+    p.drawerTracker.attach(null);
     p.drawer.remove();
-    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([]);
-    const event = close(p, "drawer");
+    const event = new FakeEvent();
+    p.drawerTracker.close(event, drawerFallbacks(p));
     expect(p.doc.activeElement).toBe(picker.input);
     expect(event.defaultPrevented).toBe(true);
+    expect(p.open.has(picker.content as unknown as Element)).toBe(true);
   });
 
-  test("a layer gone at the same time but not opened from inside the closing one is not part of it", () => {
+  test("a layer opened from the drawer that stays open (owned elsewhere), the focus on the page: the drawer's own rule — not that layer's opener", () => {
     const p = drawerWithMenu();
-    p.open.delete(p.menu as unknown as Element);
-    const elsewhere = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
-    p.open.set(elsewhere as unknown as Element, triggerOpening(elsewhere as unknown as Element, asDoc(p.doc)));
-    elsewhere.remove();
+    p.menuTracker.attach(null);
+    p.menu.remove();
+    p.menuTracker.close(new FakeEvent(), undefined);
+    const chip = p.drawer.add("button", { "data-popover-trigger": "«k1»", "data-focus-key": "chip-k1" });
+    const popover = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«k1»" });
+    const popoverTracker = createLayerTracker("popover", p.open, historyOf(), asDoc(p.doc));
+    popoverTracker.attach(popover as unknown as Element);
+    const chipTwin = p.sidebar.add("button", { "data-focus-key": "chip-k1" });
+    p.drawerTracker.attach(null);
     p.drawer.remove();
-    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([]);
-    close(p, "drawer");
+    p.doc.activeElement = p.doc.body;
+    p.drawerTracker.close(new FakeEvent(), drawerFallbacks(p));
     expect(p.doc.activeElement).toBe(p.toggle);
+    expect(chipTwin.focusCalls).toBe(0);
+    expect(chip.focusCalls).toBe(0);
+  });
+
+  test("the layers read as the drawer leaves, not as it closes: one opened from elsewhere is not among them", () => {
+    const p = drawerWithMenu();
+    const elsewhere = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
+    const elsewhereTracker = createLayerTracker("menu", p.open, historyOf(), asDoc(p.doc));
+    elsewhereTracker.attach(elsewhere as unknown as Element);
+    expect(openWithin(p.drawer as unknown as Element, p.open).map((e) => e.node)).toEqual([p.menu]);
   });
 
   test("a chain — a menu opened from a popover opened in the drawer —: innermost first, then outward", () => {
     const p = drawerWithMenu();
-    p.open.delete(p.menu as unknown as Element);
+    p.menuTracker.attach(null);
+    p.menu.remove();
+    p.menuTracker.close(new FakeEvent(), undefined);
     const chip = p.drawer.add("button", { "data-popover-trigger": "«c1»", "data-focus-key": "chip" });
     const popover = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«c1»" });
     const more = popover.add("button", { id: "more", "data-focus-key": "more" });
     const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "more" });
-    const popoverOpening = triggerOpening(popover as unknown as Element, asDoc(p.doc));
-    const menuOpening = triggerOpening(menu as unknown as Element, asDoc(p.doc));
-    p.open.set(popover as unknown as Element, popoverOpening);
-    p.open.set(menu as unknown as Element, menuOpening);
+    const popoverTracker = createLayerTracker("popover", p.open, historyOf(), asDoc(p.doc));
+    const menuTracker = createLayerTracker("menu", p.open, historyOf(), asDoc(p.doc));
+    popoverTracker.attach(popover as unknown as Element);
+    menuTracker.attach(menu as unknown as Element);
+    menu.add("div", { role: "menuitem", tabindex: "-1" }).focus();
+    expect(openWithin(p.drawer as unknown as Element, p.open).map((e) => e.node)).toEqual([menu, popover]);
+    // Only the chip has a twin in the column: the menu's trigger has none.
+    p.drawerTracker.attach(null);
+    popoverTracker.attach(null);
+    menuTracker.attach(null);
     p.drawer.remove();
     popover.remove();
     menu.remove();
-    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([menuOpening, popoverOpening]);
-    // Only the chip has a twin in the column: the menu's trigger has none.
     const chipTwin = p.sidebar.add("button", { "data-focus-key": "chip" });
-    close(p, "drawer");
+    p.drawerTracker.close(new FakeEvent(), drawerFallbacks(p));
     expect(p.doc.activeElement).toBe(chipTwin);
-    // With the menu trigger's twin too, it comes first.
+    expect(more.focusCalls).toBe(0);
+  });
+});
+
+describe("the registry holds only what is on the page (lot 18)", () => {
+  function select() {
+    const p = page();
+    const open: OpenLayers = new Map();
+    const trigger = p.bar.add("button", { "data-select-trigger": "«s1»" });
+    const tracker = createLayerTracker("menu", open, historyOf(), asDoc(p.doc));
+    const content = () => p.doc.body.add("div", { role: "listbox", "data-select-of": "«s1»" });
+    return { ...p, open, trigger, tracker, content };
+  }
+
+  test("a node outside the document is never an open layer — a closed Select's items, in a DocumentFragment", () => {
+    const p = select();
+    for (let i = 0; i < 100; i++) {
+      p.tracker.attach(fragmentNode(p.doc) as unknown as Element);
+      expect(p.open.size).toBe(0);
+      p.tracker.attach(null);
+    }
+    expect(p.open.size).toBe(0);
+  });
+
+  test("a node leaves the registry as React detaches it — before its close, which still runs the rule", () => {
+    const p = select();
+    const listbox = p.content();
+    p.tracker.attach(listbox as unknown as Element);
+    expect([...p.open.keys()]).toEqual([listbox]);
+    p.tracker.attach(null);
+    expect(p.open.size).toBe(0);
+    listbox.remove();
+    const event = new FakeEvent();
+    p.tracker.close(event, undefined);
+    expect(p.doc.activeElement).toBe(p.trigger);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  test("reopened before the old close ran: the new content stays registered, the old one is gone, the old close keeps the focus in the new one", () => {
+    const p = select();
+    const a = p.content();
+    p.tracker.attach(a as unknown as Element);
+    p.tracker.attach(null);
+    a.remove();
+    const b = p.content();
+    const option = b.add("div", { role: "option", tabindex: "-1" });
+    p.tracker.attach(b as unknown as Element);
+    option.focus();
+    expect([...p.open.keys()]).toEqual([b]);
+    const late = new FakeEvent();
+    p.tracker.close(late, undefined);
+    expect(p.doc.activeElement).toBe(option);
+    expect(late.defaultPrevented).toBe(true);
+    expect([...p.open.keys()]).toEqual([b]);
+    // Its own close, later: the rule for b — and nothing left.
+    p.tracker.attach(null);
+    b.remove();
+    p.tracker.close(new FakeEvent(), undefined);
+    expect(p.doc.activeElement).toBe(p.trigger);
+    expect(p.open.size).toBe(0);
+  });
+
+  // Measured in the browser on the app's own Select: while open, its content got
+  // the ref with null then with itself six times (Radix composes a new ref at each
+  // render of SelectContentImpl); taking each null for a close queued six closes,
+  // and the real one was mistaken for a late one — the focus fell on the page.
+  test("the ref going to null then to the same node, render after render, is no close: the real close runs the rule", () => {
+    const p = select();
+    const listbox = p.content();
+    const option = listbox.add("div", { role: "option", tabindex: "-1" });
+    p.tracker.attach(listbox as unknown as Element);
+    option.focus();
+    for (let i = 0; i < 6; i++) {
+      p.tracker.attach(null);
+      expect(p.open.size).toBe(0);
+      p.tracker.attach(listbox as unknown as Element);
+      expect([...p.open.keys()]).toEqual([listbox]);
+    }
+    listbox.remove();
+    const event = new FakeEvent();
+    p.tracker.close(event, undefined);
+    expect(p.doc.activeElement).toBe(p.trigger);
+    expect(event.defaultPrevented).toBe(true);
+    expect(p.open.size).toBe(0);
+  });
+
+  test("a null is no close: nothing is left waiting by the churn — the next content closes back to its own opener", () => {
+    const p = page();
+    const open: OpenLayers = new Map();
+    const history = createFocusHistory();
+    history.record(p.subfolder as unknown as Element);
+    const tracker = createLayerTracker("dialog", open, history, asDoc(p.doc));
+    const a = dialog(p.doc);
+    tracker.attach(a.content as unknown as Element);
+    a.input.focus();
+    for (let i = 0; i < 3; i++) {
+      tracker.attach(null);
+      tracker.attach(a.content as unknown as Element);
+    }
+    a.content.remove();
+    tracker.close(new FakeEvent(), undefined);
+    expect(p.doc.activeElement).toBe(p.subfolder);
+    // Opened again, from another control: its close goes back there.
+    history.record(p.row as unknown as Element);
+    const b = dialog(p.doc);
+    tracker.attach(b.content as unknown as Element);
+    b.input.focus();
+    b.content.remove();
+    tracker.close(new FakeEvent(), undefined);
+    expect(p.doc.activeElement).toBe(p.row);
+  });
+
+  test("a Select's content leaves the page without its detach (React never calls its ref with null): its close still runs the rule, and nothing is left", () => {
+    const p = select();
+    const listbox = p.content();
+    p.tracker.attach(listbox as unknown as Element);
+    listbox.remove();
+    pruneDetached(p.open);
+    expect(p.open.size).toBe(0);
+    const event = new FakeEvent();
+    p.tracker.close(event, undefined);
+    expect(p.doc.activeElement).toBe(p.trigger);
+    expect(event.defaultPrevented).toBe(true);
+    // Reopened: a fresh entry, and only it.
+    const again = p.content();
+    p.tracker.attach(again as unknown as Element);
+    expect([...p.open.keys()]).toEqual([again]);
+  });
+
+  test("an entry whose node left the document is dropped — by the watch on the page, any attach, any close", () => {
+    const p = select();
+    const listbox = p.content();
+    p.tracker.attach(listbox as unknown as Element);
+    listbox.remove();
+    const other = createLayerTracker("menu", p.open, historyOf(), asDoc(p.doc));
+    other.close(new FakeEvent(), undefined);
+    expect(p.open.size).toBe(0);
+  });
+
+  test("reopened, its new content not focused yet: the old close does not send the focus to the trigger", () => {
+    const p = select();
+    const a = p.content();
+    p.tracker.attach(a as unknown as Element);
+    a.remove();
+    const b = p.content();
+    p.tracker.attach(b as unknown as Element);
     p.doc.activeElement = p.doc.body;
-    const moreTwin = p.sidebar.add("button", { "data-focus-key": "more" });
-    p.open.set(p.drawer as unknown as Element, openingOf(asEl(p.toggle)));
-    close(p, "drawer");
-    expect(p.doc.activeElement).toBe(moreTwin);
+    const late = new FakeEvent();
+    p.tracker.close(late, () => asEls(p.row));
+    expect(p.trigger.focusCalls).toBe(0);
+    expect(p.row.focusCalls).toBe(0);
+    expect(late.defaultPrevented).toBe(true);
+    expect([...p.open.keys()]).toEqual([b]);
+  });
+
+  test("a registered node already gone from the document never counts among the layers opened from inside another", () => {
+    const p = select();
+    const dialogNode = p.doc.body.add("div", { role: "dialog" });
+    const inside = dialogNode.add("button", { "data-select-trigger": "«s2»" });
+    const gone = p.doc.body.add("div", { role: "listbox", "data-select-of": "«s2»" });
+    p.open.set(gone as unknown as Element, openingOf(asEl(inside)));
+    expect(openWithin(dialogNode as unknown as Element, p.open).map((e) => e.node)).toEqual([gone]);
+    gone.remove();
+    expect(openWithin(dialogNode as unknown as Element, p.open)).toEqual([]);
+  });
+
+  test("a node replaced without a detach between: the old one leaves at once", () => {
+    const p = select();
+    const a = p.content();
+    const b = p.content();
+    p.tracker.attach(a as unknown as Element);
+    p.tracker.attach(b as unknown as Element);
+    expect([...p.open.keys()]).toEqual([b]);
+  });
+
+  test("a close with no content gone (Radix reporting one still there): any focus stays, none moves", () => {
+    const p = select();
+    const listbox = p.content();
+    const option = listbox.add("div", { role: "option", tabindex: "-1" });
+    p.tracker.attach(listbox as unknown as Element);
+    option.focus();
+    const spurious = new FakeEvent();
+    p.tracker.close(spurious, () => asEls(p.row));
+    expect(p.doc.activeElement).toBe(option);
+    expect(spurious.defaultPrevented).toBe(true);
+    expect(p.trigger.focusCalls).toBe(0);
+    expect(p.open.has(listbox as unknown as Element)).toBe(true);
+  });
+
+  test("100 contents opened and closed leave nothing behind; a node gone without its detach is dropped at the next attach", () => {
+    const p = select();
+    for (let i = 0; i < 100; i++) {
+      const c = p.content();
+      p.tracker.attach(c as unknown as Element);
+      p.tracker.attach(null);
+      c.remove();
+      p.tracker.close(new FakeEvent(), undefined);
+    }
+    expect(p.open.size).toBe(0);
+    const stray = p.doc.body.add("div");
+    p.open.set(stray as unknown as Element, openingOf(null));
+    stray.remove();
+    p.tracker.attach(p.content() as unknown as Element);
+    expect(p.open.has(stray as unknown as Element)).toBe(false);
+  });
+
+  test("a popover dismissed from outside keeps that through its detach, for its own close only", () => {
+    const p = page();
+    const open: OpenLayers = new Map();
+    const chip = p.bar.add("button", { "data-popover-trigger": "«r7»" });
+    const tracker = createLayerTracker("popover", open, historyOf(), asDoc(p.doc));
+    const first = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«r7»" });
+    tracker.attach(first as unknown as Element);
+    tracker.interactedOutside();
+    tracker.attach(null);
+    first.remove();
+    tracker.close(new FakeEvent(), undefined);
+    expect(chip.focusCalls).toBe(0);
+    const second = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«r7»" });
+    tracker.attach(second as unknown as Element);
+    tracker.attach(null);
+    second.remove();
+    tracker.close(new FakeEvent(), undefined);
+    expect(p.doc.activeElement).toBe(chip);
+  });
+});
+
+// THE REAL CYCLE, AS INSTALLED. The tests above replay what React and Radix do;
+// these pin that they do it, in the installed code — a new version that changes
+// the cycle fails here first. (The repository has no DOM to run Radix in; the
+// browser proof of lot 18 runs it in the app itself.)
+describe("the cycle the tracker relies on, read from the installed React and Radix", () => {
+  const read = (rel: string) => readFileSync(join(process.cwd(), "node_modules", rel), "utf-8");
+
+  test("Radix Select: a closed content renders its items into a DocumentFragment, without the app's ref; an open one takes it, inside a FocusScope that reports the close", () => {
+    const src = read("@radix-ui/react-select/dist/index.mjs");
+    expect(src).toMatch(/present \? \/\* @__PURE__ \*\/ jsx\(SelectContentImpl, \{ \.\.\.contentProps, ref: forwardedRef \}\) : \/\* @__PURE__ \*\/ jsx\(SelectContentFragment, \{ \.\.\.contentProps, fragment \}\)/);
+    expect(src).toMatch(/setFragment\(new DocumentFragment\(\)\)/);
+    expect(src).toMatch(/ReactDOM\.createPortal\([\s\S]{0,400}?jsx\("div", \{ ref: forwardedRef, children \}\)[\s\S]{0,40}?fragment\s*\)/);
+    expect(src).toMatch(/onUnmountAutoFocus: composeEventHandlers\(onCloseAutoFocus,/);
+  });
+
+  test("Radix Presence: the element it renders gets its own ref composed with the element's — none for the fragment", () => {
+    const src = read("@radix-ui/react-presence/dist/index.mjs");
+    expect(src).toMatch(/const ref = use(?:Stable)?ComposedRefs\(presence\.ref, getElementRef\(child\)\);/);
+    expect(src).toMatch(/React2?\.cloneElement\(child, \{ ref \}\)/);
+  });
+
+  test("Radix Presence: its composed ref reads the refs of the element rendered NOW — a Select's content, swapped for the fragment, never gets null", () => {
+    const src = read("@radix-ui/react-presence/dist/index.mjs");
+    const at = src.indexOf("function useStableComposedRefs(");
+    const body = src.slice(at, at + 900);
+    expect(body).toMatch(/refsRef\.current = refs;/);
+    expect(body).toMatch(/const currentRefs = refsRef\.current;/);
+    expect(body).toMatch(/setRef\(currentRefs\[i\], null\)/);
+  });
+
+  test("Radix FocusScope: the close is reported by a timer after the content left — later than the next opening may be", () => {
+    const src = read("@radix-ui/react-focus-scope/dist/index.mjs");
+    expect(src).toMatch(/return \(\) => \{\s*container\.removeEventListener\(AUTOFOCUS_ON_MOUNT, onMountAutoFocus\);\s*setTimeout\(\(\) => \{\s*const unmountEvent = new CustomEvent\(AUTOFOCUS_ON_UNMOUNT, EVENT_OPTIONS\);/);
+  });
+
+  test("React: a removed tree's refs are detached from its root down, before its nodes leave the page", () => {
+    const src = read("react-dom/cjs/react-dom-client.development.js");
+    const at = src.indexOf("function commitDeletionEffectsOnFiber(");
+    const body = src.slice(at, at + 3000);
+    const detach = body.indexOf("safelyDetachRef(deletedFiber, nearestMountedAncestor)");
+    const children = body.indexOf("recursivelyTraverseDeletionEffects(", detach);
+    const remove = body.indexOf("removeChild(", children);
+    expect(detach).toBeGreaterThan(0);
+    expect(children).toBeGreaterThan(detach);
+    expect(remove).toBeGreaterThan(children);
   });
 });
 
@@ -817,25 +1113,32 @@ describe("the hook the shared contents use (read from the syntax tree: it needs 
   })();
   const text = (n: ts.Node) => n.getText(sf);
 
-  test("its ref reads the opening as the content mounts — once per content, every kind", () => {
+  test("one tracker for the content's life; its attach is the ref — the same function at every render", () => {
     const body = text(hook);
-    expect(body).toMatch(/if \(el === null \|\| el === node\.current\) return;/);
-    // A dialog's opener from the history; a trigger with its focus key while it is
-    // on the page (lot 17: a layout switched later leaves its twin to find).
-    expect(body).toMatch(/opening\.current = kind === "dialog" \? captureOpening\(el\) : triggerOpening\(el\);/);
-    // …and the content joins the page's open layers: a layer closing with it reads
-    // it there (lot 17).
-    expect(body).toMatch(/triggerOpening\(el\);\s*OPEN_LAYERS\.set\(el, opening\.current\);/);
+    expect(body).toMatch(/const \[tracker\] = useState\(\(\) => createLayerTracker\(kind\)\);/);
+    expect(body).toMatch(/ref: tracker\.attach,/);
   });
 
-  test("its close runs the rule of its kind with what it noted, then forgets it — and leaves the open layers, whatever happened", () => {
-    const body = text(hook);
-    expect(body).toMatch(
-      /const layer = node\.current;\s*try \{\s*closeLayerOfKind\(kind, event, layer, opening\.current, outside\.current, returnFocus\);\s*\} finally \{\s*if \(layer !== null\) OPEN_LAYERS\.delete\(layer\);\s*node\.current = null;\s*opening\.current = null;\s*outside\.current = false;\s*\}/,
-    );
+  test("the page is watched from the first open layer on: its top level, where Radix portals every layer", () => {
+    const tracker = (() => {
+      let found: ts.FunctionDeclaration | undefined;
+      const visit = (n: ts.Node) => {
+        if (ts.isFunctionDeclaration(n) && n.name?.text === "createLayerTracker") found = n;
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+      return found!;
+    })();
+    expect(text(tracker)).toMatch(/open\.set\(node, opening\);\s*watchRegistry\(open, doc\);/);
+    const watch = sf.statements.find((st) => ts.isFunctionDeclaration(st) && st.name?.text === "watchRegistry")!;
+    expect(text(watch)).toMatch(/new MutationObserver\(\(\) => pruneDetached\(open\)\)\.observe\(doc\.body, \{ childList: true \}\);/);
+  });
+
+  test("its close is the tracker's, with the view's fallbacks of this render", () => {
+    expect(text(hook)).toMatch(/onCloseAutoFocus: \(event\) => tracker\.close\(event, returnFocus\),/);
   });
 
   test("an interaction outside counts once the view's own handler let it through", () => {
-    expect(text(hook)).toMatch(/onInteractOutside\?\.\(event\);\s*if \(!event\.defaultPrevented\) outside\.current = true;/);
+    expect(text(hook)).toMatch(/onInteractOutside\?\.\(event\);\s*if \(!event\.defaultPrevented\) tracker\.interactedOutside\(\);/);
   });
 });

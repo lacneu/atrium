@@ -36,14 +36,23 @@
 // LAYERS CLOSING TOGETHER (lot 17): a layout switch unmounts the drawer with the
 // layers opened from inside it — its folder's menu, a dialog of one of its rows.
 // The outermost closes first; the rule then runs for the innermost before its own
-// (`closingWithin`): the user was in the menu, the focus goes to its trigger's twin
-// in the column, not to the drawer's toggle.
+// (`openWithin`, read as the drawer leaves): the user was in the menu, the focus
+// goes to its trigger's twin in the column, not to the drawer's toggle.
+//
+// THE REGISTRY HOLDS ONLY WHAT IS ON THE PAGE (lot 18). Each shared content has
+// its tracker (`createLayerTracker`): its node is registered as React attaches it,
+// if it is in the document, and taken out as soon as its ref goes to null or it
+// leaves the document (`watchRegistry`) — a Select's content leaves without its
+// ref ever going to null. A close is matched to the content that left, not to
+// whatever the hook holds by then: a Select reopened before its old content's
+// FocusScope timer ran saw that late close wipe the new entry and keep the old,
+// detached node for good.
 //
 // A LAYER FROM ANOTHER LIBRARY IS NO EXCEPTION (lot 17): assistant-ui's reply menu
 // is a Radix menu too; it goes through the same rule by its own shared content
 // (components/ui/action-bar-more), and a guard keeps every package that wraps
 // Radix to the layers it is allowed to render.
-import { useCallback, useRef } from "react";
+import { useState } from "react";
 import { canTakeFocus, focusFirst } from "./focusFallback";
 
 /** A view's own fallbacks for the focus, read when its layer closes. */
@@ -289,35 +298,62 @@ export function returnFocusOrder(
 
 /* ------------------------------------------------------------- the open layers */
 
-/** The layers open on the page, each with the opening it read as it mounted. */
+/** The layers open on the page, each with the opening it read as it mounted —
+ *  contents ON the page only: an entry leaves with its node (lot 18). */
 export type OpenLayers = Map<Element, Opening>;
 
-/** The page's open layers, kept by `useLayerFocus`. */
+/** The page's open layers, kept by the shared contents' trackers. */
 export const OPEN_LAYERS: OpenLayers = new Map();
 
+/** Drops every entry whose node has left the document. */
+export function pruneDetached(open: OpenLayers = OPEN_LAYERS): void {
+  for (const node of Array.from(open.keys())) {
+    if (!node.isConnected) open.delete(node);
+  }
+}
+
+let registryWatched = false;
+
 /**
- * The layers closing together with `layer`, innermost first. A layout switch
- * unmounts a layer with the layers opened from inside it — the drawer with its
- * folder's menu, or with a dialog its row opened —: each is gone from the page,
- * its opener inside the next one. React cleans a removed tree from its root, so
- * the outermost closes first; the innermost decides where the focus goes, since
- * the user was in it — its opener's twin before the drawer's toggle.
+ * Watches the page's top level, where Radix portals every layer, and drops an entry
+ * as soon as its node leaves the document — whatever React tells its ref: a Radix
+ * Select's content never gets it with null (its Presence swaps it for the closed
+ * fragment in the same render, and the ref it composes reads the fragment's refs
+ * by then). Installed with the first open layer, for the page's life.
  */
-export function closingWithin(layer: Element, open: OpenLayers = OPEN_LAYERS): Opening[] {
-  const chain: Opening[] = [];
+function watchRegistry(open: OpenLayers, doc: Document): void {
+  if (registryWatched || open !== OPEN_LAYERS || typeof MutationObserver !== "function" || !doc.body) return;
+  registryWatched = true;
+  new MutationObserver(() => pruneDetached(open)).observe(doc.body, { childList: true });
+}
+
+/** A layer: its content, and what it read as it mounted. */
+export interface LayerEntry {
+  node: Element;
+  opening: Opening;
+}
+
+/**
+ * The open layers opened from inside `layer`, innermost first — a menu opened in
+ * the drawer, a dialog opened from that menu —, read as `layer` leaves the page:
+ * React detaches a removed tree's refs from its root down, so they are still
+ * registered then. A node outside the document is never one of them.
+ */
+export function openWithin(layer: Element, open: OpenLayers = OPEN_LAYERS): LayerEntry[] {
+  const chain: LayerEntry[] = [];
   let outer = layer;
   for (let depth = 0; depth < LAYER_DEPTH; depth++) {
-    let inner: Element | null = null;
-    for (const [el, opening] of open) {
-      if (el === layer || el === outer || el.isConnected) continue;
+    let inner: LayerEntry | null = null;
+    for (const [node, opening] of open) {
+      if (node === layer || node === outer || !node.isConnected) continue;
       if (opening.origin !== null && outer.contains(opening.origin)) {
-        inner = el;
-        chain.unshift(opening);
+        inner = { node, opening };
         break;
       }
     }
     if (inner === null) break;
-    outer = inner;
+    chain.unshift(inner);
+    outer = inner.node;
   }
   return chain;
 }
@@ -336,8 +372,8 @@ export interface AutoFocusEvent {
 }
 
 /**
- * A layer closes: the guard, then the rule — for the layers closing with it first,
- * innermost first (`closingWithin`), then for its own. Radix is kept from moving
+ * A layer closes: the guard, then the rule — for the layers that closed with it
+ * first, innermost first (`nested`), then for its own. Radix is kept from moving
  * the focus again (`preventDefault`) whenever the focus is somewhere real; when
  * nothing took it, its own default stays.
  */
@@ -347,13 +383,12 @@ export function closeLayerFocus(
   opening: Opening | null,
   returnFocus: ReturnFocus | undefined,
   doc: Document = document,
-  open: OpenLayers = OPEN_LAYERS,
+  nested: ReadonlyArray<Opening> = [],
 ): void {
   if (focusPlaced(layer, doc)) {
     event.preventDefault();
     return;
   }
-  const nested = layer === null ? [] : closingWithin(layer, open);
   const order = [
     ...nested.flatMap((inner) => returnFocusOrder(inner, [], doc)),
     ...returnFocusOrder(opening, returnFocus?.() ?? [], doc),
@@ -379,22 +414,128 @@ export function closeLayerOfKind(
   interactedOutside: boolean,
   returnFocus: ReturnFocus | undefined,
   doc: Document = document,
-  open: OpenLayers = OPEN_LAYERS,
+  nested: ReadonlyArray<Opening> = [],
 ): void {
   if (kind === "popover" && interactedOutside) {
     if (focusPlaced(layer, doc)) event.preventDefault();
     return;
   }
   const opening = captured ?? (kind === "dialog" ? null : triggerOpening(layer, doc));
-  closeLayerFocus(event, layer, opening, returnFocus, doc, open);
+  closeLayerFocus(event, layer, opening, returnFocus, doc, nested);
+}
+
+/** How many contents gone from the page a tracker keeps waiting for their close —
+ *  each detach is followed by its FocusScope's close; a bound, not a count. */
+const CLOSING_KEPT = 4;
+
+/** A content gone from the page whose close has not run yet. */
+interface Closing extends LayerEntry {
+  /** The layers opened from inside it that were open as it left. */
+  within: LayerEntry[];
+  /** Dismissed by an interaction outside it (a popover). */
+  outside: boolean;
+}
+
+/** One shared content's focus handling (`useLayerFocus` keeps one per content). */
+export interface LayerTracker {
+  /** The content's ref: its node as React attaches it, null as React detaches it. */
+  attach: (node: Element | null) => void;
+  /** The content's onCloseAutoFocus: the guard and the rule. */
+  close: (event: AutoFocusEvent, returnFocus: ReturnFocus | undefined) => void;
+  /** An interaction outside the content dismissed it (once the view let it through). */
+  interactedOutside: () => void;
 }
 
 /**
- * The focus handling of a shared layer content: its `ref` reads the opening as the
- * content mounts — a dialog's opener, a trigger, with its focus key while both are
- * on the page —, its `onCloseAutoFocus` runs the guard and the rule
- * (`closeLayerOfKind`), its `onInteractOutside` notes a popover dismissed from
- * outside.
+ * The focus handling of ONE shared layer content, across React's ref calls and
+ * Radix's close (lot 18). `attach` registers a node that is in the document, with
+ * the opening it reads then — a dialog's opener from the history, a trigger with
+ * its focus key —; a node outside the document is no open layer (Radix renders a
+ * closed Select's items into a DocumentFragment). The ref going to null takes the
+ * node out of the registry until React attaches it again, which it does at each
+ * render where Radix composes a new ref; another node in its place, or the node
+ * gone from the document when its close comes, means the content left: it waits
+ * for its close with the layers opened from inside it (`openWithin`). A node that
+ * leaves the document without its ref going to null (a Select's content: its
+ * Presence swaps it for the closed fragment in the same render) leaves the
+ * registry then (`watchRegistry`). `close` runs the guard and the rule for the
+ * oldest content that left; with none — Radix reporting a close of a content still
+ * on the page —, or once the layer is open again, it keeps the focus where it is
+ * and moves none.
+ */
+export function createLayerTracker(
+  kind: LayerKind,
+  open: OpenLayers = OPEN_LAYERS,
+  history: FocusHistory = FOCUS_HISTORY,
+  doc: Document = document,
+): LayerTracker {
+  /** The content as React last attached it, what it read as it mounted, and — read
+   *  as its ref last went to null — the layers opened from inside it. */
+  let live: (LayerEntry & { outside: boolean; within: LayerEntry[] | null }) | null = null;
+  const closing: Closing[] = [];
+  const leave = () => {
+    if (live === null) return;
+    open.delete(live.node);
+    closing.push({ node: live.node, opening: live.opening, outside: live.outside, within: live.within ?? openWithin(live.node, open) });
+    if (closing.length > CLOSING_KEPT) closing.shift();
+    live = null;
+  };
+  return {
+    attach(node) {
+      if (node === null) {
+        // React calls a ref with null each time its function changes — Radix
+        // composes a new one at each render of a Select's content —, not only as
+        // the content leaves: out of the registry until it is attached again, and
+        // what was opened from inside it read now, while still registered (React
+        // detaches a removed tree's refs from its root down).
+        if (live === null) return;
+        open.delete(live.node);
+        live.within = openWithin(live.node, open);
+        return;
+      }
+      if (node === live?.node) {
+        if (node.isConnected) open.set(node, live.opening);
+        live.within = null;
+        return;
+      }
+      leave();
+      if (!node.isConnected) return;
+      pruneDetached(open);
+      const opening = kind === "dialog" ? captureOpening(node, history, doc) : triggerOpening(node, doc);
+      live = { node, opening, outside: false, within: null };
+      open.set(node, opening);
+      watchRegistry(open, doc);
+    },
+    close(event, returnFocus) {
+      if (live !== null && !live.node.isConnected) leave();
+      pruneDetached(open);
+      const left = closing.shift();
+      if (left === undefined) {
+        const active = doc.activeElement;
+        if (active !== null && active !== doc.body) event.preventDefault();
+        return;
+      }
+      if (live !== null) {
+        // Opened again before this close came (a Select reopened at once): the
+        // focus is the new content's to take — neither the rule nor Radix moves it
+        // to the old one's trigger.
+        event.preventDefault();
+        return;
+      }
+      const nested = left.within.filter((inner) => !inner.node.isConnected).map((inner) => inner.opening);
+      closeLayerOfKind(kind, event, left.node, left.opening, left.outside, returnFocus, doc, nested);
+    },
+    interactedOutside() {
+      if (live !== null) live.outside = true;
+    },
+  };
+}
+
+/**
+ * The focus handling of a shared layer content: one tracker for the content's
+ * life — its `ref` (the tracker's, the same function at every render), its
+ * `onCloseAutoFocus`, its `onInteractOutside`, which notes a popover dismissed from
+ * outside once the view's own handler let it through.
  */
 export function useLayerFocus<O extends { readonly defaultPrevented: boolean }>(
   kind: LayerKind,
@@ -405,35 +546,13 @@ export function useLayerFocus<O extends { readonly defaultPrevented: boolean }>(
   onCloseAutoFocus: (event: AutoFocusEvent) => void;
   onInteractOutside: (event: O) => void;
 } {
-  const node = useRef<HTMLElement | null>(null);
-  const opening = useRef<Opening | null>(null);
-  const outside = useRef(false);
-  const ref = useCallback(
-    (el: HTMLElement | null) => {
-      if (el === null || el === node.current) return;
-      node.current = el;
-      outside.current = false;
-      opening.current = kind === "dialog" ? captureOpening(el) : triggerOpening(el);
-      OPEN_LAYERS.set(el, opening.current);
-    },
-    [kind],
-  );
+  const [tracker] = useState(() => createLayerTracker(kind));
   return {
-    ref,
-    onCloseAutoFocus: (event) => {
-      const layer = node.current;
-      try {
-        closeLayerOfKind(kind, event, layer, opening.current, outside.current, returnFocus);
-      } finally {
-        if (layer !== null) OPEN_LAYERS.delete(layer);
-        node.current = null;
-        opening.current = null;
-        outside.current = false;
-      }
-    },
+    ref: tracker.attach,
+    onCloseAutoFocus: (event) => tracker.close(event, returnFocus),
     onInteractOutside: (event) => {
       onInteractOutside?.(event);
-      if (!event.defaultPrevented) outside.current = true;
+      if (!event.defaultPrevented) tracker.interactedOutside();
     },
   };
 }

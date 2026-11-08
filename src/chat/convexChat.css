@@ -693,14 +693,24 @@
     max(0px, calc(env(safe-area-inset-bottom) - var(--oc-kb, 0px)))
     env(safe-area-inset-left);
 }
-/* EVERY KIND OF LAYER STAYS IN THE VISIBLE SCREEN (lot 17): its height bounded by
-   the screen less the safe areas and the iOS keyboard (`--oc-kb`), scrolling
+/* EVERY KIND OF LAYER STAYS IN THE VISIBLE SCREEN (lots 17-18): its height bounded
+   by the screen less the safe areas and the iOS keyboard (`--oc-kb`), scrolling
    inside, its actions in view. Each kind is listed by its slot, and the list is
    derived from the components by its test (safeAreas.test.ts).
+   THE BOUND IS ONE VARIABLE, `--oc-layer-room`: the visible height. A view that
+   caps one of its layers further writes `min(its cap, the bound)` — never its cap
+   alone: a rule as specific as the shared one and later in the cascade wins it
+   (the search palette's 70dvh did, keyboard or not). safeAreas.test.ts reads every
+   rule that sizes a layer, the layers found in the components.
    The sheets (the drawer, the side panels) run the full height of the screen: they
    stop at the safe areas — and above the keyboard, which covers the bottom one
    when it is open (they used to run under it, buttons and all). Where there is
    neither (every desktop) this is exactly `inset-y-0`. */
+:root {
+  --oc-layer-room: calc(
+    100dvh - var(--oc-kb, 0px) - env(safe-area-inset-top) - env(safe-area-inset-bottom)
+  );
+}
 [data-slot="sheet-content"][data-side="left"],
 [data-slot="sheet-content"][data-side="right"] {
   top: env(safe-area-inset-top);
@@ -709,9 +719,7 @@
 }
 [data-slot="sheet-content"][data-side="top"],
 [data-slot="sheet-content"][data-side="bottom"] {
-  max-height: calc(
-    100dvh - var(--oc-kb, 0px) - env(safe-area-inset-top) - env(safe-area-inset-bottom)
-  );
+  max-height: var(--oc-layer-room);
 }
 [data-slot="sheet-content"][data-side="top"] {
   top: env(safe-area-inset-top);
@@ -728,32 +736,22 @@
 /* A dialog — and a confirmation, which used to escape this — stays clear of the
    safe areas, and above the iOS keyboard: shorter by what it covers and lifted by
    half of it, so its centre is the visible centre. The search palette is anchored
-   near the top: it is only made shorter. */
+   near the top: its own rule bounds it from there. */
 [data-slot="dialog-content"],
 [data-slot="alert-dialog-content"] {
-  max-height: calc(
-    100dvh - 2rem - var(--oc-kb, 0px) - env(safe-area-inset-top) - env(safe-area-inset-bottom)
-  );
+  max-height: calc(var(--oc-layer-room) - 2rem);
 }
 [data-slot="dialog-content"]:not(.oc-search-palette),
 [data-slot="alert-dialog-content"] {
   margin-top: calc(var(--oc-kb, 0px) / -2);
 }
-/* A floating layer that opens downwards stops above the keyboard: Radix measures
-   the room down to the bottom of the layout viewport, which the iOS keyboard
-   covers. It keeps at least a few rows. */
-[data-slot="popover-content"][data-side="bottom"] {
-  max-height: max(6rem, calc(var(--radix-popover-content-available-height) - var(--oc-kb, 0px)));
-}
-[data-slot="dropdown-menu-content"][data-side="bottom"] {
-  max-height: max(
-    6rem,
-    calc(var(--radix-dropdown-menu-content-available-height) - var(--oc-kb, 0px))
-  );
-}
-[data-slot="select-content"][data-side="bottom"] {
-  max-height: max(6rem, calc(var(--radix-select-content-available-height) - var(--oc-kb, 0px)));
-}
+/* A FLOATING LAYER (popover, menu, select) never exceeds the room Floating UI
+   measured for it, `--radix-<kind>-content-available-height`, which its shared
+   content takes as its cap: that room is measured on the VISUAL viewport
+   (@floating-ui/dom's getViewportRect), which the iOS keyboard shrinks — the
+   keyboard is already out of it (lot 17 took it out a second time, and its floor
+   of a few rows could exceed the room). A view caps it further only with
+   `min(its cap, that room)`. */
 /* ITS ACTIONS IN VIEW: a layer taller than the room scrolls inside, and its footer
    stays at the bottom of what is shown, opaque over the scrolled content.
    Unscrolled, the footer is where it always was. A field the focus scrolls into
@@ -1550,7 +1548,7 @@
   width: 360px;
   max-width: 92vw;
   padding: 0;
-  max-height: 70dvh;
+  max-height: min(70dvh, var(--radix-dropdown-menu-content-available-height, 70dvh));
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -6455,10 +6453,17 @@ button.oc-perm__opt:disabled {
 }
 
 /* ---- Command palette (Dialog content) ------------------------------------ */
+/* Anchored near the top, not centred: its room runs from its top down to the
+   keyboard, less the bottom safe area and a margin. */
 .oc-search-palette {
+  --oc-palette-top: 12dvh;
+  top: var(--oc-palette-top);
   display: flex;
   flex-direction: column;
-  max-height: 70dvh;
+  max-height: min(
+    70dvh,
+    calc(var(--oc-layer-room) + env(safe-area-inset-top) - var(--oc-palette-top) - 1rem)
+  );
 }
 .oc-search-palette__head {
   display: flex;
@@ -7768,9 +7773,9 @@ button.oc-perm__opt:disabled {
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
-/* shadcn DialogContent has no max-height/scroll — cap the access dialog so a
-   long list never pushes the title or footer off-screen. */
-.oc-access { max-height: 85dvh; overflow-y: auto; }
+/* Cap the access dialog so a long list never pushes the title or footer off the
+   visible screen — within the bound of every dialog. */
+.oc-access { max-height: min(85dvh, calc(var(--oc-layer-room) - 2rem)); overflow-y: auto; }
 /* The member / agent / chart rows carry a name PLUS several controls; give the
    dialog more room (responsive cap) so nothing clips and the tab labels fit. The
    doubled class beats shadcn's `sm:max-w-lg` utility without !important. */
@@ -9496,8 +9501,7 @@ button.oc-perm__opt:disabled {
   flex-direction: column;
   width: calc(100vw - 2rem);
   max-width: 96rem;
-  height: calc(100dvh - 2rem - var(--oc-kb, 0px));
-  max-height: none;
+  height: calc(var(--oc-layer-room) - 2rem);
 }
 .oc-afiles__review-sizes { font-size: 0.9rem; opacity: 0.9; display: flex; align-items: center; gap: 0.3rem; }
 .oc-afiles__review-diff { font-size: 0.9rem; opacity: 0.75; margin-top: -0.25rem; }

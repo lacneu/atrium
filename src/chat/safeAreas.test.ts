@@ -117,13 +117,18 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
     expect(uiSlots("-content")).toEqual([...CENTRED, ...FLOATING, "sheet-content", ...EXEMPT].sort());
   });
 
-  test.each(CENTRED)("%s: no taller than the screen less the keyboard and the safe areas, lifted by half", (slot) => {
+  // Lot 18: the bound is ONE variable, the visible height, that every rule sizing a
+  // layer composes with (the view rules below).
+  test("the room of a layer is the screen less the keyboard and both safe areas", () => {
+    const room = /--oc-layer-room:\s*calc\(([^;]+)\);/.exec(declarationsFor(":root"))?.[1] ?? "";
+    expect(room.replace(/\s+/g, " ").trim()).toBe(
+      `100dvh - ${KB} - env(safe-area-inset-top) - env(safe-area-inset-bottom)`,
+    );
+  });
+
+  test.each(CENTRED)("%s: no taller than the room less a margin, lifted by half the keyboard", (slot) => {
     const own = declarationsFor(`[data-slot="${slot}"]`);
-    const height = /max-height:\s*calc\(([^;]+)\);/.exec(own)?.[1] ?? "";
-    expect(height).toContain("100dvh");
-    expect(height).toContain(KB);
-    expect(height).toContain("env(safe-area-inset-top)");
-    expect(height).toContain("env(safe-area-inset-bottom)");
+    expect(own).toMatch(/max-height:\s*calc\(var\(--oc-layer-room\) - 2rem\);/);
     const lifted = cssRules().some(
       (r) =>
         r.selectors.some((sel) => sel.startsWith(`[data-slot="${slot}"]`)) &&
@@ -140,17 +145,51 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
     }
     for (const side of ["top", "bottom"]) {
       const own = declarationsFor(`[data-slot="sheet-content"][data-side="${side}"]`);
-      expect(own, side).toMatch(new RegExp(`max-height:\\s*calc\\(\\s*100dvh - ${KB.replace(/[()]/g, "\\$&")}`));
+      expect(own, side).toMatch(/max-height:\s*var\(--oc-layer-room\);/);
     }
     expect(declarationsFor('[data-slot="sheet-content"][data-side="bottom"]')).toContain(
       `bottom: max(env(safe-area-inset-bottom), ${KB})`,
     );
   });
 
-  test.each(FLOATING)("%s opening downwards stops above the keyboard", (slot) => {
-    const own = declarationsFor(`[data-slot="${slot}"][data-side="bottom"]`);
+  // Lot 18: Floating UI measures that room on the VISUAL viewport, which the iOS
+  // keyboard shrinks. Lot 17 took the keyboard out a second time and kept a floor
+  // of 6rem: measured at 740×390 with a 220 px keyboard, a menu 62 px from it was
+  // held at 96 px, 26 px under the keyboard.
+  test("Floating UI measures the room on the visual viewport (the installed @floating-ui/dom)", () => {
+    const src = readFileSync(join(ROOT, "node_modules/@floating-ui/dom/dist/floating-ui.dom.mjs"), "utf-8");
+    const at = src.indexOf("function getViewportRect(");
+    const body = src.slice(at, src.indexOf("\n}\n", at));
+    expect(body).toMatch(/const visualViewport = win\.visualViewport;/);
+    expect(body).toMatch(/height = visualViewport\.height;/);
+  });
+
+  test.each(FLOATING)("%s: capped by its shared content at exactly the room Floating UI measured", (slot) => {
     const name = slot.replace(/-content$/, "");
-    expect(own).toMatch(new RegExp(`max-height:\\s*max\\(\\s*6rem,\\s*calc\\(var\\(--radix-${name}-content-available-height\\) - var\\(--oc-kb, 0px\\)\\)\\s*\\)`));
+    const owners = walk(join(SRC, "components/ui"), [".tsx"]).filter((f) =>
+      readFileSync(f, "utf-8").includes(`data-slot="${slot}"`),
+    );
+    expect(owners.length).toBeGreaterThan(0);
+    for (const file of owners) {
+      expect(readFileSync(file, "utf-8"), file).toContain(`max-h-(--radix-${name}-content-available-height)`);
+    }
+    // …and no rule of the stylesheet takes the keyboard out of it again, nor holds
+    // it above a floor.
+    const ownRules = cssRules().filter((r) => r.selectors.some((sel) => sel.includes(`[data-slot="${slot}"]`)));
+    for (const r of ownRules) expect(r.body, r.selectors.join(", ")).not.toMatch(/max-height/);
+  });
+
+  test("no class takes a custom property in brackets — Tailwind 4 writes it out as an invalid value", () => {
+    // `max-h-[--radix-select-content-available-height]` (Tailwind 3's form) became
+    // `max-height: --radix-select-content-available-height`: no cap at all, a
+    // select opening upwards ran 1 874 px past the top of a 1280×800 window.
+    const offenders: string[] = [];
+    for (const file of walk(SRC, [".tsx", ".ts"])) {
+      for (const m of readFileSync(file, "utf-8").matchAll(/[\w:-]+-\[--[\w-]+\]/g)) {
+        offenders.push(`${file.slice(SRC.length + 1)}: ${m[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   test("their actions stay in view: every footer sticks to the bottom of what is shown, opaque", () => {
@@ -167,6 +206,167 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
   // scrolled into view ended under the sticky footer, its buttons stacked over it.
   test.each([...CENTRED, "sheet-content"])("%s: a field scrolled into view stops above the footer", (slot) => {
     expect(declarationsFor(`[data-slot="${slot}"]`)).toMatch(/scroll-padding-bottom:\s*6rem/);
+  });
+});
+
+// ---- NO VIEW RULE SIZES A LAYER PAST ITS BOUND (lot 18) ------------------------
+//
+// The shared bound is one rule; a view's rule as specific and later in the cascade
+// replaced it: the search palette kept its 70dvh, the access dialog its 85dvh — at
+// 390×844 with a 336 px keyboard the palette ran 184 px under the keyboard, a
+// notification menu opening upwards 233 px past the room Radix measured. The
+// layers are found in the components (every shared content the app renders, with
+// its classes), the rules in every stylesheet of the app: a rule that sizes one of
+// them composes with its bound — `min(its cap, the bound)` —, or fails here. The
+// browser proof of lot 18 renders every such layer and reads its box.
+
+/** The bound a layer of `slot` never exceeds: the visible room, or for a floating
+ *  layer the room Floating UI measured for it. */
+const boundOf = (slot: string) =>
+  FLOATING.includes(slot) ? `var(--radix-${slot.replace(/-content$/, "")}-content-available-height` : "var(--oc-layer-room)";
+
+/** The shared contents: every `…Content` component of components/ui whose file
+ *  renders a layer slot — the tag the views write, and its slot. */
+function layerTags(): Map<string, string> {
+  const tags = new Map<string, string>();
+  for (const file of walk(join(SRC, "components/ui"), [".tsx"])) {
+    const text = readFileSync(file, "utf-8");
+    const slot = [...CENTRED, ...FLOATING, "sheet-content"].find((sl) => text.includes(`data-slot="${sl}"`));
+    if (slot === undefined) continue;
+    for (const m of text.matchAll(/function ([A-Z]\w*Content)\(/g)) tags.set(m[1], slot);
+  }
+  return tags;
+}
+
+/** Every layer content the app renders, with its slot and its classes: string
+ *  literals, string constants of its file, both branches of a condition. */
+function layerUses(): Array<{ at: string; slot: string; classes: string[] }> {
+  const tags = layerTags();
+  const uses: Array<{ at: string; slot: string; classes: string[] }> = [];
+  for (const file of walk(SRC, [".tsx"])) {
+    if (file.startsWith(join(SRC, "components/ui"))) continue;
+    const sf = ts.createSourceFile(file, readFileSync(file, "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const consts = new Map<string, string>();
+    const collect = (n: ts.Node) => {
+      if (ts.isVariableDeclaration(n) && n.initializer && ts.isStringLiteralLike(n.initializer)) {
+        consts.set(n.name.getText(sf), n.initializer.text);
+      }
+      ts.forEachChild(n, collect);
+    };
+    collect(sf);
+    const values = (e: ts.Node | undefined): string[] => {
+      if (e === undefined) return [""];
+      if (ts.isStringLiteralLike(e)) return [e.text];
+      if (ts.isJsxExpression(e) || ts.isParenthesizedExpression(e)) return values(e.expression);
+      if (ts.isConditionalExpression(e)) return [...values(e.whenTrue), ...values(e.whenFalse)];
+      if (ts.isIdentifier(e) && consts.has(e.text)) return [consts.get(e.text)!];
+      if (ts.isTemplateExpression(e)) return [[e.head.text, ...e.templateSpans.map((sp) => sp.literal.text)].join(" ")];
+      throw new Error(`${file}: a layer's className the guard cannot read: ${e.getText(sf)}`);
+    };
+    const visit = (n: ts.Node) => {
+      if ((ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) && tags.has(n.tagName.getText(sf))) {
+        const cls = n.attributes.properties.find(
+          (p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText(sf) === "className",
+        );
+        const at = `${file.slice(SRC.length + 1)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
+        for (const v of values(cls?.initializer)) {
+          uses.push({ at, slot: tags.get(n.tagName.getText(sf))!, classes: v.split(/\s+/).filter(Boolean) });
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  return uses;
+}
+
+/** Every rule of every stylesheet of the app, each selector of a list apart. */
+function appCssRules(): Array<{ file: string; selectors: string[]; body: string }> {
+  return walk(SRC, [".css"]).flatMap((file) => {
+    const text = readFileSync(file, "utf-8").replace(/\/\*[\s\S]*?\*\//g, "");
+    return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+      file: file.slice(SRC.length + 1),
+      selectors: m[1].split(",").map((sel) => sel.trim()),
+      body: m[2],
+    }));
+  });
+}
+
+const ruleDeclarations = (body: string) =>
+  body
+    .split(";")
+    .map((d) => d.trim())
+    .filter((d) => d.includes(":"))
+    .map((d) => [d.slice(0, d.indexOf(":")).trim(), d.slice(d.indexOf(":") + 1).trim().replace(/\s+/g, " ")] as const);
+
+describe("no view rule sizes a layer past its bound (lot 18)", () => {
+  const uses = layerUses();
+  /** A view's class (the app's `oc-` classes) → the slots of the layers it is on. */
+  const viewClasses = new Map<string, Set<string>>();
+  for (const u of uses) {
+    for (const c of u.classes.filter((c) => c.startsWith("oc-"))) {
+      viewClasses.set(c, (viewClasses.get(c) ?? new Set()).add(u.slot));
+    }
+  }
+  /** The rules whose subject is a layer carrying a view's class, with its slots. */
+  const sizing = appCssRules().flatMap((r) =>
+    r.selectors.flatMap((sel) => {
+      const subject = sel.split(/\s*[>+~]\s*|\s+/).filter(Boolean).pop() ?? "";
+      const slots = new Set<string>();
+      for (const m of subject.matchAll(/\.(oc-[\w-]+)/g)) for (const sl of viewClasses.get(m[1]) ?? []) slots.add(sl);
+      return slots.size === 0 ? [] : [{ ...r, selector: sel, slots: [...slots] }];
+    }),
+  );
+
+  test("the layers are read from the components, the rules from every stylesheet", () => {
+    expect(uses.length).toBeGreaterThan(100);
+    const read = sizing.map((r) => r.selector);
+    for (const known of [".oc-search-palette", ".oc-access", ".oc-notif", ".oc-dtp__timeopts", ".oc-tzcombo__pop"]) {
+      expect(read, known).toContain(known);
+    }
+    expect(read).toContain('[data-slot="dialog-content"].oc-afiles__editor');
+  });
+
+  test("every height a view gives one of its layers is bounded by that layer's bound", () => {
+    const offenders: string[] = [];
+    for (const r of sizing) {
+      for (const [prop, value] of ruleDeclarations(r.body)) {
+        const where = `${r.file} ${r.selector} { ${prop}: ${value} }`;
+        const bounds = r.slots.map(boundOf);
+        const bounded = bounds.every((b) => value.includes(b));
+        if (/^max-(height|block-size)$/.test(prop)) {
+          if (!(value.startsWith("min(") && bounded) && !(bounds.length === 1 && value.startsWith(bounds[0]))) offenders.push(where);
+        } else if (/^(height|block-size)$/.test(prop)) {
+          if (!bounded && !/^(auto|fit-content|max-content|min-content)$/.test(value)) offenders.push(where);
+        } else if (/^min-(height|block-size)$/.test(prop)) {
+          if (!/^(0|0px|auto)$/.test(value) && !(value.startsWith("min(") && bounded)) offenders.push(where);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("a view that moves a centred layer bounds it from where it put it, in the same rule", () => {
+    const offenders: string[] = [];
+    for (const r of sizing.filter((x) => x.slots.some((sl) => CENTRED.includes(sl)))) {
+      const decls = new Map(ruleDeclarations(r.body));
+      for (const prop of ["top", "bottom", "inset", "inset-block", "inset-block-start", "inset-block-end"]) {
+        const value = decls.get(prop);
+        if (value === undefined) continue;
+        const height = decls.get("max-height") ?? "";
+        if (!height.includes("var(--oc-layer-room)") || !height.includes(value)) {
+          offenders.push(`${r.file} ${r.selector} { ${prop}: ${value}; max-height: ${height || "—"} }`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("no layer is sized or moved by a utility in its className — the stylesheet holds it, where the rules above read it", () => {
+    // tailwind-merge lets a caller's `max-h-*` replace the shared cap (overlays.test.ts).
+    const SIZE_OR_PLACE = /^(?:[\w[\]=-]+:)*!?-?(?:h|min-h|max-h|size|top|bottom|inset|inset-y)-/;
+    const offenders = uses.flatMap((u) => u.classes.filter((c) => SIZE_OR_PLACE.test(c)).map((c) => `${u.at}: ${c}`));
+    expect(offenders).toEqual([]);
   });
 });
 
