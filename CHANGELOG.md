@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.103.6] — Every frame the gateway can send during a turn, known for each version
+
+Maintenance release. Only the bridge changes; Convex and the frontend are those of 0.103.5, and
+nothing needs migrating: deploy the bridge image. Validated on the live bench on OpenClaw
+2026.9.36, with Hermes 0.21.7, in token authentication; every agent frame the run captured is in
+the inventory described below.
+
+- **Atrium knows every agent frame each supported OpenClaw version can send during a turn.** The
+  content of an agent frame — its stream, its phase, the keys of its data — has no schema
+  upstream, and Atrium checked it against lists written by hand. It is now derived from the
+  gateway's own source for each supported version (2026.9.36 today) and shipped with it, every
+  emission classified as read by the bridge or deliberately ignored. Adding a version refuses
+  until each emission it brings is classified, and a report lists what moved between two
+  versions; the analysis refuses what it cannot evaluate rather than guess, and its known limits
+  are written down with the checks that cover them.
+- **The bridge's drift detector knows what the gateway may send.** Its known streams, phases and
+  data keys now come from that inventory instead of a hand-written list: a frame the gateway
+  legitimately sends no longer counts as drift, and an unexpected one still does.
+- **Drift reports no longer carry an unknown name in clear.** When a gateway sends a frame, a
+  field or a value the bridge does not know, the drift report records it under a keyed digest
+  rather than the name itself, which can be personal (a person's name used as a key). With
+  `BRIDGE_INGEST_SECRET` set — every deployment has it — the digest is stable across restarts and
+  across a deployment's bridges, so one unknown value stays one row of the report; without it
+  (tests, development), it changes with each process.
+- **The protocol coverage shown in the Bridge settings is checked against what the bridge
+  actually reads.** Thirty-nine fields declared unread were in fact read and now show as handled,
+  and the reasons given for the others were corrected where they were wrong.
+
+**Rollback:** redeploy the 0.103.5 bridge image. Convex is unchanged, so nothing else moves.
+
 ## [0.103.5] — Approvals after a reconnection and past ten minutes, safe from Atrium's background work
 
 Patch release. The bridge and the Convex functions change; the frontend does not. The Convex

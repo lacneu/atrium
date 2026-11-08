@@ -6,141 +6,146 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "agent-request-approval-replay",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "approval-wait-vs-utility-job",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "approval-wait-vs-existing-session-claim",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
     },
     {
       "id": "utility-hold-frames",
       "ok": true,
-      "chat": "54b6fdf8ee85555d"
+      "chat": "cae626878c23f093"
+    },
+    {
+      "id": "emission-check",
+      "ok": true,
+      "chat": "cae626878c23f093"
     }
   ],
   "verdict": "GO",
-  "at": "2026-11-08T08:15:25.605Z",
+  "at": "2026-11-08T17:42:16.053Z",
   "scenarios": [
     "agent-request-approval-replay",
     "agent-request-exec-approval",
@@ -151,6 +156,7 @@
     "async-task",
     "basic-turn",
     "cron-tool",
+    "emission-check",
     "fork-attachment-rehydrate",
     "hermes-basic-turn",
     "hermes-clarify",
@@ -205,16 +211,17 @@
     "hermes-clarify": "hermes",
     "hermes-clarify-skip": "hermes",
     "transcript-files-replay": "openclaw",
-    "utility-hold-frames": "openclaw"
+    "utility-hold-frames": "openclaw",
+    "emission-check": "openclaw"
   },
   "flags": [],
-  "atriumSha": "8c533d02f224d38e4c89e0f039ecefba72e58ea0",
+  "atriumSha": "78d78e7da85bddce0afc0e5797cf5a4541642715",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "ffc3ffb22a750165aa03adcda64f5114931a3f46d4a81d86a6c967eeb676eaa8"
+    "deltaSha256": "fc8e6ed9b91fa2eefa655a32311e932eed8e468e4c00125afdbe724cd39eba54"
   },
-  "supportDigest": "e312bea67c1ac0d6981da09e1bc4782feece338b02e38669f0589fd8904dc797",
+  "supportDigest": "3ec450b2f017a1187f9c8a8a20c6758f0543e996b0833de136a9f3918b3a3928",
   "authMode": "token",
   "bridgeVersion": "0.103.4",
-  "vendoredSha256": "dd3bf6d34c96dbdc0229aab143ef422b1d466349a0a964788473efcc6bdc640a"
+  "vendoredSha256": "d326866980554b03ae372878cc8d4d6a098387da5b27edd26155cf2365c2cf95"
 }
