@@ -15,6 +15,7 @@
 //    (lot 10), their zones grown with them; dense under a mouse.
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { describe, expect, test } from "vitest";
 
 const SRC = join(process.cwd(), "src");
@@ -70,30 +71,164 @@ function fontPx(body: string): number | null {
 const isTouch = (media: string | null) =>
   media !== null && /hover:\s*none|any-pointer:\s*coarse/.test(media);
 
-describe("fields at 16 px where touch is used (G4)", () => {
-  /** The class lists components put on their fields, one per field. */
-  function fields(): string[][] {
-    const out: string[][] = [];
-    for (const src of TSX) {
-      for (const m of src.matchAll(/<(input|textarea|select)\b([^>]*?)>/gs)) {
-        const cls = m[2].match(/className=\{?["`]([^"`]+)["`]/);
-        const list = (cls?.[1].split(/\s+/) ?? []).filter((c) => c.startsWith("oc-"));
-        if (list.length > 0) out.push(list);
-      }
-    }
-    return out;
-  }
-  const styledSmall = (c: string) =>
-    ALL_RULES.some(
-      (r) =>
-        r.media === null &&
-        r.selector.split(",").some((s) => s.trim().split(/\s+/).pop()!.startsWith(`.${c}`)) &&
-        (fontPx(r.body) ?? 99) < 16,
-    );
+// ---- FIELDS (G4; lot 19) ------------------------------------------------------
+//
+// Lot 19: the search palette's field (15.2 px) was missed — the inventory read the
+// fields with a regex that stopped at the `>` of `=>` in `onChange={(e) => …}`,
+// before the className. The fields are now found by the TypeScript syntax tree,
+// every one, their classes read from literals, constants, conditions, `cn()`
+// arguments and template parts (a className the guard cannot read fails it), and
+// each field gets the cascade computed: under touch, every rule that styles it
+// under 16 px must lose to the floor.
 
-  const touchRule = ALL_RULES.find(
-    (r) => isTouch(r.media) && /font-size:\s*max\(16px,\s*1em\)/.test(r.body),
-  );
+/** The components that render a text field, and its element. */
+const FIELD_TAGS: Record<string, string> = {
+  input: "input",
+  textarea: "textarea",
+  select: "select",
+  Input: "input",
+  "ComposerPrimitive.Input": "textarea",
+};
+/** Input types that are no text field: iOS does not zoom on them. */
+const NOT_TEXT = new Set(["checkbox", "radio", "range", "color", "file", "button", "submit", "reset", "image", "hidden"]);
+
+type Field = { at: string; element: string; classes: string[]; inlineFont: string | null };
+
+function fieldInventory(): Field[] {
+  const out: Field[] = [];
+  for (const file of walk(SRC, ".tsx")) {
+    const sf = ts.createSourceFile(file, readFileSync(file, "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const consts = new Map<string, string>();
+    const collect = (n: ts.Node) => {
+      if (ts.isVariableDeclaration(n) && n.initializer && ts.isStringLiteralLike(n.initializer)) {
+        consts.set(n.name.getText(sf), n.initializer.text);
+      }
+      ts.forEachChild(n, collect);
+    };
+    collect(sf);
+    const strings = (e: ts.Node | undefined, where: string): string[] => {
+      if (e === undefined) return [];
+      if (ts.isStringLiteralLike(e)) return [e.text];
+      if (ts.isJsxExpression(e) || ts.isParenthesizedExpression(e)) return strings(e.expression, where);
+      if (ts.isConditionalExpression(e)) return [...strings(e.whenTrue, where), ...strings(e.whenFalse, where)];
+      if (ts.isBinaryExpression(e) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken].includes(e.operatorToken.kind)) {
+        return [...strings(e.left, where), ...strings(e.right, where)];
+      }
+      if (ts.isTemplateExpression(e)) {
+        return [e.head.text, ...e.templateSpans.flatMap((sp) => [...strings(sp.expression, where), sp.literal.text])];
+      }
+      if (ts.isCallExpression(e) && /^(cn|clsx|cx)$/.test(e.expression.getText(sf))) return e.arguments.flatMap((a) => strings(a, where));
+      if (ts.isIdentifier(e) && consts.has(e.text)) return [consts.get(e.text)!];
+      if (ts.isIdentifier(e) && e.text === "className") return []; // a wrapper passing its own prop on
+      throw new Error(`${where}: a field's className the guard cannot read: ${e.getText(sf)}`);
+    };
+    const visit = (n: ts.Node) => {
+      if ((ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) && FIELD_TAGS[n.tagName.getText(sf)]) {
+        const attr = (name: string) =>
+          n.attributes.properties.find((p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText(sf) === name);
+        const at = `${file.slice(SRC.length + 1)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
+        const type = attr("type")?.initializer;
+        const element = FIELD_TAGS[n.tagName.getText(sf)];
+        if (!(element === "input" && type !== undefined && ts.isStringLiteralLike(type) && NOT_TEXT.has(type.text))) {
+          const classes = strings(attr("className")?.initializer, at).join(" ").split(/\s+/).filter(Boolean);
+          const style = attr("style")?.initializer?.getText(sf) ?? "";
+          out.push({ at, element, classes: [...new Set(classes)], inlineFont: /fontSize/.test(style) ? style : null });
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  return out;
+}
+
+/** The comma-separated parts of a selector list, parentheses kept whole. */
+function splitList(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let part = "";
+  for (const ch of list) {
+    if (ch === "," && depth === 0) {
+      out.push(part.trim());
+      part = "";
+      continue;
+    }
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    part += ch;
+  }
+  if (part.trim() !== "") out.push(part.trim());
+  return out;
+}
+
+/** A selector's specificity [ids, classes/attributes/pseudo-classes, elements];
+ *  `:where()` counts nothing, `:not()`/`:is()`/`:has()` their heaviest argument. */
+function specificity(selector: string): [number, number, number] {
+  const total: [number, number, number] = [0, 0, 0];
+  let rest = "";
+  for (let i = 0; i < selector.length; ) {
+    const fn = /^:(where|not|is|has)\(/.exec(selector.slice(i));
+    if (fn === null) {
+      rest += selector[i++];
+      continue;
+    }
+    let depth = 1;
+    let j = i + fn[0].length;
+    for (; j < selector.length && depth > 0; j++) {
+      if (selector[j] === "(") depth++;
+      else if (selector[j] === ")") depth--;
+    }
+    if (fn[1] !== "where") {
+      const heaviest = splitList(selector.slice(i + fn[0].length, j - 1))
+        .map(specificity)
+        .sort((x, y) => y[0] - x[0] || y[1] - x[1] || y[2] - x[2])[0];
+      if (heaviest !== undefined) heaviest.forEach((v, k) => (total[k] += v));
+    }
+    rest += " ";
+    i = j;
+  }
+  rest = rest.replace(/\[[^\]]*\]/g, () => (total[1]++, " "));
+  rest = rest.replace(/::[\w-]+/g, () => (total[2]++, " "));
+  rest = rest.replace(/#[\w-]+/g, () => (total[0]++, " "));
+  rest = rest.replace(/\.[\w-]+/g, () => (total[1]++, " "));
+  rest = rest.replace(/:[\w-]+/g, () => (total[1]++, " "));
+  for (const m of rest.matchAll(/(^|[\s>+~])([a-zA-Z][\w-]*)/g)) if (m[2] !== "") total[2]++;
+  return total;
+}
+const heavier = (a: [number, number, number], b: [number, number, number]) =>
+  a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] > b[2];
+
+/** Could the selector's subject (its last compound) be `field`? Its tag and its
+ *  classes are read; an attribute or a pseudo-class is taken as matching. */
+function subjectMatches(selector: string, field: Field): boolean {
+  const subject = selector.trim().split(/\s*[>+~]\s*|\s+/).pop() ?? "";
+  const base = subject.replace(/:(where|not|is)\([^()]*\)/g, "").replace(/\[[^\]]*\]/g, "").replace(/::?[\w-]+/g, "");
+  const tag = /^[a-zA-Z][\w-]*/.exec(base)?.[0];
+  if (tag !== undefined && tag !== field.element) return false;
+  const classes = [...base.matchAll(/\.([\w-]+)/g)].map((m) => m[1]);
+  if (tag === undefined && classes.length === 0) return false;
+  return classes.every((c) => field.classes.includes(c));
+}
+
+/** A font size under 16 px: px and rem below 16, a relative size below 1. */
+function smallFont(body: string): string | null {
+  const m = /font-size:\s*([^;]+)/.exec(body);
+  if (m === null) return null;
+  const value = m[1].trim();
+  const px = /^([0-9.]+)(px|rem)$/.exec(value);
+  if (px !== null) return parseFloat(px[1]) * (px[2] === "rem" ? 16 : 1) < 16 ? value : null;
+  const rel = /^([0-9.]+)(em|%)$/.exec(value);
+  if (rel !== null) return parseFloat(rel[1]) / (rel[2] === "%" ? 100 : 1) < 1 ? value : null;
+  return /^(smaller|x-small|small|xx-small)$/.test(value) ? value : null;
+}
+
+/** A rule that cannot apply where a finger is the pointer. */
+const fineOnly = (media: string | null) => media !== null && /\(hover:\s*hover\)|\(pointer:\s*fine\)/.test(media) && !/coarse|hover:\s*none/.test(media);
+
+describe("fields at 16 px where touch is used (G4; lot 19)", () => {
+  const FIELDS = fieldInventory();
+  const touchRule = ALL_RULES.find((r) => isTouch(r.media) && /font-size:\s*max\(16px,\s*1em\)/.test(r.body));
+  const raises = touchRule === undefined ? [] : splitList(touchRule.selector);
 
   test("the touch rule raises every text field, at no weight of its own", () => {
     expect(touchRule, "no 16 px touch rule").toBeDefined();
@@ -103,20 +238,47 @@ describe("fields at 16 px where touch is used (G4)", () => {
     }
   });
 
-  test("the derivation sees the pattern: fields styled under 16 px exist", () => {
-    const small = fields().filter((list) => list.some(styledSmall)).flat();
-    expect(small).toContain("oc-injcard__text");
-    expect(small).toContain("oc-areq__input");
+  test("the fields are read from the syntax tree, every one — the search field among them", () => {
+    expect(FIELDS.length).toBeGreaterThan(80);
+    expect(FIELDS.map((f) => f.classes.join(" "))).toContain("oc-search-palette__field");
   });
 
-  test("every field styled under 16 px is raised, by one of its classes", () => {
-    const missing = fields()
-      .filter((list) => list.some(styledSmall))
-      .filter((list) => !list.some((c) => touchRule!.selector.includes(`.${c}.${c}`)))
-      .map((list) => list.join(" "));
-    expect(missing).toEqual([]);
+  test("under touch, every rule that styles a field under 16 px loses to the floor", () => {
+    const offenders: string[] = [];
+    for (const field of FIELDS) {
+      for (const rule of ALL_RULES) {
+        if (rule.layer !== null || fineOnly(rule.media) || rule === touchRule) continue;
+        const size = smallFont(rule.body);
+        if (size === null) continue;
+        for (const sel of splitList(rule.selector)) {
+          if (!subjectMatches(sel, field)) continue;
+          const beaten = raises.some((raise) => subjectMatches(raise, field) && heavier(specificity(raise), specificity(sel)));
+          if (!beaten) offenders.push(`${field.at} <${field.element} class="${field.classes.join(" ")}">: ${sel} { font-size: ${size} }`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("no field sets its font size inline", () => {
+    expect(FIELDS.filter((f) => f.inlineFont !== null).map((f) => `${f.at}: ${f.inlineFont}`)).toEqual([]);
+  });
+
+  test("the computation sees the pattern: the fields styled small are found, each raised by a heavier selector", () => {
+    const small = new Set<string>();
+    for (const field of FIELDS) {
+      for (const rule of ALL_RULES) {
+        if (rule.layer !== null || fineOnly(rule.media) || rule === touchRule || smallFont(rule.body) === null) continue;
+        if (splitList(rule.selector).some((sel) => subjectMatches(sel, field))) field.classes.forEach((c) => small.add(c));
+      }
+    }
+    for (const c of ["oc-injcard__text", "oc-areq__input", "oc-search-palette__field"]) expect([...small]).toContain(c);
+    expect(specificity(".oc-search-palette__field.oc-search-palette__field")).toEqual([0, 2, 0]);
+    expect(specificity(':where(input:not([type="checkbox"]), textarea)')).toEqual([0, 0, 0]);
+    expect(specificity('[data-slot="dialog-content"].oc-afiles__editor')).toEqual([0, 2, 0]);
   });
 });
+
 
 describe("no text under 12 px (C2), glyphs in a fixed shape excepted", () => {
   // Initials in a fixed circle, a count in a fixed bubble, a page number on a

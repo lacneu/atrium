@@ -693,9 +693,11 @@
     max(0px, calc(env(safe-area-inset-bottom) - var(--oc-kb, 0px)))
     env(safe-area-inset-left);
 }
-/* EVERY KIND OF LAYER STAYS IN THE VISIBLE SCREEN (lots 17-18): its height bounded
+/* EVERY KIND OF LAYER STAYS IN THE VISIBLE SCREEN (lots 17-19): its height bounded
    by the screen less the safe areas and the iOS keyboard (`--oc-kb`), scrolling
-   inside, its actions in view. Each kind is listed by its slot, and the list is
+   inside, its actions in view. What is on screen is a RECTANGLE (lot 19): iOS also
+   scrolls the visual viewport down to reveal a field, and `--oc-vv-top` is how far
+   — every layer stays between that top and the keyboard. Each kind is listed by its slot, and the list is
    derived from the components by its test (safeAreas.test.ts).
    THE BOUND IS ONE VARIABLE, `--oc-layer-room`: the visible height. A view that
    caps one of its layers further writes `min(its cap, the bound)` — never its cap
@@ -708,12 +710,13 @@
    neither (every desktop) this is exactly `inset-y-0`. */
 :root {
   --oc-layer-room: calc(
-    100dvh - var(--oc-kb, 0px) - env(safe-area-inset-top) - env(safe-area-inset-bottom)
+    100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - env(safe-area-inset-top) -
+      env(safe-area-inset-bottom)
   );
 }
 [data-slot="sheet-content"][data-side="left"],
 [data-slot="sheet-content"][data-side="right"] {
-  top: env(safe-area-inset-top);
+  top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top));
   bottom: max(env(safe-area-inset-bottom), var(--oc-kb, 0px));
   height: auto;
 }
@@ -722,7 +725,7 @@
   max-height: var(--oc-layer-room);
 }
 [data-slot="sheet-content"][data-side="top"] {
-  top: env(safe-area-inset-top);
+  top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top));
 }
 [data-slot="sheet-content"][data-side="bottom"] {
   bottom: max(env(safe-area-inset-bottom), var(--oc-kb, 0px));
@@ -734,16 +737,17 @@
   right: env(safe-area-inset-right);
 }
 /* A dialog — and a confirmation, which used to escape this — stays clear of the
-   safe areas, and above the iOS keyboard: shorter by what it covers and lifted by
-   half of it, so its centre is the visible centre. The search palette is anchored
-   near the top: its own rule bounds it from there. */
+   safe areas, and between the visible top and the iOS keyboard: shorter by what
+   they hide and moved by half their difference, so its centre is the visible
+   centre. The search palette is anchored near the visible top: its own rule bounds
+   it from there. */
 [data-slot="dialog-content"],
 [data-slot="alert-dialog-content"] {
   max-height: calc(var(--oc-layer-room) - 2rem);
 }
 [data-slot="dialog-content"]:not(.oc-search-palette),
 [data-slot="alert-dialog-content"] {
-  margin-top: calc(var(--oc-kb, 0px) / -2);
+  margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-kb, 0px)) / 2);
 }
 /* A FLOATING LAYER (popover, menu, select) never exceeds the room Floating UI
    measured for it, `--radix-<kind>-content-available-height`, which its shared
@@ -6453,11 +6457,11 @@ button.oc-perm__opt:disabled {
 }
 
 /* ---- Command palette (Dialog content) ------------------------------------ */
-/* Anchored near the top, not centred: its room runs from its top down to the
-   keyboard, less the bottom safe area and a margin. */
+/* Anchored near the visible top, not centred: its room runs from its top down to
+   the keyboard, less the bottom safe area and a margin. */
 .oc-search-palette {
   --oc-palette-top: 12dvh;
-  top: var(--oc-palette-top);
+  top: calc(var(--oc-vv-top, 0px) + var(--oc-palette-top));
   display: flex;
   flex-direction: column;
   max-height: min(
@@ -10564,17 +10568,17 @@ button.oc-perm__opt:disabled {
   --oc-exp-floor: 3.75rem;
   --oc-exp-gap: max(
     0px,
-    min(5dvh, calc((100dvh - var(--oc-kb, 0px) - var(--oc-exp-floor)) / 2))
+    min(5dvh, calc((100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - var(--oc-exp-floor)) / 2))
   );
   bottom: calc(var(--oc-kb, 0px) + var(--oc-exp-gap));
   height: max(
     var(--oc-exp-floor),
-    calc(100dvh - var(--oc-kb, 0px) - 2 * var(--oc-exp-gap))
+    calc(100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - 2 * var(--oc-exp-gap))
   );
   max-height: none;
   margin: 0;
   /* Paddings give way with the visible height (0.25 to 0.9 rem). */
-  --oc-exp-pad: clamp(0.25rem, calc((100dvh - var(--oc-kb, 0px)) / 20), 0.9rem);
+  --oc-exp-pad: clamp(0.25rem, calc((100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px)) / 20), 0.9rem);
   padding: var(--oc-exp-pad) 1.15rem calc(var(--oc-exp-pad) * 0.9);
   /* The panel's own height decides what folds (the header, below). */
   container: oc-exp / size;
@@ -11874,7 +11878,12 @@ button.oc-perm__opt:disabled {
    (14.1 px), the traces filter and the shared `Input` from 768 px up (14 px). The
    element rule carries no weight (`:where`), so a field styled larger keeps its
    size; the classes below are the fields styled smaller, raised by name (doubled
-   so they win whatever file defines them). Last in the file on purpose. */
+   so they win whatever file defines them). Last in the file on purpose.
+   Zoomed, the page also stops fitting its layers to the keyboard: past a scale of
+   1.01 the visual viewport is read as the reader zooming (lib/virtualKeyboard) —
+   the search field (15.2 px, lot 19) zoomed it by 1.053 and its palette went back
+   under the keyboard. touchType.test.ts finds every field by the syntax tree and
+   computes the cascade each one gets. */
 @media (hover: none), (any-pointer: coarse) {
   :where(
     input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"]),
@@ -11894,6 +11903,7 @@ button.oc-perm__opt:disabled {
   .oc-docviewer__zoom.oc-docviewer__zoom,
   .oc-feedback__textarea.oc-feedback__textarea,
   .oc-notif__close-input.oc-notif__close-input,
+  .oc-search-palette__field.oc-search-palette__field,
   .oc-spanel__select.oc-spanel__select,
   .oc-subpanel__prompt-input.oc-subpanel__prompt-input,
   .oc-summary-dialog__edit.oc-summary-dialog__edit {

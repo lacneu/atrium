@@ -52,13 +52,15 @@ describe("the page runs edge to edge, and makes room for the keyboard", () => {
   // Lot 11: a dialog's lift sat BEFORE a `margin: 0` in its own rule, which zeroed
   // it. A lift counts only if nothing after it in its rule resets it.
   test("every lift by the keyboard survives its rule: no margin reset after it", () => {
-    const lifts = [...CSS.matchAll(/([^{}]+)\{([^{}]*margin-top:\s*calc\(var\(--oc-kb[^{}]*)\}/g)];
+    const LIFT = "margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-kb, 0px)) / 2)";
+    const lifts = [...CSS.matchAll(/([^{}]+)\{([^{}]*margin-top:\s*calc\(\(var\(--oc-vv-top[^{}]*)\}/g)];
     const lifted = lifts.flatMap((m) => m[1].split(",").map((sel) => sel.trim()));
     expect(lifted).toContain('[data-slot="dialog-content"]:not(.oc-search-palette)');
     expect(lifted).toContain('[data-slot="alert-dialog-content"]');
     for (const [, selector, body] of lifts) {
-      const after = body.slice(body.lastIndexOf("margin-top: calc(var(--oc-kb"));
-      expect(after, selector.trim()).not.toMatch(/(^|[;\s])margin(-top)?\s*:(?!\s*calc\(var\(--oc-kb)/);
+      expect(body, selector.trim()).toContain(LIFT);
+      const after = body.slice(body.lastIndexOf(LIFT) + LIFT.length);
+      expect(after, selector.trim()).not.toMatch(/(^|[;\s])margin(-top)?\s*:/);
     }
   });
 });
@@ -119,30 +121,33 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
 
   // Lot 18: the bound is ONE variable, the visible height, that every rule sizing a
   // layer composes with (the view rules below).
-  test("the room of a layer is the screen less the keyboard and both safe areas", () => {
+  test("the room of a layer is the screen less what iOS scrolled out at the top, the keyboard and both safe areas", () => {
     const room = /--oc-layer-room:\s*calc\(([^;]+)\);/.exec(declarationsFor(":root"))?.[1] ?? "";
     expect(room.replace(/\s+/g, " ").trim()).toBe(
-      `100dvh - ${KB} - env(safe-area-inset-top) - env(safe-area-inset-bottom)`,
+      `100dvh - var(--oc-vv-top, 0px) - ${KB} - env(safe-area-inset-top) - env(safe-area-inset-bottom)`,
     );
   });
 
-  test.each(CENTRED)("%s: no taller than the room less a margin, lifted by half the keyboard", (slot) => {
+  test.each(CENTRED)("%s: no taller than the room less a margin, moved to the visible centre", (slot) => {
     const own = declarationsFor(`[data-slot="${slot}"]`);
     expect(own).toMatch(/max-height:\s*calc\(var\(--oc-layer-room\) - 2rem\);/);
     const lifted = cssRules().some(
       (r) =>
         r.selectors.some((sel) => sel.startsWith(`[data-slot="${slot}"]`)) &&
-        /margin-top:\s*calc\(var\(--oc-kb, 0px\) \/ -2\)/.test(r.body),
+        /margin-top:\s*calc\(\(var\(--oc-vv-top, 0px\) - var\(--oc-kb, 0px\)\) \/ 2\)/.test(r.body),
     );
     expect(lifted, `${slot} is not lifted`).toBe(true);
   });
 
-  test("sheets stop at the safe areas, and above the keyboard, on every side", () => {
+  test("sheets stop at the safe areas, below the visible top and above the keyboard, on every side", () => {
     const sides = ["left", "right"].map((side) => declarationsFor(`[data-slot="sheet-content"][data-side="${side}"]`));
     for (const own of sides) {
-      expect(own).toContain("top: env(safe-area-inset-top)");
+      expect(own).toContain("top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top))");
       expect(own).toContain(`bottom: max(env(safe-area-inset-bottom), ${KB})`);
     }
+    expect(declarationsFor('[data-slot="sheet-content"][data-side="top"]')).toContain(
+      "top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top))",
+    );
     for (const side of ["top", "bottom"]) {
       const own = declarationsFor(`[data-slot="sheet-content"][data-side="${side}"]`);
       expect(own, side).toMatch(/max-height:\s*var\(--oc-layer-room\);/);
@@ -354,7 +359,10 @@ describe("no view rule sizes a layer past its bound (lot 18)", () => {
         const value = decls.get(prop);
         if (value === undefined) continue;
         const height = decls.get("max-height") ?? "";
-        if (!height.includes("var(--oc-layer-room)") || !height.includes(value)) {
+        // Every length that places it, but the visible top the room already
+        // counts, is taken out of its height (lot 19: placed from `--oc-vv-top`).
+        const placed = [...value.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]).filter((v) => v !== "--oc-vv-top");
+        if (!height.includes("var(--oc-layer-room)") || placed.length === 0 || !placed.every((v) => height.includes(`var(${v})`))) {
           offenders.push(`${r.file} ${r.selector} { ${prop}: ${value}; max-height: ${height || "—"} }`);
         }
       }
@@ -506,13 +514,23 @@ function values(shorthand: string): string[] {
   return out;
 }
 
-/** A length in px: `vh` is the viewport's height, `kb` the keyboard's (`--oc-kb`). */
-function cssLength(expr: string, env: { vh: number; kb: number }, decls: Decls): number {
-  let src = expr;
-  for (let round = 0; /var\(/.test(src); round++) {
+/** What the screen shows, in layout px: the viewport's height (`vh`), the keyboard
+ *  (`kb`, `--oc-kb`), what iOS scrolled out of sight at the top (`top`,
+ *  `--oc-vv-top`, lot 19), the safe areas. */
+type Screen = { vh: number; kb: number; top?: number; safeTop?: number; safeBottom?: number };
+
+/** A length in px on `env`'s screen. */
+function cssLength(expr: string, env: Screen, decls: Decls): number {
+  const safe = (text: string) =>
+    text.replace(/env\(safe-area-inset-(top|bottom|left|right)\)/g, (_, side: string) =>
+      `${side === "top" ? (env.safeTop ?? 0) : side === "bottom" ? (env.safeBottom ?? 0) : 0}px`,
+    );
+  let src = safe(expr);
+  for (let round = 0; /var\(/.test(src); round++, src = safe(src)) {
     expect(round, `unresolved var() in ${expr}`).toBeLessThan(20);
     src = src.replace(/var\((--[\w-]+)(?:,\s*([^()]*))?\)/g, (_, name: string, fallback?: string) => {
       if (name === "--oc-kb") return `${env.kb}px`;
+      if (name === "--oc-vv-top") return `${env.top ?? 0}px`;
       const own = decls.get(name);
       if (own !== undefined) return `(${own})`;
       expect(fallback, `no value for ${name}`).toBeDefined();
@@ -616,9 +634,9 @@ describe("the full-page prompt's geometry over the review's grid (lots 12, 13)",
   // comes from the declarations: the panel's box from its own rule, the column's
   // gap from the card's, the items' flex from theirs, their order from the JSX.
   const BAR = 44;
-  const geometry = (vh: number, kb: number, regionContent: number) => {
+  const geometry = (vh: number, kb: number, regionContent: number, shownFrom = 0) => {
     const decls = declarations(ruleBody(".oc-composer--expanded"));
-    const len = (e: string) => cssLength(e, { vh, kb }, decls);
+    const len = (e: string) => cssLength(e, { vh, kb, top: shownFrom }, decls);
     const [padTop, , padBottom] = values(decls.get("padding") ?? "");
     expect(padBottom, "the panel's padding has no bottom value").toBeDefined();
     const border = Number(/(\d+)px/.exec(decls.get("border") ?? "")?.[1] ?? NaN);
@@ -641,6 +659,7 @@ describe("the full-page prompt's geometry over the review's grid (lots 12, 13)",
     const barBox = boxes[order.indexOf("oc-composer__bar")];
     return {
       visible: vh - kb,
+      visibleTop: shownFrom,
       floor: len("var(--oc-exp-floor)"),
       minimum: BAR + gap + 2 * border + len(padTop) + len(padBottom),
       gap: len("var(--oc-exp-gap)"),
@@ -677,6 +696,31 @@ describe("the full-page prompt's geometry over the review's grid (lots 12, 13)",
     }
   });
 
+  // Lot 19: iOS scrolled the visual viewport down to reveal a field — what is on
+  // screen runs from `top` to the keyboard. The panel stays between the two.
+  test.each([
+    [844, 216, 120],
+    [844, 100, 300],
+    [390, 180, 40],
+    [740, 150, 90],
+  ])("%i px high, %i px of keyboard, %i px scrolled out at the top: the panel between the visible top and the keyboard", (vh, kb, top) => {
+    for (const content of [0, 149, 600]) {
+      const g = geometry(vh, kb, content, top);
+      expect(g.barBottom).toBeLessThanOrEqual(g.visible + 0.001);
+      expect(g.top).toBeGreaterThanOrEqual(top - 0.001);
+    }
+  });
+
+  test("tight on a scrolled screen, its margins are shared evenly between the visible top and the keyboard", () => {
+    // 80 px shown from 200 px down a 390 px layout: room for the floor and 10 px
+    // above and below — not for 5dvh on each side.
+    for (const content of [0, 600]) {
+      const g = geometry(390, 110, content, 200);
+      expect(g.top - 200).toBeCloseTo(g.visible - g.foot, 3);
+      expect(g.top).toBeGreaterThanOrEqual(200 - 0.001);
+    }
+  });
+
   test("the floor holds the bar, the gap above it, the smallest paddings and the borders", () => {
     const g = geometry(360, 336, 600);
     expect(g.floor).toBeGreaterThanOrEqual(g.minimum - 0.001);
@@ -708,6 +752,88 @@ describe("the full-page prompt's geometry over the review's grid (lots 12, 13)",
     const g = geometry(844, 0, 74);
     expect(g.gap).toBeCloseTo(844 * 0.05, 3);
     expect(g.top).toBeCloseTo(g.gap, 3);
+  });
+});
+
+// ---- THE VISIBLE PART IS A RECTANGLE (lot 19) ---------------------------------
+//
+// iOS scrolls the visual viewport down the layout one to reveal a field: what is
+// on screen runs from `offsetTop` to the keyboard. Measured in the browser with the
+// app's own tracker on 844 px, 508 px shown from 120 px down: every dialog was
+// 596 px tall from 16 px, 104 px above the visible top, its title and close out of
+// sight; every sheet from 0. Each layer's box is computed here from its own rules,
+// on screens scrolled or not, with and without safe areas, and held inside.
+describe("every layer stays inside the visible rectangle (lot 19)", () => {
+  /** [layout height, shown from (offsetTop), shown height, safe top, safe bottom] */
+  const SCREENS = [
+    [844, 120, 508, 0, 0],
+    [844, 120, 508, 47, 34],
+    [844, 0, 508, 47, 34],
+    [844, 0, 844, 47, 34],
+    [390, 40, 170, 0, 21],
+    [667, 90, 300, 20, 0],
+  ] as const;
+  const ROOT = declarations(declarationsFor(":root"));
+  const on = (vh: number, top: number, shown: number, safeTop: number, safeBottom: number): Screen => ({
+    vh,
+    top,
+    kb: vh - top - shown,
+    safeTop,
+    safeBottom,
+  });
+  /** The visible rectangle a layer must stay in: below the notch at the shown top;
+   *  above the keyboard — or above the home bar when there is none. */
+  const rect = (s: Screen) => ({
+    top: (s.top ?? 0) + (s.safeTop ?? 0),
+    bottom: s.vh - s.kb - (s.kb === 0 ? (s.safeBottom ?? 0) : 0),
+  });
+  const len = (expr: string, s: Screen, own: Decls) => cssLength(expr, s, new Map([...ROOT, ...own]));
+
+  test.each(SCREENS)("%i px, shown from %i px over %i px (safe %i/%i): a dialog or a confirmation taller than the screen", (vh, top, shown, st, sb) => {
+    const s = on(vh, top, shown, st, sb);
+    for (const slot of CENTRED) {
+      const own = declarations(ruleBody(`[data-slot="dialog-content"],\n[data-slot="alert-dialog-content"]`));
+      const lift = declarations(ruleBody(`[data-slot="dialog-content"]:not(.oc-search-palette),\n[data-slot="alert-dialog-content"]`));
+      // Centred by its components (top 50%, translate −50%), moved by the lift.
+      const height = len(own.get("max-height") ?? "", s, own);
+      const centre = vh / 2 + len(lift.get("margin-top") ?? "", s, lift);
+      expect(centre - height / 2, `${slot} top`).toBeGreaterThanOrEqual(rect(s).top - 0.01);
+      expect(centre + height / 2, `${slot} bottom`).toBeLessThanOrEqual(rect(s).bottom + 0.01);
+    }
+  });
+
+  test.each(SCREENS)("%i px, shown from %i px over %i px (safe %i/%i): the search palette, anchored near the visible top", (vh, top, shown, st, sb) => {
+    const s = on(vh, top, shown, st, sb);
+    const own = declarations(ruleBody(".oc-search-palette"));
+    const at = len(own.get("top") ?? "", s, own);
+    const height = len(own.get("max-height") ?? "", s, own);
+    expect(at).toBeGreaterThanOrEqual(rect(s).top - 0.01);
+    expect(at + height).toBeLessThanOrEqual(rect(s).bottom + 0.01);
+  });
+
+  test.each(SCREENS)("%i px, shown from %i px over %i px (safe %i/%i): every sheet, on every side", (vh, top, shown, st, sb) => {
+    const s = on(vh, top, shown, st, sb);
+    const side = (name: string) => {
+      const own = new Map<string, string>();
+      for (const r of cssRules()) {
+        const ok = r.selectors.includes('[data-slot="sheet-content"]') || r.selectors.includes(`[data-slot="sheet-content"][data-side="${name}"]`);
+        if (ok) for (const [k, v] of declarations(r.body)) own.set(k, v);
+      }
+      return own;
+    };
+    for (const name of ["left", "right"]) {
+      const own = side(name);
+      expect(len(own.get("top") ?? "", s, own), `${name} top`).toBeGreaterThanOrEqual(rect(s).top - 0.01);
+      expect(vh - len(own.get("bottom") ?? "", s, own), `${name} bottom`).toBeLessThanOrEqual(rect(s).bottom + 0.01);
+    }
+    const topSheet = side("top");
+    const at = len(topSheet.get("top") ?? "", s, topSheet);
+    expect(at).toBeGreaterThanOrEqual(rect(s).top - 0.01);
+    expect(at + len(topSheet.get("max-height") ?? "", s, topSheet)).toBeLessThanOrEqual(rect(s).bottom + 0.01);
+    const bottomSheet = side("bottom");
+    const foot = vh - len(bottomSheet.get("bottom") ?? "", s, bottomSheet);
+    expect(foot).toBeLessThanOrEqual(rect(s).bottom + 0.01);
+    expect(foot - len(bottomSheet.get("max-height") ?? "", s, bottomSheet)).toBeGreaterThanOrEqual(rect(s).top - 0.01);
   });
 });
 

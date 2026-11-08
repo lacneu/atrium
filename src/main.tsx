@@ -55,8 +55,9 @@ function BootMessage({ children }: { children: React.ReactNode }) {
   );
 }
 
-// `--oc-kb`: the height the iOS keyboard covers, for the layouts sized on the screen
-// to subtract (src/lib/virtualKeyboard.ts). Installed once, for the page's life.
+// `--oc-kb` and `--oc-vv-top`: what the iOS keyboard covers at the bottom and what
+// iOS scrolled out of sight at the top, for the layouts sized on the screen to keep
+// out of (src/lib/virtualKeyboard.ts). Installed once, for the page's life.
 installKeyboardInset();
 
 // The page's focus moves, from which a dialog reads the control it was opened from

@@ -6,6 +6,13 @@
 // it covers, read off `window.visualViewport`, for the layouts sized on the screen
 // (the shell, the full-page prompt, dialogs) to subtract. 0 wherever there is
 // nothing to subtract, so nothing changes there.
+//
+// THE VISIBLE PART IS A RECTANGLE (lot 19). To reveal a field the keyboard would
+// hide, iOS also scrolls the visual viewport down the layout one (`offsetTop`):
+// what is on screen then runs from `--oc-vv-top` to the keyboard. A layer that
+// only stayed above the keyboard kept its top in the layout viewport — a 596 px
+// dialog began at 16 px when the screen showed from 120 px on, its title and its
+// close button out of sight. Both edges are written, and the layers fit between.
 
 /**
  * The height the keyboard covers at the bottom of the layout viewport. A zoomed
@@ -22,17 +29,31 @@ export function keyboardInset(
   return Math.max(0, Math.round(layoutHeight - visualHeight - visualOffsetTop));
 }
 
-/** Keeps `--oc-kb` on <html> in step with the visual viewport. Returns its undo. */
+/**
+ * How far down the layout viewport what is on screen begins: the visual viewport's
+ * `offsetTop`, scrolled there by iOS to reveal a field. A zoomed visual viewport is
+ * the reader zooming and panning, not a page to fit: 0, as for the keyboard.
+ */
+export function visibleTopInset(visualOffsetTop: number, scale: number): number {
+  if (scale > 1.01) return 0;
+  return Math.max(0, Math.round(visualOffsetTop));
+}
+
+/** Keeps `--oc-kb` and `--oc-vv-top` on <html> in step with the visual viewport.
+ *  Returns its undo. */
 export function installKeyboardInset(win: Window = window): () => void {
   const vv = win.visualViewport;
   if (!vv) return () => undefined;
   const root = win.document.documentElement;
-  let last = -1;
+  let last = "";
   const update = () => {
-    const inset = keyboardInset(win.innerHeight, vv.height, vv.offsetTop, vv.scale);
-    if (inset === last) return;
-    last = inset;
-    root.style.setProperty("--oc-kb", `${inset}px`);
+    const bottom = keyboardInset(win.innerHeight, vv.height, vv.offsetTop, vv.scale);
+    const top = visibleTopInset(vv.offsetTop, vv.scale);
+    const key = `${top}/${bottom}`;
+    if (key === last) return;
+    last = key;
+    root.style.setProperty("--oc-kb", `${bottom}px`);
+    root.style.setProperty("--oc-vv-top", `${top}px`);
   };
   update();
   vv.addEventListener("resize", update);
@@ -41,5 +62,6 @@ export function installKeyboardInset(win: Window = window): () => void {
     vv.removeEventListener("resize", update);
     vv.removeEventListener("scroll", update);
     root.style.removeProperty("--oc-kb");
+    root.style.removeProperty("--oc-vv-top");
   };
 }
