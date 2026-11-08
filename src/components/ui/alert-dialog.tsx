@@ -50,6 +50,16 @@ function AlertDialogOverlay({
   )
 }
 
+// NEVER TALLER THAN THE VISIBLE SCREEN, like every layer (lot 17): a confirmation
+// used to keep its natural height, centred on the layout viewport — the iOS
+// keyboard opened by its type-to-confirm field covered its buttons, and a short
+// landscape screen cut it. Capped like the dialog, it scrolls inside; the
+// stylesheet subtracts the keyboard and the safe areas, lifts it, and keeps its
+// actions in view (convexChat.css, safeAreas.test.ts). The z-index utility stays
+// on the element, after its `data-slot` (overlayLayer.test.ts).
+export const alertDialogContentClassName =
+  "fixed top-1/2 left-1/2 grid w-[calc(100%-2rem)] max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+
 function AlertDialogContent({
   className,
   returnFocus,
@@ -67,10 +77,7 @@ function AlertDialogContent({
       <AlertDialogOverlay />
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
-        className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
-        )}
+        className={cn("z-50", alertDialogContentClassName, className)}
         {...props}
         ref={focus.ref}
         onCloseAutoFocus={focus.onCloseAutoFocus}

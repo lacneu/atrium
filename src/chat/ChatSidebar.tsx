@@ -686,6 +686,7 @@ export function ChatSidebar({
               : "oc-newchat flex-1 justify-start"
           }
           onClick={onNewChat}
+          data-focus-key="sidebar:new-chat"
           title={`${newChatLabel} (${newChatShortcut})`}
           aria-label={newChatLabel}
         >
@@ -730,6 +731,7 @@ export function ChatSidebar({
         </div>
         <Button
           className="oc-newproject"
+          data-focus-key="sidebar:new-folder"
           variant="outline"
           size="icon"
           aria-label={m.sidebar_new_project()}
@@ -857,8 +859,11 @@ export function ChatSidebar({
               something to put back, so it costs nothing the rest of the time. */}
           {hiddenRoots.length > 0 ? (
             <DropdownMenu>
+              {/* A focus key on each layer opener of the sidebar: the drawer and the
+                  column render it twice, and a layout switched while its layer is
+                  open gives the focus back to the twin (lib/returnFocus, lot 17). */}
               <DropdownMenuTrigger asChild>
-                <button className="oc-sidebar__hiddenfolders">
+                <button className="oc-sidebar__hiddenfolders" data-focus-key="sidebar:hidden-folders">
                   <EyeOff className="size-3.5" aria-hidden />
                   <span>
                     {m.sidebar_hidden_folders({ count: hiddenRoots.length })}
@@ -1219,6 +1224,7 @@ function Section({
                 size="icon-xs"
                 aria-label={m.sidebar_project_actions()}
                 className="oc-sidebar__group-menu oc-reveal oc-hit"
+                data-focus-key={`sidebar:folder-menu:${projectId}`}
                 onClick={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onTouchStart={(e) => e.stopPropagation()}
@@ -1639,6 +1645,7 @@ const ChatItem = memo(function ChatItem({
               size="icon-xs"
               aria-label={m.sidebar_actions()}
               className="oc-reveal oc-hit"
+              data-focus-key={`sidebar:chat-menu:${chat._id}`}
               onClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}

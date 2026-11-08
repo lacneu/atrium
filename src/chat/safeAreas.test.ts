@@ -49,24 +49,124 @@ describe("the page runs edge to edge, and makes room for the keyboard", () => {
     }
   });
 
-  test("dialogs shrink and lift for the keyboard; sheets stop at the safe areas", () => {
-    expect(ruleBody('[data-slot="dialog-content"]')).toMatch(/max-height:[\s\S]*var\(--oc-kb, 0px\)/);
-    expect(ruleBody('[data-slot="dialog-content"]:not(.oc-search-palette)')).toMatch(
-      /margin-top:\s*calc\(var\(--oc-kb, 0px\) \/ -2\)/,
-    );
-    const sheets = ruleBody('[data-slot="sheet-content"][data-side="left"],\n[data-slot="sheet-content"][data-side="right"]');
-    expect(sheets).toContain("top: env(safe-area-inset-top)");
-  });
-
   // Lot 11: a dialog's lift sat BEFORE a `margin: 0` in its own rule, which zeroed
   // it. A lift counts only if nothing after it in its rule resets it.
   test("every lift by the keyboard survives its rule: no margin reset after it", () => {
     const lifts = [...CSS.matchAll(/([^{}]+)\{([^{}]*margin-top:\s*calc\(var\(--oc-kb[^{}]*)\}/g)];
-    expect(lifts.map((m) => m[1].trim())).toContain('[data-slot="dialog-content"]:not(.oc-search-palette)');
+    const lifted = lifts.flatMap((m) => m[1].split(",").map((sel) => sel.trim()));
+    expect(lifted).toContain('[data-slot="dialog-content"]:not(.oc-search-palette)');
+    expect(lifted).toContain('[data-slot="alert-dialog-content"]');
     for (const [, selector, body] of lifts) {
       const after = body.slice(body.lastIndexOf("margin-top: calc(var(--oc-kb"));
       expect(after, selector.trim()).not.toMatch(/(^|[;\s])margin(-top)?\s*:(?!\s*calc\(var\(--oc-kb)/);
     }
+  });
+});
+
+// ---- EVERY KIND OF LAYER (lot 17) ----------------------------------------------
+//
+// The protections were written for the dialog alone: a confirmation (alert dialog)
+// kept its natural height centred on the layout viewport — the iOS keyboard opened
+// by its type-to-confirm field covered its buttons, a short screen cut it —, the
+// sheets ran under the keyboard, a menu opening downwards too. Every kind of layer
+// gets the same: its height bounded by the screen less the safe areas and the
+// keyboard, scrolling inside, its actions in view. The kinds are derived from the
+// components (every `data-slot` of a content or a footer in components/ui), so a
+// layer added tomorrow is classified or fails here.
+
+/** The stylesheet's rules, each selector of a list apart (a rule nested in an
+ *  at-rule is read as its own). */
+function cssRules(): Array<{ selectors: string[]; body: string }> {
+  return [...CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selectors: m[1].split(",").map((sel) => sel.trim()),
+    body: m[2],
+  }));
+}
+/** Every declaration aimed at exactly `selector`, rule after rule. */
+const declarationsFor = (selector: string) =>
+  cssRules()
+    .filter((r) => r.selectors.includes(selector))
+    .map((r) => r.body)
+    .join("\n");
+
+/** Every `data-slot` value ending with `suffix` in the components that float — a
+ *  layer is raised above the page (`z-50`, overlayLayer.test.ts): a card's or a
+ *  table's footer, an accordion's or tabs' content are not layers. */
+function uiSlots(suffix: string): string[] {
+  const slots = new Set<string>();
+  for (const file of walk(join(SRC, "components/ui"), [".tsx"])) {
+    const text = readFileSync(file, "utf-8");
+    if (!/\bz-50\b/.test(text)) continue;
+    for (const m of text.matchAll(/data-slot="([a-z-]+)"/g)) {
+      if (m[1].endsWith(suffix)) slots.add(m[1]);
+    }
+  }
+  return [...slots].sort();
+}
+
+/** Centred on the screen: shortened by the keyboard and the safe areas, lifted. */
+const CENTRED = ["alert-dialog-content", "dialog-content"];
+/** Floating, measured by Radix down to the layout viewport's bottom. */
+const FLOATING = ["dropdown-menu-content", "popover-content", "select-content"];
+/** A label shown on hover or focus, gone at the next move: nothing to reach in it. */
+const EXEMPT = ["tooltip-content"];
+const KB = "var(--oc-kb, 0px)";
+
+describe("every kind of layer stays in the visible screen (lot 17)", () => {
+  test("every layer of the components is one of the kinds below", () => {
+    expect(uiSlots("-content")).toEqual([...CENTRED, ...FLOATING, "sheet-content", ...EXEMPT].sort());
+  });
+
+  test.each(CENTRED)("%s: no taller than the screen less the keyboard and the safe areas, lifted by half", (slot) => {
+    const own = declarationsFor(`[data-slot="${slot}"]`);
+    const height = /max-height:\s*calc\(([^;]+)\);/.exec(own)?.[1] ?? "";
+    expect(height).toContain("100dvh");
+    expect(height).toContain(KB);
+    expect(height).toContain("env(safe-area-inset-top)");
+    expect(height).toContain("env(safe-area-inset-bottom)");
+    const lifted = cssRules().some(
+      (r) =>
+        r.selectors.some((sel) => sel.startsWith(`[data-slot="${slot}"]`)) &&
+        /margin-top:\s*calc\(var\(--oc-kb, 0px\) \/ -2\)/.test(r.body),
+    );
+    expect(lifted, `${slot} is not lifted`).toBe(true);
+  });
+
+  test("sheets stop at the safe areas, and above the keyboard, on every side", () => {
+    const sides = ["left", "right"].map((side) => declarationsFor(`[data-slot="sheet-content"][data-side="${side}"]`));
+    for (const own of sides) {
+      expect(own).toContain("top: env(safe-area-inset-top)");
+      expect(own).toContain(`bottom: max(env(safe-area-inset-bottom), ${KB})`);
+    }
+    for (const side of ["top", "bottom"]) {
+      const own = declarationsFor(`[data-slot="sheet-content"][data-side="${side}"]`);
+      expect(own, side).toMatch(new RegExp(`max-height:\\s*calc\\(\\s*100dvh - ${KB.replace(/[()]/g, "\\$&")}`));
+    }
+    expect(declarationsFor('[data-slot="sheet-content"][data-side="bottom"]')).toContain(
+      `bottom: max(env(safe-area-inset-bottom), ${KB})`,
+    );
+  });
+
+  test.each(FLOATING)("%s opening downwards stops above the keyboard", (slot) => {
+    const own = declarationsFor(`[data-slot="${slot}"][data-side="bottom"]`);
+    const name = slot.replace(/-content$/, "");
+    expect(own).toMatch(new RegExp(`max-height:\\s*max\\(\\s*6rem,\\s*calc\\(var\\(--radix-${name}-content-available-height\\) - var\\(--oc-kb, 0px\\)\\)\\s*\\)`));
+  });
+
+  test("their actions stay in view: every footer sticks to the bottom of what is shown, opaque", () => {
+    expect(uiSlots("-footer")).toEqual(["alert-dialog-footer", "dialog-footer", "sheet-footer"]);
+    for (const slot of uiSlots("-footer")) {
+      const own = declarationsFor(`[data-slot="${slot}"]`);
+      expect(own, slot).toContain("position: sticky");
+      expect(own, slot).toContain("bottom: 0");
+      expect(own, slot).toContain("background: var(--popover)");
+    }
+  });
+
+  // Measured at 740×360 with a 180 px keyboard: the type-to-confirm field the focus
+  // scrolled into view ended under the sticky footer, its buttons stacked over it.
+  test.each([...CENTRED, "sheet-content"])("%s: a field scrolled into view stops above the footer", (slot) => {
+    expect(declarationsFor(`[data-slot="${slot}"]`)).toMatch(/scroll-padding-bottom:\s*6rem/);
   });
 });
 

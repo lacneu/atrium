@@ -289,6 +289,7 @@ function SubAgentSessionBar({
   instanceName,
   parentAgentLabel,
   onExport,
+  panelKey,
 }: {
   meta: SubAgentSessionMeta | undefined;
   telemetry?: SubAgentTelemetry;
@@ -297,6 +298,8 @@ function SubAgentSessionBar({
   instanceName?: string;
   parentAgentLabel?: string;
   onExport?: (format: "md" | "json") => void;
+  /** The panel's child session: the focus key of its openers (see the report's). */
+  panelKey: string;
 }) {
   const [advOpen, setAdvOpen] = useState(false);
   // ANY captured field opens the Advanced detail — derived (not an enumerated field
@@ -371,6 +374,7 @@ function SubAgentSessionBar({
                 type="button"
                 className="oc-chip oc-chip--btn oc-subpanel__bar-export"
                 title={m.subagent_panel_export_hint()}
+                data-focus-key={`subagent:export:${panelKey}`}
               >
                 <Download size={12} aria-hidden />
                 <span className="oc-chip__label">
@@ -804,6 +808,12 @@ export function SubAgentPanelContent({
                   }
                   aria-label={m.subagent_panel_report()}
                   disabled={alreadyReported}
+                  // The panel is a column beside the thread or, short of room, a
+                  // sheet over it: the two are different trees, and crossing the
+                  // threshold with the report dialog open unmounts both. This key,
+                  // the same in both, is how the focus finds this button in the
+                  // other one (lib/returnFocus). The export menu's trigger too.
+                  data-focus-key={`subagent:report:${childKey}`}
                   onClick={() =>
                     setReportTarget({ subAgentId: card.id, label: card.label })
                   }
@@ -848,6 +858,7 @@ export function SubAgentPanelContent({
         instanceName={instanceForChild}
         parentAgentLabel={parentAgentLabel}
         onExport={card ? doExport : undefined}
+        panelKey={childKey}
       />
 
       <div className="oc-subpanel__body" ref={bodyRef}>

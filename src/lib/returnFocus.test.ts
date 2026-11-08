@@ -21,18 +21,22 @@ import {
   captureOpening,
   closeLayerFocus,
   closeLayerOfKind,
+  closingWithin,
   createFocusHistory,
   focusPlaced,
   installFocusHistory,
+  keyedTwin,
   nearestSurvivingControl,
   openerFor,
   openerOf,
+  openingOf,
   regionsOf,
   returnFocusOrder,
   triggerOpening,
   type FocusHistory,
   type FocusSource,
   type Opening,
+  type OpenLayers,
 } from "./returnFocus";
 
 const NATURAL = new Set(["button", "input", "select", "textarea"]);
@@ -139,6 +143,9 @@ class FakeEl {
         return this.attrs.get("role") === "dialog" && !this.attrs.has("data-popover-of");
       case "[data-popover-of]":
       case "[data-popover-trigger]":
+      case "[data-select-of]":
+      case "[data-select-trigger]":
+      case "[data-focus-key]":
         return this.attrs.has(selector.slice(1, -1));
       case "[inert]":
         return this.attrs.has("inert");
@@ -370,18 +377,21 @@ describe("a dialog's opener, read from the history as its content mounts", () =>
     expect(openerFor(second.content as unknown as Element, asEntries(p.row, first.input, next, second.input), asDoc(p.doc))).toBe(p.row);
   });
 
-  test("the newest control gone since: no opener (not an older, stale one)", () => {
+  test("the newest control gone since stays the opener — never an older, stale one", () => {
     const p = page();
     const d = dialog(p.doc);
     p.row.remove();
-    expect(openerFor(d.content as unknown as Element, asEntries(p.newChat, p.row), asDoc(p.doc))).toBeNull();
+    expect(openerFor(d.content as unknown as Element, asEntries(p.newChat, p.row), asDoc(p.doc))).toBe(p.row);
   });
 
-  test("the opening keeps the page around the opener", () => {
+  test("the opening keeps the page around the opener, and its focus key", () => {
     const p = page();
     const d = dialog(p.doc);
     const opening = captureOpening(d.content as unknown as Element, historyOf(p.subfolder, d.input), asDoc(p.doc));
-    expect(opening).toEqual({ origin: p.subfolder, regions: [p.bar, p.view] });
+    expect(opening).toEqual({ origin: p.subfolder, regions: [p.bar, p.view], key: null });
+    p.newChat.attrs.set("data-focus-key", "sidebar:new-chat");
+    const keyed = captureOpening(d.content as unknown as Element, historyOf(p.newChat, d.input), asDoc(p.doc));
+    expect(keyed.key).toBe("sidebar:new-chat");
   });
 });
 
@@ -458,11 +468,230 @@ describe("closing: the guard comes first — then the rule", () => {
     expect(p.newChat.focusCalls).toBe(0);
   });
 
-  test("the order: the opener, the view's fallbacks, then the nearest surviving control", () => {
+  test("the order: the opener, its twin, the view's fallbacks, then the nearest surviving control", () => {
     const p = page();
-    const opening: Opening = { origin: asEl(p.subfolder), regions: regionsOf(asEl(p.subfolder)) };
-    expect(returnFocusOrder(opening, asEls(p.row))).toEqual(asEls(p.subfolder, p.row, p.subfolder));
-    expect(returnFocusOrder(null, asEls(p.row))).toEqual(asEls(p.row));
+    const opening: Opening = { origin: asEl(p.subfolder), regions: regionsOf(asEl(p.subfolder)), key: null };
+    expect(returnFocusOrder(opening, asEls(p.row), asDoc(p.doc))).toEqual(asEls(p.subfolder, null, p.row, p.subfolder));
+    expect(returnFocusOrder(null, asEls(p.row), asDoc(p.doc))).toEqual(asEls(p.row));
+  });
+});
+
+describe("the layout switched while the layer was open: the opener's twin (lot 17)", () => {
+  /** The drawer's sidebar and the column's: one opener rendered in each layout,
+   *  the same focus key on both. */
+  function twoLayouts() {
+    const p = page();
+    const drawer = p.doc.body.add("div", { role: "dialog", "data-state": "open" });
+    const drawerNewChat = drawer.add("button", { "data-focus-key": "sidebar:new-chat" });
+    return { ...p, drawer, drawerNewChat };
+  }
+
+  test("the drawer gone with its button, the column's twin takes the focus — before the fallbacks", () => {
+    const p = twoLayouts();
+    const picker = dialog(p.doc);
+    const opening = captureOpening(picker.content as unknown as Element, historyOf(p.drawerNewChat, picker.input), asDoc(p.doc));
+    expect(opening.origin).toBe(p.drawerNewChat);
+    expect(opening.key).toBe("sidebar:new-chat");
+    // Wider than the drawer layout: the drawer leaves, the column renders its own.
+    p.drawer.remove();
+    const columnNewChat = p.sidebar.add("button", { "data-focus-key": "sidebar:new-chat" });
+    picker.content.remove();
+    closeLayerFocus(new FakeEvent(), picker.content as unknown as Element, opening, () => asEls(p.row), asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(columnNewChat);
+  });
+
+  test("no twin in the new layout: the view's fallbacks, as before", () => {
+    const p = twoLayouts();
+    const picker = dialog(p.doc);
+    const opening = captureOpening(picker.content as unknown as Element, historyOf(p.drawerNewChat, picker.input), asDoc(p.doc));
+    p.drawer.remove();
+    picker.content.remove();
+    closeLayerFocus(new FakeEvent(), picker.content as unknown as Element, opening, () => asEls(p.row), asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.row);
+  });
+
+  test("a twin that cannot take the focus is passed over; a control of another key is not a twin", () => {
+    const p = twoLayouts();
+    const hidden = p.sidebar.add("button", { "data-focus-key": "sidebar:new-chat" });
+    hidden.displayed = false;
+    p.sidebar.add("button", { "data-focus-key": "sidebar:new-folder" });
+    p.drawer.remove();
+    expect(keyedTwin("sidebar:new-chat", asDoc(p.doc))).toBeNull();
+    const shown = p.view.add("button", { "data-focus-key": "sidebar:new-chat" });
+    expect(keyedTwin("sidebar:new-chat", asDoc(p.doc))).toBe(shown);
+    expect(keyedTwin(null, asDoc(p.doc))).toBeNull();
+  });
+
+  test("the opener still there keeps the focus: its twin is only for when it is gone", () => {
+    const p = twoLayouts();
+    p.sidebar.add("button", { "data-focus-key": "sidebar:new-chat" });
+    const picker = dialog(p.doc);
+    const opening = captureOpening(picker.content as unknown as Element, historyOf(p.drawerNewChat, picker.input), asDoc(p.doc));
+    picker.content.remove();
+    closeLayerFocus(new FakeEvent(), picker.content as unknown as Element, opening, undefined, asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(p.drawerNewChat);
+  });
+
+  test("a menu's trigger read as the menu mounts keeps its key: its twin after a switch", () => {
+    const p = page();
+    p.pageMenu.attrs.set("data-focus-key", "sidebar:folder-menu:p1");
+    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
+    const opening = triggerOpening(menu as unknown as Element, asDoc(p.doc));
+    expect(opening.key).toBe("sidebar:folder-menu:p1");
+    p.bar.remove();
+    menu.remove();
+    const twin = p.sidebar.add("button", { "data-focus-key": "sidebar:folder-menu:p1" });
+    closeLayerOfKind("menu", new FakeEvent(), menu as unknown as Element, opening, false, undefined, asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(twin);
+  });
+});
+
+describe("layers closing together: the innermost decides (lot 17)", () => {
+  /** The drawer (a sheet) opened from the top bar's toggle, with a folder's ⋯ in
+   *  its sidebar; the folder's menu opened from that ⋯ — both in the open layers,
+   *  as the shared contents register them when they mount. */
+  function drawerWithMenu() {
+    const p = page();
+    const toggle = p.doc.body.add("button");
+    const drawer = p.doc.body.add("div", { role: "dialog", "data-state": "open" });
+    const folderMenu = drawer.add("button", { id: "folder-menu-d", "data-focus-key": "sidebar:folder-menu:p1" });
+    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "folder-menu-d" });
+    const open: OpenLayers = new Map();
+    open.set(drawer as unknown as Element, openingOf(asEl(toggle)));
+    open.set(menu as unknown as Element, triggerOpening(menu as unknown as Element, asDoc(p.doc)));
+    return { ...p, toggle, drawer, folderMenu, menu, open };
+  }
+
+  /** Wider than the drawer layout: the drawer leaves with the menu opened from it,
+   *  the column renders its own folder ⋯. */
+  function switchLayout(p: ReturnType<typeof drawerWithMenu>) {
+    p.drawer.remove();
+    p.menu.remove();
+    return p.sidebar.add("button", { "data-focus-key": "sidebar:folder-menu:p1" });
+  }
+
+  const close = (
+    p: ReturnType<typeof drawerWithMenu>,
+    which: "drawer" | "menu",
+    open: OpenLayers = p.open,
+  ) => {
+    const event = new FakeEvent();
+    const layer = (which === "drawer" ? p.drawer : p.menu) as unknown as Element;
+    if (which === "drawer") {
+      closeLayerOfKind("dialog", event, layer, open.get(layer) ?? null, false, () => asEls(p.toggle), asDoc(p.doc), open);
+    } else {
+      closeLayerOfKind("menu", event, layer, open.get(layer) ?? null, false, undefined, asDoc(p.doc), open);
+    }
+    open.delete(layer);
+    return event;
+  };
+
+  test("the drawer closes first (React cleans a removed tree from its root): the menu's trigger twin — not the toggle", () => {
+    const p = drawerWithMenu();
+    const twin = switchLayout(p);
+    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([p.open.get(p.menu as unknown as Element)]);
+    const drawerClosed = close(p, "drawer");
+    expect(p.doc.activeElement).toBe(twin);
+    expect(drawerClosed.defaultPrevented).toBe(true);
+    // Then the menu: the guard keeps the twin — nothing moves it again.
+    const menuClosed = close(p, "menu");
+    expect(p.doc.activeElement).toBe(twin);
+    expect(menuClosed.defaultPrevented).toBe(true);
+    expect(p.toggle.focusCalls).toBe(0);
+  });
+
+  test("in the other order, the same place: the menu's rule, then the drawer's guard", () => {
+    const p = drawerWithMenu();
+    const twin = switchLayout(p);
+    close(p, "menu");
+    expect(p.doc.activeElement).toBe(twin);
+    close(p, "drawer");
+    expect(p.doc.activeElement).toBe(twin);
+    expect(p.toggle.focusCalls).toBe(0);
+  });
+
+  test("témoin: the menu closed before the switch (its entry gone) — the drawer's own rule, its toggle", () => {
+    const p = drawerWithMenu();
+    p.open.delete(p.menu as unknown as Element);
+    switchLayout(p);
+    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([]);
+    close(p, "drawer");
+    expect(p.doc.activeElement).toBe(p.toggle);
+  });
+
+  test("no twin of the menu's trigger: the drawer's own rule follows", () => {
+    const p = drawerWithMenu();
+    p.drawer.remove();
+    p.menu.remove();
+    close(p, "drawer");
+    expect(p.doc.activeElement).toBe(p.toggle);
+  });
+
+  test("a layer opened from the drawer but still on the page (the agent picker) is not closing: the guard keeps the focus in it", () => {
+    const p = drawerWithMenu();
+    p.open.delete(p.menu as unknown as Element);
+    const drawerNewChat = p.drawer.add("button", { "data-focus-key": "sidebar:new-chat" });
+    const picker = dialog(p.doc);
+    p.open.set(picker.content as unknown as Element, openingOf(asEl(drawerNewChat)));
+    picker.input.focus();
+    p.drawer.remove();
+    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([]);
+    const event = close(p, "drawer");
+    expect(p.doc.activeElement).toBe(picker.input);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  test("a layer gone at the same time but not opened from inside the closing one is not part of it", () => {
+    const p = drawerWithMenu();
+    p.open.delete(p.menu as unknown as Element);
+    const elsewhere = p.doc.body.add("div", { role: "menu", "aria-labelledby": "page-menu" });
+    p.open.set(elsewhere as unknown as Element, triggerOpening(elsewhere as unknown as Element, asDoc(p.doc)));
+    elsewhere.remove();
+    p.drawer.remove();
+    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([]);
+    close(p, "drawer");
+    expect(p.doc.activeElement).toBe(p.toggle);
+  });
+
+  test("a chain — a menu opened from a popover opened in the drawer —: innermost first, then outward", () => {
+    const p = drawerWithMenu();
+    p.open.delete(p.menu as unknown as Element);
+    const chip = p.drawer.add("button", { "data-popover-trigger": "«c1»", "data-focus-key": "chip" });
+    const popover = p.doc.body.add("div", { role: "dialog", "data-popover-of": "«c1»" });
+    const more = popover.add("button", { id: "more", "data-focus-key": "more" });
+    const menu = p.doc.body.add("div", { role: "menu", "aria-labelledby": "more" });
+    const popoverOpening = triggerOpening(popover as unknown as Element, asDoc(p.doc));
+    const menuOpening = triggerOpening(menu as unknown as Element, asDoc(p.doc));
+    p.open.set(popover as unknown as Element, popoverOpening);
+    p.open.set(menu as unknown as Element, menuOpening);
+    p.drawer.remove();
+    popover.remove();
+    menu.remove();
+    expect(closingWithin(p.drawer as unknown as Element, p.open)).toEqual([menuOpening, popoverOpening]);
+    // Only the chip has a twin in the column: the menu's trigger has none.
+    const chipTwin = p.sidebar.add("button", { "data-focus-key": "chip" });
+    close(p, "drawer");
+    expect(p.doc.activeElement).toBe(chipTwin);
+    // With the menu trigger's twin too, it comes first.
+    p.doc.activeElement = p.doc.body;
+    const moreTwin = p.sidebar.add("button", { "data-focus-key": "more" });
+    p.open.set(p.drawer as unknown as Element, openingOf(asEl(p.toggle)));
+    close(p, "drawer");
+    expect(p.doc.activeElement).toBe(moreTwin);
+  });
+});
+
+describe("selects: their trigger by the shared Select's pair (lot 17)", () => {
+  test("a select closes back to its trigger; an item inside one stands for it", () => {
+    const p = page();
+    const trigger = p.bar.add("button", { "data-select-trigger": "«s1»" });
+    const list = p.doc.body.add("div", { role: "listbox", "data-select-of": "«s1»" });
+    const option = list.add("div", { role: "option", tabindex: "-1" });
+    expect(openerOf(option as unknown as Element, asDoc(p.doc))).toBe(trigger);
+    const opening = triggerOpening(list as unknown as Element, asDoc(p.doc));
+    list.remove();
+    closeLayerOfKind("menu", new FakeEvent(), list as unknown as Element, opening, false, undefined, asDoc(p.doc));
+    expect(p.doc.activeElement).toBe(trigger);
   });
 });
 
@@ -588,16 +817,21 @@ describe("the hook the shared contents use (read from the syntax tree: it needs 
   })();
   const text = (n: ts.Node) => n.getText(sf);
 
-  test("its ref reads a dialog's opening as the content mounts — once per content", () => {
+  test("its ref reads the opening as the content mounts — once per content, every kind", () => {
     const body = text(hook);
     expect(body).toMatch(/if \(el === null \|\| el === node\.current\) return;/);
-    expect(body).toMatch(/opening\.current = kind === "dialog" \? captureOpening\(el\) : null;/);
+    // A dialog's opener from the history; a trigger with its focus key while it is
+    // on the page (lot 17: a layout switched later leaves its twin to find).
+    expect(body).toMatch(/opening\.current = kind === "dialog" \? captureOpening\(el\) : triggerOpening\(el\);/);
+    // …and the content joins the page's open layers: a layer closing with it reads
+    // it there (lot 17).
+    expect(body).toMatch(/triggerOpening\(el\);\s*OPEN_LAYERS\.set\(el, opening\.current\);/);
   });
 
-  test("its close runs the rule of its kind with what it noted, then forgets it", () => {
+  test("its close runs the rule of its kind with what it noted, then forgets it — and leaves the open layers, whatever happened", () => {
     const body = text(hook);
     expect(body).toMatch(
-      /closeLayerOfKind\(kind, event, node\.current, opening\.current, outside\.current, returnFocus\);\s*node\.current = null;\s*opening\.current = null;\s*outside\.current = false;/,
+      /const layer = node\.current;\s*try \{\s*closeLayerOfKind\(kind, event, layer, opening\.current, outside\.current, returnFocus\);\s*\} finally \{\s*if \(layer !== null\) OPEN_LAYERS\.delete\(layer\);\s*node\.current = null;\s*opening\.current = null;\s*outside\.current = false;\s*\}/,
     );
   });
 

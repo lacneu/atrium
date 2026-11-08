@@ -6,8 +6,12 @@
 //   - the project page's "New subfolder" and "New chat here" go into its ⋯ when
 //     the bar has no room: the prompt and the agent picker fall back to that ⋯;
 //   - a calendar occurrence is a different button in month and in agenda, swapped
-//     by the calendar itself with its width: the cron editor falls back to the same
-//     occurrence in the view now shown, then to the toolbar's current mode;
+//     by the calendar itself with its width: both carry the occurrence's focus key,
+//     and the rule finds the one now shown (lot 17); the cron editor falls back to
+//     the toolbar's current mode when that view does not show it;
+//   - the sidebar is rendered in the drawer or in the column, a whole new tree when
+//     the layout switches: every layer opener in it carries a focus key (lot 17);
+//     so do those of the side panels, a column beside the thread or a sheet over it;
 //   - the composer's room chevron goes into More with the width: the conversation
 //     panel falls back to the chevron, More, then the field.
 // The wiring is read from the syntax tree; the calendar's choice runs on fakes.
@@ -16,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
-import { calendarReturnFocus } from "./admin/CalendarView";
+import { calendarEventKey, calendarReturnFocus } from "./admin/CalendarView";
 
 const SRC = join(process.cwd(), "src");
 
@@ -94,14 +98,15 @@ describe("project page: the new-item dialogs fall back to the page's ⋯", () =>
   });
 });
 
-describe("calendar: the cron editor falls back to the same occurrence, then the toolbar", () => {
+describe("calendar: the same occurrence by its focus key, then the toolbar", () => {
   const tab = parse("chat/admin/ScheduledTab.tsx");
   const cal = parse("chat/admin/CalendarView.tsx");
 
-  test("every occurrence button, in month and in agenda, carries its occurrence", () => {
+  test("every occurrence button, in month and in agenda, carries its occurrence's focus key", () => {
     const buttons = openings(cal).filter((o) => /onEventClick\b[^]*\(ev\)/.test(attrText(o, "onClick") ?? ""));
     expect(buttons.length).toBe(2);
-    for (const b of buttons) expect(attrText(b, "data-cal-event")).toBe("{ev.id}");
+    for (const b of buttons) expect(attrText(b, "data-focus-key")).toBe("{calendarEventKey(ev.id)}");
+    expect(calendarEventKey("olivier\u0000job:1")).toBe("cal-event:olivier\u0000job:1");
   });
 
   test("the editor remembers the occurrence it was opened from — and only then", () => {
@@ -131,8 +136,142 @@ describe("calendar: the cron editor falls back to the same occurrence, then the 
     expect(content, "no cron editor content").toBeDefined();
     expect(attrText(content!, "returnFocus")).toBe("{editReturnFocus}");
     const fn = constFn(tab, "editReturnFocus");
-    const call = fn && find(fn, ts.isCallExpression).find((c) => c.expression.getText() === "calendarReturnFocus");
-    expect(call?.arguments.map((a) => a.getText())).toEqual(["editFromEvent.current"]);
+    expect(fn?.body.getText()).toBe("editFromEvent.current === null ? [] : calendarReturnFocus()");
+  });
+});
+
+// ---- OPENERS RENDERED IN TWO LAYOUTS (lot 17) -------------------------------------
+//
+// The sidebar body is ONE tree rendered in the drawer (drawer layout) or in the
+// column (desktop): crossing the threshold mounts a new one. A layer opened from
+// it outlives the button it was opened from — the agent picker of "New chat", the
+// shared prompt of "New folder" — or closes with the tree — a row's menu, the
+// sheets it opens: the innermost of those decides (lib/returnFocus, closingWithin).
+// Either way each such opener carries a focus key, the same in both layouts,
+// unique among them: the rule finds the live twin. Inventory of the app's other
+// layouts:
+//   - the side panels (sources, sub-agent, cron, document): a column of the dock
+//     or, short of room, a sheet of the chat — keyed below;
+//   - the calendar's month and agenda: the occurrences, keyed above;
+//   - the composer's bar and its More, the project bar and its ⋯: the twin of a
+//     hidden control exists only inside a closed menu — their views name fallbacks
+//     (composerOverlayFocus.test.ts, the project page above);
+//   - the project's columns and one level: a parent column dropped has no twin —
+//     the nearest surviving part of the page;
+//   - the top bar, the chat header, the tables stacked or not, the sidebar's
+//     compact top: the same elements in both — nothing remounts.
+describe("every layer opener of the sidebar carries a focus key, in both layouts", () => {
+  const sidebar = parse("chat/ChatSidebar.tsx");
+
+  /** The openers: a menu's trigger (its child element), and every control whose
+   *  click opens a layer — the agent picker, a prompt, a dialog's state. */
+  function openers(): ts.JsxOpeningLikeElement[] {
+    const triggers = find(sidebar, ts.isJsxElement)
+      .filter((e) => /^(DropdownMenu|Popover)Trigger$/.test(e.openingElement.tagName.getText()))
+      .map((e) => openings(e).find((o) => o !== e.openingElement)!);
+    const clicks = openings(sidebar).filter((o) =>
+      /\b(prompt|confirm|onNewChat)\b|set\w*Open\(true\)/.test(attrText(o, "onClick") ?? ""),
+    );
+    return [...triggers, ...clicks];
+  }
+
+  test("the openers are all found: New chat, New folder, hidden folders, a folder's and a chat's menu", () => {
+    const keys = openers().map((o) => attrText(o, "data-focus-key"));
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        '"sidebar:new-chat"',
+        '"sidebar:new-folder"',
+        '"sidebar:hidden-folders"',
+        "{`sidebar:folder-menu:${projectId}`}",
+        "{`sidebar:chat-menu:${chat._id}`}",
+      ]),
+    );
+    expect(openers().length).toBe(5);
+  });
+
+  test("each carries one, and no two openers share it", () => {
+    const keys = openers().map((o) => attrText(o, "data-focus-key"));
+    expect(keys.every((k) => k !== undefined)).toBe(true);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test("the sidebar is the same tree in the drawer and in the column (one body, two parents)", () => {
+    const router = parse("router.tsx");
+    const uses = find(router, ts.isJsxExpression).filter((e) => e.expression?.getText() === "sidebarBody");
+    expect(uses.length).toBe(2);
+    const parents = uses.map((u) => (u.parent as ts.JsxElement).openingElement);
+    expect(parents.map((o) => attrText(o, "className"))).toEqual([
+      '"oc-sidebar-col oc-sidebar-col--drawer"',
+      '"oc-sidebar-col"',
+    ]);
+  });
+});
+
+describe("every layer opener of the side panels carries a focus key, column or sheet", () => {
+  const PANELS = ["SourcesPanelContent", "SubAgentPanelContent", "CronDetailContent", "DocumentViewerContent"];
+
+  test("each panel is one content with two parents: the dock's column, the chat's sheet", () => {
+    const dock = openings(parse("chat/PinnedPanelDock.tsx")).map((o) => o.tagName.getText());
+    const chat = parse("chat/ConvexChat.tsx");
+    const inSheet = find(chat, ts.isJsxElement)
+      .filter((e) => e.openingElement.tagName.getText() === "SheetContent")
+      .flatMap((e) => openings(e).map((o) => o.tagName.getText()));
+    for (const panel of PANELS) {
+      expect(dock, `${panel} in the dock`).toContain(panel);
+      expect(inSheet, `${panel} in a sheet`).toContain(panel);
+    }
+  });
+
+  /** The layers each panel renders — a menu, a dialog of its own (a component
+   *  named …Dialog or …Sheet too) — and the state setters that open its dialogs.
+   *  A layer added to a panel fails the next test until it is listed here, its
+   *  opener keyed. */
+  const PANEL_LAYERS: Record<string, { layers: string[]; setters: string[] }> = {
+    "chat/SubAgentPanel.tsx": { layers: ["DropdownMenu", "SubAgentReportDialog"], setters: ["setReportTarget"] },
+    "chat/CronDetailPanel.tsx": { layers: ["AlertDialog"], setters: ["setConfirmDelete"] },
+    "chat/SourcesActivity.tsx": { layers: [], setters: [] },
+    "chat/DocumentViewer.tsx": { layers: [], setters: [] },
+  };
+  const LAYER_TAG = /^(Dialog|AlertDialog|Sheet|Popover|DropdownMenu|Select)$|\w(Dialog|Sheet)$/;
+
+  test.each(Object.entries(PANEL_LAYERS))("%s renders exactly the layers listed", (rel, { layers }) => {
+    const tags = find(parse(rel), ts.isJsxElement)
+      .map((e) => e.openingElement.tagName.getText())
+      .concat(find(parse(rel), ts.isJsxSelfClosingElement).map((e) => e.tagName.getText()))
+      .filter((t) => LAYER_TAG.test(t));
+    expect([...new Set(tags)].sort()).toEqual([...layers].sort());
+  });
+
+  /** A panel's layer openers: a menu's trigger (its child), a control whose click
+   *  calls a setter that opens one of its dialogs. */
+  function openers(rel: string): ts.JsxOpeningLikeElement[] {
+    const sf = parse(rel);
+    const triggers = find(sf, ts.isJsxElement)
+      .filter((e) => /^(DropdownMenu|Popover)Trigger$/.test(e.openingElement.tagName.getText()))
+      .map((e) => openings(e).find((o) => o !== e.openingElement)!);
+    const setters = PANEL_LAYERS[rel].setters;
+    const clicks = openings(sf).filter((o) =>
+      setters.some((set) => new RegExp(`\\b${set}\\(`).test(attrText(o, "onClick") ?? "")),
+    );
+    return [...triggers, ...clicks];
+  }
+
+  test("the sub-agent's export menu and report, the cron's deletion: keyed by their panel", () => {
+    expect(openers("chat/SubAgentPanel.tsx").map((o) => attrText(o, "data-focus-key"))).toEqual([
+      "{`subagent:export:${panelKey}`}",
+      "{`subagent:report:${childKey}`}",
+    ]);
+    expect(openers("chat/CronDetailPanel.tsx").map((o) => attrText(o, "data-focus-key"))).toEqual([
+      '{`cron-panel:delete:${instanceName}:${jobId ?? ""}`}',
+    ]);
+  });
+
+  test("each dialog setter is the one its dialog is bound to", () => {
+    const sub = openings(parse("chat/SubAgentPanel.tsx")).find((o) => o.tagName.getText() === "SubAgentReportDialog");
+    expect(attrText(sub!, "target")).toBe("{reportTarget}");
+    const cron = openings(parse("chat/CronDetailPanel.tsx")).find((o) => o.tagName.getText() === "AlertDialog");
+    expect(attrText(cron!, "open")).toBe("{confirmDelete}");
+    expect(attrText(cron!, "onOpenChange")).toBe("{setConfirmDelete}");
   });
 });
 
@@ -164,24 +303,13 @@ describe("conversation panel: back to the composer's chevron, More, the field", 
 
 // A fake calendar: just what calendarReturnFocus reads.
 class FakeNode {
-  constructor(
-    readonly name: string,
-    readonly attrs: Record<string, string> = {},
-  ) {}
-  getAttribute(n: string): string | null {
-    return this.attrs[n] ?? null;
-  }
+  constructor(readonly name: string) {}
 }
 class FakeCal {
   constructor(
-    readonly events: FakeNode[],
     readonly pressed: FakeNode | null,
     readonly firstHeadButton: FakeNode | null,
   ) {}
-  querySelectorAll(sel: string): FakeNode[] {
-    if (sel !== "[data-cal-event]") throw new Error(sel);
-    return this.events;
-  }
   querySelector(sel: string): FakeNode | null {
     if (sel === '.oc-cal__modes [aria-pressed="true"]') return this.pressed;
     if (sel === ".oc-cal__head button") return this.firstHeadButton;
@@ -191,30 +319,19 @@ class FakeCal {
 const docWith = (root: FakeCal | null) =>
   ({ querySelector: (sel: string) => (sel === ".oc-cal" ? root : null) }) as unknown as Pick<Document, "querySelector">;
 
-describe("calendarReturnFocus", () => {
-  // Real ids join the instance and the job with a NUL: no selector is built from them.
-  const id = "olivier\u0000job_7f3a2c:1794207600000";
-  const agendaRow = new FakeNode("agenda row", { "data-cal-event": id });
-  const other = new FakeNode("other", { "data-cal-event": "olivier\u0000job_91b0:1794207600000" });
+describe("calendarReturnFocus — once the occurrence is in neither view", () => {
   const agenda = new FakeNode("Agenda (pressed)");
   const prev = new FakeNode("previous");
 
-  test("the same occurrence in the view now shown, then the current mode", () => {
-    const cal = new FakeCal([other, agendaRow], agenda, prev);
-    expect(calendarReturnFocus(id, docWith(cal))).toEqual([agendaRow, agenda]);
-  });
-
-  test("an occurrence the new view does not show (past, out of the agenda): the current mode", () => {
-    const cal = new FakeCal([other], agenda, prev);
-    expect(calendarReturnFocus(id, docWith(cal))).toEqual([null, agenda]);
+  test("the toolbar's current mode", () => {
+    expect(calendarReturnFocus(docWith(new FakeCal(agenda, prev)))).toEqual([agenda]);
   });
 
   test("no mode pressed: the toolbar's first control", () => {
-    const cal = new FakeCal([agendaRow], null, prev);
-    expect(calendarReturnFocus(id, docWith(cal))).toEqual([agendaRow, prev]);
+    expect(calendarReturnFocus(docWith(new FakeCal(null, prev)))).toEqual([prev]);
   });
 
   test("no calendar on the page: nothing", () => {
-    expect(calendarReturnFocus(id, docWith(null))).toEqual([]);
+    expect(calendarReturnFocus(docWith(null))).toEqual([]);
   });
 });

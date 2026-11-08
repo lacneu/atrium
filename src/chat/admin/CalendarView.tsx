@@ -210,29 +210,29 @@ export function CalendarView({
   );
 }
 
+/** The focus key of an occurrence: month and agenda render each occurrence as a
+ *  different button, and the calendar swaps them by itself when its width crosses
+ *  the grid's need — the rule finds the same occurrence in the view now shown by
+ *  this key (lib/returnFocus). */
+export function calendarEventKey(eventId: string): string {
+  return `cal-event:${eventId}`;
+}
+
 /**
  * Where the focus goes back when a dialog opened from an occurrence closes, once
- * the button it was opened from is gone: month and agenda render each occurrence
- * as a different button (`data-cal-event`), and the calendar swaps them by itself
- * when its width crosses the grid's need. The same occurrence in the view now
- * shown, then the toolbar's current mode — a control that stays.
+ * neither the button it was opened from nor its twin in the other view is there
+ * (a past occurrence the agenda does not list): the toolbar's current mode — a
+ * control that stays.
  */
 export function calendarReturnFocus(
-  eventId: string | null,
   doc: Pick<Document, "querySelector"> = document,
 ): Array<HTMLElement | null> {
   const root = doc.querySelector<HTMLElement>(".oc-cal");
   if (root === null) return [];
-  const same =
-    eventId === null
-      ? null
-      : (Array.from(root.querySelectorAll<HTMLElement>("[data-cal-event]")).find(
-          (el) => el.getAttribute("data-cal-event") === eventId,
-        ) ?? null);
   const mode =
     root.querySelector<HTMLElement>('.oc-cal__modes [aria-pressed="true"]') ??
     root.querySelector<HTMLElement>(".oc-cal__head button");
-  return [same, mode];
+  return [mode];
 }
 
 /** Scrolls the nearest scrolling ancestor of `target` — that one only:
@@ -354,7 +354,7 @@ function AgendaList({
                   type="button"
                   variant="ghost"
                   key={ev.id}
-                  data-cal-event={ev.id}
+                  data-focus-key={calendarEventKey(ev.id)}
                   className={`${className} h-auto min-h-11 w-full justify-start font-normal`}
                   style={style}
                   onClick={() => onEventClick(ev)}
@@ -417,7 +417,7 @@ function MonthGrid({
               <button
                 type="button"
                 key={ev.id}
-                data-cal-event={ev.id}
+                data-focus-key={calendarEventKey(ev.id)}
                 className={
                   "oc-cal__event" +
                   (ev.muted ? " oc-cal__event--muted" : "") +

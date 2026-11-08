@@ -1,5 +1,4 @@
 import {
-  ActionBarMorePrimitive,
   ActionBarPrimitive,
   AssistantRuntimeProvider,
   AttachmentPrimitive,
@@ -142,6 +141,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  ActionBarMore,
+  ActionBarMoreContent,
+  ActionBarMoreItem,
+  ActionBarMoreSeparator,
+  ActionBarMoreTrigger,
+} from "@/components/ui/action-bar-more";
 import { formatDateTime, formatDurationShort } from "@/lib/format";
 import {
   Popover,
@@ -2607,8 +2613,8 @@ function IconArrowDown() {
  *  in a new chat"): the fork carries the same visible history up to here, opens
  *  immediately, and its first send re-grounds the agent via the existing
  *  rehydration — the original conversation continues untouched. */
-// Shadcn dropdown-menu look, replicated for the ActionBarMorePrimitive
-// (which needs raw Radix parts — see the comment inside AssistantMoreMenu).
+// Shadcn dropdown-menu look, replicated for assistant-ui's reply menu
+// (components/ui/action-bar-more — see the comment inside AssistantMoreMenu).
 // Keep in sync with components/ui/dropdown-menu.tsx.
 const MSG_MENU_CONTENT_CLS =
   "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 oc-overlay-layer min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md";
@@ -2695,23 +2701,23 @@ function AssistantMoreMenu({
       setBusy(false);
     }
   };
-  // ActionBarMorePrimitive (NOT the plain shadcn DropdownMenu): the action bar
+  // assistant-ui's ActionBarMore (NOT the plain shadcn DropdownMenu): the action bar
   // AUTOHIDES on non-last messages (visible = hovering), and a plain Radix
   // menu steals the pointer/focus on open -> the bar unmounts -> the trigger
   // disappears -> the menu closes itself instantly. This primitive acquires
   // the action bar's interaction LOCK while open, keeping the bar mounted.
   // Classes mirror components/ui/dropdown-menu.tsx for an identical look.
   return (
-    <ActionBarMorePrimitive.Root>
-      <ActionBarMorePrimitive.Trigger
+    <ActionBarMore>
+      <ActionBarMoreTrigger
         className="oc-iconbtn"
         title={m.chat_more_actions()}
         aria-label={m.chat_more_actions()}
         disabled={busy}
       >
         <Ellipsis size={15} />
-      </ActionBarMorePrimitive.Trigger>
-      <ActionBarMorePrimitive.Content
+      </ActionBarMoreTrigger>
+      <ActionBarMoreContent
         align="end"
         sideOffset={4}
         className={MSG_MENU_CONTENT_CLS}
@@ -2736,51 +2742,51 @@ function AssistantMoreMenu({
                 ) : null;
               })()}
             </div>
-            <ActionBarMorePrimitive.Separator className="bg-border -mx-1 my-1 h-px" />
+            <ActionBarMoreSeparator className="bg-border -mx-1 my-1 h-px" />
           </>
         ) : null}
         {sourceShown ? (
-          <ActionBarMorePrimitive.Item
+          <ActionBarMoreItem
             className={MSG_MENU_ITEM_CLS}
             onSelect={onToggleSource}
           >
             <Code size={14} aria-hidden />
             {sourceActive ? m.chat_show_rendered() : m.chat_show_source()}
-          </ActionBarMorePrimitive.Item>
+          </ActionBarMoreItem>
         ) : null}
         {ownerView ? (
-          <ActionBarMorePrimitive.Item
+          <ActionBarMoreItem
             className={MSG_MENU_ITEM_CLS}
             disabled={busy || streaming}
             onSelect={() => void branch()}
           >
             <GitBranch size={14} aria-hidden />
             {m.chat_branch_action()}
-          </ActionBarMorePrimitive.Item>
+          </ActionBarMoreItem>
         ) : null}
         {onPickBlock ? (
-          <ActionBarMorePrimitive.Item
+          <ActionBarMoreItem
             className={MSG_MENU_ITEM_CLS}
             disabled={streaming}
             onSelect={onPickBlock}
           >
             <Reply size={14} aria-hidden />
             {m.quote_reply_pick_action()}
-          </ActionBarMorePrimitive.Item>
+          </ActionBarMoreItem>
         ) : null}
         <BookmarkMenuItem />
         {onPickBookmarkBlock ? (
-          <ActionBarMorePrimitive.Item
+          <ActionBarMoreItem
             className={MSG_MENU_ITEM_CLS}
             disabled={streaming}
             onSelect={onPickBookmarkBlock}
           >
             <BookmarkIcon size={14} aria-hidden />
             {m.bookmark_pick_action()}
-          </ActionBarMorePrimitive.Item>
+          </ActionBarMoreItem>
         ) : null}
-      </ActionBarMorePrimitive.Content>
-    </ActionBarMorePrimitive.Root>
+      </ActionBarMoreContent>
+    </ActionBarMore>
   );
 }
 
@@ -2794,13 +2800,13 @@ function BookmarkMenuItem() {
     bmApi.byMessage.get(messageId)?.some((b) => b.blockIndex === null) ??
     false;
   return (
-    <ActionBarMorePrimitive.Item
+    <ActionBarMoreItem
       className={MSG_MENU_ITEM_CLS}
       onSelect={() => bmApi.toggle(messageId, null)}
     >
       <BookmarkIcon size={14} aria-hidden />
       {has ? m.bookmark_remove() : m.bookmark_add()}
-    </ActionBarMorePrimitive.Item>
+    </ActionBarMoreItem>
   );
 }
 

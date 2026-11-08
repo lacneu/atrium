@@ -693,14 +693,31 @@
     max(0px, calc(env(safe-area-inset-bottom) - var(--oc-kb, 0px)))
     env(safe-area-inset-left);
 }
-/* The sheets (the drawer, the side panels) run the full height of the screen:
-   they stop at the safe areas, the backdrop filling the rest. Where there are none
-   (every desktop) this is exactly `inset-y-0`. */
+/* EVERY KIND OF LAYER STAYS IN THE VISIBLE SCREEN (lot 17): its height bounded by
+   the screen less the safe areas and the iOS keyboard (`--oc-kb`), scrolling
+   inside, its actions in view. Each kind is listed by its slot, and the list is
+   derived from the components by its test (safeAreas.test.ts).
+   The sheets (the drawer, the side panels) run the full height of the screen: they
+   stop at the safe areas — and above the keyboard, which covers the bottom one
+   when it is open (they used to run under it, buttons and all). Where there is
+   neither (every desktop) this is exactly `inset-y-0`. */
 [data-slot="sheet-content"][data-side="left"],
 [data-slot="sheet-content"][data-side="right"] {
   top: env(safe-area-inset-top);
-  bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--oc-kb, 0px)));
+  bottom: max(env(safe-area-inset-bottom), var(--oc-kb, 0px));
   height: auto;
+}
+[data-slot="sheet-content"][data-side="top"],
+[data-slot="sheet-content"][data-side="bottom"] {
+  max-height: calc(
+    100dvh - var(--oc-kb, 0px) - env(safe-area-inset-top) - env(safe-area-inset-bottom)
+  );
+}
+[data-slot="sheet-content"][data-side="top"] {
+  top: env(safe-area-inset-top);
+}
+[data-slot="sheet-content"][data-side="bottom"] {
+  bottom: max(env(safe-area-inset-bottom), var(--oc-kb, 0px));
 }
 [data-slot="sheet-content"][data-side="left"] {
   left: env(safe-area-inset-left);
@@ -708,16 +725,52 @@
 [data-slot="sheet-content"][data-side="right"] {
   right: env(safe-area-inset-right);
 }
-/* A dialog stays clear of the safe areas, and above the iOS keyboard: shorter by
-   what it covers and lifted by half of it, so its centre is the visible centre.
-   The search palette is anchored near the top: it is only made shorter. */
-[data-slot="dialog-content"] {
+/* A dialog — and a confirmation, which used to escape this — stays clear of the
+   safe areas, and above the iOS keyboard: shorter by what it covers and lifted by
+   half of it, so its centre is the visible centre. The search palette is anchored
+   near the top: it is only made shorter. */
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"] {
   max-height: calc(
     100dvh - 2rem - var(--oc-kb, 0px) - env(safe-area-inset-top) - env(safe-area-inset-bottom)
   );
 }
-[data-slot="dialog-content"]:not(.oc-search-palette) {
+[data-slot="dialog-content"]:not(.oc-search-palette),
+[data-slot="alert-dialog-content"] {
   margin-top: calc(var(--oc-kb, 0px) / -2);
+}
+/* A floating layer that opens downwards stops above the keyboard: Radix measures
+   the room down to the bottom of the layout viewport, which the iOS keyboard
+   covers. It keeps at least a few rows. */
+[data-slot="popover-content"][data-side="bottom"] {
+  max-height: max(6rem, calc(var(--radix-popover-content-available-height) - var(--oc-kb, 0px)));
+}
+[data-slot="dropdown-menu-content"][data-side="bottom"] {
+  max-height: max(
+    6rem,
+    calc(var(--radix-dropdown-menu-content-available-height) - var(--oc-kb, 0px))
+  );
+}
+[data-slot="select-content"][data-side="bottom"] {
+  max-height: max(6rem, calc(var(--radix-select-content-available-height) - var(--oc-kb, 0px)));
+}
+/* ITS ACTIONS IN VIEW: a layer taller than the room scrolls inside, and its footer
+   stays at the bottom of what is shown, opaque over the scrolled content.
+   Unscrolled, the footer is where it always was. A field the focus scrolls into
+   view (the type-to-confirm field, as the keyboard opens) stops above that footer:
+   the room it takes, stacked buttons included, is kept out of the scrolling. */
+[data-slot="dialog-footer"],
+[data-slot="alert-dialog-footer"],
+[data-slot="sheet-footer"] {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--popover);
+}
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"],
+[data-slot="sheet-content"] {
+  scroll-padding-bottom: 6rem;
 }
 .oc-topbar {
   display: flex;

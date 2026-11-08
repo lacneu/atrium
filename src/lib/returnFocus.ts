@@ -7,10 +7,16 @@
 //      stays there — the user or the view put it there (the composer focused while
 //      the drawer slid out). Nobody moves it: not the rule, not a view, not Radix.
 //   1. the control that opened the layer, while it can still take the focus;
-//   2. the fallbacks its view names (a control that stays: the ⋯ an action went
-//      into, the same calendar occurrence in the view now shown, the drawer's
-//      toggle) — a view only ever adds fallbacks, it never replaces the rule;
-//   3. the first control of the nearest part of the page around the opener that
+//   2. its twin in the layout now shown — an opener rendered in two layouts (the
+//      drawer's and the column's "New chat", a calendar occurrence in month and
+//      in agenda) carries the same `data-focus-key` in both, and a layout switched
+//      while the layer was open leaves the live one to find (lot 17). A twin not
+//      rendered yet (a panel reloading its content) is not waited for: the focus
+//      is never moved later, when the user may have put it elsewhere;
+//   3. the fallbacks its view names (a control that stays: the ⋯ an action went
+//      into, the calendar's toolbar, the drawer's toggle) — a view only ever adds
+//      fallbacks, it never replaces the rule;
+//   4. the first control of the nearest part of the page around the opener that
 //      is still there — within its view: never past the routed `main` or a
 //      sidebar, whose content may be another view by then.
 // `focusFirst` checks that each one really takes it. When none does, Radix's own
@@ -26,6 +32,17 @@
 // opener is read from them when its content mounts: the newest focus move outside
 // it — whatever its own fields did first —, past those inside a dialog closing as
 // it opens; an item of a menu or a popover stands for that layer's trigger.
+//
+// LAYERS CLOSING TOGETHER (lot 17): a layout switch unmounts the drawer with the
+// layers opened from inside it — its folder's menu, a dialog of one of its rows.
+// The outermost closes first; the rule then runs for the innermost before its own
+// (`closingWithin`): the user was in the menu, the focus goes to its trigger's twin
+// in the column, not to the drawer's toggle.
+//
+// A LAYER FROM ANOTHER LIBRARY IS NO EXCEPTION (lot 17): assistant-ui's reply menu
+// is a Radix menu too; it goes through the same rule by its own shared content
+// (components/ui/action-bar-more), and a guard keeps every package that wraps
+// Radix to the layers it is allowed to render.
 import { useCallback, useRef } from "react";
 import { canTakeFocus, focusFirst } from "./focusFallback";
 
@@ -36,8 +53,19 @@ export type ReturnFocus = () => ReadonlyArray<HTMLElement | null>;
 const FOCUSABLE =
   "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
 
-/** The floating layers an item can open a dialog from: a menu, a popover. */
-const FLOATING = '[role="menu"], [data-popover-of]';
+/** The floating layers an item can open a dialog from: a menu, a popover, a select. */
+const FLOATING = '[role="menu"], [data-popover-of], [data-select-of]';
+
+/** The pairs a shared content and its trigger carry (Radix links them only while
+ *  open, if at all): a popover's, a select's. */
+const PAIRS = [
+  ["data-popover-of", "data-popover-trigger"],
+  ["data-select-of", "data-select-trigger"],
+] as const;
+
+/** The attribute an opener rendered in several layouts carries in each, with the
+ *  same value: how the rule finds the live twin of an opener the layout replaced. */
+export const FOCUS_KEY = "data-focus-key";
 
 /** The layers that hold the focus while open: dialogs, alert dialogs, sheets (a
  *  popover is a `dialog` too for Radix: the shared Popover marks it apart). */
@@ -62,11 +90,12 @@ const HISTORY_SIZE = 32;
  *  (`data-popover-of` ↔ `data-popover-trigger`). Readable after the layer left the
  *  page: its own attributes stay on it. */
 export function triggerOf(layer: Element, doc: Document): Element | null {
-  const pair = layer.getAttribute("data-popover-of");
-  if (pair !== null) {
+  for (const [of, trigger] of PAIRS) {
+    const pair = layer.getAttribute(of);
+    if (pair === null) continue;
     return (
-      Array.from(doc.querySelectorAll("[data-popover-trigger]")).find(
-        (el) => el.getAttribute("data-popover-trigger") === pair,
+      Array.from(doc.querySelectorAll(`[${trigger}]`)).find(
+        (el) => el.getAttribute(trigger) === pair,
       ) ?? null
     );
   }
@@ -157,7 +186,8 @@ export function installFocusHistory(
  * during React's commit, then Radix) and are passed over —, past those inside
  * another dialog closing as this one opens (its opener comes earlier); an item of
  * a menu or a popover stands for the layer's trigger. Null when the focus was
- * nowhere, or on a control gone since.
+ * nowhere. A control gone since stays the opener — never an older, stale one —:
+ * it takes no focus, its twin may.
  */
 export function openerFor(
   layer: Element,
@@ -172,8 +202,7 @@ export function openerFor(
     if (host !== null && (host.getAttribute("data-state") === "closed" || !host.isConnected)) {
       continue;
     }
-    const opener = openerOf(el, doc);
-    return opener !== null && opener.isConnected ? (opener as HTMLElement) : null;
+    return openerOf(el, doc) as HTMLElement | null;
   }
   return null;
 }
@@ -207,10 +236,26 @@ export function nearestSurvivingControl(
   return null;
 }
 
-/** What a layer remembers of its opening: the control, and the page around it. */
+/** What a layer remembers of its opening: the control, its key, and the page
+ *  around it. */
 export interface Opening {
   origin: HTMLElement | null;
   regions: Element[];
+  key: string | null;
+}
+
+/** The opening of `origin`: the parts of the page around it, its focus key. */
+export function openingOf(origin: HTMLElement | null): Opening {
+  return { origin, regions: regionsOf(origin), key: origin?.getAttribute(FOCUS_KEY) ?? null };
+}
+
+/** The live control carrying `key` — the opener's twin in the layout now shown. */
+export function keyedTwin(key: string | null, doc: Document = document): HTMLElement | null {
+  if (key === null) return null;
+  for (const el of Array.from(doc.querySelectorAll<HTMLElement>(`[${FOCUS_KEY}]`))) {
+    if (el.getAttribute(FOCUS_KEY) === key && canTakeFocus(el)) return el;
+  }
+  return null;
 }
 
 /** A dialog's opening, as its content mounts (`openerFor` the page's history). */
@@ -219,23 +264,62 @@ export function captureOpening(
   history: FocusHistory = FOCUS_HISTORY,
   doc: Document = document,
 ): Opening {
-  const origin = openerFor(layer, history.entries(), doc);
-  return { origin, regions: regionsOf(origin) };
+  return openingOf(openerFor(layer, history.entries(), doc));
 }
 
-/** A popover's or a menu's opening: its trigger. */
+/** A popover's, a menu's or a select's opening: its trigger. */
 export function triggerOpening(layer: Element | null, doc: Document = document): Opening {
-  const origin = (layer === null ? null : triggerOf(layer, doc)) as HTMLElement | null;
-  return { origin, regions: regionsOf(origin) };
+  return openingOf((layer === null ? null : triggerOf(layer, doc)) as HTMLElement | null);
 }
 
 /** The order the focus is offered in when a layer closes. */
 export function returnFocusOrder(
   opening: Opening | null,
   fallbacks: ReadonlyArray<HTMLElement | null>,
+  doc: Document = document,
 ): Array<HTMLElement | null> {
   if (opening === null) return [...fallbacks];
-  return [opening.origin, ...fallbacks, nearestSurvivingControl(opening.regions)];
+  return [
+    opening.origin,
+    keyedTwin(opening.key, doc),
+    ...fallbacks,
+    nearestSurvivingControl(opening.regions),
+  ];
+}
+
+/* ------------------------------------------------------------- the open layers */
+
+/** The layers open on the page, each with the opening it read as it mounted. */
+export type OpenLayers = Map<Element, Opening>;
+
+/** The page's open layers, kept by `useLayerFocus`. */
+export const OPEN_LAYERS: OpenLayers = new Map();
+
+/**
+ * The layers closing together with `layer`, innermost first. A layout switch
+ * unmounts a layer with the layers opened from inside it — the drawer with its
+ * folder's menu, or with a dialog its row opened —: each is gone from the page,
+ * its opener inside the next one. React cleans a removed tree from its root, so
+ * the outermost closes first; the innermost decides where the focus goes, since
+ * the user was in it — its opener's twin before the drawer's toggle.
+ */
+export function closingWithin(layer: Element, open: OpenLayers = OPEN_LAYERS): Opening[] {
+  const chain: Opening[] = [];
+  let outer = layer;
+  for (let depth = 0; depth < LAYER_DEPTH; depth++) {
+    let inner: Element | null = null;
+    for (const [el, opening] of open) {
+      if (el === layer || el === outer || el.isConnected) continue;
+      if (opening.origin !== null && outer.contains(opening.origin)) {
+        inner = el;
+        chain.unshift(opening);
+        break;
+      }
+    }
+    if (inner === null) break;
+    outer = inner;
+  }
+  return chain;
 }
 
 /** Is the focus already on a control outside the closing layer? */
@@ -252,9 +336,10 @@ export interface AutoFocusEvent {
 }
 
 /**
- * A layer closes: the guard, then the rule. Radix is kept from moving the focus
- * again (`preventDefault`) whenever the focus is somewhere real; when nothing took
- * it, its own default stays.
+ * A layer closes: the guard, then the rule — for the layers closing with it first,
+ * innermost first (`closingWithin`), then for its own. Radix is kept from moving
+ * the focus again (`preventDefault`) whenever the focus is somewhere real; when
+ * nothing took it, its own default stays.
  */
 export function closeLayerFocus(
   event: AutoFocusEvent,
@@ -262,25 +347,29 @@ export function closeLayerFocus(
   opening: Opening | null,
   returnFocus: ReturnFocus | undefined,
   doc: Document = document,
+  open: OpenLayers = OPEN_LAYERS,
 ): void {
   if (focusPlaced(layer, doc)) {
     event.preventDefault();
     return;
   }
-  if (focusFirst(returnFocusOrder(opening, returnFocus?.() ?? [])) !== null) {
-    event.preventDefault();
-  }
+  const nested = layer === null ? [] : closingWithin(layer, open);
+  const order = [
+    ...nested.flatMap((inner) => returnFocusOrder(inner, [], doc)),
+    ...returnFocusOrder(opening, returnFocus?.() ?? [], doc),
+  ];
+  if (focusFirst(order) !== null) event.preventDefault();
 }
 
 /** The kinds of layers: a dialog (alert dialog, sheet) has no trigger, a popover
- *  and a menu have one. */
+ *  and a menu (a select too) have one. */
 export type LayerKind = "dialog" | "popover" | "menu";
 
 /**
- * A layer of `kind` closes: a dialog gives the focus back from the opening read
- * as it mounted, a popover or a menu from its trigger. A popover dismissed by an
- * interaction outside it leaves the focus where that interaction put it — Radix's
- * own choice for popovers, kept: only the guard runs.
+ * A layer of `kind` closes, from the opening read as it mounted: a dialog's opener,
+ * a popover's or a menu's trigger (read again from the layer when it was not). A
+ * popover dismissed by an interaction outside it leaves the focus where that
+ * interaction put it — Radix's own choice for popovers, kept: only the guard runs.
  */
 export function closeLayerOfKind(
   kind: LayerKind,
@@ -290,18 +379,20 @@ export function closeLayerOfKind(
   interactedOutside: boolean,
   returnFocus: ReturnFocus | undefined,
   doc: Document = document,
+  open: OpenLayers = OPEN_LAYERS,
 ): void {
   if (kind === "popover" && interactedOutside) {
     if (focusPlaced(layer, doc)) event.preventDefault();
     return;
   }
-  const opening = kind === "dialog" ? captured : triggerOpening(layer, doc);
-  closeLayerFocus(event, layer, opening, returnFocus, doc);
+  const opening = captured ?? (kind === "dialog" ? null : triggerOpening(layer, doc));
+  closeLayerFocus(event, layer, opening, returnFocus, doc, open);
 }
 
 /**
  * The focus handling of a shared layer content: its `ref` reads the opening as the
- * content mounts (a dialog's), its `onCloseAutoFocus` runs the guard and the rule
+ * content mounts — a dialog's opener, a trigger, with its focus key while both are
+ * on the page —, its `onCloseAutoFocus` runs the guard and the rule
  * (`closeLayerOfKind`), its `onInteractOutside` notes a popover dismissed from
  * outside.
  */
@@ -322,17 +413,23 @@ export function useLayerFocus<O extends { readonly defaultPrevented: boolean }>(
       if (el === null || el === node.current) return;
       node.current = el;
       outside.current = false;
-      opening.current = kind === "dialog" ? captureOpening(el) : null;
+      opening.current = kind === "dialog" ? captureOpening(el) : triggerOpening(el);
+      OPEN_LAYERS.set(el, opening.current);
     },
     [kind],
   );
   return {
     ref,
     onCloseAutoFocus: (event) => {
-      closeLayerOfKind(kind, event, node.current, opening.current, outside.current, returnFocus);
-      node.current = null;
-      opening.current = null;
-      outside.current = false;
+      const layer = node.current;
+      try {
+        closeLayerOfKind(kind, event, layer, opening.current, outside.current, returnFocus);
+      } finally {
+        if (layer !== null) OPEN_LAYERS.delete(layer);
+        node.current = null;
+        opening.current = null;
+        outside.current = false;
+      }
     },
     onInteractOutside: (event) => {
       onInteractOutside?.(event);

@@ -343,10 +343,10 @@ export function ScheduledTab() {
   const historyGen = useRef(0);
   const editGen = useRef(0);
   // Closing the editor opened from an occurrence whose button the calendar has
-  // replaced meanwhile: the same occurrence in the view now shown, then the
-  // calendar's toolbar (the dialog tries its opener first).
+  // replaced meanwhile: the rule finds the same occurrence in the view now shown
+  // by its focus key; when that view does not show it, the calendar's toolbar.
   const editReturnFocus = () =>
-    editFromEvent.current === null ? [] : calendarReturnFocus(editFromEvent.current);
+    editFromEvent.current === null ? [] : calendarReturnFocus();
   const openHistory = async (instanceName: string, job: CronJob) => {
     if (job.id === null) return;
     const gen = ++historyGen.current;
