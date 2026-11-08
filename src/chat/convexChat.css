@@ -189,7 +189,7 @@
   .oc-cronactions {
     --oc-hit-w: 1.875rem;
   }
-  .oc-tablefit[data-layout="stacked"] .oc-cronactions {
+  .oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) .oc-cronactions {
     --oc-hit-w: 2.75rem;
   }
   /* Shared buttons closer to a neighbour than 16 px (lot 7, measured at 360 px):
@@ -4217,6 +4217,12 @@ button.oc-bmk-rail__count:hover {
     border-color 150ms ease,
     box-shadow 150ms ease;
 }
+/* The region holding everything but the action bar (lot 13): inline it lays out
+   nothing of its own, its children are the card's column as before. The full-page
+   prompt makes it the part that gives way (below). */
+.oc-composer__body {
+  display: contents;
+}
 /* Stand-in note where the inline composer would be, while a composer is pinned
    (detached to the floating panel): every conversation shows this instead of a
    composer, so the sole editable composer is unmistakably the movable one. */
@@ -5482,7 +5488,7 @@ button.oc-perm__opt:disabled {
   text-align: left;
 }
 /* The header row is a sort bar there: say which labels sort. */
-.oc-tablefit[data-layout="stacked"] .oc-dt__sort-icon--idle {
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) .oc-dt__sort-icon--idle {
   opacity: 0.5;
 }
 .oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__check {
@@ -5507,7 +5513,10 @@ button.oc-perm__opt:disabled {
   grid-column: 2 / span 2;
   padding-top: 0.25rem;
 }
-.oc-tablefit[data-layout="stacked"] td.oc-dt__actionsrow .oc-cronactions {
+/* Not in the measuring clone (lot 13): wrapped there too, the five actions made the
+   clone narrower once the list was stacked, and the table and the stacked rows
+   called each other for ever. */
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__actionsrow .oc-cronactions {
   display: flex;
   flex-wrap: wrap;
   gap: 1rem;
@@ -6900,7 +6909,7 @@ button.oc-perm__opt:disabled {
    The dimming is applied SIBLING BY SIBLING rather than on a common ancestor: CSS
    opacity groups its whole subtree, so a child can never be brighter than its
    parent — an ancestor rule could not be lifted back on the selector. */
-.oc-composer--disabled > *:not(.oc-composer__bar),
+.oc-composer--disabled > .oc-composer__body > *,
 .oc-composer--disabled .oc-composer__bar > *:not(.oc-composer__group),
 .oc-composer--disabled .oc-composer__group > *:not(.oc-composer__agent) {
   opacity: 0.65;
@@ -10493,9 +10502,9 @@ button.oc-perm__opt:disabled {
   width: min(94vw, 1040px);
   max-width: none;
   /* The floor: what the column cannot give up — the bar (44 px on touch), the
-     field's own padding, the column's gap, the smallest paddings and the border
-     (72 px, measured in the browser with the field at its smallest). */
-  --oc-exp-floor: 4.5rem;
+     gap above it, the smallest paddings and the borders (60 px); the region
+     above the bar can give up everything (lot 13). */
+  --oc-exp-floor: 3.75rem;
   --oc-exp-gap: max(
     0px,
     min(5dvh, calc((100dvh - var(--oc-kb, 0px) - var(--oc-exp-floor)) / 2))
@@ -10525,20 +10534,33 @@ button.oc-perm__opt:disabled {
   from { opacity: 0; transform: translateX(-50%) scale(0.97); }
   to { opacity: 1; transform: translateX(-50%) scale(1); }
 }
-/* The column: the bar and the header keep their height, the field and the
-   attachments give theirs up (scrolling inside). */
-.oc-composer--expanded > .oc-composer__bar,
-.oc-composer--expanded > .oc-composer__exphead {
+/* TWO CHILDREN, the bar last (lot 13): the region — the header, the people, the
+   quote, the attachments, the field, the dictation preview — and the action bar.
+   The bar never gives way; the region gives way entirely: it shrinks to nothing
+   and scrolls what it holds. A child left beside the region (the people row, lot
+   12) kept its height and pushed the bar out of the panel, through its bottom. */
+.oc-composer--expanded > .oc-composer__body {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.oc-composer--expanded > .oc-composer__bar {
+  flex: none;
+}
+/* Inside the region the field gives way first, down to a line; the rest keeps its
+   height (an attachment row squeezed to nothing would hide what is attached) and
+   the region scrolls. */
+.oc-composer--expanded > .oc-composer__body > :not(.oc-composer__input) {
   flex-shrink: 0;
 }
-.oc-composer--expanded > .oc-attachrow {
-  flex-shrink: 1;
-  min-height: 0;
-}
 /* A panel too short for its header (a keyboard over a phone held sideways): the
-   header folds — the backdrop still closes the panel. */
+   header folds — the backdrop and the bar's collapse still close the panel. */
 @container oc-exp (max-height: 10.5rem) {
-  .oc-composer--expanded > .oc-composer__exphead {
+  .oc-composer--expanded > .oc-composer__body > .oc-composer__exphead {
     display: none;
   }
 }
@@ -10590,12 +10612,12 @@ button.oc-perm__opt:disabled {
   visibility: hidden;
   pointer-events: none;
 }
-/* The workspace fills the panel's free height and scrolls beyond it. No minimum
-   of its own: it is the part that gives way when the keyboard leaves little room
-   (lot 12 — its former 30dvh floor pushed the bar out of the panel). */
+/* The workspace fills the region's free height and scrolls beyond it. One line at
+   least: when the keyboard leaves little room it is the REGION that scrolls, to
+   the line being typed — the bar below is never what gives (lots 12, 13). */
 .oc-composer--expanded .oc-composer__input {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 2.5rem;
   max-height: none;
   overflow-y: auto;
   font-size: 1.02rem;

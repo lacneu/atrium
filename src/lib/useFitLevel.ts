@@ -46,6 +46,122 @@ export function pickFitLevel(
   return required.length;
 }
 
+/** What a fit remembers from one measure to the next (lot 13). */
+export interface FitMemory {
+  /** How many levels the measure had: another number, and the indices below
+   *  name other presentations — everything is forgotten. */
+  readonly levels: number;
+  /** For each level MORE detailed than the current one: the width it needed when
+   *  the fit left it, read in the wider presentation then on screen, and moved
+   *  since only by what the content changed. */
+  readonly locked: ReadonlyArray<number | undefined>;
+  /** For each locked level: the current presentation's own reading of its width,
+   *  the last time it was compared. Forgotten at every change of level — another
+   *  presentation reads another number. */
+  readonly seen: ReadonlyArray<number | undefined>;
+}
+
+/** A fit that has measured nothing yet. */
+export const FRESH_FIT: FitMemory = { levels: 0, locked: [], seen: [] };
+
+/** Less than this between two readings of the same presentation is layout noise
+ *  (sub-pixel rounding), not a content change. */
+const READING_NOISE = 0.5;
+
+/**
+ * The level to show, with a LOCKED hysteresis (lot 13): a measure taken in a
+ * compact presentation may depend on that presentation — a clone that inherits
+ * the stacked layout reads narrower than the table it measures, and the table
+ * and the stacked rows then called each other for ever. So a level, once left
+ * because it no longer fit, keeps the width it needed THEN, read in the wider
+ * presentation it was leaving; the fit climbs back to it only when the space
+ * covers that width plus `hysteresis` — never on the reading of the presentation
+ * now shown alone (it counts too: the larger of the two is taken).
+ *
+ * The content may change meanwhile (a row added, a label translated): the lock
+ * follows what the current presentation's reading of that level MOVED, never
+ * that reading itself. A loop is then impossible whatever a clone inherits: at a
+ * given width and content, the climb needs the very width that made the fit
+ * leave, plus the band.
+ */
+export function decideFitLevel(
+  input: FitInput,
+  current: number,
+  hysteresis: number,
+  memory: FitMemory,
+): { level: number; memory: FitMemory } {
+  const { available, required } = input;
+  // Nothing laid out yet (pickFitLevel): the most detailed level, nothing kept.
+  if (required.length === 0 || !(required[0] > 0)) return { level: 0, memory: FRESH_FIT };
+  const same = memory.levels === required.length;
+  const locked = same ? [...memory.locked] : [];
+  const seen = same ? [...memory.seen] : [];
+  // The content moved: each lock moves by as much as this presentation's own
+  // reading of its level did since it last looked.
+  for (let l = 0; l < Math.min(current, required.length); l++) {
+    const lock = locked[l];
+    if (lock === undefined) continue;
+    const before = seen[l];
+    if (before === undefined) {
+      seen[l] = required[l];
+    } else if (Math.abs(required[l] - before) > READING_NOISE) {
+      locked[l] = lock + (required[l] - before);
+      seen[l] = required[l];
+    }
+  }
+  let level = required.length;
+  for (let l = 0; l < required.length; l++) {
+    const need =
+      l < current ? Math.max(required[l], locked[l] ?? required[l]) + hysteresis : required[l];
+    if (available >= need) {
+      level = l;
+      break;
+    }
+  }
+  if (level > current) {
+    // Leaving the levels [current, level): each keeps what it needs, read NOW —
+    // in the widest presentation of the move, the one still on screen.
+    for (let l = current; l < level; l++) locked[l] = required[l];
+  } else if (level < current) {
+    // Back on `level`: it and the levels below it hold no lock any more.
+    locked.length = level;
+  }
+  if (level !== current) seen.length = 0;
+  return { level, memory: { levels: required.length, locked, seen } };
+}
+
+/**
+ * The fit's decisions, separated from React (lot 13). A decision is taken only
+ * on a reading of the presentation actually on screen: between a change of level
+ * and its render, every reading would still be of the previous one, so measures
+ * wait for `shown` — which measures at once, so that a move is checked in the
+ * presentation it chose and that presentation's readings start from there.
+ */
+export function createFitController(onLevel: (level: number) => void) {
+  let decided = 0;
+  let onScreen = 0;
+  let memory: FitMemory = FRESH_FIT;
+  const measure = (read: () => FitInput | null, hysteresis: number) => {
+    if (decided !== onScreen) return;
+    const input = read();
+    if (input === null) return;
+    const next = decideFitLevel(input, decided, hysteresis, memory);
+    memory = next.memory;
+    if (next.level !== decided) {
+      decided = next.level;
+      onLevel(decided);
+    }
+  };
+  return {
+    measure,
+    /** The DOM now shows `level`: measure in it. */
+    shown(level: number, read: () => FitInput | null, hysteresis: number) {
+      onScreen = level;
+      measure(read, hysteresis);
+    },
+  };
+}
+
 /** The natural width of a block whose LINES clip their own overflow (ellipsis):
  *  its widest line's `scrollWidth`. The block's own `scrollWidth` cannot give it —
  *  each line clips what it does not show, so the block only ever reports its
@@ -137,9 +253,14 @@ export function createTargetWatch(
  *  labels (a permission mode's name, a count) changes the width it needs without
  *  changing its own size, so a resize observer alone would never hear of it.
  *
- *  `hysteresis` (px): see `pickFitLevel` — for a presentation whose levels differ
- *  in HEIGHT inside a scroller, so that the level itself adds or removes the
- *  scroller's scrollbar and with it the width measured. */
+ *  A level left because it no longer fit is climbed back to only when the space
+ *  covers the width it needed when left, read in that wider presentation
+ *  (`decideFitLevel`, the locked hysteresis): a reading taken in the compact
+ *  presentation can never call the wider one back by itself.
+ *
+ *  `hysteresis` (px): the band added to that climb — for a presentation whose
+ *  levels differ in HEIGHT inside a scroller, so that the level itself adds or
+ *  removes the scroller's scrollbar and with it the width AVAILABLE. */
 export function useFitLevel(
   measure: () => FitInput | null,
   observed: () => ReadonlyArray<Element | null | undefined>,
@@ -157,14 +278,16 @@ export function useFitLevel(
   observedRef.current = observed;
   const hysteresisRef = useRef(hysteresis);
   hysteresisRef.current = hysteresis;
-  const runRef = useRef(() => {
-    const input = measureRef.current();
-    if (input === null) return;
-    setLevel((prev) => {
-      const next = pickFitLevel(input, prev, hysteresisRef.current);
-      return prev === next ? prev : next;
-    });
-  });
+  // The decisions and what they remember (the locked hysteresis): one controller
+  // for the hook's whole life.
+  const controllerRef = useRef<ReturnType<typeof createFitController> | null>(null);
+  if (controllerRef.current === null) controllerRef.current = createFitController(setLevel);
+  const controller = controllerRef.current;
+  const runRef = useRef(() => controller.measure(() => measureRef.current(), hysteresisRef.current));
+  // The level on screen: the controller measures in it before anything else does.
+  useLayoutEffect(() => {
+    controller.shown(level, () => measureRef.current(), hysteresisRef.current);
+  }, [controller, level]);
   const watchRef = useRef<ReturnType<typeof createTargetWatch> | null>(null);
   // AFTER EVERY COMMIT: the observed elements as they are now. A remounted one
   // (unmounted, mounted again, `deps` unchanged) is observed and measured afresh.

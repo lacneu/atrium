@@ -8,7 +8,16 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 
-import { createTargetWatch, naturalWidthOf, pickFitLevel, type FitInput } from "./useFitLevel";
+import {
+  createFitController,
+  createTargetWatch,
+  decideFitLevel,
+  FRESH_FIT,
+  naturalWidthOf,
+  pickFitLevel,
+  type FitInput,
+  type FitMemory,
+} from "./useFitLevel";
 
 const NEW_CHAT_ROW = [222, 173] as const;
 
@@ -62,6 +71,241 @@ describe("pickFitLevel — hysteresis (lot 11)", () => {
 
   test("a ghost not laid out yet still gives no verdict", () => {
     expect(pickFitLevel({ available: 10, required: [0] }, 1, 24)).toBe(0);
+  });
+});
+
+// THE LOCKED HYSTERESIS (lot 13). Anchored on the scheduled jobs measured in the
+// browser at 1400×800: the OpenClaw table needs 1137.4 px read as a table, but
+// 1039 px read once the list is stacked — its clone inherited the stacked rule
+// that wraps the five actions — and the list had 1085 px.
+const TABLE = 1137.4;
+const TABLE_READ_STACKED = 1039;
+
+/** A page whose reading depends on the presentation it shows, as the clone's did. */
+function modeDependentPage(available: number) {
+  const page = { available, shown: 0, content: 0, reads: 0 };
+  const read = (): FitInput => {
+    page.reads += 1;
+    const table = page.shown === 0 ? TABLE : TABLE_READ_STACKED;
+    return { available: page.available, required: [table + page.content] };
+  };
+  return { page, read };
+}
+
+/** The hook's schedule, without React: a decided level is rendered, the render
+ *  measures (`shown`), and a change of layout height wakes the observer once. */
+function runFit(available: number, hysteresis = 0) {
+  const { page, read } = modeDependentPage(available);
+  const flips: number[] = [];
+  let pending: number | null = null;
+  const fit = createFitController((level) => {
+    flips.push(level);
+    pending = level;
+  });
+  const settle = (frames: number) => {
+    for (let i = 0; i < frames; i += 1) {
+      if (pending !== null) {
+        const level = pending;
+        pending = null;
+        page.shown = level;
+        fit.shown(level, read, hysteresis); // the render's own measure
+        fit.measure(read, hysteresis); // the height changed: the observer fires
+      } else {
+        fit.measure(read, hysteresis); // any later observer wake-up
+      }
+    }
+  };
+  fit.shown(0, read, hysteresis);
+  return { page, read, flips, settle, fit, hysteresis };
+}
+
+describe("decideFitLevel — the locked hysteresis (lot 13)", () => {
+  test("the reported loop: without the lock, table and stacked rows call each other", () => {
+    // The stateless pick, fed the reading of the presentation on screen.
+    let level = 0;
+    const seen: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const required = [level === 0 ? TABLE : TABLE_READ_STACKED];
+      level = pickFitLevel({ available: 1085, required }, level);
+      seen.push(level);
+    }
+    expect(seen).toEqual([1, 0, 1, 0, 1, 0]);
+  });
+
+  test("with it: one move to the stacked rows, then nothing, however often the observer wakes", () => {
+    const f = runFit(1085);
+    f.settle(50);
+    expect(f.flips).toEqual([1]);
+    expect(f.page.shown).toBe(1);
+  });
+
+  test("the climb needs the width read when the table was left — not the stacked reading", () => {
+    const f = runFit(1085);
+    f.settle(5);
+    for (const width of [1100, 1137]) {
+      f.page.available = width; // wider than the stacked reading (1039), short of the table
+      f.settle(5);
+      expect(f.flips, `${width}`).toEqual([1]);
+    }
+    f.page.available = TABLE; // the width the table needed when it was left
+    f.settle(20);
+    expect(f.flips).toEqual([1, 0]);
+  });
+
+  test("plus the band, when there is one", () => {
+    const f = runFit(1085, 24);
+    f.settle(5);
+    f.page.available = TABLE + 23;
+    f.settle(5);
+    expect(f.flips).toEqual([1]);
+    f.page.available = TABLE + 24;
+    f.settle(20);
+    expect(f.flips).toEqual([1, 0]);
+  });
+
+  test("swept a pixel at a time, up then down across the threshold: one move each way", () => {
+    const f = runFit(1000);
+    f.settle(5);
+    for (let width = 1000; width <= 1200; width += 1) {
+      f.page.available = width;
+      f.settle(4);
+    }
+    for (let width = 1200; width >= 1000; width -= 1) {
+      f.page.available = width;
+      f.settle(4);
+    }
+    expect(f.flips).toEqual([1, 0, 1]);
+  });
+
+  test("the content shrinks while stacked: the lock follows what the reading MOVED", () => {
+    const f = runFit(1085);
+    f.settle(5);
+    f.page.content = -100; // a row gone: 100 px less, in either presentation
+    f.settle(20);
+    // The table now needs 1037.4: it fits in 1085 — back, once, and it stays.
+    expect(f.flips).toEqual([1, 0]);
+  });
+
+  test("the content grows while stacked: the climb needs the grown width", () => {
+    const f = runFit(1085);
+    f.settle(5);
+    f.page.content = 50;
+    f.settle(5);
+    f.page.available = TABLE + 49;
+    f.settle(5);
+    expect(f.flips).toEqual([1]);
+    f.page.available = TABLE + 50;
+    f.settle(20);
+    expect(f.flips).toEqual([1, 0]);
+  });
+
+  test("the larger of the lock and the current reading is taken", () => {
+    const memory: FitMemory = { levels: 1, locked: [900], seen: [1300] };
+    // Read in this presentation, the level now needs 1300: the old lock is not enough.
+    expect(decideFitLevel({ available: 1200, required: [1300] }, 1, 0, memory).level).toBe(1);
+  });
+
+  test("a sub-pixel wobble of the reading is not a content change", () => {
+    const memory: FitMemory = { levels: 1, locked: [TABLE], seen: [TABLE_READ_STACKED] };
+    const next = decideFitLevel(
+      { available: 1085, required: [TABLE_READ_STACKED + 0.4] },
+      1,
+      0,
+      memory,
+    );
+    expect(next.memory.locked[0]).toBe(TABLE);
+  });
+
+  test("leaving several levels at once, each keeps the width read in the widest presentation", () => {
+    // The composer bar: labels on 368, labels off 321, then moved items 282.
+    const next = decideFitLevel({ available: 300, required: [368, 321, 282] }, 0, 0, FRESH_FIT);
+    expect(next.level).toBe(2);
+    expect(next.memory.locked).toEqual([368, 321]);
+    expect(next.memory.seen).toEqual([]);
+  });
+
+  test("back on a level: it and the levels below lose their lock, those above keep theirs", () => {
+    const memory: FitMemory = { levels: 3, locked: [368, 321], seen: [360, 300] };
+    const next = decideFitLevel({ available: 330, required: [360, 300, 282] }, 2, 0, memory);
+    expect(next.level).toBe(1);
+    expect(next.memory.locked).toEqual([368]);
+    expect(next.memory.seen).toEqual([]); // another presentation: its readings start again
+  });
+
+  test("another number of levels: the old indices mean nothing, all is forgotten", () => {
+    const memory: FitMemory = { levels: 3, locked: [368, 321], seen: [360, 300] };
+    const next = decideFitLevel({ available: 330, required: [320, 300] }, 2, 0, memory);
+    expect(next.level).toBe(0);
+    expect(next.memory.locked).toEqual([]);
+  });
+
+  test("nothing laid out yet (a 0): the most detailed level, nothing kept", () => {
+    const memory: FitMemory = { levels: 1, locked: [TABLE], seen: [TABLE_READ_STACKED] };
+    expect(decideFitLevel({ available: 1085, required: [0] }, 1, 0, memory)).toEqual({
+      level: 0,
+      memory: FRESH_FIT,
+    });
+  });
+});
+
+describe("useFitLevel decides through the controller (lot 13)", () => {
+  // The hook needs React and a DOM to run: its wiring is read from the syntax tree.
+  const file = "src/lib/useFitLevel.ts";
+  const sf = ts.createSourceFile(file, readFileSync(join(process.cwd(), file), "utf-8"), ts.ScriptTarget.Latest, true);
+  const hook = (() => {
+    let found: ts.FunctionDeclaration | undefined;
+    const visit = (n: ts.Node) => {
+      if (ts.isFunctionDeclaration(n) && n.name?.text === "useFitLevel") found = n;
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    return found!;
+  })();
+  const calls = (name: string) => {
+    const out: ts.CallExpression[] = [];
+    const visit = (n: ts.Node) => {
+      if (ts.isCallExpression(n)) {
+        const e = n.expression;
+        if ((ts.isIdentifier(e) && e.text === name) || (ts.isPropertyAccessExpression(e) && e.name.text === name)) {
+          out.push(n);
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(hook);
+    return out;
+  };
+
+  test("no stateless pick inside the hook: every decision goes through the controller", () => {
+    expect(calls("pickFitLevel")).toHaveLength(0);
+    expect(calls("createFitController")).toHaveLength(1);
+    expect(calls("measure").length).toBeGreaterThan(0);
+  });
+
+  test("the level on screen is reported to the controller after each render of a new level", () => {
+    const shown = calls("useLayoutEffect").filter((c) => /\.shown\(/.test(c.arguments[0].getText()));
+    expect(shown).toHaveLength(1);
+    const deps = shown[0].arguments[1];
+    expect(deps !== undefined && ts.isArrayLiteralExpression(deps)).toBe(true);
+    expect((deps as ts.ArrayLiteralExpression).elements.map((e) => e.getText())).toContain("level");
+  });
+});
+
+describe("createFitController — decisions only on what the screen shows (lot 13)", () => {
+  test("between a move and its render, no reading is even taken", () => {
+    const { page, read } = modeDependentPage(1085);
+    const moves: number[] = [];
+    const fit = createFitController((level) => moves.push(level));
+    fit.shown(0, read, 0);
+    expect(moves).toEqual([1]);
+    const before = page.reads;
+    fit.measure(read, 0); // the DOM still shows the table: its reading would mislead
+    fit.measure(read, 0);
+    expect(page.reads).toBe(before);
+    page.shown = 1;
+    fit.shown(1, read, 0); // rendered: read, in the stacked rows
+    expect(page.reads).toBe(before + 1);
+    expect(moves).toEqual([1]);
   });
 });
 

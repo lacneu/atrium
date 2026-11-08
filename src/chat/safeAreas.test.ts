@@ -5,6 +5,7 @@
 // an iPad is to be checked on the device (the report lists what).
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { describe, expect, test } from "vitest";
 
 const ROOT = process.cwd();
@@ -69,10 +70,41 @@ describe("the page runs edge to edge, and makes room for the keyboard", () => {
   });
 });
 
-describe("the full-page prompt keeps its action bar in view (lot 12)", () => {
-  // Twice the keyboard defeated a panel CENTRED with a FIXED field: under a
-  // landscape keyboard (390 px high, 220 px of keyboard) the panel was 131 px
-  // for a 117 px field and a 44 px bar. It is now laid out from its foot.
+/** The composer root's element children, in order, from the JSX (lot 13). */
+function composerChildren(): string[] {
+  const file = join(SRC, "chat/ConvexChat.tsx");
+  const sf = ts.createSourceFile(file, readFileSync(file, "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let root: ts.JsxElement | undefined;
+  const visit = (n: ts.Node) => {
+    if (
+      root === undefined &&
+      ts.isJsxElement(n) &&
+      n.openingElement.tagName.getText() === "ComposerPrimitive.Root"
+    ) {
+      root = n;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  expect(root, "no ComposerPrimitive.Root").toBeDefined();
+  return root!.children.flatMap((child) => {
+    if (ts.isJsxText(child) && child.getText().trim() === "") return [];
+    if (ts.isJsxExpression(child) && child.expression === undefined) return []; // a comment
+    if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child)) {
+      const opening = ts.isJsxElement(child) ? child.openingElement : child;
+      const cls = opening.attributes.properties.find(
+        (p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText() === "className",
+      );
+      return [cls?.initializer?.getText().replace(/"/g, "") ?? opening.tagName.getText()];
+    }
+    return [child.getText().slice(0, 40)];
+  });
+}
+
+describe("the full-page prompt keeps its action bar whole (lots 12, 13)", () => {
+  // Twice the keyboard defeated a panel CENTRED with a FIXED field (lots 11, 12),
+  // then a child left beside the field — the people row — kept its height and
+  // pushed the bar through the panel's bottom (lot 13).
   const panel = () => ruleBody(".oc-composer--expanded");
 
   test("anchored by its bottom above the keyboard, never centred", () => {
@@ -81,24 +113,47 @@ describe("the full-page prompt keeps its action bar in view (lot 12)", () => {
     expect(panel()).not.toMatch(/translate\(-50%,\s*-50%\)/);
   });
 
-  test("never shorter than what it cannot give up: the bar and its paddings", () => {
-    expect(panel()).toMatch(/height:\s*max\(\s*var\(--oc-exp-floor\)/);
-    expect(panel()).toMatch(/--oc-exp-floor:\s*4\.5rem/);
+  test("two children: ONE region with everything else, then the bar, last", () => {
+    expect(composerChildren()).toEqual(["oc-composer__body", "oc-composer__bar"]);
   });
 
-  test("the bar never shrinks; the field alone gives way, scrolling", () => {
-    expect(ruleBody(".oc-composer--expanded > .oc-composer__bar,\n.oc-composer--expanded > .oc-composer__exphead")).toMatch(
+  test("the region gives way entirely and scrolls; the bar never gives way", () => {
+    const region = ruleBody(".oc-composer--expanded > .oc-composer__body");
+    expect(region).toMatch(/display:\s*flex/);
+    expect(region).toMatch(/flex-direction:\s*column/);
+    expect(region).toMatch(/flex:\s*1 1 auto/);
+    expect(region).toMatch(/min-height:\s*0/);
+    expect(region).toMatch(/overflow-y:\s*auto/);
+    expect(ruleBody(".oc-composer--expanded > .oc-composer__bar")).toMatch(/flex:\s*none/);
+  });
+
+  test("inside the region the field gives way first, down to a line, and scrolls its own text", () => {
+    const field = ruleBody(".oc-composer--expanded .oc-composer__input");
+    expect(field).toMatch(/flex:\s*1 1 auto/);
+    expect(field).toMatch(/min-height:\s*[\d.]+rem/);
+    expect(field).toMatch(/overflow-y:\s*auto/);
+    // The rest keeps its height: an attachment row squeezed to nothing would hide
+    // what is attached — the region scrolls instead.
+    expect(ruleBody(".oc-composer--expanded > .oc-composer__body > :not(.oc-composer__input)")).toMatch(
       /flex-shrink:\s*0/,
     );
-    const field = ruleBody(".oc-composer--expanded .oc-composer__input");
-    expect(field).toMatch(/min-height:\s*0/);
-    expect(field).toMatch(/overflow-y:\s*auto/);
+  });
+
+  test("inline, the region lays out nothing of its own: the card's column as before", () => {
+    expect(ruleBody(".oc-composer__body")).toMatch(/display:\s*contents/);
+  });
+
+  test("a composer that cannot send still dims each part but the bar — through the region", () => {
+    // Inline the region has no box: an opacity on it would dim nothing. Its
+    // children are dimmed one by one, as the card's were.
+    expect(CSS).toMatch(/\.oc-composer--disabled > \.oc-composer__body > \*,/);
+    expect(CSS).not.toMatch(/\.oc-composer--disabled > \*:not\(\.oc-composer__bar\)/);
   });
 
   test("its header folds when the panel itself is very short", () => {
     expect(panel()).toMatch(/container:\s*oc-exp\s*\/\s*size/);
     expect(CSS).toMatch(
-      /@container oc-exp \(max-height: [\d.]+rem\)\s*\{\s*\.oc-composer--expanded > \.oc-composer__exphead\s*\{\s*display:\s*none/,
+      /@container oc-exp \(max-height: [\d.]+rem\)\s*\{\s*\.oc-composer--expanded > \.oc-composer__body > \.oc-composer__exphead\s*\{\s*display:\s*none/,
     );
   });
 });
@@ -207,67 +262,150 @@ function cssLength(expr: string, env: { vh: number; kb: number }, decls: Decls):
   return v;
 }
 
-describe("the full-page prompt's geometry over the review's grid (lot 12)", () => {
-  // The bar is 44 px on touch; the panel's border is 1 px.
+type FlexItem = { basis: number; grow: number; shrink: number; min: number };
+
+/** A flex item's grow, shrink and basis from its `flex` declaration. */
+function flexOf(decl: string | undefined): { grow: number; shrink: number } {
+  if (decl === undefined || decl === "none") return { grow: 0, shrink: 0 };
+  const [grow, shrink] = decl.split(" ").map(Number);
+  return { grow: grow ?? 0, shrink: shrink ?? 1 };
+}
+
+/** A single-line flex column of definite inner height, laid out as CSS Flexbox
+ *  does it (§9.7, what this panel needs): every item at its basis; short of room,
+ *  the shrinkable ones give way in proportion to shrink × basis, never below their
+ *  minimum (an item clamped is frozen and the rest shared again); with room left,
+ *  the growable ones take it. Items are stacked from the top with the gap; what
+ *  still overflows goes past the bottom. */
+function flexColumn(inner: number, gap: number, items: FlexItem[]): { top: number; size: number }[] {
+  const size = items.map((i) => i.basis);
+  const frozen = items.map(() => false);
+  const free = () => inner - size.reduce((a, b) => a + b, 0) - gap * (items.length - 1);
+  if (free() > 0) {
+    const grow = items.reduce((a, i) => a + i.grow, 0);
+    if (grow > 0) {
+      const room = free();
+      items.forEach((i, k) => (size[k] += (room * i.grow) / grow));
+    }
+  } else {
+    for (let round = 0; round < items.length && free() < -1e-9; round++) {
+      const weights = items.map((i, k) => (frozen[k] ? 0 : i.shrink * i.basis));
+      const total = weights.reduce((a, b) => a + b, 0);
+      if (total === 0) break;
+      const over = -free();
+      items.forEach((i, k) => {
+        if (frozen[k] || weights[k] === 0) return;
+        size[k] -= (over * weights[k]) / total;
+        if (size[k] <= i.min) {
+          size[k] = i.min;
+          frozen[k] = true;
+        }
+      });
+    }
+  }
+  let top = 0;
+  return size.map((s) => {
+    const box = { top, size: s };
+    top += s + gap;
+    return box;
+  });
+}
+
+describe("the full-page prompt's geometry over the review's grid (lots 12, 13)", () => {
+  // The bar's height on touch, measured in the browser (44 px targets); the rest
+  // comes from the declarations: the panel's box from its own rule, the column's
+  // gap from the card's, the items' flex from theirs, their order from the JSX.
   const BAR = 44;
-  const BORDER = 1;
-  const geometry = (vh: number, kb: number) => {
+  const geometry = (vh: number, kb: number, regionContent: number) => {
     const decls = declarations(ruleBody(".oc-composer--expanded"));
     const len = (e: string) => cssLength(e, { vh, kb }, decls);
-    const padBottom = values(decls.get("padding") ?? "")[2];
+    const [padTop, , padBottom] = values(decls.get("padding") ?? "");
     expect(padBottom, "the panel's padding has no bottom value").toBeDefined();
+    const border = Number(/(\d+)px/.exec(decls.get("border") ?? "")?.[1] ?? NaN);
+    expect(border, "the panel's border width").toBeGreaterThan(0);
+    const gap = len(declarations(ruleBody(".oc-composer")).get("gap") ?? "");
     const foot = vh - len(decls.get("bottom") ?? "");
     const height = len(decls.get("height") ?? "");
-    const barBottom = foot - BORDER - len(padBottom);
+    const top = foot - height;
+    const inner = height - 2 * border - len(padTop) - len(padBottom);
+    const region = declarations(ruleBody(".oc-composer--expanded > .oc-composer__body"));
+    const bar = declarations(ruleBody(".oc-composer--expanded > .oc-composer__bar"));
+    const regionMin = region.get("min-height") === "0" ? 0 : regionContent;
+    const items: Record<string, FlexItem> = {
+      "oc-composer__body": { basis: regionContent, ...flexOf(region.get("flex")), min: regionMin },
+      "oc-composer__bar": { basis: BAR, ...flexOf(bar.get("flex")), min: bar.get("flex") === "none" ? BAR : 0 },
+    };
+    const order = composerChildren();
+    const boxes = flexColumn(inner, gap, order.map((c) => items[c]));
+    const contentTop = top + border + len(padTop);
+    const barBox = boxes[order.indexOf("oc-composer__bar")];
     return {
       visible: vh - kb,
       floor: len("var(--oc-exp-floor)"),
+      minimum: BAR + gap + 2 * border + len(padTop) + len(padBottom),
       gap: len("var(--oc-exp-gap)"),
       foot,
+      top,
       height,
-      top: foot - height,
-      barBottom,
-      barTop: barBottom - BAR,
+      innerBottom: foot - border - len(padBottom),
+      barTop: contentTop + barBox.top,
+      barBottom: contentTop + barBox.top + barBox.size,
+      barSize: barBox.size,
     };
   };
-  // 844 = a phone upright, 390 = the same phone sideways, 360 = a short window;
-  // no keyboard, a landscape one (220), a portrait one (336), and a tight case
-  // where the panel only just fits (300 over 390: 90 px left).
-  const GRID = [844, 390, 360].flatMap((vh) => [0, 220, 300, 336].map((kb) => [vh, kb] as const));
+  // The review's grid: 844 / 740 / 390 / 360 px high; no keyboard, a landscape one
+  // (220), the reported one (280), a portrait one (336); the region's content from
+  // nothing to far more than any panel (the people row, attachments, a dictation).
+  const GRID = [844, 740, 390, 360].flatMap((vh) =>
+    [0, 220, 280, 336].flatMap((kb) => [0, 74, 149, 184, 600].map((content) => [vh, kb, content] as const)),
+  );
 
-  test.each(GRID)("%i px high, %i px of keyboard: the bar's foot is in view, above the keyboard", (vh, kb) => {
-    const g = geometry(vh, kb);
-    expect(g.foot).toBeLessThanOrEqual(g.visible + 0.001);
-    expect(g.barBottom).toBeLessThanOrEqual(g.visible);
-    expect(g.barBottom).toBeGreaterThan(0);
-    expect(g.height).toBeGreaterThanOrEqual(g.floor);
+  test.each(GRID)("%i px high, %i px of keyboard, %i px in the region: the bar is whole, in view", (vh, kb, content) => {
+    const g = geometry(vh, kb, content);
+    expect(g.barSize).toBe(BAR); // never squeezed
+    expect(g.barBottom).toBeLessThanOrEqual(g.innerBottom + 0.001); // never past the panel's bottom
+    expect(g.barBottom).toBeLessThanOrEqual(g.visible + 0.001); // never under the keyboard
+    expect(g.height).toBeGreaterThanOrEqual(g.floor - 0.001);
     if (g.visible >= g.floor) {
-      // The whole panel is in view, and the bar inside it.
-      expect(g.top).toBeGreaterThanOrEqual(-0.001);
+      expect(g.top).toBeGreaterThanOrEqual(-0.001); // the whole panel in view
       expect(g.barTop).toBeGreaterThanOrEqual(g.top);
     } else {
-      // Not even the floor fits (a keyboard over a phone held sideways): the
-      // panel keeps its floor and overflows at the TOP; its foot stays in view.
+      // Under the floor (a keyboard over a phone held sideways): the panel keeps
+      // it and overflows at the TOP; the bar's foot stays in view.
       expect(g.top).toBeLessThan(0);
+      expect(g.barBottom).toBeGreaterThan(0);
     }
   });
 
-  test("the computation agrees with the browser's cascade: the send button's foot as measured", () => {
-    // Measured in the browser with --oc-kb set (l12-apres-*-composeur-plein-ecran-
-    // grille), rounded there to a tenth of a pixel.
+  test("the floor holds the bar, the gap above it, the smallest paddings and the borders", () => {
+    const g = geometry(360, 336, 600);
+    expect(g.floor).toBeGreaterThanOrEqual(g.minimum - 0.001);
+  });
+
+  test("the computation agrees with the browser: the bar's foot as measured, whatever the content", () => {
+    // Measured in the browser with --oc-kb set, on touch, with and without the people
+    // row, with four attachments and with a dictation preview — the same foot each
+    // time (l13-apres-*-composeur-plancher-*).
     const measured: [number, number, number][] = [
-      [390, 336, 49.4],
-      [390, 220, 141.9],
-      [360, 336, 19.4],
       [360, 220, 114.7],
+      [360, 280, 65.4],
+      [360, 336, 19.4],
+      [390, 220, 141.9],
+      [390, 280, 84.6],
+      [390, 336, 49.4],
+      [740, 280, 409],
+      [844, 336, 451.9],
     ];
     for (const [vh, kb, foot] of measured) {
-      expect(Math.abs(geometry(vh, kb).barBottom - foot), `${vh}/${kb}`).toBeLessThanOrEqual(0.1);
+      for (const content of [74, 149, 184]) {
+        const g = geometry(vh, kb, content);
+        expect(Math.abs(g.barBottom - foot), `${vh}/${kb}/${content}`).toBeLessThanOrEqual(0.1);
+      }
     }
   });
 
   test("with room to spare it keeps a margin of 5dvh above and below", () => {
-    const g = geometry(844, 0);
+    const g = geometry(844, 0, 74);
     expect(g.gap).toBeCloseTo(844 * 0.05, 3);
     expect(g.top).toBeCloseTo(g.gap, 3);
   });

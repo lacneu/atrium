@@ -6296,115 +6296,123 @@ function Composer({
         dictation.recording ? " oc-composer--dictation" : ""
       }${composerExpanded ? " oc-composer--expanded" : ""}`}
     >
-      {composerExpanded ? (
-        // Expanded header: a title + an ALWAYS-visible close (the action bar
-        // stays reachable too, but this guarantees an exit at the top).
-        <div
-          className="oc-composer__exphead"
-          ref={expheadRef}
-          data-labels={expheadLevel === 0 ? "on" : "off"}
-        >
-          <span className="oc-composer__exptitle">
-            {m.chat_composer_expand_title()}
-          </span>
-          <button
-            type="button"
-            className="oc-composer__expclose"
-            title={m.chat_composer_collapse()}
-            aria-label={m.chat_composer_collapse()}
-            onClick={() => setComposerExpanded(false)}
+      {/* ONE REGION for everything but the action bar (lot 13): the header, the
+          people, the quote, the attachments, the progress, the field and the
+          dictation preview. In the full-page prompt it is the part that gives way
+          — it shrinks to nothing and scrolls — so the bar below it is never cut,
+          whatever else the panel holds. Inline, it lays out nothing of its own
+          (`display: contents`). */}
+      <div className="oc-composer__body">
+        {composerExpanded ? (
+          // Expanded header: a title + an ALWAYS-visible close (the action bar
+          // stays reachable too, but this guarantees an exit at the top).
+          <div
+            className="oc-composer__exphead"
+            ref={expheadRef}
+            data-labels={expheadLevel === 0 ? "on" : "off"}
           >
-            <Minimize2 size={15} aria-hidden />
-            <span className="oc-composer__expclose-label">{m.chat_composer_collapse()}</span>
-          </button>
+            <span className="oc-composer__exptitle">
+              {m.chat_composer_expand_title()}
+            </span>
+            <button
+              type="button"
+              className="oc-composer__expclose"
+              title={m.chat_composer_collapse()}
+              aria-label={m.chat_composer_collapse()}
+              onClick={() => setComposerExpanded(false)}
+            >
+              <Minimize2 size={15} aria-hidden />
+              <span className="oc-composer__expclose-label">{m.chat_composer_collapse()}</span>
+            </button>
+          </div>
+        ) : null}
+        {/* WHO ELSE IS HERE — a group conversation names its people where the
+            message is written, not on a button. Opens the people tab. */}
+        {chatId ? (
+          <RoomPresence
+            chatId={chatId as Id<"chats">}
+            onOpen={() => openConversation("people", null)}
+          />
+        ) : null}
+        {chatId ? (
+          <ConversationPanel
+            chatId={chatId as Id<"chats">}
+            routing={composerRouting}
+            open={convOpen}
+            onOpenChange={setConvOpen}
+            tab={convTab}
+            onTabChange={setConvTab}
+            intent={convIntent}
+            onIntentDone={clearConvIntent}
+          />
+        ) : null}
+        <QuoteChip chatId={chatId} />
+        {/* WRAPPER, deliberately. `ComposerPrimitive.Attachments` renders a bare
+            fragment — no element of its own — so every chip became a direct child
+            of the composer, which is a COLUMN flex: ten images stacked ten rows
+            high and pushed the textarea off screen. The row below lays them out
+            horizontally, wraps, and caps its own height rather than growing for
+            ever. `:empty` hides it so it costs no gap when nothing is attached. */}
+        <div className="oc-attachrow">
+          <ComposerPrimitive.Attachments
+            components={{ Attachment: ComposerAttachmentChip }}
+          />
         </div>
-      ) : null}
-      {/* WHO ELSE IS HERE — a group conversation names its people where the
-          message is written, not on a button. Opens the people tab. */}
-      {chatId ? (
-        <RoomPresence
-          chatId={chatId as Id<"chats">}
-          onOpen={() => openConversation("people", null)}
+        {/* SR-only routed-paste confirmation: the paste never lands in the
+            textarea, so without this a non-visual user cannot tell it became an
+            attachment (the visible cue is the chip's mount shimmer). */}
+        <span className="oc-sr-only" role="status" aria-live="polite">
+          {pasteAnnouncement}
+        </span>
+        <UploadProgress />
+        {/* Content fidelity: disable the browser/OS conventions that MUTATE typed
+            text (autocorrect, auto-capitalize, autocomplete) so a word is sent
+            exactly as typed — never silently swapped at submit. `data-gramm`
+            disables Grammarly. spellCheck stays ON (it underlines, it does NOT
+            mutate). NB: no third-party extension is 100% controllable — the
+            per-message "Source" view is the real, convention-free guarantee.
+            One exception, on a coarse pointer only (Olivier's arbitration): the
+            sentence's first letter is capitalized, as every phone keyboard does —
+            it changes no word. Autocorrect stays off everywhere. */}
+        <ComposerPrimitive.Input
+          className="oc-composer__input"
+          placeholder={
+            unavailable
+              ? m.chat_composer_unavailable()
+              : // WHO ANSWERS with no mention (the primary, else brand/identity) —
+                // never a hardcoded provider: OpenClaw is one gateway among others
+                // (Hermes upcoming), not the product the user writes to.
+                composerAmongSeveral
+                ? m.chat_composer_placeholder_primary({ name: composerName })
+                : m.chat_composer_placeholder({ name: composerName })
+          }
+          // A finger's tap (opening a chat from the drawer, a run starting) must
+          // not raise the keyboard over half the thread: under a coarse pointer the
+          // composer is never focused for the reader (lot 8, G14).
+          autoFocus={composerAutoFocus(coarsePointer)}
+          unstable_focusOnRunStart={composerAutoFocus(coarsePointer)}
+          unstable_focusOnScrollToBottom={composerAutoFocus(coarsePointer)}
+          unstable_focusOnThreadSwitched={composerAutoFocus(coarsePointer)}
+          rows={1}
+          disabled={unavailable}
+          onKeyDownCapture={onInputKeyDown}
+          onPaste={onInputPaste}
+          autoCorrect="off"
+          autoCapitalize={coarsePointer ? "sentences" : "off"}
+          autoComplete="off"
+          data-gramm="false"
+          data-gramm_editor="false"
+          data-enable-grammarly="false"
         />
-      ) : null}
-      {chatId ? (
-        <ConversationPanel
-          chatId={chatId as Id<"chats">}
-          routing={composerRouting}
-          open={convOpen}
-          onOpenChange={setConvOpen}
-          tab={convTab}
-          onTabChange={setConvTab}
-          intent={convIntent}
-          onIntentDone={clearConvIntent}
-        />
-      ) : null}
-      <QuoteChip chatId={chatId} />
-      {/* WRAPPER, deliberately. `ComposerPrimitive.Attachments` renders a bare
-          fragment — no element of its own — so every chip became a direct child
-          of the composer, which is a COLUMN flex: ten images stacked ten rows
-          high and pushed the textarea off screen. The row below lays them out
-          horizontally, wraps, and caps its own height rather than growing for
-          ever. `:empty` hides it so it costs no gap when nothing is attached. */}
-      <div className="oc-attachrow">
-        <ComposerPrimitive.Attachments
-          components={{ Attachment: ComposerAttachmentChip }}
-        />
+        {(dictation.recording || dictation.ownsSend) && dictation.interim !== "" ? (
+          // The engine's in-flight hypothesis — display-only ghost under the
+          // caret area, replaced on every event, cleared when it commits.
+          <div className="oc-composer__interim" aria-hidden>
+            <span className="oc-composer__interim-dot" />
+            {dictation.interim}
+          </div>
+        ) : null}
       </div>
-      {/* SR-only routed-paste confirmation: the paste never lands in the
-          textarea, so without this a non-visual user cannot tell it became an
-          attachment (the visible cue is the chip's mount shimmer). */}
-      <span className="oc-sr-only" role="status" aria-live="polite">
-        {pasteAnnouncement}
-      </span>
-      <UploadProgress />
-      {/* Content fidelity: disable the browser/OS conventions that MUTATE typed
-          text (autocorrect, auto-capitalize, autocomplete) so a word is sent
-          exactly as typed — never silently swapped at submit. `data-gramm`
-          disables Grammarly. spellCheck stays ON (it underlines, it does NOT
-          mutate). NB: no third-party extension is 100% controllable — the
-          per-message "Source" view is the real, convention-free guarantee.
-          One exception, on a coarse pointer only (Olivier's arbitration): the
-          sentence's first letter is capitalized, as every phone keyboard does —
-          it changes no word. Autocorrect stays off everywhere. */}
-      <ComposerPrimitive.Input
-        className="oc-composer__input"
-        placeholder={
-          unavailable
-            ? m.chat_composer_unavailable()
-            : // WHO ANSWERS with no mention (the primary, else brand/identity) —
-              // never a hardcoded provider: OpenClaw is one gateway among others
-              // (Hermes upcoming), not the product the user writes to.
-              composerAmongSeveral
-              ? m.chat_composer_placeholder_primary({ name: composerName })
-              : m.chat_composer_placeholder({ name: composerName })
-        }
-        // A finger's tap (opening a chat from the drawer, a run starting) must
-        // not raise the keyboard over half the thread: under a coarse pointer the
-        // composer is never focused for the reader (lot 8, G14).
-        autoFocus={composerAutoFocus(coarsePointer)}
-        unstable_focusOnRunStart={composerAutoFocus(coarsePointer)}
-        unstable_focusOnScrollToBottom={composerAutoFocus(coarsePointer)}
-        unstable_focusOnThreadSwitched={composerAutoFocus(coarsePointer)}
-        rows={1}
-        disabled={unavailable}
-        onKeyDownCapture={onInputKeyDown}
-        onPaste={onInputPaste}
-        autoCorrect="off"
-        autoCapitalize={coarsePointer ? "sentences" : "off"}
-        autoComplete="off"
-        data-gramm="false"
-        data-gramm_editor="false"
-        data-enable-grammarly="false"
-      />
-      {(dictation.recording || dictation.ownsSend) && dictation.interim !== "" ? (
-        // The engine's in-flight hypothesis — display-only ghost under the
-        // caret area, replaced on every event, cleared when it commits.
-        <div className="oc-composer__interim" aria-hidden>
-          <span className="oc-composer__interim-dot" />
-          {dictation.interim}
-        </div>
-      ) : null}
       {/* No in-composer status. Anything tied to an AI response — processing,
           held-send, sub-agents — is anchored to THAT response in the thread (the
           run status + sub-agent cards), never accumulated in the neutral composer
