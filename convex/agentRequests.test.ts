@@ -2112,6 +2112,8 @@ describe("only the gateway's word closes a card for good", () => {
     expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("pending");
   });
 
+  // The gateway's own expiry, settled from its stream, lands only on a `pending` row (never
+  // over our answer in flight): no answerer on it, in 0.103.4 as now — it stays closed.
   test("a REAL expiry — the gateway's own — stays: its replay is that card, closed", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seed(t);
@@ -2125,14 +2127,60 @@ describe("only the gateway's word closes a card for good", () => {
     expect(row!.expiredLocally).toBeUndefined();
   });
 
-  test("…as does an expiry the gateway gave in answer to ours", async () => {
+  // UPGRADE FROM 0.103.4: its bridge answered `request_gone` for a socket absent or closed,
+  // without asking the gateway, and completeAnswer (unchanged since) closed the card
+  // `expired`, with no `expiredLocally` — but still naming who answered (closedByAtrium).
+  test("upgrade from 0.103.4: a card its answer path closed is reopened by the write that follows a pending `approval.get` — the failed answer forgotten, answerable again", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId } = await seed(t);
-    const { id } = await record(t, chatId);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
     bridgeSays(409, { code: "request_gone", status: "expired" });
     expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "request_gone" });
+    const closed = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(closed).toMatchObject({ status: "expired", resolvedByUserId: userId, decision: "allow-once" });
+    expect(closed.expiredLocally).toBeUndefined();
+    // After the upgrade, the reconnection's replay: `approval.get` still pending.
+    const later = Date.now() + 20 * 60_000;
+    expect(await record(t, chatId, { providerSeenSeq: 20, expiresAt: later })).toEqual({ id, created: false });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row).toMatchObject({ status: "pending", expiresAt: later });
+    for (const gone of ["resolvedByUserId", "decision", "resolvedAt", "expiredLocally"] as const) {
+      expect(row[gone], gone).toBeUndefined();
+    }
+    expect(await answer(t, userId, id!)).toEqual({ ok: true, status: "allowed" });
+  });
+
+  test("upgrade from 0.103.4: so is a stuck answer its sweep closed", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    // 0.103.4's sweep of a `submitting` row past its deadline: expired, the answerer kept.
+    await t.run((ctx) =>
+      ctx.db.patch(id!, { status: "expired", resolvedAt: Date.now(), resolvedByUserId: userId, decision: "allow-once" }),
+    );
     await record(t, chatId, { providerSeenSeq: 20 });
-    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("expired");
+    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("pending");
+  });
+
+  test("a verdict that landed first is never overwritten by the reopening", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    bridgeSays(409, { code: "request_gone", status: "expired" });
+    await answer(t, userId, id!);
+    // The gateway's own verdict reaches Convex before the replay: it is the card's…
+    expect(
+      await t.mutation(internal.agentRequests.settleFromBridge, {
+        chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status: "denied", decision: "deny",
+      }),
+    ).toEqual({ settled: true, outcome: "settled" });
+    // …its author not the answer that failed…
+    const settled = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(settled).toMatchObject({ status: "denied", decision: "deny", resolvedElsewhere: true });
+    expect(settled.resolvedByUserId).toBeUndefined();
+    // …and a late replay does not reopen it.
+    await record(t, chatId, { providerSeenSeq: 20 });
+    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("denied");
   });
 
   test("the gateway's verdict, coming after our clock closed the card, is the card's", async () => {

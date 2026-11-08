@@ -293,11 +293,13 @@ export const upsertFromBridge = internalMutation({
     if (approvalGeneration !== null) {
       const same = ofFamily.find((r) => r.providerCreatedAt === approvalGeneration);
       if (same !== undefined) {
-        // …except a card Atrium's own clock closed (`expiredLocally`): that was never the
-        // gateway's verdict, and this sighting — written only after `approval.get` showed
-        // the request pending (agent-request-observer.ts) — says it still waits. It is
-        // answerable again, until the deadline the gateway gives now. A real verdict stays.
-        if (same.status === "expired" && same.expiredLocally === true) {
+        // …except a card Atrium closed itself (closedByAtrium): that was never the gateway's
+        // verdict, and this sighting — written only after `approval.get` showed the request
+        // pending (agent-request-observer.ts) — says it still waits. It is answerable again,
+        // until the deadline the gateway gives now; the answer that failed is forgotten. A
+        // real verdict stays. Decided on the row as read in THIS transaction: a verdict
+        // committed concurrently makes Convex run it again on that verdict, never over it.
+        if (closedByAtrium(same)) {
           const reopenedAt = Date.now();
           await ctx.db.patch(same._id, {
             status: "pending",
@@ -306,6 +308,9 @@ export const upsertFromBridge = internalMutation({
             resolvedAt: undefined,
             expiredLocally: undefined,
             failureCode: undefined,
+            resolvedByUserId: undefined,
+            answers: undefined,
+            decision: undefined,
           });
           await trace(ctx, args.chatId, { phase: "reopened", source: same.source });
         }
@@ -640,7 +645,7 @@ export const settleFromBridge = internalMutation({
     // that may still be on its way (keepResolution). A card already closed: nothing.
     if (row === null) return { settled: false, outcome: await keepResolution(ctx, args) };
     // A card Atrium's own clock closed is not settled: the gateway's verdict is the card's.
-    const expiredHere = row.status === "expired" && row.expiredLocally === true;
+    const expiredHere = closedByAtrium(row);
     if (!isOpenStatus(row.status) && !expiredHere) return { settled: false, outcome: "none" };
     const now = Date.now();
     // Ours in flight: the gateway's broadcast of OUR answer can beat the action's
@@ -656,7 +661,10 @@ export const settleFromBridge = internalMutation({
       status: args.status,
       updatedAt: now,
       resolvedAt: now,
-      ...(expiredHere ? { expiredLocally: undefined } : {}),
+      // The answer that failed before is not the verdict's author.
+      ...(expiredHere
+        ? { expiredLocally: undefined, resolvedByUserId: undefined, answers: undefined, decision: undefined }
+        : {}),
     };
     // What the gateway recorded, NEVER cut: a truncated copy both misstates the answer and
     // can match ours by its prefix (codex P2). Past the bounds Atrium's own answers obey, it
@@ -709,6 +717,28 @@ export const settleFromBridge = internalMutation({
     return { settled: true, outcome: "settled" };
   },
 });
+
+/**
+ * Was this card closed `expired` by ATRIUM — its own clock or its own answer path — rather
+ * than by the gateway's verdict? Since 0.103.5 such closures are marked (`expiredLocally`).
+ * Before (0.103.4, c49dac12 convex/agentRequests.ts), the row tells them apart by who it
+ * still names as answering: prepareAnswer records the answerer (`resolvedByUserId`,
+ * :833-841); completeAnswer keeps it on a `request_gone` that says `expired` (:910-918) —
+ * the reply 0.103.4's bridge also gave for a socket absent or closed, without asking the
+ * gateway — and so does the sweep of a stuck `submitting` row (:1290-1299); revertAnswer and
+ * the sweep's unstuck path clear it (:940-947, :1310-1316). A gateway expiry
+ * (settleFromBridge) never lands over our answer in flight (`ours` + expired: not applied,
+ * :577-583), so only on a `pending` row, which never carries an answerer — it stays closed.
+ * A reply `request_gone` the gateway itself gave for a terminal record is kept the same way,
+ * and is reopened only by a later `approval.get` of the same request still pending, which a
+ * terminal record never gives.
+ */
+function closedByAtrium(row: Doc<"agentRequests">): boolean {
+  return (
+    row.status === "expired" &&
+    (row.expiredLocally === true || (row.resolvedByUserId !== undefined && row.resolvedElsewhere !== true))
+  );
+}
 
 /** What a settle did: closed the card (`settled`), kept the verdict for a card not
  *  recorded yet (`kept`), or nothing — the card was already closed, the answer on the wire
