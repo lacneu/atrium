@@ -8562,7 +8562,7 @@
         },
         "agentId": {
           "status": "handled",
-          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the agent of the session the card names — this conversation's, or a sub-agent's the conversation answers for (answersFor: its lineage, approval-lineage.ts) — is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
         },
         "scope": {
           "status": "handled",
@@ -8606,7 +8606,7 @@
         },
         "agentId": {
           "status": "handled",
-          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the agent of the session the card names — this conversation's, or a sub-agent's the conversation answers for (answersFor: its lineage, approval-lineage.ts) — is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
         },
         "scope": {
           "status": "handled",
@@ -8678,7 +8678,7 @@
         },
         "agentId": {
           "status": "handled",
-          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the agent of the session the card names — this conversation's, or a sub-agent's the conversation answers for (answersFor: its lineage, approval-lineage.ts) — is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
         },
         "scope": {
           "status": "handled",
@@ -8746,11 +8746,11 @@
         },
         "status": {
           "status": "handled",
-          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "sourceSessionKey": {
           "status": "ignored",
-          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's session and the sub-agents of its lineage only; the answer path re-checks the presentation's agentId against the card's session instead"
+          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's own session only — a sub-agent's request, which upstream also addresses to its parent through that projection, is not shown; the answer path re-checks the presentation's agentId instead"
         }
       }
     },
@@ -8778,7 +8778,7 @@
         },
         "status": {
           "status": "handled",
-          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "resolvedAtMs": {
           "status": "ignored",
@@ -8793,8 +8793,8 @@
           "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
         },
         "decision": {
-          "status": "ignored",
-          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
         },
         "reason": {
           "status": "ignored",
@@ -8826,7 +8826,7 @@
         },
         "status": {
           "status": "handled",
-          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "resolvedAtMs": {
           "status": "ignored",
@@ -8841,8 +8841,8 @@
           "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
         },
         "decision": {
-          "status": "ignored",
-          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
         },
         "reason": {
           "status": "ignored",
@@ -8874,7 +8874,7 @@
         },
         "status": {
           "status": "handled",
-          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "resolvedAtMs": {
           "status": "ignored",
@@ -8918,7 +8918,7 @@
         },
         "status": {
           "status": "handled",
-          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "resolvedAtMs": {
           "status": "ignored",
@@ -8962,11 +8962,11 @@
         },
         "status": {
           "status": "handled",
-          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "sourceSessionKey": {
           "status": "ignored",
-          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's session and the sub-agents of its lineage only; the answer path re-checks the presentation's agentId against the card's session instead"
+          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's own session only — a sub-agent's request, which upstream also addresses to its parent through that projection, is not shown; the answer path re-checks the presentation's agentId instead"
         },
         "resolvedAtMs": {
           "status": "ignored",
@@ -8981,8 +8981,8 @@
           "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
         },
         "decision": {
-          "status": "ignored",
-          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
         },
         "reason": {
           "status": "ignored",
@@ -9014,7 +9014,7 @@
         },
         "status": {
           "status": "handled",
-          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "resolvedAtMs": {
           "status": "ignored",
@@ -9029,8 +9029,8 @@
           "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
         },
         "decision": {
-          "status": "ignored",
-          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
         },
         "reason": {
           "status": "ignored",

@@ -163,6 +163,10 @@ export interface AgentRequestSettle {
   decision?: ApprovalDecision;
 }
 
+/** What Convex did with a settle (convex/agentRequests.ts settleFromBridge): closed the
+ *  card, kept the verdict for a card not recorded yet, or nothing. */
+export type AgentRequestSettleOutcome = "settled" | "kept" | "none";
+
 type Obj = Record<string, unknown>;
 
 function obj(v: unknown): Obj | null {
@@ -350,15 +354,20 @@ export interface OpenClawApprovalAnnounce {
    *  at v2026.9.36) — the alias the run's own frames name the wait by. */
   toolCallId: string | null;
   expiresAtMs: number | null;
+  /** The request's GENERATION, its creation time (`createdAtMs`): with the id, its
+   *  identity (providers/openclaw/approval-identity.ts). Read here, before any network
+   *  read, so a resolution that comes while `approval.get` fails still names it. */
+  createdAtMs: number | null;
 }
 
 /**
  * The broadcast `{id, request, createdAtMs, expiresAtMs}` — and an entry of a pending
  * list (`*.approval.list`), which has the very same shape
  * (server-methods/approval-record-lookup.ts:121-155 at v2026.9.36). Read ONLY for
- * routing — which session asked, on which run and tool call, and until when. What the
- * card shows comes from `approval.get`'s reviewer-safe presentation, never from this raw
- * request (whose exec branch carries cwd, env binding and the unredacted plan).
+ * routing — which session asked, on which run and tool call, which request it is (its id
+ * and creation time), and until when. What the card shows comes from `approval.get`'s
+ * reviewer-safe presentation, never from this raw request (whose exec branch carries cwd,
+ * env binding and the unredacted plan).
  */
 export function readOpenClawApprovalRequested(
   event: string,
@@ -379,6 +388,7 @@ export function readOpenClawApprovalRequested(
     runId: str(request?.runId) ?? null,
     toolCallId: providerId(request?.toolCallId) ?? null,
     expiresAtMs: num(p.expiresAtMs) ?? null,
+    createdAtMs: num(p.createdAtMs) ?? null,
   };
 }
 
@@ -423,6 +433,25 @@ export function readOpenClawApprovalResolved(
   };
 }
 
+/**
+ * Which request an `approval.get` snapshot says it is about: its generation (`createdAtMs`,
+ * on every snapshot) and the raising session when it names one — a terminal snapshot's
+ * reviewer-safe `source.sessionKey`, a pending one's `sourceSessionKey` (set only on a
+ * session-scoped projection): packages/gateway-protocol/src/schema/approvals.ts
+ * ApprovalHistorySourceAttributionSchema, PendingApprovalSnapshotSchema at v2026.9.36. Null
+ * when there is no snapshot object at all.
+ */
+export function readOpenClawApprovalSnapshotOrigin(
+  getResult: unknown,
+): { createdAtMs: number | null; sessionKey: string | null } | null {
+  const snapshot = obj(obj(getResult)?.approval) ?? obj(getResult);
+  if (snapshot === null) return null;
+  return {
+    createdAtMs: num(snapshot.createdAtMs) ?? null,
+    sessionKey: str(obj(snapshot.source)?.sessionKey) ?? str(snapshot.sourceSessionKey) ?? null,
+  };
+}
+
 /** The terminal status an `approval.get` snapshot records, when it has one. */
 export function readOpenClawApprovalTerminalStatus(
   getResult: unknown,
@@ -431,6 +460,34 @@ export function readOpenClawApprovalTerminalStatus(
   return status === "allowed" || status === "denied" || status === "expired" || status === "cancelled"
     ? status
     : null;
+}
+
+/**
+ * What a TERMINAL `approval.get` snapshot settles: its status, the decision an allow or a
+ * deny records (`allow-once` | `allow-always` for an allow, `deny` for a deny; none for an
+ * expiry or a cancel: packages/gateway-protocol/src/schema/approvals.ts:239-271 at
+ * v2026.9.36), and the generation it is (`createdAtMs`). Null for a snapshot that is still
+ * pending, or unreadable.
+ */
+export function readOpenClawApprovalTerminal(getResult: unknown): {
+  status: "allowed" | "denied" | "expired" | "cancelled";
+  decision?: ApprovalDecision;
+  createdAtMs: number | null;
+} | null {
+  const status = readOpenClawApprovalTerminalStatus(getResult);
+  if (status === null) return null;
+  const snapshot = obj(obj(getResult)?.approval);
+  const d = snapshot?.decision;
+  const decision =
+    (status === "allowed" && (d === "allow-once" || d === "allow-always")) ||
+    (status === "denied" && d === "deny")
+      ? d
+      : undefined;
+  return {
+    status,
+    ...(decision !== undefined ? { decision } : {}),
+    createdAtMs: num(snapshot?.createdAtMs) ?? null,
+  };
 }
 
 const SCOPE_KINDS = new Set(["message-send", "payment", "external-post", "standing-grant"]);

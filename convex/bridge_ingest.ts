@@ -2102,9 +2102,11 @@ export const ingest = httpAction(async (ctx, request) => {
         kind: "openclaw.ingest",
         chatId: body.chatId,
         correlationId: body.chatId,
-        meta: { op: body.op, status, settled: res.settled },
+        meta: { op: body.op, status, settled: res.settled, outcome: res.outcome },
       });
-      return json({ ok: true, settled: res.settled });
+      // What the settle DID — closed the card, kept the verdict for a card not recorded yet,
+      // or nothing: the bridge reads it instead of taking any answer for a closed card.
+      return json({ ok: true, settled: res.settled, outcome: res.outcome });
     }
     case "applyTranscript": {
       // Shape is re-validated by the mutation's validators (a malformed body is a 500

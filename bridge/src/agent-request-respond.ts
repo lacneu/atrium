@@ -14,7 +14,8 @@
 //
 // The outcome is a small closed vocabulary Convex acts on: `ok`, `request_gone`
 // (with the provider's own status when it says one), `invalid_answer`,
-// `session_mismatch`, or a transport code. Provider prose never crosses.
+// `session_mismatch`, `session_unavailable` (retryable: the session that would show what
+// follows is not live here), or a transport code. Provider prose never crosses.
 //
 // A SECRET passes through this file and nowhere else: it is placed in the RPC params
 // and dropped. Never logged, never echoed.
@@ -60,7 +61,33 @@ export type RespondOutcome =
       code: string;
       /** The provider's own verdict on a request that no longer waits. */
       status?: "answered" | "allowed" | "denied" | "expired" | "cancelled";
+      /** Who says it no longer waits: the GATEWAY — read from it, or refused by it. Every
+       *  OpenClaw `request_gone` (goneByGateway); absent from a Hermes one Atrium infers (a
+       *  prompt no live turn holds). Convex keeps a gateway closure for good. */
+      saidBy?: "gateway";
     };
+
+/** The route's JSON body for an outcome (server.ts `/agent-request/respond`). */
+export function respondPayload(outcome: RespondOutcome): Record<string, unknown> {
+  if (outcome.ok) return { ok: true };
+  return {
+    ok: false,
+    error: {
+      code: outcome.code,
+      ...(outcome.status !== undefined ? { status: outcome.status } : {}),
+      ...(outcome.saidBy !== undefined ? { saidBy: outcome.saidBy } : {}),
+    },
+  };
+}
+
+/** The GATEWAY's word that an OpenClaw request no longer waits — read from it, or refused
+ *  by it. Every `request_gone` respondOpenClaw returns is one: it never says so of its own
+ *  accord (a session away is retryable, `live`). */
+function goneByGateway(
+  status: "answered" | "allowed" | "denied" | "expired" | "cancelled",
+): RespondOutcome {
+  return { ok: false, httpStatus: 409, code: "request_gone", status, saidBy: "gateway" };
+}
 
 const SOURCES = new Set<AgentRequestSource>([
   "openclaw.ask_user",
@@ -162,7 +189,7 @@ const GONE_WORDS: ReadonlyArray<[RegExp, "answered" | "expired" | "cancelled"]> 
 function classifyQuestionError(err: unknown): RespondOutcome {
   const msg = (err as Error)?.message ?? String(err);
   for (const [re, status] of GONE_WORDS) {
-    if (re.test(msg)) return { ok: false, httpStatus: 409, code: "request_gone", status };
+    if (re.test(msg)) return goneByGateway(status);
   }
   if (/requires an answer|empty answer|multiple answers|unknown option|not part of this request|requires exactly one secret/i.test(msg)) {
     return { ok: false, httpStatus: 422, code: "invalid_answer" };
@@ -201,6 +228,11 @@ function sameSession(a: string | undefined, b: unknown): boolean {
   return a === b || a.toLowerCase() === b.toLowerCase();
 }
 
+/** An OpenClaw request still waiting, while the chat's session is not live here on it: NOT
+ *  a verdict — the card stays answerable, and the person may try again once the session
+ *  is back (Convex reverts the card to `pending`, convex/agentRequests.ts revertAnswer). */
+const SESSION_UNAVAILABLE: RespondOutcome = { ok: false, httpStatus: 503, code: "session_unavailable" };
+
 /** The chat's LIVE session in this bridge process, when there is one. */
 export interface OpenClawLiveSession {
   sessionKey: string;
@@ -208,9 +240,6 @@ export interface OpenClawLiveSession {
   /** Its socket: a closed one is a husk awaiting the reaper, reading nothing (codex P1,
    *  0.21.5 pass 25). */
   connection: { readonly isClosed: boolean };
-  /** Whether it answers approvals raised by `sessionKey` — its own session, or one of its
-   *  sub-agents (agent-request-observer.ts `answersFor`). Absent: its own session only. */
-  answersFor?(sessionKey: string): boolean | Promise<boolean>;
 }
 
 /** OpenClaw: re-check at the gateway, then resolve — on the operator connection. */
@@ -218,38 +247,35 @@ export async function respondOpenClaw(
   body: RespondBody,
   gateway: GatewayRpc,
   /** The chat's live socket routed this approval here (its broadcast, or the pending
-   *  list, named this session or one of its descendants). The proof used when the
-   *  approval names no agent to compare. */
+   *  list, named this exact session). The proof used when the approval names no agent to
+   *  compare. */
   routedHere: boolean,
   /** The chat's live session here. The resolution goes on a short operator connection
    *  that ingests nothing: what the agent does once released is read by THIS session's
-   *  socket. With none on the request's session (a bridge restart), the run would resume
-   *  with nobody to show, finalize or stop what follows — refused, as for Hermes (codex
-   *  P1, 0.21.5 pass 23). Both come back once the session is live again: a question
-   *  through its `question.list` replay, an approval through the pending lists
-   *  (`exec|plugin|openclaw.approval.list`) its new socket reads — a fresh card for the
-   *  request that still waits. */
+   *  socket. With none on the request's session (a bridge restart, a socket closed or
+   *  away), the run would resume with nobody to show, finalize or stop what follows — not
+   *  resolved (codex P1, 0.21.5 pass 23). But that absence is never a VERDICT on the
+   *  request: the gateway is still asked, and only what IT says closes a card (a terminal
+   *  record, an id it does not know). One it says still waits is refused RETRYABLE
+   *  (`session_unavailable`): the card stays answerable, and the person tries again once the
+   *  session is back — its new socket's replay (`question.list`, the pending approval lists)
+   *  shows the request again. */
   live: OpenClawLiveSession | undefined,
 ): Promise<RespondOutcome> {
-  const isQuestion = body.source === "openclaw.ask_user" || body.source === "openclaw.secret";
-  // The request's session must be the live conversation's — or, for an APPROVAL, one of
-  // its sub-agents: upstream addresses an approval to the raising session's lineage
-  // (approval-session-audience.ts:52-107), the card names the child's session, and what
-  // the child does once released is read by this conversation's socket.
-  const sessionAnswered =
-    live !== undefined &&
-    (sameSession(body.sessionKey, live.sessionKey) ||
-      (!isQuestion &&
-        body.sessionKey !== undefined &&
-        (await live.answersFor?.(body.sessionKey)) === true));
+  // The request's session must be the live conversation's own: one raised by a sub-agent —
+  // the observer shows none (agent-request-observer.ts) — or by a session since replaced is
+  // never answered from here. Refused before any read, the card left as it is: a refusal,
+  // not a verdict.
   if (
-    live === undefined ||
-    live.connection.isClosed ||
-    live.instanceName !== body.instanceName ||
-    !sessionAnswered
+    live !== undefined &&
+    live.instanceName === body.instanceName &&
+    !sameSession(body.sessionKey, live.sessionKey)
   ) {
-    return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+    return { ok: false, httpStatus: 403, code: "session_mismatch" };
   }
+  const liveHere =
+    live !== undefined && !live.connection.isClosed && live.instanceName === body.instanceName;
+  const isQuestion = body.source === "openclaw.ask_user" || body.source === "openclaw.secret";
   if (isQuestion) {
     let record: Record<string, unknown> | null = null;
     try {
@@ -262,7 +288,7 @@ export async function respondOpenClaw(
     } catch (err) {
       return classifyQuestionError(err);
     }
-    if (record === null) return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+    if (record === null) return goneByGateway("expired");
     // The id is the gateway's; the chat is ours. They must name the same session, or
     // an answer typed in one conversation would settle another's question.
     if (!sameSession(body.sessionKey, record.sessionKey)) {
@@ -271,25 +297,24 @@ export async function respondOpenClaw(
     // Same id, another request: the gateway forgets a settled question after 15 s and
     // takes caller-chosen ids, so the card's generation must be the one still asked.
     if (!sameGeneration(body.providerCreatedAt, record.createdAtMs)) {
-      return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+      return goneByGateway("expired");
     }
     if (record.status !== "pending") {
       const s = record.status;
-      return {
-        ok: false,
-        httpStatus: 409,
-        code: "request_gone",
-        status: s === "answered" || s === "cancelled" || s === "expired" ? s : "expired",
-      };
+      return goneByGateway(
+        s === "answered" || s === "cancelled" || s === "expired" ? s : "expired",
+      );
     }
     // …and the same QUESTION: a reused id under a clock that stood still carries the same
     // creation time and another question — the card must not answer it (codex P1).
     if (body.questionShape !== undefined) {
       const asked = readOpenClawQuestionRequested(record);
       if (asked === null || questionShape(asked.questions) !== body.questionShape) {
-        return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+        return goneByGateway("expired");
       }
     }
+    // Still waiting, by the gateway's own word: answered only from the live session.
+    if (!liveHere) return SESSION_UNAVAILABLE;
     try {
       const res = payloadOf(
         body.skip
@@ -324,41 +349,40 @@ export async function respondOpenClaw(
       approval?: { status?: unknown; createdAtMs?: unknown; presentation?: { agentId?: unknown } };
     } | null;
     if (!sameGeneration(body.providerCreatedAt, got?.approval?.createdAtMs)) {
-      return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+      return goneByGateway("expired");
     }
     // The id is the gateway's; the chat is ours — the same re-check as for a question.
     // A PENDING snapshot names no session (`sourceSessionKey` is set only on the
     // session-scoped projection; absent from every approval.get captured live on
     // 2026.9.5), but it names the AGENT that asked. An exec or plugin approval whose
-    // agent is not the one of the session the card names (this conversation's, or the
-    // sub-agent's that raised it) is never resolved from here. A system-agent
+    // agent is not this conversation's is never resolved from here. A system-agent
     // approval is raised by the gateway's own system agent, whatever the chat.
     // An exec approval may name NO agent (upstream allows `agentId: null`); it is then
     // answerable only on the proof that this chat's own socket routed it here.
+    // (With no live session here, that proof cannot be had yet — nothing is resolved then,
+    // and the person is told to try again, below.)
     const presentedAgent = got?.approval?.presentation?.agentId;
     const agentChecked =
       typeof presentedAgent === "string" && presentedAgent !== ""
         ? sameAgent(body.sessionKey, presentedAgent)
-        : routedHere;
+        : routedHere || !liveHere;
     if (body.approvalKind !== "system-agent" && !agentChecked) {
       return { ok: false, httpStatus: 403, code: "session_mismatch" };
     }
     const status = got?.approval?.status;
     if (status !== "pending") {
-      return {
-        ok: false,
-        httpStatus: 409,
-        code: "request_gone",
-        status:
-          status === "allowed" || status === "denied" || status === "expired" || status === "cancelled"
-            ? status
-            : "expired",
-      };
+      return goneByGateway(
+        status === "allowed" || status === "denied" || status === "expired" || status === "cancelled"
+          ? status
+          : "expired",
+      );
     }
+    // Still waiting, by the gateway's own word: answered only from the live session.
+    if (!liveHere) return SESSION_UNAVAILABLE;
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
     if (/not found|unknown approval/i.test(msg)) {
-      return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+      return goneByGateway("expired");
     }
     return transportFailure(msg);
   }
@@ -373,12 +397,9 @@ export async function respondOpenClaw(
     if (res?.applied === false) {
       // First answer wins: someone else decided first. Their verdict is the record.
       const s = res.approval?.status;
-      return {
-        ok: false,
-        httpStatus: 409,
-        code: "request_gone",
-        status: s === "allowed" || s === "denied" || s === "expired" || s === "cancelled" ? s : "expired",
-      };
+      return goneByGateway(
+        s === "allowed" || s === "denied" || s === "expired" || s === "cancelled" ? s : "expired",
+      );
     }
     // Only `applied: true` confirms OUR decision was recorded; an unreadable reply is
     // not one (a retry then reads the approval's real state first).
@@ -387,7 +408,7 @@ export async function respondOpenClaw(
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
     if (/not found|unknown approval|already/i.test(msg)) {
-      return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+      return goneByGateway("expired");
     }
     if (/decision.*not allowed|invalid decision/i.test(msg)) {
       return { ok: false, httpStatus: 422, code: "invalid_answer" };

@@ -1497,3 +1497,40 @@ describe("the ingest route never cuts an observed verdict (codex, 0.21.5 pass 12
     expect(statuses).toContainEqual(["Delete production data?", "pending"]);
   });
 });
+
+describe("the ingest route says what a settle did", () => {
+  test("kept for a card not recorded yet, which is then recorded settled; nothing once closed", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const settle = (status: "allowed" | "denied", decision: "allow-once" | "deny") =>
+      post(
+        t,
+        { op: "settleAgentRequest", chatId: a.chatId, providerRequestId: "ap_early", providerCreatedAt: 7, family: "approval", status, decision },
+        a.secret,
+      );
+    const early = await settle("allowed", "allow-once");
+    expect(early.status).toBe(200);
+    expect(await early.json()).toEqual({ ok: true, settled: false, outcome: "kept" });
+    const up = await post(
+      t,
+      {
+        op: "upsertAgentRequest",
+        chatId: a.chatId,
+        messageId: a.messageId,
+        source: "openclaw.exec",
+        providerRequestId: "ap_early",
+        providerCreatedAt: 7,
+        approvalKind: "exec",
+        approval: { command: "ls", decisions: ["allow-once", "deny"] },
+      },
+      a.secret,
+    );
+    expect(up.status).toBe(200);
+    const rows = await t.run((ctx) => ctx.db.query("agentRequests").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ instanceName: "alpha", status: "allowed", decision: "allow-once", resolvedElsewhere: true });
+    expect(await (await settle("denied", "deny")).json()).toEqual({ ok: true, settled: false, outcome: "none" });
+    expect((await t.run((ctx) => ctx.db.get(rows[0]!._id)))!.status).toBe("allowed");
+  });
+});

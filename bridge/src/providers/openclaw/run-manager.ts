@@ -33,6 +33,12 @@ import {
   type ProvenancePart,
 } from "../../core/provenance.js";
 import { EXEC_APPROVAL_FOLLOWUP_PREFIX } from "./run-families.js";
+import {
+  ApprovalGenerations,
+  ApprovalIdentitySet,
+  approvalIdentity,
+  type ApprovalGeneration,
+} from "./approval-identity.js";
 import { redactAllQuestionAnswers } from "../../core/secret-answer-redaction.js";
 import { errForLog } from "../../core/log-safe-error.js";
 
@@ -942,6 +948,93 @@ export class RunManager {
     this.frameSampled.clear();
     this.tallyDumped = false;
     await this.sink.resumeTurn(messageId, runId);
+    // The approvals of THIS run noted before the turn came back — a reconnection's replay
+    // lists them while `/resume` still reads the session — hold it now, each until its own
+    // deadline: the run's `waiting-approval` went to the socket that closed, and the
+    // observer notes each request once. Only what still waits: a request — an identity —
+    // seen resolved is never held again.
+    for (const kept of [...this.approvalsWithoutTurn.values()]) {
+      if (kept.runId !== runId || this.approvalsResolved.has(kept.approvalId, kept.generation)) continue;
+      await this.applyOrdered(() =>
+        this.normalizer.noteApprovalRequested(
+          kept.approvalId,
+          {
+            kind: kept.kind,
+            runId: kept.runId,
+            toolCallId: kept.toolCallId,
+            expiresInSec: kept.deadline === null ? null : Math.max(0, kept.deadline - now),
+            generation: kept.generation,
+          },
+          now,
+        ),
+      );
+    }
+  }
+
+  private static readonly MAX_APPROVALS_WITHOUT_TURN = 64;
+  /** This session's approvals seen RESOLVED (their broadcast, a terminal snapshot, an answer
+   *  given here), by IDENTITY — the id and its generation (approval-identity.ts) — with or
+   *  without a turn: never held again — not from a list read before they were decided and
+   *  answered after, nor when a turn resumes. A new generation of the same id is another
+   *  request, never blocked by them. Bounded like the normalizer's deadlines. */
+  private readonly approvalsResolved = new ApprovalIdentitySet(RunManager.MAX_APPROVALS_WITHOUT_TURN);
+  /** The generations announced for each id, each marked once resolved: a resolution that
+   *  names none (an answer without it) is about the one still waiting, else the only one
+   *  known. */
+  private readonly approvalGenerations = new ApprovalGenerations(RunManager.MAX_APPROVALS_WITHOUT_TURN);
+
+  /** This session's approval requests noted while no turn was active, by identity, each
+   *  with its own deadline on this clock (null: none known): re-applied to the turn that
+   *  resumes their run (resumeTurn), forgotten once settled. Kept apart from the observer's
+   *  memory of the cards, which notes each request once. Bounded like the normalizer's
+   *  deadlines. */
+  private readonly approvalsWithoutTurn = new Map<
+    string,
+    {
+      approvalId: string;
+      generation: ApprovalGeneration;
+      kind: "exec" | "plugin" | "system-agent";
+      runId: string | null;
+      toolCallId: string | null;
+      deadline: number | null;
+    }
+  >();
+
+  private keepApprovalWithoutTurn(
+    approvalId: string,
+    generation: ApprovalGeneration,
+    facts: {
+      kind: "exec" | "plugin" | "system-agent";
+      runId: string | null;
+      toolCallId: string | null;
+      expiresInSec: number | null;
+      hold?: boolean;
+    },
+    now: number,
+  ): void {
+    const left = facts.expiresInSec;
+    const deadline = left !== null && Number.isFinite(left) && left >= 0 ? now + left : null;
+    const key = approvalIdentity(approvalId, generation);
+    const kept = this.approvalsWithoutTurn.get(key);
+    if (facts.hold === false) {
+      // A deadline update only (the record's snapshot): never a reason to keep a request.
+      if (kept !== undefined && deadline !== null) kept.deadline = deadline;
+      return;
+    }
+    this.approvalsWithoutTurn.delete(key);
+    this.approvalsWithoutTurn.set(key, {
+      approvalId,
+      generation,
+      kind: facts.kind,
+      runId: facts.runId,
+      toolCallId: facts.toolCallId,
+      deadline: deadline ?? kept?.deadline ?? null,
+    });
+    while (this.approvalsWithoutTurn.size > RunManager.MAX_APPROVALS_WITHOUT_TURN) {
+      const oldest = this.approvalsWithoutTurn.keys().next().value;
+      if (oldest === undefined) break;
+      this.approvalsWithoutTurn.delete(oldest);
+    }
   }
 
   /** A user /abort RPC targeted this chat's active run — see TurnSink. */
@@ -978,7 +1071,9 @@ export class RunManager {
 
   /** An approval request of THIS session (its broadcast or the pending list): its own
    *  deadline bounds the turn's approval wait, and an exec one naming the turn's run
-   *  holds it (see Normalizer.noteApprovalRequested). */
+   *  holds it (see Normalizer.noteApprovalRequested). With no turn active it is KEPT,
+   *  for the turn that resumes its run (resumeTurn). `generation`: with the id, the
+   *  request's identity (null: not known). */
   async noteApprovalRequested(
     approvalId: string,
     facts: {
@@ -987,19 +1082,39 @@ export class RunManager {
       toolCallId: string | null;
       expiresInSec: number | null;
       hold?: boolean;
+      generation?: ApprovalGeneration;
     },
     now: number,
   ): Promise<void> {
-    if (!this.sink.active) return;
-    await this.applyOrdered(() => this.normalizer.noteApprovalRequested(approvalId, facts, now));
+    const generation = facts.generation ?? null;
+    this.approvalGenerations.announce(approvalId, generation);
+    // Already decided: a list read before the decision and answered after it is stale.
+    if (this.approvalsResolved.has(approvalId, generation)) return;
+    if (!this.sink.active) {
+      this.keepApprovalWithoutTurn(approvalId, generation, facts, now);
+      return;
+    }
+    await this.applyOrdered(() =>
+      this.normalizer.noteApprovalRequested(approvalId, { ...facts, generation }, now),
+    );
   }
 
-  /** An approval of this turn was settled outside its frames (see
-   *  Normalizer.noteApprovalSettled). */
-  async noteApprovalSettled(approvalId: string, now: number): Promise<void> {
+  /** An approval of this session was settled outside its frames (see
+   *  Normalizer.noteApprovalSettled): that IDENTITY — `generation` null when the caller does
+   *  not know it, then the one announced and still waiting, else the only one known. */
+  async noteApprovalSettled(
+    approvalId: string,
+    now: number,
+    generation: ApprovalGeneration = null,
+  ): Promise<void> {
+    const decided = generation ?? this.approvalGenerations.attach(approvalId);
+    // Decided: never held again, by this turn or one resumed later.
+    this.approvalGenerations.resolve(approvalId, decided);
+    this.approvalsResolved.add(approvalId, decided);
+    this.approvalsWithoutTurn.delete(approvalIdentity(approvalId, decided));
     if (!this.sink.active) return;
     await this.applyOrdered(() =>
-      this.normalizer.noteApprovalSettled(approvalId, now),
+      this.normalizer.noteApprovalSettled(approvalId, now, decided),
     );
   }
 

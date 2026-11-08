@@ -184,6 +184,8 @@ describe("OpenClaw approvals", () => {
       // The tool call that waits: the alias the run's own `waiting-approval` names it by.
       toolCallId: "call_1:exec:1",
       expiresAtMs: 2,
+      // Its generation: with the id, the request's identity.
+      createdAtMs: 1,
     });
     // Nothing of the raw request (cwd, command) is carried: the card shows the
     // reviewer-safe presentation instead.

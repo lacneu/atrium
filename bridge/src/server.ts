@@ -316,6 +316,7 @@ import {
   parseRespondBody,
   respondHermes,
   respondOpenClaw,
+  respondPayload,
   type RespondOutcome,
 } from "./agent-request-respond.js";
 import { errForLog } from "./core/log-safe-error.js";
@@ -7060,7 +7061,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               respondOpenClaw(
                 body,
                 conn,
-                registry.peekByChat(body.chatId)?.routedApproval(body.providerRequestId) === true,
+                registry.peekByChat(body.chatId)?.routedApproval(body.providerRequestId, body.providerCreatedAt) === true,
                 registry.peekByChat(body.chatId),
               ),
             noteHandshakeFor(body.instanceName),
@@ -7078,23 +7079,13 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // approval's allow is carried by a follow-up run, not by a `resolved` frame on
       // the run that asked, so without this the turn would wait out its bound.
       if (outcome.ok && !isHermes && body.approvalKind !== undefined) {
-        registry.peekByChat(body.chatId)?.noteApprovalAnswered(body.providerRequestId);
+        registry.peekByChat(body.chatId)?.noteApprovalAnswered(body.providerRequestId, body.providerCreatedAt);
       }
       // Structural only — never an answer, a decision's subject or a secret.
       console.log(
         `[agent-request] respond chat=${body.chatId} source=${body.source} skip=${body.skip} -> ${outcome.ok ? "ok" : outcome.code}`,
       );
-      if (outcome.ok) {
-        sendJson(res, 200, { ok: true });
-      } else {
-        sendJson(res, outcome.httpStatus, {
-          ok: false,
-          error: {
-            code: outcome.code,
-            ...(outcome.status !== undefined ? { status: outcome.status } : {}),
-          },
-        });
-      }
+      sendJson(res, outcome.ok ? 200 : outcome.httpStatus, respondPayload(outcome));
       return;
     }
 

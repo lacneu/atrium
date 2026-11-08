@@ -353,10 +353,10 @@ describe("the bridge records what an agent asked", () => {
         status: "cancelled",
       });
     // A's settle, late: about the generation seen by seq 10 — A, already closed.
-    expect(await settle(10)).toEqual({ settled: false });
+    expect(await settle(10)).toEqual({ settled: false, outcome: "none" });
     expect((await t.run((ctx) => ctx.db.get(b.id!)))!.status).toBe("pending");
     // B's own settle closes B.
-    expect(await settle(20)).toEqual({ settled: true });
+    expect(await settle(20)).toEqual({ settled: true, outcome: "settled" });
   });
 
   test("a late settle closes the generation it is ABOUT when two share a creation time (codex, 0.21.5 pass 21)", async () => {
@@ -379,7 +379,7 @@ describe("the bridge records what an agent asked", () => {
       status: "answered",
       answers: [{ id: "confirm", values: ["Yes"] }],
     });
-    expect(late).toEqual({ settled: false }); // the staging row was already closed
+    expect(late).toEqual({ settled: false, outcome: "none" }); // the staging row was already closed
     const row = (await t.run((ctx) => ctx.db.get(production.id!)))!;
     expect(row.status).toBe("pending");
     expect(row.answers).toBeUndefined();
@@ -394,7 +394,7 @@ describe("the bridge records what an agent asked", () => {
       questionShape: questionShape(q("Delete production data?"))!,
       status: "cancelled",
     });
-    expect(own).toEqual({ settled: true });
+    expect(own).toEqual({ settled: true, outcome: "settled" });
   });
 
   test("a LATE write of a request that has since settled raises no phantom card (codex, 0.21.5 pass 20)", async () => {
@@ -1855,5 +1855,396 @@ describe("settled elsewhere, swept, deleted", () => {
       status: "expired",
     });
     expect(await as.query(api.agentRequests.pendingByChat, {})).toEqual([]);
+  });
+});
+
+// An approval's verdict can reach Convex BEFORE its card: an older socket's write still in
+// flight while the new socket read the request already decided (agent-request-observer's
+// terminal snapshot). The verdict is kept for the card, which is then recorded in it.
+describe("a verdict that reaches Convex before its card", () => {
+  const EXEC = {
+    source: "openclaw.exec" as const,
+    providerRequestId: "ap_early",
+    providerCreatedAt: 100,
+    approvalKind: "exec" as const,
+    sessionKey: "agent:denis:atrium:chat:alice:c1",
+    approval: { command: "rm -rf build", decisions: ["allow-once", "allow-always", "deny"] },
+  };
+  type T = ReturnType<typeof convexTest>;
+  const settleEarly = (t: T, chatId: Id<"chats">, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.agentRequests.settleFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      providerRequestId: EXEC.providerRequestId,
+      providerCreatedAt: EXEC.providerCreatedAt,
+      family: "approval" as const,
+      status: "allowed" as const,
+      decision: "allow-once" as const,
+      ...over,
+    });
+  const record = (t: T, chatId: Id<"chats">, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...EXEC,
+      expiresAt: Date.now() + 15 * 60_000,
+      ...over,
+    });
+  const keptVerdicts = (t: T) => t.run((ctx) => ctx.db.query("agentRequestResolutions").collect());
+  const agentRequestNotes = async (t: T) =>
+    (await t.run((ctx) => ctx.db.query("notifications").collect())).filter((n) => n.kind === "agent_request");
+
+  test("it is kept, and the card created late is recorded in it — never pending, nobody notified", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    expect(await keptVerdicts(t)).toMatchObject([
+      { chatId, instanceName: INSTANCE, providerRequestId: "ap_early", providerCreatedAt: 100, status: "allowed", decision: "allow-once" },
+    ]);
+    const res = await record(t, chatId);
+    expect(res.created).toBe(true);
+    const row = await t.run((ctx) => ctx.db.get(res.id!));
+    expect(row).toMatchObject({ kind: "approval", status: "allowed", resolvedElsewhere: true, decision: "allow-once" });
+    expect(row!.resolvedAt).toBeTypeOf("number");
+    expect(row!.resolvedByUserId).toBeUndefined();
+    // Not taken by that creation: the generation's terminal mark for its whole window.
+    expect(await keptVerdicts(t)).toHaveLength(1);
+    expect(await agentRequestNotes(t)).toEqual([]);
+    expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
+    // A replay of the creation is that same settled card.
+    expect(await record(t, chatId)).toEqual({ id: res.id, created: false });
+  });
+
+  test("an expiry kept is the card's outcome, decided by nobody", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    expect(await settleEarly(t, chatId, { status: "expired", decision: undefined })).toEqual({ settled: false, outcome: "kept" });
+    const row = await t.run(async (ctx) => ctx.db.get((await record(t, chatId)).id!));
+    expect(row).toMatchObject({ status: "expired" });
+    expect(row!.resolvedElsewhere).toBeUndefined();
+    expect(row!.decision).toBeUndefined();
+  });
+
+  test("a second settle changes nothing: the first verdict is kept once, and nothing once the card is closed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    // Even another verdict for that generation: the first stands, as on a closed card.
+    expect(await settleEarly(t, chatId, { status: "denied", decision: "deny" })).toEqual({ settled: false, outcome: "kept" });
+    expect(await keptVerdicts(t)).toMatchObject([{ status: "allowed", decision: "allow-once" }]);
+    const res = await record(t, chatId);
+    expect(await settleEarly(t, chatId, { status: "denied", decision: "deny" })).toEqual({ settled: false, outcome: "none" });
+    expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({ status: "allowed", decision: "allow-once" });
+    // Nothing more kept by a settle that found its card closed: the first verdict, alone.
+    expect(await keptVerdicts(t)).toMatchObject([{ status: "allowed", decision: "allow-once" }]);
+  });
+
+  test("two creations of one generation still in flight when its verdict was kept: ONE card, decided, nobody notified — the one seen later included (codex, lot « trames 1 » pass 6)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    // Two sockets read it pending before it was decided; its verdict lands first.
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    const first = await record(t, chatId, { providerSeenSeq: 10 });
+    expect(first.created).toBe(true);
+    // The other socket's write, seen LATER (a higher sighting seq): that same card.
+    expect(await record(t, chatId, { providerSeenSeq: 20 })).toEqual({ id: first.id, created: false });
+    const rows = await t.run((ctx) => ctx.db.query("agentRequests").collect());
+    expect(rows.map((r) => [r.providerCreatedAt, r.status])).toEqual([[100, "allowed"]]);
+    expect(await agentRequestNotes(t)).toEqual([]);
+    expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
+  });
+
+  test("a late write of a generation recorded and settled since is that card — never a new pending one, whatever it saw later", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const open = await record(t, chatId, { providerSeenSeq: 10 });
+    expect(await settleEarly(t, chatId)).toEqual({ settled: true, outcome: "settled" });
+    expect(await record(t, chatId, { providerSeenSeq: 20 })).toEqual({ id: open.id, created: false });
+    const rows = await t.run((ctx) => ctx.db.query("agentRequests").collect());
+    expect(rows.map((r) => r.status)).toEqual(["allowed"]);
+    expect(await agentRequestNotes(t)).toHaveLength(1);
+  });
+
+  // Hypothetical upstream (an approval id names one request, bridge/src/providers/openclaw/
+  // approval-identity.ts): pins that another generation is never taken for this one's card.
+  test("a REAL reuse — the id given again under another generation — is a new pending card, asked anew", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const old = await record(t, chatId, { providerSeenSeq: 10 });
+    expect(await settleEarly(t, chatId)).toEqual({ settled: true, outcome: "settled" });
+    const reused = await record(t, chatId, { providerCreatedAt: 400, providerSeenSeq: 20 });
+    expect(reused.created).toBe(true);
+    expect(reused.id).not.toEqual(old.id);
+    expect((await t.run((ctx) => ctx.db.get(reused.id!)))!.status).toBe("pending");
+    expect((await t.run((ctx) => ctx.db.get(old.id!)))!.status).toBe("allowed");
+    // Each request asked for its own answer.
+    expect(await agentRequestNotes(t)).toHaveLength(2);
+  });
+
+  test("another generation under the same id is not touched", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const open = await record(t, chatId, { providerSeenSeq: 10 });
+    // The verdict of a LATER request reusing the id: not this card's.
+    expect(await settleEarly(t, chatId, { providerCreatedAt: 200 })).toEqual({ settled: false, outcome: "kept" });
+    expect((await t.run((ctx) => ctx.db.get(open.id!)))!.status).toBe("pending");
+    // The open card's replay neither takes it nor changes.
+    expect(await record(t, chatId, { providerSeenSeq: 10 })).toEqual({ id: open.id, created: false });
+    expect((await t.run((ctx) => ctx.db.get(open.id!)))!.status).toBe("pending");
+    expect(await keptVerdicts(t)).toMatchObject([{ providerCreatedAt: 200, status: "allowed" }]);
+    // …and neither does a card of yet another generation.
+    const third = await record(t, chatId, { providerCreatedAt: 300, providerSeenSeq: 30 });
+    expect((await t.run((ctx) => ctx.db.get(third.id!)))!.status).toBe("pending");
+    expect(await keptVerdicts(t)).toHaveLength(1);
+  });
+
+  test("nothing is kept for a question, nor without a generation or a family", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    expect(await settleEarly(t, chatId, { family: "question", status: "cancelled", decision: undefined })).toEqual({ settled: false, outcome: "none" });
+    expect(await settleEarly(t, chatId, { providerCreatedAt: undefined })).toEqual({ settled: false, outcome: "none" });
+    expect(await settleEarly(t, chatId, { family: undefined })).toEqual({ settled: false, outcome: "none" });
+    expect(await keptVerdicts(t)).toEqual([]);
+    const res = await record(t, chatId);
+    expect((await t.run((ctx) => ctx.db.get(res.id!)))!.status).toBe("pending");
+  });
+
+  test("the sweep forgets a verdict whose card never came, and only once it has lapsed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    await settleEarly(t, chatId);
+    expect((await t.mutation(internal.agentRequests.reapExpired, {})).resolutionsPurged).toBe(0);
+    expect(await keptVerdicts(t)).toHaveLength(1);
+    await t.run(async (ctx) => {
+      for (const k of await ctx.db.query("agentRequestResolutions").collect()) {
+        await ctx.db.patch(k._id, { expiresAt: Date.now() - 1 });
+      }
+    });
+    expect((await t.mutation(internal.agentRequests.reapExpired, {})).resolutionsPurged).toBe(1);
+    expect(await keptVerdicts(t)).toEqual([]);
+  });
+});
+
+// A socket away, or Atrium's own clock, is never a VERDICT on a request: only the gateway's
+// word closes a card for good (lot « trames 1 », pass 8). An answer given while the
+// conversation's socket is away is refused retryable (the bridge's `session_unavailable`);
+// a card closed by our clock is reopened by the sighting the gateway says still waits.
+describe("only the gateway's word closes a card for good", () => {
+  const EXEC = {
+    source: "openclaw.exec" as const,
+    providerRequestId: "ap_offline",
+    providerCreatedAt: 500,
+    approvalKind: "exec" as const,
+    sessionKey: "agent:denis:atrium:chat:alice:c1",
+    approval: { command: "make deploy", decisions: ["allow-once", "deny"] },
+  };
+  type T = ReturnType<typeof convexTest>;
+  const record = (t: T, chatId: Id<"chats">, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...EXEC,
+      expiresAt: Date.now() + 15 * 60_000,
+      ...over,
+    });
+  const answer = (t: T, userId: Id<"users">, requestId: Id<"agentRequests">) =>
+    t.withIdentity({ subject: `${userId}|session` }).action(api.agentRequests.answer, { requestId, decision: "allow-once" });
+  const bridgeSays = (status: number, error: Record<string, unknown>) =>
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error }), { status }));
+  const sweepNow = async (t: T, id: Id<"agentRequests">) => {
+    await t.run((ctx) => ctx.db.patch(id, { expiresAt: Date.now() - 5 * 60_000 }));
+    await t.mutation(internal.agentRequests.reapExpired, {});
+  };
+
+  test("an answer while the conversation's socket is away: the card stays pending, the error retryable — and the next try goes through", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId);
+    bridgeSays(503, { code: "session_unavailable" });
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "session_unavailable" });
+    const row = await t.run((ctx) => ctx.db.get(id!));
+    expect(row).toMatchObject({ status: "pending", failureCode: "session_unavailable" });
+    expect(row!.decision).toBeUndefined();
+    expect(await answer(t, userId, id!)).toEqual({ ok: true, status: "allowed" });
+  });
+
+  test("a card our clock expired is reopened by the replay the gateway says still waits — answerable, until the deadline it gives now", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    await sweepNow(t, id!);
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
+    // The reconnection's replay: `approval.get` said pending, so the bridge writes it again.
+    const later = Date.now() + 20 * 60_000;
+    expect(await record(t, chatId, { providerSeenSeq: 20, expiresAt: later })).toEqual({ id, created: false });
+    const row = await t.run((ctx) => ctx.db.get(id!));
+    expect(row).toMatchObject({ status: "pending", expiresAt: later });
+    expect(row!.expiredLocally).toBeUndefined();
+    expect(row!.resolvedAt).toBeUndefined();
+    expect(await t.run((ctx) => ctx.db.query("agentRequests").collect())).toHaveLength(1);
+    expect(await answer(t, userId, id!)).toEqual({ ok: true, status: "allowed" });
+  });
+
+  test("…and so is one an answer found past its deadline", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId);
+    await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - 1 }));
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "AGENT_REQUEST_EXPIRED" });
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
+    await record(t, chatId, { providerSeenSeq: 20 });
+    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("pending");
+  });
+
+  test("…and one whose deadline passed while the refused answer was on the wire", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId);
+    fetchMock.mockImplementationOnce(async () => {
+      // The deadline passes by OUR clock while the bridge is asked.
+      await t.run((ctx) => ctx.db.patch(id!, { expiresAt: Date.now() - 1 }));
+      return new Response(JSON.stringify({ ok: false, error: { code: "session_unavailable" } }), { status: 503 });
+    });
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "session_unavailable" });
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
+    await record(t, chatId, { providerSeenSeq: 20 });
+    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("pending");
+  });
+
+  // The gateway's own expiry, settled from its stream, lands only on a `pending` row (never
+  // over our answer in flight): no answerer on it, in 0.103.4 as now — it stays closed.
+  test("a REAL expiry — the gateway's own — stays: its replay is that card, closed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    await t.mutation(internal.agentRequests.settleFromBridge, {
+      chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status: "expired",
+    });
+    expect(await record(t, chatId, { providerSeenSeq: 20 })).toEqual({ id, created: false });
+    const row = await t.run((ctx) => ctx.db.get(id!));
+    expect(row!.status).toBe("expired");
+    expect(row!.expiredLocally).toBeUndefined();
+  });
+
+  // Codex, pass 10: an OLD socket read `approval.get` still pending, then lost its socket while
+  // its write was retried; meanwhile an answer got the gateway's `request_gone` (expired), and
+  // the expiry's broadcast was missed. The late write must not reopen the card.
+  test("a pending snapshot, then an expiry the gateway confirmed in answer to ours, then that snapshot's late write: the card stays expired, its deadline untouched", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    bridgeSays(409, { code: "request_gone", status: "expired", saidBy: "gateway" });
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "request_gone" });
+    const closed = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(closed).toMatchObject({ status: "expired", closedByGateway: true });
+    // The snapshot's deadline: past by now (it expired)…
+    expect(await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 })).toEqual({ id, created: false });
+    // …or still ahead when it was read: the gateway's word stands either way.
+    expect(await record(t, chatId, { providerSeenSeq: 12, expiresAt: Date.now() + 10 * 60_000 })).toEqual({ id, created: false });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row.status).toBe("expired");
+    expect(row.expiresAt).toBe(closed.expiresAt);
+  });
+
+  test("a sighting whose own deadline is past reopens nothing — and no default deadline stands in for it", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    // A card Atrium closed itself (a 0.103.4 bridge's `request_gone`: no gateway word)…
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    bridgeSays(409, { code: "request_gone", status: "expired" });
+    await answer(t, userId, id!);
+    const closed = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(closed.closedByGateway).toBeUndefined();
+    // …and a write whose deadline is past, or that names none: still closed, deadline kept.
+    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 });
+    await record(t, chatId, { providerSeenSeq: 12, expiresAt: undefined });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row.status).toBe("expired");
+    expect(row.expiresAt).toBe(closed.expiresAt);
+    // One whose deadline is ahead does reopen it, until that deadline (the upgrade, below).
+    const ahead = Date.now() + 10 * 60_000;
+    await record(t, chatId, { providerSeenSeq: 13, expiresAt: ahead });
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "pending", expiresAt: ahead });
+  });
+
+  test("…as for a card our clock expired", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    await sweepNow(t, id!);
+    await record(t, chatId, { providerSeenSeq: 11, expiresAt: Date.now() - 1_000 });
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "expired", expiredLocally: true });
+  });
+
+  // UPGRADE FROM 0.103.4: its bridge answered `request_gone` for a socket absent or closed,
+  // without asking the gateway, and completeAnswer (unchanged since) closed the card
+  // `expired`, with no `expiredLocally` — but still naming who answered (closedByAtrium).
+  test("upgrade from 0.103.4: a card its answer path closed is reopened by the write that follows a pending `approval.get` — the failed answer forgotten, answerable again", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    bridgeSays(409, { code: "request_gone", status: "expired" });
+    expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "request_gone" });
+    const closed = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(closed).toMatchObject({ status: "expired", resolvedByUserId: userId, decision: "allow-once" });
+    expect(closed.expiredLocally).toBeUndefined();
+    // After the upgrade, the reconnection's replay: `approval.get` still pending.
+    const later = Date.now() + 20 * 60_000;
+    expect(await record(t, chatId, { providerSeenSeq: 20, expiresAt: later })).toEqual({ id, created: false });
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row).toMatchObject({ status: "pending", expiresAt: later });
+    for (const gone of ["resolvedByUserId", "decision", "resolvedAt", "expiredLocally"] as const) {
+      expect(row[gone], gone).toBeUndefined();
+    }
+    expect(await answer(t, userId, id!)).toEqual({ ok: true, status: "allowed" });
+  });
+
+  test("upgrade from 0.103.4: so is a stuck answer its sweep closed", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    // 0.103.4's sweep of a `submitting` row past its deadline: expired, the answerer kept.
+    await t.run((ctx) =>
+      ctx.db.patch(id!, { status: "expired", resolvedAt: Date.now(), resolvedByUserId: userId, decision: "allow-once" }),
+    );
+    await record(t, chatId, { providerSeenSeq: 20 });
+    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("pending");
+  });
+
+  test("a verdict that landed first is never overwritten by the reopening", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    bridgeSays(409, { code: "request_gone", status: "expired" });
+    await answer(t, userId, id!);
+    // The gateway's own verdict reaches Convex before the replay: it is the card's…
+    expect(
+      await t.mutation(internal.agentRequests.settleFromBridge, {
+        chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status: "denied", decision: "deny",
+      }),
+    ).toEqual({ settled: true, outcome: "settled" });
+    // …its author not the answer that failed…
+    const settled = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(settled).toMatchObject({ status: "denied", decision: "deny", resolvedElsewhere: true });
+    expect(settled.resolvedByUserId).toBeUndefined();
+    // …and a late replay does not reopen it.
+    await record(t, chatId, { providerSeenSeq: 20 });
+    expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe("denied");
+  });
+
+  test("the gateway's verdict, coming after our clock closed the card, is the card's", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const { id } = await record(t, chatId);
+    await sweepNow(t, id!);
+    expect(
+      await t.mutation(internal.agentRequests.settleFromBridge, {
+        chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status: "allowed", decision: "allow-once",
+      }),
+    ).toEqual({ settled: true, outcome: "settled" });
+    const row = await t.run((ctx) => ctx.db.get(id!));
+    expect(row).toMatchObject({ status: "allowed", decision: "allow-once", resolvedElsewhere: true });
+    expect(row!.expiredLocally).toBeUndefined();
   });
 });

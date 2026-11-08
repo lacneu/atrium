@@ -3767,6 +3767,14 @@ export default defineSchema({
     /** A curated code when the provider refused the answer, or the last transport
      *  failure while the row went back to `pending`. Never provider prose. */
     failureCode: v.optional(v.string()),
+    /** Closed `expired` by Atrium's own clock (its deadline passed here: the sweep, an
+     *  answer that failed past it), never by the gateway. Not a verdict: a sighting of the
+     *  same request the gateway says still waits reopens it (upsertFromBridge). */
+    expiredLocally: v.optional(v.boolean()),
+    /** Closed on the GATEWAY's word in answer to ours: a `request_gone` the bridge read from
+     *  or was refused by the gateway (`saidBy: "gateway"`, every OpenClaw one since 0.103.5).
+     *  A verdict, never reopened as a closure of Atrium's. */
+    closedByGateway: v.optional(v.boolean()),
   })
     .index("by_chat_and_created", ["chatId", "createdAt"])
     .index("by_chat_and_status", ["chatId", "status"])
@@ -3799,6 +3807,32 @@ export default defineSchema({
       "kind",
       "expiresAt",
     ]),
+
+  // The provider's VERDICT on an approval whose card this chat does not hold yet. The
+  // bridge's settle can reach Convex before the card's own creation (an older socket's
+  // write still in flight after a reconnection, while the new socket reads the request
+  // already decided): kept here, so that creation records the card settled, never
+  // `pending` (agentRequests.upsertFromBridge). One per (chat, instance, id, generation),
+  // the first verdict kept; a bounded life (`expiresAt`), purged by
+  // agentRequests.reapExpired.
+  agentRequestResolutions: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    providerRequestId: v.string(),
+    /** The generation settled (the provider's creation time): another one is not touched. */
+    providerCreatedAt: v.number(),
+    status: v.union(
+      v.literal("allowed"),
+      v.literal("denied"),
+      v.literal("expired"),
+      v.literal("cancelled"),
+    ),
+    decision: v.optional(approvalDecisionValidator),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_chat_instance_provider_request", ["chatId", "instanceName", "providerRequestId"])
+    .index("by_expiresAt", ["expiresAt"]),
 
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy

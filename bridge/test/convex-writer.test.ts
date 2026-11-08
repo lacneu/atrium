@@ -1893,6 +1893,34 @@ describe("agent requests survive a transient ingest failure", () => {
   });
 });
 
+describe("a settle reports what Convex did with it (lot « trames 1 »)", () => {
+  test("closed, kept for a card not recorded yet, or nothing — and an older Convex's `settled` alone", async () => {
+    const answers = [
+      { ok: true, settled: true, outcome: "settled" },
+      { ok: true, settled: false, outcome: "kept" },
+      { ok: true, settled: false, outcome: "none" },
+      { ok: true, settled: true },
+      { ok: true, settled: false },
+      { ok: true, settled: false, outcome: "something-new" },
+    ];
+    const fetchImpl = (async () =>
+      ({ ok: true, json: async () => answers.shift() }) as unknown as Response) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    const settle = { chatId: "chat-1", providerRequestId: "ap_1", family: "approval" as const, providerCreatedAt: 7, status: "allowed" as const };
+    const got: unknown[] = [];
+    for (let i = 0; i < 6; i += 1) got.push(await w.settleAgentRequest(settle));
+    expect(got).toEqual([
+      { outcome: "settled" },
+      { outcome: "kept" },
+      { outcome: "none" },
+      { outcome: "settled" },
+      { outcome: "none" },
+      // Unknown is never taken for held.
+      { outcome: "none" },
+    ]);
+  });
+});
+
 describe("an agent request Convex refused is reported as not recorded (codex, Hermes 0.21.5 pass 5)", () => {
   test("`id: null` → recorded false; an id → recorded true", async () => {
     const answers = [{ ok: true, id: null, created: false }, { ok: true, id: "j57abc", created: true }];

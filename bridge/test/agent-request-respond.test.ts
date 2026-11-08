@@ -6,6 +6,7 @@ import {
   parseRespondBody,
   respondHermes,
   respondOpenClaw,
+  respondPayload,
   type RespondBody,
 } from "../src/agent-request-respond.js";
 import { questionShape } from "../src/core/agent-requests.js";
@@ -103,7 +104,7 @@ describe("OpenClaw questions", () => {
         body({ answers: [{ id: "token", values: ["x"] }], questionShape: '[["token",false,false,[],null,[null,"Jeton ?",[],null,null]]]' }),
         other.gw, false, LIVE,
       ),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(other.calls.map(([m]) => m)).toEqual(["question.get"]);
     // The same question: answered.
     const same = recorder({ "question.get": { question: record }, "question.resolve": { status: "answered" } });
@@ -140,7 +141,7 @@ describe("OpenClaw questions", () => {
         }),
         g.gw, false, LIVE,
       ),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(g.calls.map(([m]) => m)).toEqual(["question.get"]);
   });
 
@@ -165,25 +166,57 @@ describe("OpenClaw questions", () => {
         }),
         g.gw, false, LIVE,
       ),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(g.calls.map(([m]) => m)).toEqual(["question.get"]);
   });
 
-  it("is NEVER resolved unless the chat's session is live here, on the request's session (codex, 0.21.5 pass 23)", async () => {
+  it("is NEVER resolved unless the chat's session is live here, on the request's session (codex, 0.21.5 pass 23) — and that absence is RETRYABLE, never a verdict (lot « trames 1 », pass 8)", async () => {
     // After a bridge restart the resolution would go out on an operator connection that
-    // ingests nothing: the agent would resume with nobody reading what follows.
-    const g = recorder({ "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 1_000, questions: [] } }, "question.resolve": { status: "answered" } });
-    const gone = { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
+    // ingests nothing: the agent would resume with nobody reading what follows. But a
+    // socket away or closed says nothing about the request: the gateway, asked, says it
+    // still waits — the card must stay answerable.
+    const g = recorder({
+      "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 1_000, questions: [] } },
+      "question.resolve": { status: "answered" },
+      "approval.get": { approval: { id: "ap_1", status: "pending", createdAtMs: 1_000, presentation: { agentId: "denis" } } },
+      "approval.resolve": { applied: true },
+    });
+    const retry = { ok: false, httpStatus: 503, code: "session_unavailable" };
     const b = body({ answers: [{ id: "token", values: ["x"] }] });
-    expect(await respondOpenClaw(b, g.gw, false, undefined)).toEqual(gone); // no live session
-    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, sessionKey: "agent:denis:atrium:chat:denis:c2" })).toEqual(gone);
-    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, instanceName: "other" })).toEqual(gone);
+    expect(await respondOpenClaw(b, g.gw, false, undefined)).toEqual(retry); // no live session
+    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, instanceName: "other" })).toEqual(retry);
     const approval = body({ source: "openclaw.exec", approvalKind: "exec", decision: "allow-once", providerRequestId: "ap_1" } as Partial<RespondBody>);
-    expect(await respondOpenClaw(approval, g.gw, true, undefined)).toEqual(gone);
+    expect(await respondOpenClaw(approval, g.gw, true, undefined)).toEqual(retry);
     // A CLOSED socket still registered (awaiting the reaper) reads nothing either (pass 25).
-    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, connection: { isClosed: true } })).toEqual(gone);
-    expect(await respondOpenClaw(approval, g.gw, true, { ...LIVE, connection: { isClosed: true } })).toEqual(gone);
-    expect(g.calls).toEqual([]);
+    expect(await respondOpenClaw(b, g.gw, false, { ...LIVE, connection: { isClosed: true } })).toEqual(retry);
+    expect(await respondOpenClaw(approval, g.gw, true, { ...LIVE, connection: { isClosed: true } })).toEqual(retry);
+    // An approval naming no agent: its routing proof needs the live socket — retryable too.
+    const agentless = recorder({ "approval.get": { approval: { id: "ap_1", status: "pending", createdAtMs: 1_000, presentation: {} } } });
+    expect(await respondOpenClaw(approval, agentless.gw, false, undefined)).toEqual(retry);
+    // Only reads: nothing was resolved.
+    expect([...g.calls, ...agentless.calls].map(([m]) => m).filter((m) => m.endsWith(".resolve"))).toEqual([]);
+    // The live conversation on ANOTHER session: refused before any read — a refusal, not a
+    // verdict (Convex leaves the card answerable).
+    const other = recorder({});
+    expect(await respondOpenClaw(b, other.gw, false, { ...LIVE, sessionKey: "agent:denis:atrium:chat:denis:c2" })).toEqual({
+      ok: false,
+      httpStatus: 403,
+      code: "session_mismatch",
+    });
+    expect(other.calls).toEqual([]);
+  });
+
+  it("…while the gateway's OWN word still closes the card, the session away or not", async () => {
+    const approval = body({ source: "openclaw.exec", approvalKind: "exec", decision: "allow-once", providerRequestId: "ap_1" } as Partial<RespondBody>);
+    const decided = recorder({ "approval.get": { approval: { id: "ap_1", status: "allowed", createdAtMs: 1_000, presentation: { agentId: "denis" } } } });
+    expect(await respondOpenClaw(approval, decided.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "allowed", saidBy: "gateway" });
+    const unknown = recorder({ "approval.get": new Error("unknown approval id") });
+    expect(await respondOpenClaw(approval, unknown.gw, true, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
+    const forgotten = recorder({ "question.get": new Error("question ask_1 was not found") });
+    expect(await respondOpenClaw(body({}), forgotten.gw, false, undefined)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
+    // The gateway not reached at all: a transport failure, retryable, never a verdict.
+    const down = recorder({ "approval.get": new Error("socket closed") });
+    expect(await respondOpenClaw(approval, down.gw, true, undefined)).toEqual({ ok: false, httpStatus: 502, code: "gateway_unreachable" });
   });
 
   it("skipping CANCELS — the agent is told to proceed without an answer", async () => {
@@ -210,7 +243,7 @@ describe("OpenClaw questions", () => {
       "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 2_000 } },
     });
     const out = await respondOpenClaw(body({ providerCreatedAt: 1_000, answers: [{ id: "format", values: ["PDF"] }] }), gw, false, LIVE);
-    expect(out).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    expect(out).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
     expect(calls.map(([m]) => m)).toEqual(["question.get"]);
     // Same generation: answered.
     const same = recorder({
@@ -222,14 +255,14 @@ describe("OpenClaw questions", () => {
     const ap = recorder({ "approval.get": { approval: { status: "pending", createdAtMs: 5, presentation: { kind: "exec", agentId: "denis" } } } });
     expect(
       await respondOpenClaw(body({ source: "openclaw.exec", providerRequestId: "ap-1", approvalKind: "exec", decision: "allow-once", providerCreatedAt: 4 }), ap.gw, false, LIVE),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired", saidBy: "gateway" });
   });
 
   it("a question already settled says HOW, for the card to show", async () => {
     const { gw } = recorder({
       "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "answered", createdAtMs: 1_000 } },
     });
-    expect(await respondOpenClaw(body({}), gw, false, LIVE)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "answered" });
+    expect(await respondOpenClaw(body({}), gw, false, LIVE)).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "answered", saidBy: "gateway" });
   });
 
   it("the gateway's own refusals map to our vocabulary", async () => {
@@ -242,6 +275,7 @@ describe("OpenClaw questions", () => {
       httpStatus: 409,
       code: "request_gone",
       status: "expired",
+      saidBy: "gateway",
     });
     const invalid = recorder({
       "question.get": { question: { id: "ask_1", sessionKey: SESSION, status: "pending", createdAtMs: 1_000 } },
@@ -306,70 +340,31 @@ describe("OpenClaw approvals", () => {
     expect(await respondOpenClaw(b, agentless().gw, true, LIVE)).toEqual({ ok: true });
   });
 
-  it("a SUB-AGENT's approval is answered from the conversation that spawned it (N1, lot « trames 1 »)", async () => {
-    // The card names the CHILD's session and agent (the request broadcast's own
-    // `request.sessionKey`, approval-shared.ts:133-147 at v2026.9.36); upstream addresses
-    // it to the child's lineage (approval-session-audience.ts:52-107).
+  it("a SUB-AGENT's approval is never answered from the parent conversation — deliberately, until N1-v2", async () => {
+    // Upstream addresses a sub-agent's approval to its whole lineage, the parent included
+    // (src/gateway/approval-session-audience.ts:52-107 at v2026.9.36), and serves that
+    // audience on the session-scoped stream (`session.approval`). Atrium does not consume
+    // that stream yet, and does not rebuild the audience from the broadcasts: the parent
+    // conversation shows no card for it, and a card naming the child's session — the
+    // child's own agent and a request routed nowhere else — is refused before any read:
+    // a refusal (`session_mismatch`), never a verdict that would close the card.
     const CHILD = "agent:files:subagent:11111111-1111-4111-8111-111111111111";
-    const asked: string[] = [];
-    const live = {
-      ...LIVE,
-      answersFor: async (key: string) => {
-        asked.push(key);
-        return key === CHILD;
-      },
-    };
-    const childApproval = () =>
-      recorder({
-        "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "exec", agentId: "files" } } },
-        "approval.resolve": { applied: true, approval: { status: "allowed" } },
-      });
-    const b = body({ source: "openclaw.exec", providerRequestId: "ap-c", approvalKind: "exec", decision: "allow-once", sessionKey: CHILD });
-    const answered = childApproval();
-    expect(await respondOpenClaw(b, answered.gw, false, live)).toEqual({ ok: true });
-    // The very request, by its id: the resolver routes it to the child's waiting exec.
-    expect(answered.calls[1]).toEqual(["approval.resolve", { id: "ap-c", kind: "exec", decision: "allow-once" }]);
-    expect(asked).toEqual([CHILD]);
-    // A session this conversation does NOT answer for: nothing is even read.
-    const foreign = childApproval();
-    const STRANGER = "agent:files:subagent:99999999-9999-4999-8999-999999999999";
-    expect(await respondOpenClaw({ ...b, sessionKey: STRANGER }, foreign.gw, false, live)).toEqual({
-      ok: false,
-      httpStatus: 409,
-      code: "request_gone",
-      status: "expired",
-    });
-    expect(foreign.calls).toEqual([]);
-    // Without the lineage (an older session object), only its own session counts.
-    const plain = childApproval();
-    expect((await respondOpenClaw(b, plain.gw, false, LIVE)).ok).toBe(false);
-    expect(plain.calls).toEqual([]);
-  });
-
-  it("a sub-agent's card whose approval names ANOTHER agent is still refused", async () => {
-    const CHILD = "agent:files:subagent:11111111-1111-4111-8111-111111111111";
-    const live = { ...LIVE, answersFor: () => true };
     const { calls, gw } = recorder({
-      "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "exec", agentId: "bob" } } },
+      "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "exec", agentId: "files" } } },
+      "approval.resolve": { applied: true, approval: { status: "allowed" } },
     });
-    expect(
-      await respondOpenClaw(
-        body({ source: "openclaw.exec", providerRequestId: "ap-c", approvalKind: "exec", decision: "allow-once", sessionKey: CHILD }),
-        gw,
-        false,
-        live,
-      ),
-    ).toEqual({ ok: false, httpStatus: 403, code: "session_mismatch" });
-    expect(calls.map(([m]) => m)).toEqual(["approval.get"]);
-  });
-
-  it("a QUESTION is still answered only on the conversation's own session", async () => {
-    const CHILD = "agent:files:subagent:11111111-1111-4111-8111-111111111111";
-    const live = { ...LIVE, answersFor: () => true };
-    const { calls, gw } = recorder({});
-    expect(
-      await respondOpenClaw(body({ sessionKey: CHILD, answers: [{ id: "format", values: ["PDF"] }] }), gw, false, live),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    const childCard = body({
+      source: "openclaw.exec",
+      providerRequestId: "ap-c",
+      approvalKind: "exec",
+      decision: "allow-once",
+      sessionKey: CHILD,
+    });
+    expect(await respondOpenClaw(childCard, gw, true, LIVE)).toEqual({
+      ok: false,
+      httpStatus: 403,
+      code: "session_mismatch",
+    });
     expect(calls).toEqual([]);
   });
 
@@ -380,7 +375,7 @@ describe("OpenClaw approvals", () => {
     });
     expect(
       await respondOpenClaw(body({ source: "openclaw.plugin", providerRequestId: "ap-1", approvalKind: "plugin", decision: "allow-once" }), gw, false, LIVE),
-    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "denied" });
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "denied", saidBy: "gateway" });
   });
 });
 
@@ -415,6 +410,33 @@ describe("incomplete gateway replies are never a confirmation", () => {
       ok: false,
       httpStatus: 502,
       code: "gateway_error",
+    });
+  });
+});
+
+// What the route answers Convex (server.ts): an OpenClaw `request_gone` carries the
+// gateway's word — Convex keeps such a closure for good (convex/agentRequests.ts
+// closedByGateway) — and nothing else claims it.
+describe("the route's reply (respondPayload)", () => {
+  it("carries the gateway's word with an OpenClaw `request_gone`, and only there", async () => {
+    expect(respondPayload({ ok: true })).toEqual({ ok: true });
+    const decided = recorder({
+      "approval.get": { approval: { id: "ap_1", status: "expired", createdAtMs: 1_000, presentation: { agentId: "denis" } } },
+    });
+    const approval = body({ source: "openclaw.exec", approvalKind: "exec", decision: "allow-once", providerRequestId: "ap_1" } as Partial<RespondBody>);
+    expect(respondPayload(await respondOpenClaw(approval, decided.gw, true, LIVE))).toEqual({
+      ok: false,
+      error: { code: "request_gone", status: "expired", saidBy: "gateway" },
+    });
+    expect(respondPayload({ ok: false, httpStatus: 503, code: "session_unavailable" })).toEqual({
+      ok: false,
+      error: { code: "session_unavailable" },
+    });
+    // A Hermes prompt no live turn holds: Atrium's own inference, never said to be the gateway's.
+    const hermes = body({ provider: "hermes", source: "hermes.clarify", providerRequestId: "clr_1", answers: [{ id: "answer", values: ["x"] }] });
+    expect(respondPayload(await respondHermes(hermes, async () => ({})))).toEqual({
+      ok: false,
+      error: { code: "request_gone", status: "expired" },
     });
   });
 });

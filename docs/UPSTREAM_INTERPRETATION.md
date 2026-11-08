@@ -257,7 +257,7 @@ identical. The two broken anchors are real and are each recorded:
 
 **DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
 `delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1873`,
+delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1878`,
 the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
 Written here because it is known and unfixed, not because it was measured on the
 bench: the catalogue never elicits a retraction. It is owed a scenario before it
@@ -1348,6 +1348,62 @@ remains its net (12 min without a write closes the bubble `stream_orphaned`).
 - Exclusions: no export, fork, feedback report, metadata API, search, notification or
   spoken reply carries a reasoning (the answer text never contains it).
 
+## 10. Approvals: addressed to a lineage, shown to the raising session (0.103.5)
+
+### Upstream contract
+
+- **An approval is addressed to the raising session and every ancestor.** When an approval
+  registers, the gateway walks up from the raising session — the sub-agent registry's
+  controller and requester of the latest run, else the stored parent
+  (`src/gateway/approval-session-audience.ts:52-107`) — and stores the result with the
+  approval as its audience (`src/gateway/exec-approval-registration.ts:107-112`). That
+  audience is fixed then: a later change of the sub-agent's owner does not move an approval
+  already raised.
+- **The audience is served on the session-scoped stream only.** The `session.approval`
+  events of `sessions.messages.subscribe` with `includeApprovals`
+  (`src/gateway/server-methods/sessions-subscriptions.ts:116-122`) go to the sessions of the
+  stored audience (`src/gateway/operator-approval-session-events.ts:156`). The operator
+  broadcast `*.approval.requested` carries the request itself, which names the raising
+  session alone (`src/gateway/server-methods/approval-shared.ts:132-147`); neither
+  `approval.get` nor the three pending lists (`exec|plugin|openclaw.approval.list`) carry
+  the audience.
+- **The Control UI shows a descendant's approval in its ancestor's pane**, marked with the
+  raising session (`ui/src/pages/chat/session-approval-projection.ts:31-48`,
+  `ui/src/components/exec-approval-card.ts:400-408`).
+- **An approval id names one request.** The gateway mints it at random for each request
+  (`src/agents/bash-tools.exec-host-shared.ts:209`, `src/agents/bash-tools.exec-host-node.ts:329`,
+  `src/gateway/node-invoke-plugin-approval.ts:184`); an explicit id from the caller of
+  `exec.approval.request` is refused while a record under it exists
+  (`src/gateway/server-methods/exec-approval.ts:172,292-299`), and the durable registry refuses a
+  second record under an existing id (`src/gateway/operator-approval-store.kernel.ts:140`). Every
+  record carries its creation time, `createdAtMs`, on its broadcast, its pending-list entry and
+  its snapshot. The resolution broadcast carries the id, the decision and the request, not the
+  creation time (`src/gateway/server-methods/approval-shared.ts:59-65`).
+
+### Atrium behavior and verdict
+
+**Narrower than the Control UI, deliberately.** A conversation socket opens no
+`sessions.messages.subscribe` (a subscription on that socket has cost frames the turn
+depends on), so it reads the broadcasts and, at each (re)connection, the three pending
+lists. A conversation shows and answers the approvals of its own session only: a
+sub-agent's approval is neither shown in the parent conversation nor answerable from it,
+and the sub-agent waits for an answer given elsewhere (the Control UI, another client) or
+for the approval's own timeout. Atrium does not rebuild the stored audience from the
+broadcasts and the sessions' rows: a lineage read when the request is seen approximates it,
+but no client-side rule reproduces it exactly — a later read proves the sub-agent's current
+owner, not the audience the gateway fixed — and an inexact rule lets one conversation see
+or answer another's request. Showing those approvals in the parent means consuming
+`session.approval` itself.
+
+**An approval is keyed by its id and its creation time**, everywhere: the bridge's memories
+of a decided approval (the observer, the turn's hold), the Convex card and the verdict Convex
+keeps for a card not recorded yet. With ids unique per request upstream, the creation time
+adds nothing to which request an id names; it dates a verdict that reaches Convex before its
+card, and an `approval.get` snapshot is used only when it is the announced request's — the same
+creation time, and the conversation's own session when the snapshot names one. A write of a
+request already recorded is that card, whatever order the writes arrive in. A resolution is
+attached to the creation time announced for its id.
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1361,6 +1417,7 @@ remains its net (12 min without a write closes the bubble `stream_orphaned`).
 | End of a run (no client clock) | **Conformant (0.102.1)** for OpenClaw — no projected bubble is closed on Atrium's clock; the gateway's terminal or state decides, re-read at every reconnection (§8); Hermes keeps the 12-min watchdog |
 | Projection `on` deviations | **Deliberate** (§7) — no visible duplicate, files copied at once with a `gone` state, a waiting line while a child runs, stricter masking, one automatic resend of a send the gateway reports absent |
 | Reasoning and work notes | **Conformant (0.103.0)** — shown after the fact above its row when the conversation shows reasoning (per-conversation choice, per-agent Atrium default); work notes live from completed preambles; Hermes is read, never written (its setter is global) (§9) |
+| Approvals of sub-agents | **Deliberately narrower (0.103.5)** — a conversation shows and answers its own session's approvals only; upstream addresses an approval to the raising session's whole lineage, stores that audience when it registers it, and serves it on `session.approval`, which Atrium does not consume (§10) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or

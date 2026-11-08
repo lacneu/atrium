@@ -142,6 +142,17 @@ function boundedDeadline(now: number, expiresAt: number | undefined): number {
   return now + DEFAULT_REQUEST_TTL_MS;
 }
 
+/** A deadline a sighting gives, when it is still ahead (and within the bound): else none —
+ *  never a default in its place (a reopening must not outlive the gateway's deadline). */
+function snapshotDeadline(now: number, expiresAt: number | undefined): number | null {
+  return typeof expiresAt === "number" &&
+    Number.isFinite(expiresAt) &&
+    expiresAt > now &&
+    expiresAt <= now + MAX_REQUEST_TTL_MS
+    ? Math.round(expiresAt)
+    : null;
+}
+
 /** Mark the owner's notification for a request read once it no longer waits. */
 /** The request's notification, gone with it (a cascade): a bell entry linking to a
  *  deleted conversation, unread forever, is worse than none (codex P3). */
@@ -263,21 +274,63 @@ export const upsertFromBridge = internalMutation({
     // settled row whose provider creation time differs from this one is an older
     // generation, and this request gets its own row (codex P2).
     const incomingFamily = familyOf(args.source);
-    const existing =
-      (
-        await ctx.db
-          .query("agentRequests")
-          // Same INSTANCE by the index — a per-turn-routed chat talks to several
-          // gateways, which may use the same id — then the same family (codex P2 ×2).
-          .withIndex("by_chat_instance_provider_request", (q) =>
-            q
-              .eq("chatId", args.chatId)
-              .eq("instanceName", args.boundInstanceName)
-              .eq("providerRequestId", providerRequestId),
-          )
-          .order("desc")
-          .take(MAX_GENERATIONS_READ)
-      ).find((r) => familyOf(r.source) === incomingFamily) ?? null;
+    const ofFamily = (
+      await ctx.db
+        .query("agentRequests")
+        // Same INSTANCE by the index — a per-turn-routed chat talks to several
+        // gateways, which may use the same id — then the same family (codex P2 ×2).
+        .withIndex("by_chat_instance_provider_request", (q) =>
+          q
+            .eq("chatId", args.chatId)
+            .eq("instanceName", args.boundInstanceName)
+            .eq("providerRequestId", providerRequestId),
+        )
+        .order("desc")
+        .take(MAX_GENERATIONS_READ)
+    ).filter((r) => familyOf(r.source) === incomingFamily);
+    const existing = ofFamily[0] ?? null;
+    // An OpenClaw APPROVAL is one request per id AND generation — its creation time
+    // (bridge/src/providers/openclaw/approval-identity.ts): a write of a generation already
+    // recorded — a replay, or the late write of another socket or bridge process, whatever
+    // it saw later — IS that card, never a new one. (Upstream mints an approval id per
+    // request and refuses a second record under one: another generation never comes.)
+    const approvalGeneration =
+      args.source.startsWith("openclaw.") &&
+      incomingFamily === "approval" &&
+      typeof args.providerCreatedAt === "number" &&
+      Number.isFinite(args.providerCreatedAt)
+        ? args.providerCreatedAt
+        : null;
+    if (approvalGeneration !== null) {
+      const same = ofFamily.find((r) => r.providerCreatedAt === approvalGeneration);
+      if (same !== undefined) {
+        // …except a card Atrium closed itself (closedByAtrium): that was never the gateway's
+        // verdict, and this sighting — written only after `approval.get` showed the request
+        // pending (agent-request-observer.ts) — says it still waits. It is answerable again,
+        // until the deadline the gateway gives now; the answer that failed is forgotten. A
+        // real verdict stays. Decided on the row as read in THIS transaction: a verdict
+        // committed concurrently makes Convex run it again on that verdict, never over it.
+        // Only until the deadline THIS sighting gives, still ahead: an old snapshot written
+        // late, its deadline past, reopens nothing — and no default deadline replaces it.
+        const reopenedAt = Date.now();
+        const deadline = snapshotDeadline(reopenedAt, args.expiresAt);
+        if (closedByAtrium(same) && deadline !== null) {
+          await ctx.db.patch(same._id, {
+            status: "pending",
+            updatedAt: reopenedAt,
+            expiresAt: deadline,
+            resolvedAt: undefined,
+            expiredLocally: undefined,
+            failureCode: undefined,
+            resolvedByUserId: undefined,
+            answers: undefined,
+            decision: undefined,
+          });
+          await trace(ctx, args.chatId, { phase: "reopened", source: same.source });
+        }
+        return { id: same._id, created: false };
+      }
+    }
     // A row WITHOUT a generation cannot be a replay of this one either: every OpenClaw
     // request ingested carries one (required below), so such a row came from an
     // archive import (which drops it) or a seed — an older request (codex P2).
@@ -321,7 +374,8 @@ export const upsertFromBridge = internalMutation({
         (otherQuestion && seenLater));
     // The gateway forgets a settled request and may then give its id to a NEW one — and
     // under a clock that stood still, or stepped back, with the same or an older
-    // creation time (codex P2). A `pending` sighting of an id whose row here is settled
+    // creation time (codex P2) — a QUESTION: an approval of the same generation is its
+    // card, returned above. A `pending` sighting of an id whose row here is settled
     // cannot be the old request: its own `resolved` preceded this on the same socket,
     // and the replays (question.list / approval.get) list pending ones only. So it is
     // recorded — unless it arrives already past its deadline, which is the one way a
@@ -442,6 +496,17 @@ export const upsertFromBridge = internalMutation({
     }
     messageId ??= await latestAssistantMessage(ctx, args.chatId);
 
+    // Already decided: its settle reached Convex before this creation (keepResolution).
+    // The card is recorded SETTLED, as it would stand had it been created first — the
+    // conversation keeps its record of the ask and the outcome, folded to that outcome —
+    // never `pending`, and nobody is notified of a request nobody can answer any more. The
+    // verdict is NOT taken: it stays for its whole window, and any other creation of this
+    // generation finds the card above.
+    const resolution =
+      approvalGeneration !== null
+        ? await keptResolution(ctx, args.chatId, args.boundInstanceName, providerRequestId, approvalGeneration)
+        : null;
+
     const now = Date.now();
     const id = await ctx.db.insert("agentRequests", {
       chatId: args.chatId,
@@ -472,11 +537,31 @@ export const upsertFromBridge = internalMutation({
       ...(kind === "credential"
         ? { credential: boundCredential(args.credential, args.source) }
         : {}),
-      status: "pending",
+      ...(resolution === null
+        ? { status: "pending" as const }
+        : {
+            status: resolution.status,
+            resolvedAt: now,
+            // Decided by someone, and not through this card (it did not exist).
+            ...(resolution.status === "allowed" || resolution.status === "denied"
+              ? {
+                  resolvedElsewhere: true,
+                  ...(resolution.decision !== undefined ? { decision: resolution.decision } : {}),
+                }
+              : {}),
+          }),
       createdAt: now,
       expiresAt: boundedDeadline(now, args.expiresAt),
       updatedAt: now,
     });
+    if (resolution !== null) {
+      await trace(ctx, args.chatId, {
+        phase: "requested-settled",
+        source: args.source,
+        status: resolution.status,
+      });
+      return { id, created: true };
+    }
     await notifyUser(ctx, {
       userId: chat.userId,
       kind: "agent_request",
@@ -529,7 +614,7 @@ export const settleFromBridge = internalMutation({
     answersUnreadable: v.optional(v.boolean()),
     decision: v.optional(approvalDecisionValidator),
   },
-  handler: async (ctx, args): Promise<{ settled: boolean }> => {
+  handler: async (ctx, args): Promise<{ settled: boolean; outcome: SettleOutcome }> => {
     if (!(await chatAllowsInstance(ctx, args.chatId, args.boundInstanceName))) {
       throw new Error("forbidden: cross-instance agent request target");
     }
@@ -570,7 +655,12 @@ export const settleFromBridge = internalMutation({
       sameShape.length > 1 && seenSeq !== undefined
         ? (sameShape.find((g) => g.providerSeenSeq === undefined || g.providerSeenSeq <= seenSeq) ?? null)
         : (sameShape[0] ?? null);
-    if (row === null || !isOpenStatus(row.status)) return { settled: false };
+    // No card of this generation (yet): an approval's verdict is kept for the creation
+    // that may still be on its way (keepResolution). A card already closed: nothing.
+    if (row === null) return { settled: false, outcome: await keepResolution(ctx, args) };
+    // A card Atrium's own clock closed is not settled: the gateway's verdict is the card's.
+    const expiredHere = closedByAtrium(row);
+    if (!isOpenStatus(row.status) && !expiredHere) return { settled: false, outcome: "none" };
     const now = Date.now();
     // Ours in flight: the gateway's broadcast of OUR answer can beat the action's
     // own settle. It is still our answer, not someone else's.
@@ -579,12 +669,16 @@ export const settleFromBridge = internalMutation({
     // a prompt the person has just answered. The action knows what the gateway
     // replied; it settles the row, not this.
     if (ours && (args.status === "expired" || args.status === "cancelled")) {
-      return { settled: false };
+      return { settled: false, outcome: "none" };
     }
     const patch: Partial<Doc<"agentRequests">> = {
       status: args.status,
       updatedAt: now,
       resolvedAt: now,
+      // The answer that failed before is not the verdict's author.
+      ...(expiredHere
+        ? { expiredLocally: undefined, resolvedByUserId: undefined, answers: undefined, decision: undefined }
+        : {}),
     };
     // What the gateway recorded, NEVER cut: a truncated copy both misstates the answer and
     // can match ours by its prefix (codex P2). Past the bounds Atrium's own answers obey, it
@@ -634,9 +728,121 @@ export const settleFromBridge = internalMutation({
       elsewhere,
       waitedMs: now - row.createdAt,
     });
-    return { settled: true };
+    return { settled: true, outcome: "settled" };
   },
 });
+
+/**
+ * Was this card closed `expired` by ATRIUM — its own clock or its own answer path — rather
+ * than by the gateway's verdict? Since 0.103.5 such closures are marked (`expiredLocally`).
+ * Before (0.103.4, c49dac12 convex/agentRequests.ts), the row tells them apart by who it
+ * still names as answering: prepareAnswer records the answerer (`resolvedByUserId`,
+ * :833-841); completeAnswer keeps it on a `request_gone` that says `expired` (:910-918) —
+ * the reply 0.103.4's bridge also gave for a socket absent or closed, without asking the
+ * gateway — and so does the sweep of a stuck `submitting` row (:1290-1299); revertAnswer and
+ * the sweep's unstuck path clear it (:940-947, :1310-1316). A gateway expiry
+ * (settleFromBridge) never lands over our answer in flight (`ours` + expired: not applied,
+ * :577-583), so only on a `pending` row, which never carries an answerer — it stays closed.
+ * Since 0.103.5 the bridge asks the gateway before it says `request_gone`, and says so
+ * (`saidBy: "gateway"`): such a closure is marked `closedByGateway` and is a verdict. A
+ * `request_gone` from an older bridge carries no such word — during the upgrade too — and is
+ * read as before. Reopened, in every case, only by a sighting whose own deadline is still
+ * ahead (upsertFromBridge).
+ */
+function closedByAtrium(row: Doc<"agentRequests">): boolean {
+  return (
+    row.status === "expired" &&
+    (row.expiredLocally === true ||
+      (row.resolvedByUserId !== undefined && row.resolvedElsewhere !== true && row.closedByGateway !== true))
+  );
+}
+
+/** What a settle did: closed the card (`settled`), kept the verdict for a card not
+ *  recorded yet (`kept`), or nothing — the card was already closed, the answer on the wire
+ *  is Atrium's own, or there is neither a card nor a verdict that can be kept (`none`). */
+type SettleOutcome = "settled" | "kept" | "none";
+
+/** How long a kept verdict waits for its card: past any creation still in flight — the
+ *  bridge's writes retry for seconds, and two bridge processes overlap for minutes during
+ *  a rolling deploy. */
+const RESOLUTION_KEEP_MS = 60 * 60_000;
+
+/**
+ * A settle that found no card of its generation. An approval's verdict is KEPT
+ * (agentRequestResolutions): the card's creation may still be on its way — an older
+ * socket's write in flight while the new socket read the request already decided — and
+ * must then record the card settled (upsertFromBridge). Idempotent: the first verdict kept
+ * stands. Kept only with a generation, without which it could not tell which request it
+ * settles, and never for a question: only the socket that recorded a question settles it,
+ * after its creation.
+ */
+async function keepResolution(
+  ctx: MutationCtx,
+  args: {
+    chatId: Id<"chats">;
+    boundInstanceName: string;
+    providerRequestId: string;
+    providerCreatedAt?: number;
+    family?: "question" | "approval";
+    status: "answered" | "allowed" | "denied" | "expired" | "cancelled";
+    decision?: ApprovalDecision;
+  },
+): Promise<SettleOutcome> {
+  const generation = args.providerCreatedAt;
+  const status = args.status;
+  if (
+    args.family !== "approval" ||
+    typeof generation !== "number" ||
+    !Number.isFinite(generation) ||
+    status === "answered"
+  ) {
+    return "none";
+  }
+  const kept = await ctx.db
+    .query("agentRequestResolutions")
+    .withIndex("by_chat_instance_provider_request", (q) =>
+      q
+        .eq("chatId", args.chatId)
+        .eq("instanceName", args.boundInstanceName)
+        .eq("providerRequestId", args.providerRequestId),
+    )
+    .take(MAX_GENERATIONS_READ);
+  if (kept.some((k) => k.providerCreatedAt === generation)) return "kept";
+  const now = Date.now();
+  await ctx.db.insert("agentRequestResolutions", {
+    chatId: args.chatId,
+    instanceName: args.boundInstanceName,
+    providerRequestId: args.providerRequestId,
+    providerCreatedAt: generation,
+    status,
+    ...((status === "allowed" || status === "denied") && args.decision !== undefined
+      ? { decision: args.decision }
+      : {}),
+    createdAt: now,
+    expiresAt: now + RESOLUTION_KEEP_MS,
+  });
+  await trace(ctx, args.chatId, { phase: "settle-kept", status });
+  return "kept";
+}
+
+/** The verdict kept for THIS generation of an approval. Read, never taken: it is the
+ *  generation's terminal mark for its whole window (RESOLUTION_KEEP_MS, then reapExpired),
+ *  whatever creations of it arrive, and in whatever order. */
+async function keptResolution(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  instanceName: string,
+  providerRequestId: string,
+  generation: number,
+): Promise<Doc<"agentRequestResolutions"> | null> {
+  const kept = await ctx.db
+    .query("agentRequestResolutions")
+    .withIndex("by_chat_instance_provider_request", (q) =>
+      q.eq("chatId", chatId).eq("instanceName", instanceName).eq("providerRequestId", providerRequestId),
+    )
+    .take(MAX_GENERATIONS_READ);
+  return kept.find((k) => k.providerCreatedAt === generation) ?? null;
+}
 
 // ── Person → gateway ───────────────────────────────────────────────────────────
 
@@ -722,8 +928,9 @@ export const prepareAnswer = internalMutation({
     const now = Date.now();
     if (row.expiresAt <= now) {
       // RETURNED, not thrown: a throw would roll this settle back with it, and the
-      // row would keep offering an answer the agent can no longer receive.
-      await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now });
+      // row would keep offering an answer the agent can no longer receive. Atrium's clock,
+      // not the gateway's verdict (see expiredLocally).
+      await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now, expiredLocally: true });
       await clearNotification(ctx, row);
       return { refused: "AGENT_REQUEST_EXPIRED" };
     }
@@ -893,8 +1100,11 @@ export const completeAnswer = internalMutation({
     status: terminalStatusValidator,
     /** The gateway reported the request already settled by someone else. */
     elsewhere: v.optional(v.boolean()),
+    /** The bridge says the GATEWAY said the request no longer waits (`saidBy: "gateway"`):
+     *  a verdict (closedByGateway). */
+    byGateway: v.optional(v.boolean()),
   },
-  handler: async (ctx, { requestId, status, elsewhere }) => {
+  handler: async (ctx, { requestId, status, elsewhere, byGateway }) => {
     const row = await ctx.db.get(requestId);
     if (row === null) return null;
     // A broadcast may have settled it first — keep that verdict. But not its AUTHOR:
@@ -915,6 +1125,7 @@ export const completeAnswer = internalMutation({
       ...(elsewhere === true
         ? { resolvedElsewhere: true, resolvedByUserId: undefined, answers: undefined, decision: undefined }
         : {}),
+      ...(byGateway === true ? { closedByGateway: true } : {}),
     });
     await clearNotification(ctx, row);
     await trace(ctx, row.chatId, {
@@ -940,7 +1151,8 @@ export const revertAnswer = internalMutation({
     await ctx.db.patch(requestId, {
       status: expired ? "expired" : "pending",
       updatedAt: now,
-      ...(expired ? { resolvedAt: now } : {}),
+      // Past its deadline by OUR clock: not the gateway's verdict (see expiredLocally).
+      ...(expired ? { resolvedAt: now, expiredLocally: true } : {}),
       failureCode: failureCode.slice(0, 64),
       resolvedByUserId: undefined,
       answers: undefined,
@@ -1049,7 +1261,7 @@ export const answer = action({
           ...(args.secret !== undefined && args.skip !== true ? { secret: args.secret } : {}),
         }),
       });
-      let payload: { ok?: unknown; error?: { code?: unknown; status?: unknown } } = {};
+      let payload: { ok?: unknown; error?: { code?: unknown; status?: unknown; saidBy?: unknown } } = {};
       try {
         payload = (await res.json()) as typeof payload;
       } catch {
@@ -1072,6 +1284,9 @@ export const answer = action({
           requestId: prep.requestId,
           status: goneStatus ?? "expired",
           elsewhere: goneStatus === "answered" || goneStatus === "allowed" || goneStatus === "denied",
+          // A bridge before 0.103.5 says no such thing: its `request_gone` may be its own
+          // inference (a socket away), and the card stays reopenable (closedByAtrium).
+          byGateway: payload.error?.saidBy === "gateway",
         });
         return { ok: false, reason: "request_gone" };
       }
@@ -1279,14 +1494,20 @@ export const pendingByChat = query({
 /**
  * Settle what nothing else will: an open request past its deadline (the provider's
  * own expiry normally arrives first — this is the net for a restarted bridge), and
- * a `submitting` row whose action was lost.
+ * a `submitting` row whose action was lost. And forget a kept verdict whose card never
+ * came (agentRequestResolutions).
  */
 export const reapExpired = internalMutation({
   args: {},
-  handler: async (ctx): Promise<{ expired: number; unstuck: number }> => {
+  handler: async (ctx): Promise<{ expired: number; unstuck: number; resolutionsPurged: number }> => {
     const now = Date.now();
     let expired = 0;
     let unstuck = 0;
+    const lapsed = await ctx.db
+      .query("agentRequestResolutions")
+      .withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
+      .take(100);
+    for (const kept of lapsed) await ctx.db.delete(kept._id);
     for (const status of ["pending", "submitting"] as const) {
       const rows = await ctx.db
         .query("agentRequests")
@@ -1295,7 +1516,8 @@ export const reapExpired = internalMutation({
         )
         .take(100);
       for (const row of rows) {
-        await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now });
+        // Atrium's clock, not the gateway's verdict (see expiredLocally).
+        await ctx.db.patch(row._id, { status: "expired", updatedAt: now, resolvedAt: now, expiredLocally: true });
         await clearNotification(ctx, row);
         await trace(ctx, row.chatId, { phase: "swept", source: row.source });
         expired += 1;
@@ -1317,7 +1539,7 @@ export const reapExpired = internalMutation({
       });
       unstuck += 1;
     }
-    return { expired, unstuck };
+    return { expired, unstuck, resolutionsPurged: lapsed.length };
   },
 });
 

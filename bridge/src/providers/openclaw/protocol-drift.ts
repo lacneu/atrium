@@ -444,10 +444,14 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 356,
-  ignored: 813,
+  handled: 360,
+  ignored: 809,
   gaps: 918,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  TERMINAL APPROVAL SNAPSHOTS (0.103.5): the `decision` of a decided approval's
+   *  `approval.get` snapshot (Allowed / Denied / Approval / Terminal) is handled — a card
+   *  whose request is found already decided is settled from it (readOpenClawApprovalTerminal).
    *
    *  CAPPED ROWS (0.101.3): `chat.message.get` is called — the full message of a row
    *  `chat.history` capped for display — so `ChatMessageGetParams` (sessionKey, messageId,
