@@ -29,7 +29,7 @@
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { isChatBusy, projectedGatewayHoldUntil } from "./outboxQueue";
+import { isChatBusy, SESSION_ACTIVE_FRESH_MS } from "./outboxQueue";
 
 /** The hidden chat kinds whose dispatch creates a fresh gateway session per job. */
 export const UTILITY_CHAT_KINDS: ReadonlySet<string> = new Set([
@@ -60,11 +60,6 @@ export const UTILITY_HOLD_MAX_MS = 35 * 60_000;
  * - `source_still_busy`: past the bound, the summarized conversation is still working.
  */
 export type UtilityCancelReason = "target_changed" | "approval_still_pending" | "source_still_busy";
-
-/** Open requests read per status when asking about an instance — a bound on the read,
- *  far above what is ever open at once (the expiry sweep closes rows past their
- *  deadline). */
-const OPEN_REQUESTS_READ = 200;
 
 /** `submitting` too: the person clicked, but the gateway has not taken the decision yet
  *  — its wait is still open, and a session created now still breaks it. */
@@ -100,17 +95,21 @@ export async function utilitySessionHold(
 ): Promise<UtilityHold | null> {
   let earliestDeadline: number | null = null;
   for (const status of OPEN_STATUSES) {
+    // Straight to the earliest approval of this status still within its deadline: the
+    // range holds no other kind and no expired row, so nothing read before it can hide it
+    // — however many questions, or expired rows the sweep has not closed yet, there are.
     const open = await ctx.db
       .query("agentRequests")
-      .withIndex("by_instance_and_status", (q) =>
-        q.eq("instanceName", args.instanceName).eq("status", status),
+      .withIndex("by_instanceName_and_status_and_kind_and_expiresAt", (q) =>
+        q
+          .eq("instanceName", args.instanceName)
+          .eq("status", status)
+          .eq("kind", "approval")
+          .gt("expiresAt", now),
       )
-      .take(OPEN_REQUESTS_READ);
-    for (const request of open) {
-      if (request.kind !== "approval" || request.expiresAt <= now) continue;
-      if (earliestDeadline === null || request.expiresAt < earliestDeadline) {
-        earliestDeadline = request.expiresAt;
-      }
+      .first();
+    if (open !== null && (earliestDeadline === null || open.expiresAt < earliestDeadline)) {
+      earliestDeadline = open.expiresAt;
     }
   }
   if (earliestDeadline !== null) {
@@ -131,7 +130,8 @@ export async function utilitySessionHold(
 /**
  * Is the conversation doing anything that may raise an approval in the next seconds?
  * A turn in dispatch, a bubble streaming, a sub-agent running, or a run the gateway
- * reports active before its bubble exists (the projection's facts).
+ * reports active before its bubble exists (the projection's facts, on ANY of the
+ * conversation's sessions: projectedRunWorking).
  *
  * Deliberately NOT `isChatBusy`: under the transcript projection a running sub-agent
  * does not make a conversation busy for a SEND (the gateway places the reply itself),
@@ -163,7 +163,41 @@ async function sourceConversationWorking(
       .first();
     if (running !== null) return true;
   }
-  return (await projectedGatewayHoldUntil(ctx, chatId, now)) !== null;
+  return await projectedRunWorking(ctx, chatId, now);
+}
+
+/**
+ * A gateway fact that a run of ONE OF the conversation's sessions works with no bubble yet
+ * (the projection's): a fresh `hasActiveRun` on any of its session cursors, or a send
+ * admitted whose run has shown nothing. Every session is asked, not only the most recently
+ * read one (outboxQueue.projectedGatewayHoldUntil, the question a SEND asks of the session
+ * it goes to): a conversation routed to several agents, or re-keyed, has a session each,
+ * and any of them may ask for an approval. A fresh fact is stamped with its cursor's write
+ * (`hasActiveRunAt` and `updatedAt`, transcriptProjection), so the cursors written within
+ * the freshness bound hold every one that can carry it: that range is read whole.
+ */
+async function projectedRunWorking(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  now: number,
+): Promise<boolean> {
+  const freshSince = now - SESSION_ACTIVE_FRESH_MS;
+  for await (const cursor of ctx.db
+    .query("transcriptCursors")
+    .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId).gt("updatedAt", freshSince))) {
+    if (
+      cursor.hasActiveRun === true &&
+      typeof cursor.hasActiveRunAt === "number" &&
+      cursor.hasActiveRunAt > freshSince
+    ) {
+      return true;
+    }
+  }
+  const admitted = await ctx.db
+    .query("runAdmissions")
+    .withIndex("by_chat_admitted", (q) => q.eq("chatId", chatId).gt("admittedAt", freshSince))
+    .first();
+  return admitted !== null;
 }
 
 /** The `createdAt` of the job lock a hidden chat holds now (its kind's own lock), or

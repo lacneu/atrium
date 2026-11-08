@@ -1985,10 +1985,6 @@ type UtilityCancelled = { kind: "cancelled"; reason: UtilityCancelReason };
 /** What the utility gate decided for one dispatch attempt (see holdUtilityDispatch). */
 type UtilityDispatchVerdict = { kind: "send" } | { kind: "gone" } | UtilityHeld | UtilityCancelled;
 
-/** Pending renditions of one user re-armed per hold — the user's conversions run one at
- *  a time on a single converter chat, so a handful at most are ever waiting. */
-const HELD_RENDITIONS_REARMED = 50;
-
 /**
  * THE UTILITY GATE at dispatch, before anything is loaded (lib/utilityHold.ts). For a
  * hidden utility job:
@@ -2002,8 +1998,8 @@ const HELD_RENDITIONS_REARMED = 50;
  * of its reply is untouched — and its dispatch is scheduled again at `retryAt`. Its
  * `pendingSince` is re-stamped so the stalled-dispatch reconciler
  * (outboxReconcile.STALLED_PENDING_MS) does not take a deliberate wait for a dead
- * dispatch; the conversions waiting on the user's converter chat are re-armed the same
- * way for the rendition timeout. The last gate asks all of it again (lastGateBeforeSend).
+ * dispatch; the user's converter chat is stamped the same way for the rendition timeout
+ * (schema.chats.convertHeldAt). The last gate asks all of it again (lastGateBeforeSend).
  */
 export const holdUtilityDispatch = internalMutation({
   args: {
@@ -2054,7 +2050,7 @@ async function utilityGate(
 
 /**
  * Decide the utility hold for one PENDING utility row and apply it: held (the row
- * re-stamped, the user's waiting conversions re-armed, the dispatch scheduled again),
+ * re-stamped, the user's converter queue stamped, the dispatch scheduled again),
  * withdrawn past the bound, or null — nothing holds it, it leaves.
  *
  * The approvals are ALWAYS read, past the bound too: the bound only decides what happens
@@ -2096,13 +2092,9 @@ async function applyUtilityHold(
     ...(row.utilityHoldSince === undefined ? { utilityHoldSince: now } : {}),
   });
   if (chat.kind === "converter") {
-    const waiting = await ctx.db
-      .query("fileRenditions")
-      .withIndex("by_user_status", (q) => q.eq("userId", chat.userId).eq("status", "pending"))
-      .take(HELD_RENDITIONS_REARMED);
-    for (const rendition of waiting) {
-      await ctx.db.patch(rendition._id, { dispatchHeldAt: now });
-    }
+    // ONE stamp for the user's whole queue (schema.chats.convertHeldAt), read by the
+    // rendition timeout for every pending rendition: none is left out, however many wait.
+    await ctx.db.patch(chat._id, { convertHeldAt: now });
   }
   await ctx.scheduler.runAt(hold.retryAt, internal.bridge.dispatch, { outboxId: row._id });
   return {

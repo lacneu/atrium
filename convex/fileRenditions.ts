@@ -112,9 +112,13 @@ export function pickDeliveredPdf<
 export const RENDITION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Where a pending rendition's timeout counts from: its request, or the last time its
- *  conversion turn was deliberately held (schema.fileRenditions.dispatchHeldAt). */
-export function renditionClockStart(r: { createdAt: number; dispatchHeldAt?: number }): number {
-  return Math.max(r.createdAt, r.dispatchHeldAt ?? 0);
+ *  user's conversion turn was deliberately held (schema.chats.convertHeldAt, on the
+ *  user's converter chat — one stamp for the whole queue). */
+export function renditionClockStart(
+  r: { createdAt: number },
+  converterChat: { convertHeldAt?: number } | null,
+): number {
+  return Math.max(r.createdAt, converterChat?.convertHeldAt ?? 0);
 }
 
 const CONVERSION_PROMPT: Record<string, string> = {
@@ -579,26 +583,28 @@ export const timeoutStaleRenditions = internalMutation({
       .take(BATCH);
     let failed = 0;
     /** Rows this page leaves `pending`: still within their window — a recent request, or
-     *  one whose conversion turn is held (re-armed by bridge.holdUtilityDispatch, up to a
-     *  whole page of them) — or kept for an upload in flight (projection `on`). */
+     *  one queued on a conversion turn held for an approval (chats.convertHeldAt; a whole
+     *  page of them, or more) — or kept for an upload in flight (projection `on`). */
     let kept = 0;
     for (const r of stale) {
-      // The clock starts at the LATER of the request and the last deliberate hold of
-      // the user's conversion turn (bridge.holdUtilityDispatch): a conversion held while
-      // a person decides an approval has not stalled, and gets its whole window once
-      // its turn leaves.
-      const since = renditionClockStart(r);
-      if (since >= cutoff) {
-        kept++; // still within the grace window
+      // Within the window counted from its request: nothing more to read.
+      if (r.createdAt >= cutoff) {
+        kept++;
         continue;
       }
-      // The converter chat that may still be locked on THIS rendition (the one read
-      // this loop always made; read first now, so the projection's wait can be asked).
+      // The user's converter chat (one indexed read): it may still be locked on THIS
+      // rendition, and its last deliberate hold restarts the clock of every rendition
+      // queued on it — a conversion held while a person decides an approval has not
+      // stalled, and gets its whole window once its turn leaves (bridge.applyUtilityHold).
       const chat = await ctx.db
         .query("chats")
-        .withIndex("by_user", (q) => q.eq("userId", r.userId))
-        .filter((q) => q.eq(q.field("kind"), "converter"))
+        .withIndex("by_user_kind", (q) => q.eq("userId", r.userId).eq("kind", "converter"))
         .first();
+      const since = renditionClockStart(r, chat);
+      if (since >= cutoff) {
+        kept++; // a held queue, still within the window counted from its last hold
+        continue;
+      }
       // PROJECTION `on` (codex phase 4 pass 23): the job's answer is receiving its PDF —
       // the deferred check's same wait, under the same overall bound, before any failure
       // or cleanup. Only a conversation that stored transcript text carries the marker:
@@ -634,7 +640,7 @@ export const timeoutStaleRenditions = internalMutation({
       // A page that left a row pending would come back unchanged from where this step
       // started, and a continuation scheduled at once would read it again, and again —
       // for as long as the rows stay in their window (codex phase 4 pass 24, then again
-      // with the rows a held conversion re-arms). Such a step continues PAST the page, so
+      // with the rows of a held conversion queue). Such a step continues PAST the page, so
       // every row is reached and nothing loops; the kept rows are seen again by the cron's
       // next run. Only a page whose rows all failed may be read again from the start: it
       // no longer holds them.

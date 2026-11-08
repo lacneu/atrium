@@ -1860,6 +1860,11 @@ export default defineSchema({
         createdAt: v.number(),
       }),
     ),
+    // The last time this converter chat's conversion turn was deliberately HELD (the
+    // utility hold, lib/utilityHold.ts). ONE stamp for the user's whole queue: every
+    // rendition still pending counts its timeout from the later of this and its own
+    // request (fileRenditions.renditionClockStart) — none is left out, however many wait.
+    convertHeldAt: v.optional(v.number()),
     archived: v.optional(v.boolean()),
     updatedAt: v.number(),
     // Sidebar organization (all optional — additive on existing rows):
@@ -3784,8 +3789,16 @@ export default defineSchema({
     // The expiry sweep's range: open rows past their deadline.
     .index("by_status_and_expires", ["status", "expiresAt"])
     // "Is a person deciding an approval on this gateway right now?" — the utility
-    // hold (lib/utilityHold.ts) asks it before a background job creates a session.
-    .index("by_instance_and_status", ["instanceName", "status"]),
+    // hold (lib/utilityHold.ts) asks it before a background job creates a session: ONE
+    // exact range per open status, straight to the earliest approval still within its
+    // deadline. Never a page filtered afterwards: expired rows the sweep has not closed
+    // yet, or questions, ahead of it hid an open approval (codex pass 3 of lot A+B).
+    .index("by_instanceName_and_status_and_kind_and_expiresAt", [
+      "instanceName",
+      "status",
+      "kind",
+      "expiresAt",
+    ]),
 
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy
@@ -4478,10 +4491,6 @@ export default defineSchema({
     converterAgentId: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
-    // The last time the user's conversion turn was deliberately HELD (the utility
-    // hold, lib/utilityHold.ts). The timeout watchdog counts from the later of this
-    // and `createdAt`: a rendition waiting on a held dispatch is not stalled.
-    dispatchHeldAt: v.optional(v.number()),
   })
     // Read/idempotency: THE row for a source blob (the cache key).
     .index("by_source", ["sourceStorageId"])

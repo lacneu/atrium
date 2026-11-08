@@ -807,8 +807,8 @@ describe("the hold, asked again after the attachments are read (codex review of 
     const again = await scheduledDispatches(t);
     expect(again).toHaveLength(1);
     expect(again[0]!.scheduledTime).toBe(T0 + UTILITY_HOLD_RECHECK_MS);
-    const rendition = await t.run((ctx) => ctx.db.get(job.renditionId!));
-    expect(rendition!.dispatchHeldAt).toBe(T0);
+    // The user's conversion queue is stamped as held, for the rendition timeout.
+    expect((await t.run((ctx) => ctx.db.get(job.chatId)))!.convertHeldAt).toBe(T0);
     expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "deferred")).toEqual([
       expect.objectContaining({ reason: "approval_pending", chatKind: "converter" }),
     ]);
@@ -833,16 +833,28 @@ describe("the hold, asked again after the attachments are read (codex review of 
 });
 
 describe("the rendition timeout continues past a page of held conversions (codex review of lot A+B)", () => {
-  test("50 re-armed renditions, then an expired one: the 51st is timed out, the page is never re-read at once", async () => {
+  test("50 renditions of a held queue, then an expired one: the 51st is timed out, the page is never re-read at once", async () => {
     const t = convexTest(schema, modules);
     const ids = await t.run(async (ctx) => {
-      const userId = await ctx.db.insert("users", {});
-      const chatId = await ctx.db.insert("chats", { userId, instanceName: INSTANCE, agentId: "olivier", updatedAt: 1 });
       const sourceStorageId = await ctx.storage.store(new Blob([new Uint8Array([1])]));
-      const row = (dispatchHeldAt?: number) => ({
+      const owner = async (heldAt?: number) => {
+        const userId = await ctx.db.insert("users", {});
+        const chatId = await ctx.db.insert("chats", { userId, instanceName: INSTANCE, agentId: "olivier", updatedAt: 1 });
+        // The user's converter chat, its conversion turn held just now (or never).
+        await ctx.db.insert("chats", {
+          userId,
+          kind: "converter" as const,
+          instanceName: INSTANCE,
+          agentId: "olivier",
+          updatedAt: 1,
+          ...(heldAt === undefined ? {} : { convertHeldAt: heldAt }),
+        });
+        return { userId, chatId };
+      };
+      const row = (who: { userId: Id<"users">; chatId: Id<"chats"> }) => ({
         sourceStorageId,
-        chatId,
-        userId,
+        chatId: who.chatId,
+        userId: who.userId,
         sourceFilename: "deck.pptx",
         sourceMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         status: "pending" as const,
@@ -851,13 +863,13 @@ describe("the rendition timeout continues past a page of held conversions (codex
         // Requested twice the timeout ago.
         createdAt: T0 - 10 * MIN,
         updatedAt: T0 - 10 * MIN,
-        ...(dispatchHeldAt === undefined ? {} : { dispatchHeldAt }),
       });
-      // A whole page of conversions a held turn re-armed just now…
+      // A whole page of conversions queued on a turn held just now…
+      const heldOwner = await owner(T0);
       const held: Id<"fileRenditions">[] = [];
-      for (let i = 0; i < 50; i++) held.push(await ctx.db.insert("fileRenditions", row(T0)));
-      // …and, after them, one that has truly expired.
-      const expired = await ctx.db.insert("fileRenditions", row());
+      for (let i = 0; i < 50; i++) held.push(await ctx.db.insert("fileRenditions", row(heldOwner)));
+      // …and, after them, one of another user that has truly expired.
+      const expired = await ctx.db.insert("fileRenditions", row(await owner()));
       return { held, expired };
     });
     const lastHeld = await t.run((ctx) => ctx.db.get(ids.held[49]!));
@@ -1313,5 +1325,229 @@ describe("every creator stamps its job's target on the row, under the lock it ta
       agentId: "curbot",
       lockedAt: chat.pendingCurate!.createdAt,
     });
+  });
+});
+
+describe("nothing read before an open approval hides it (codex review of lot A+B, pass 3)", () => {
+  /** 200 rows of the instance, all `pending`, that do NOT hold a job — approvals past their
+   *  deadline the expiry sweep has not closed yet, or questions — written BEFORE the open
+   *  approval, so a page read in creation order would hold only them. */
+  async function rowsAhead(t: Tt, kind: "expired" | "question"): Promise<void> {
+    await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        instanceName: INSTANCE,
+        agentId: "olivier",
+        updatedAt: 1,
+      });
+      for (let i = 0; i < 200; i++) {
+        await ctx.db.insert("agentRequests", {
+          chatId,
+          userId,
+          instanceName: INSTANCE,
+          providerRequestId: `ahead-${i}`,
+          ...(kind === "question"
+            ? {
+                source: "openclaw.ask_user" as const,
+                kind: "question" as const,
+                questions: [
+                  {
+                    id: "q",
+                    text: "Which?",
+                    options: [{ label: "A" }],
+                    multiSelect: false,
+                    allowOther: false,
+                    secret: false,
+                  },
+                ],
+                expiresAt: T0 + 30 * MIN,
+              }
+            : {
+                source: "openclaw.exec" as const,
+                kind: "approval" as const,
+                approvalKind: "exec" as const,
+                approval: { command: "echo OK", decisions: ["allow-once" as const, "deny" as const] },
+                expiresAt: T0 - 1,
+              }),
+          status: "pending" as const,
+          createdAt: T0,
+          updatedAt: T0,
+        });
+      }
+    });
+  }
+
+  for (const kind of ["expired", "question"] as const) {
+    const ahead = kind === "expired" ? "200 expired approvals still pending" : "200 questions";
+    test(`${ahead} ahead of an open approval: held at the first check`, async () => {
+      const t = convexTest(schema, modules);
+      const job = await seedJob(t, { utilityJob: {} });
+      await rowsAhead(t, kind);
+      await seedRequest(t, await otherConversation(t));
+
+      await dispatch(t, job.outboxId);
+
+      expect(sends()).toBe(0);
+      expect((await outbox(t, job.outboxId))!.utilityHoldSince).toBe(T0);
+      expect((await dispatchTraces(t))[0]).toMatchObject({
+        dispatchStatus: "deferred",
+        reason: "approval_pending",
+      });
+    });
+
+    test(`${ahead} ahead of an approval raised while the file is read: held at the last gate`, async () => {
+      const t = convexTest(schema, modules);
+      const blob = new Blob([new Uint8Array([7, 7, 7])]);
+      const original = blob.arrayBuffer.bind(blob);
+      let onRead: (() => Promise<void>) | null = null;
+      Object.defineProperty(blob, "arrayBuffer", {
+        value: async () => {
+          const act = onRead;
+          onRead = null;
+          if (act !== null) await act();
+          return await original();
+        },
+      });
+      const job = await seedJob(t, { kind: "converter", attachment: blob, utilityJob: {} });
+      await rowsAhead(t, kind);
+      // Armed once the job is stored (storing it reads it too).
+      onRead = async () => {
+        await seedRequest(t, await otherConversation(t));
+      };
+
+      await dispatch(t, job.outboxId);
+
+      expect(onRead).toBeNull(); // the first check passed: the file WAS read
+      expect(sends()).toBe(0);
+      const row = await outbox(t, job.outboxId);
+      expect(row!.status).toBe("pending");
+      expect(row!.sentToInstance).toBeUndefined();
+      expect(row!.utilityHoldSince).toBe(T0);
+    });
+
+    test(`${ahead} ahead of an approval still open at the bound: withdrawn, never sent`, async () => {
+      const t = convexTest(schema, modules);
+      const job = await seedJob(t, { utilityHoldSince: T0 - 35 * MIN, utilityJob: {} });
+      await rowsAhead(t, kind);
+      await seedRequest(t, await otherConversation(t));
+
+      await dispatch(t, job.outboxId);
+
+      expect(sends()).toBe(0);
+      expect((await outbox(t, job.outboxId))!.status).toBe("failed");
+      expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "cancelled")).toEqual([
+        expect.objectContaining({ reason: "approval_still_pending" }),
+      ]);
+    });
+  }
+});
+
+describe("the other bounded reads of the hold hide nothing either (codex review of lot A+B, pass 3)", () => {
+  /** A session cursor of `chatId` as the transcript projection writes it. */
+  async function cursor(
+    t: Tt,
+    chatId: Id<"chats">,
+    sessionKey: string,
+    fact: { hasActiveRun: boolean; hasActiveRunAt: number; updatedAt: number },
+  ): Promise<void> {
+    await t.run((ctx) =>
+      ctx.db.insert("transcriptCursors", {
+        chatId,
+        instanceName: INSTANCE,
+        sessionKey,
+        sessionId: `${sessionKey}:id`,
+        floorSeq: 0,
+        floorAt: 0,
+        lastKind: "page" as const,
+        reads: 1,
+        resets: 0,
+        unidentified: 0,
+        ...fact,
+      }),
+    );
+  }
+
+  test("a run active on one session of the conversation holds its summary, though another session was read since", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, { utilityJob: {} });
+    // A run works on the first agent's session (stated a minute ago)…
+    await cursor(t, job.sourceChatId, "agent:olivier:u:a", {
+      hasActiveRun: true,
+      hasActiveRunAt: T0 - MIN,
+      updatedAt: T0 - MIN,
+    });
+    // …and the second agent's session of the same conversation was read since, idle.
+    await cursor(t, job.sourceChatId, "agent:other:u:b", {
+      hasActiveRun: false,
+      hasActiveRunAt: T0 - 5_000,
+      updatedAt: T0 - 5_000,
+    });
+
+    await dispatch(t, job.outboxId);
+
+    expect(sends()).toBe(0);
+    expect((await dispatchTraces(t))[0]).toMatchObject({
+      dispatchStatus: "deferred",
+      reason: "source_busy",
+    });
+  });
+
+  test("…but a claim past its freshness does not hold, whatever wrote the cursor since", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, { utilityJob: {} });
+    // Stated 16 minutes ago, never renewed — the cursor itself rewritten a minute ago by a
+    // read that did not carry the fact.
+    await cursor(t, job.sourceChatId, "agent:olivier:u:a", {
+      hasActiveRun: true,
+      hasActiveRunAt: T0 - 16 * MIN,
+      updatedAt: T0 - MIN,
+    });
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(1);
+  });
+
+  test("a held conversion keeps EVERY rendition queued behind it, past fifty", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t, { kind: "converter", renditionCreatedAt: T0 - 10 * MIN, utilityJob: {} });
+    const queued = await t.run(async (ctx) => {
+      const ids: Id<"fileRenditions">[] = [];
+      for (let i = 0; i < 60; i++) {
+        ids.push(
+          await ctx.db.insert("fileRenditions", {
+            sourceStorageId: await ctx.storage.store(new Blob([new Uint8Array([i])])),
+            chatId: job.sourceChatId,
+            userId: job.userId,
+            sourceFilename: `sheet-${i}.xlsx`,
+            sourceMimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            status: "pending" as const,
+            converterInstance: INSTANCE,
+            converterAgentId: "olivier",
+            // Requested nine minutes ago: past the timeout counted from the request.
+            createdAt: T0 - 9 * MIN,
+            updatedAt: T0 - 9 * MIN,
+          }),
+        );
+      }
+      return ids;
+    });
+    await seedRequest(t, await otherConversation(t));
+    await dispatch(t, job.outboxId); // held
+    // Only the timeout's own chain runs below: the held job's re-check is left out.
+    await t.run(async (ctx) => {
+      for (const f of await ctx.db.system.query("_scheduled_functions").collect()) {
+        if (f.state.kind === "pending") await ctx.scheduler.cancel(f._id);
+      }
+    });
+
+    // The cron's run, then every continuation it schedules past a kept page.
+    vi.setSystemTime(T0 + 1_000);
+    await t.mutation(internal.fileRenditions.timeoutStaleRenditions, {});
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const statuses = await t.run(async (ctx) =>
+      Promise.all([job.renditionId!, ...queued].map(async (id) => (await ctx.db.get(id))!.status)),
+    );
+    expect(statuses.filter((s) => s !== "pending")).toEqual([]);
   });
 });

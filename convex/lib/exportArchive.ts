@@ -332,6 +332,7 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   "pendingSummarize",
   "pendingCurate",
   "pendingConvert",
+  "convertHeldAt",
   "forkPendingRehydration",
   "historyPin",
   "stoppedAt",

@@ -3,11 +3,11 @@
 ## [0.103.5] — Approvals from sub-agents, after a reconnection and past ten minutes, safe from Atrium's background work
 
 Patch release. The bridge and the Convex functions change; the frontend does not. The schema
-gains an index (`agentRequests.by_instance_and_status`) and three optional fields
-(`outbox.utilityHoldSince`, `outbox.utilityJob`, `fileRenditions.dispatchHeldAt`); nothing needs
-migrating. Deploy **Convex first, then the bridge image**: either half works with the other half
-of 0.103.4 during the rollout. Validated on the live bench on OpenClaw 2026.9.36, with Hermes
-0.21.7, in token and in trusted-proxy authentication.
+gains an index (`agentRequests.by_instanceName_and_status_and_kind_and_expiresAt`) and three
+optional fields (`outbox.utilityHoldSince`, `outbox.utilityJob`, `chats.convertHeldAt`); nothing
+needs migrating. Deploy **Convex first, then the bridge image**: either half works with the
+other half of 0.103.4 during the rollout. Validated on the live bench on OpenClaw 2026.9.36,
+with Hermes 0.21.7, in token and in trusted-proxy authentication.
 
 - **A sub-agent's approval is shown in the conversation that started it.** When an agent
   delegated work to a sub-agent and that sub-agent needed your approval to run a command, the
