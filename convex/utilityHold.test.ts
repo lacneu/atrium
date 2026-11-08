@@ -87,6 +87,9 @@ async function seedJob(
     pendingSince?: number;
     utilityHoldSince?: number;
     renditionCreatedAt?: number;
+    /** A converter job's file, riding the turn as its attachment (read and encoded by
+     *  the dispatch before the last gate). */
+    attachment?: Blob;
   } = {},
 ) {
   const instanceName = opts.instanceName ?? INSTANCE;
@@ -113,8 +116,12 @@ async function seedJob(
     });
     const kind = opts.kind ?? "summarizer";
     let renditionId: Id<"fileRenditions"> | null = null;
+    let attachmentId: Id<"_storage"> | null = null;
     if (kind === "converter") {
-      const sourceStorageId = await ctx.storage.store(new Blob([new Uint8Array([1, 2, 3])]));
+      const sourceStorageId = await ctx.storage.store(
+        opts.attachment ?? new Blob([new Uint8Array([1, 2, 3])]),
+      );
+      if (opts.attachment) attachmentId = sourceStorageId;
       renditionId = await ctx.db.insert("fileRenditions", {
         sourceStorageId,
         chatId: sourceChatId,
@@ -188,7 +195,18 @@ async function seedJob(
       clientMessageId: `job-${kind}-${T0}`,
       messageId,
       text: "job prompt",
-      attachmentIds: [],
+      attachmentIds: attachmentId === null ? [] : [attachmentId],
+      ...(attachmentId === null
+        ? {}
+        : {
+            attachments: [
+              {
+                storageId: attachmentId,
+                filename: "deck.pptx",
+                mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              },
+            ],
+          }),
       status: "pending" as const,
       pendingSince: opts.pendingSince ?? T0,
       ...(opts.utilityHoldSince !== undefined ? { utilityHoldSince: opts.utilityHoldSince } : {}),
@@ -618,3 +636,120 @@ describe("the hold is bounded and keeps the watchdogs honest", () => {
     expect(await status(job.renditionId!)).toBe("failed");
   });
 });
+
+describe("the hold, asked again after the attachments are read (codex review of lot A+B)", () => {
+  /** A file whose READ by the dispatch raises an approval on the instance, once: the
+   *  first check has passed (nothing pending), the last gate has not run yet. The stored
+   *  object itself is what the dispatch reads (`storage.get` returns it). Armed only once
+   *  the job is stored: storing it reads it too (its sha256). */
+  function fileThatRaisesAnApproval(t: Tt): { blob: Blob; arm: () => void; reads: () => number } {
+    const blob = new Blob([new Uint8Array([7, 7, 7])]);
+    const original = blob.arrayBuffer.bind(blob);
+    let reads = 0;
+    let armed = false;
+    Object.defineProperty(blob, "arrayBuffer", {
+      value: async () => {
+        if (armed) {
+          reads += 1;
+          if (reads === 1) await seedRequest(t, await otherConversation(t));
+        }
+        return await original();
+      },
+    });
+    return { blob, arm: () => (armed = true), reads: () => reads };
+  }
+
+  test("an approval raised while a conversion's file is read: nothing is sent, the dispatch asks again", async () => {
+    const t = convexTest(schema, modules);
+    const file = fileThatRaisesAnApproval(t);
+    const job = await seedJob(t, { kind: "converter", attachment: file.blob, pendingSince: T0 - MIN });
+    file.arm();
+
+    await dispatch(t, job.outboxId);
+
+    // The first check passed: the file WAS read and encoded…
+    expect(file.reads()).toBe(1);
+    // …and the last gate held the job all the same.
+    expect(sends()).toBe(0);
+    const row = await outbox(t, job.outboxId);
+    expect(row!.status).toBe("pending");
+    expect(row!.sentToInstance).toBeUndefined();
+    expect(row!.sendId).toBeUndefined();
+    expect(row!.utilityHoldSince).toBe(T0);
+    expect(row!.pendingSince).toBe(T0);
+    const again = await scheduledDispatches(t);
+    expect(again).toHaveLength(1);
+    expect(again[0]!.scheduledTime).toBe(T0 + UTILITY_HOLD_RECHECK_MS);
+    const rendition = await t.run((ctx) => ctx.db.get(job.renditionId!));
+    expect(rendition!.dispatchHeldAt).toBe(T0);
+    expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "deferred")).toEqual([
+      expect.objectContaining({ reason: "approval_pending", chatKind: "converter" }),
+    ]);
+  });
+
+  test("…and a job already traced on an earlier hold is not traced twice", async () => {
+    const t = convexTest(schema, modules);
+    const file = fileThatRaisesAnApproval(t);
+    const job = await seedJob(t, { kind: "converter", attachment: file.blob, utilityHoldSince: T0 - MIN });
+    file.arm();
+
+    await dispatch(t, job.outboxId);
+
+    expect(sends()).toBe(0);
+    const row = await outbox(t, job.outboxId);
+    // The hold keeps its origin; the stamp follows this check.
+    expect(row!.utilityHoldSince).toBe(T0 - MIN);
+    expect(row!.pendingSince).toBe(T0);
+    expect(await scheduledDispatches(t)).toHaveLength(1);
+    expect((await dispatchTraces(t)).filter((m) => m.dispatchStatus === "deferred")).toHaveLength(0);
+  });
+});
+
+describe("the rendition timeout continues past a page of held conversions (codex review of lot A+B)", () => {
+  test("50 re-armed renditions, then an expired one: the 51st is timed out, the page is never re-read at once", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", { userId, instanceName: INSTANCE, agentId: "olivier", updatedAt: 1 });
+      const sourceStorageId = await ctx.storage.store(new Blob([new Uint8Array([1])]));
+      const row = (dispatchHeldAt?: number) => ({
+        sourceStorageId,
+        chatId,
+        userId,
+        sourceFilename: "deck.pptx",
+        sourceMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        status: "pending" as const,
+        converterInstance: INSTANCE,
+        converterAgentId: "olivier",
+        // Requested twice the timeout ago.
+        createdAt: T0 - 10 * MIN,
+        updatedAt: T0 - 10 * MIN,
+        ...(dispatchHeldAt === undefined ? {} : { dispatchHeldAt }),
+      });
+      // A whole page of conversions a held turn re-armed just now…
+      const held: Id<"fileRenditions">[] = [];
+      for (let i = 0; i < 50; i++) held.push(await ctx.db.insert("fileRenditions", row(T0)));
+      // …and, after them, one that has truly expired.
+      const expired = await ctx.db.insert("fileRenditions", row());
+      return { held, expired };
+    });
+    const lastHeld = await t.run((ctx) => ctx.db.get(ids.held[49]!));
+
+    // The cron's own run: nothing of its page can be timed out.
+    expect(await t.mutation(internal.fileRenditions.timeoutStaleRenditions, {})).toEqual({ failed: 0 });
+    const continuations = (
+      await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())
+    ).filter((f) => f.name.includes("timeoutStaleRenditions") && f.state.kind === "pending");
+    // ONE continuation, and PAST the page — never the same page again at once.
+    expect(continuations).toHaveLength(1);
+    expect((continuations[0]!.args[0] as { after?: number }).after).toBe(lastHeld!._creationTime);
+
+    // The chain runs to its end (a loop would exhaust the iterations and throw).
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const status = async (id: Id<"fileRenditions">) => (await t.run((ctx) => ctx.db.get(id)))!;
+    expect((await status(ids.expired)).status).toBe("failed");
+    expect((await status(ids.expired)).failureReason).toBe("timeout");
+    for (const id of ids.held) expect((await status(id)).status).toBe("pending");
+  });
+});
+

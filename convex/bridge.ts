@@ -1973,11 +1973,11 @@ export const reparkIfBusy = internalMutation({
   handler: async (ctx, { outboxId }): Promise<boolean> => reparkRowIfBusy(ctx, outboxId),
 });
 
+/** A dispatch the utility hold kept back (see applyUtilityHold). */
+type UtilityHeld = { kind: "held"; reason: UtilityHoldReason; retryAt: number; first: boolean };
+
 /** What the utility hold decided for one dispatch attempt (see holdUtilityDispatch). */
-type UtilityDispatchVerdict =
-  | { kind: "send" }
-  | { kind: "gone" }
-  | { kind: "held"; reason: UtilityHoldReason; retryAt: number; first: boolean };
+type UtilityDispatchVerdict = { kind: "send" } | { kind: "gone" } | UtilityHeld;
 
 /** Pending renditions of one user re-armed per hold — the user's conversions run one at
  *  a time on a single converter chat, so a handful at most are ever waiting. */
@@ -2002,43 +2002,59 @@ export const holdUtilityDispatch = internalMutation({
     const row = await ctx.db.get(outboxId);
     if (row === null || row.status !== "pending") return { kind: "gone" };
     const chat = await ctx.db.get(row.chatId);
-    if (chat === null || chat.kind === undefined || !UTILITY_CHAT_KINDS.has(chat.kind)) {
-      return { kind: "send" };
-    }
-    const now = Date.now();
-    if (row.utilityHoldSince !== undefined && now - row.utilityHoldSince >= UTILITY_HOLD_MAX_MS) {
-      return { kind: "send" };
-    }
-    const sourceChatId =
-      chat.kind === "summarizer" ? chat.pendingSummarize?.targetChatId : undefined;
-    const hold = await utilitySessionHold(
-      ctx,
-      { instanceName, ...(sourceChatId === undefined ? {} : { sourceChatId }) },
-      now,
-    );
-    if (hold === null) return { kind: "send" };
-    await ctx.db.patch(outboxId, {
-      pendingSince: now,
-      ...(row.utilityHoldSince === undefined ? { utilityHoldSince: now } : {}),
-    });
-    if (chat.kind === "converter") {
-      const waiting = await ctx.db
-        .query("fileRenditions")
-        .withIndex("by_user_status", (q) => q.eq("userId", chat.userId).eq("status", "pending"))
-        .take(HELD_RENDITIONS_REARMED);
-      for (const rendition of waiting) {
-        await ctx.db.patch(rendition._id, { dispatchHeldAt: now });
-      }
-    }
-    await ctx.scheduler.runAt(hold.retryAt, internal.bridge.dispatch, { outboxId });
-    return {
-      kind: "held",
-      reason: hold.reason,
-      retryAt: hold.retryAt,
-      first: row.utilityHoldSince === undefined,
-    };
+    if (chat === null) return { kind: "send" };
+    return (await applyUtilityHold(ctx, row, chat, instanceName)) ?? { kind: "send" };
   },
 });
+
+/**
+ * Decide the utility hold for one PENDING row of `chat` and, when it holds, apply it: the
+ * row re-stamped, the user's waiting conversions re-armed, the dispatch scheduled again.
+ * Null = not held (not a utility job, the bound passed, or nothing holds it). Asked by the
+ * dispatch before it loads anything (holdUtilityDispatch) and again by the last gate,
+ * after the attachments are read and encoded (lastGateBeforeSend): an approval raised
+ * in between must hold the job just the same.
+ */
+async function applyUtilityHold(
+  ctx: MutationCtx,
+  row: Doc<"outbox">,
+  chat: Doc<"chats">,
+  instanceName: string,
+): Promise<UtilityHeld | null> {
+  if (chat.kind === undefined || !UTILITY_CHAT_KINDS.has(chat.kind)) return null;
+  const now = Date.now();
+  if (row.utilityHoldSince !== undefined && now - row.utilityHoldSince >= UTILITY_HOLD_MAX_MS) {
+    return null;
+  }
+  const sourceChatId =
+    chat.kind === "summarizer" ? chat.pendingSummarize?.targetChatId : undefined;
+  const hold = await utilitySessionHold(
+    ctx,
+    { instanceName, ...(sourceChatId === undefined ? {} : { sourceChatId }) },
+    now,
+  );
+  if (hold === null) return null;
+  await ctx.db.patch(row._id, {
+    pendingSince: now,
+    ...(row.utilityHoldSince === undefined ? { utilityHoldSince: now } : {}),
+  });
+  if (chat.kind === "converter") {
+    const waiting = await ctx.db
+      .query("fileRenditions")
+      .withIndex("by_user_status", (q) => q.eq("userId", chat.userId).eq("status", "pending"))
+      .take(HELD_RENDITIONS_REARMED);
+    for (const rendition of waiting) {
+      await ctx.db.patch(rendition._id, { dispatchHeldAt: now });
+    }
+  }
+  await ctx.scheduler.runAt(hold.retryAt, internal.bridge.dispatch, { outboxId: row._id });
+  return {
+    kind: "held",
+    reason: hold.reason,
+    retryAt: hold.retryAt,
+    first: row.utilityHoldSince === undefined,
+  };
+}
 
 async function reparkRowIfBusy(ctx: MutationCtx, outboxId: Id<"outbox">): Promise<boolean> {
   const row = await ctx.db.get(outboxId);
@@ -2112,6 +2128,7 @@ export const lastGateBeforeSend = internalMutation({
   ): Promise<
     | { kind: "gone" }
     | { kind: "reparked" }
+    | UtilityHeld
     | { kind: "refused"; agentLeftRoom?: true }
     | { kind: "permission_refused" }
     | { kind: "knowledge_refused"; revision: number }
@@ -2130,6 +2147,18 @@ export const lastGateBeforeSend = internalMutation({
     const chat = await ctx.db.get(row.chatId);
     if (chat === null) return { kind: "gone" };
     if (await reparkRowIfBusy(ctx, outboxId)) return { kind: "reparked" };
+    const targetInstance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", target.instanceName))
+      .first();
+    // THE UTILITY HOLD, asked again at the last moment (lib/utilityHold.ts). The dispatch
+    // asked it before loading anything, but reading and encoding a conversion's file takes
+    // time, and an approval raised meanwhile would see this job's session created during
+    // its wait. OpenClaw only, like the first check.
+    if ((targetInstance?.kind ?? "openclaw") === "openclaw") {
+      const held = await applyUtilityHold(ctx, row, chat, target.instanceName);
+      if (held !== null) return held;
+    }
     const senderId = row.userId as Id<"users">;
     const refusal = await senderRefusal(ctx, {
       chatId: chat._id,
@@ -2186,11 +2215,7 @@ export const lastGateBeforeSend = internalMutation({
     // INLINE WIDGETS, decided in this same transaction as the permission and knowledge
     // choices: the instance switch AND the conversation override (convex/widgets.ts).
     // The bridge adds the gateway-version judgement and re-opens the socket on change.
-    const widgetInstance = await ctx.db
-      .query("instances")
-      .withIndex("by_name", (q) => q.eq("name", target.instanceName))
-      .first();
-    const inlineWidgets = conversationWantsWidgets(widgetInstance, chat);
+    const inlineWidgets = conversationWantsWidgets(targetInstance, chat);
     return {
       kind: "send",
       inlineWidgets,
@@ -2833,7 +2858,25 @@ export const dispatch = internalAction({
     // approval makes the allowed command fail. Asked here — the target is known, nothing
     // is loaded or sent yet — and only for Atrium's own hidden jobs on OpenClaw: a
     // conversation's turn is never held behind someone else's approval, and Hermes has
-    // no such wait.
+    // no such wait. The last gate asks it again, after the attachments are loaded.
+    // Traced once per job (its first hold), not at every re-check: a job held for the
+    // length of an approval would otherwise write a row every 15 s.
+    const holdTarget = {
+      instanceName: routing.target.instanceName,
+      agentId: routing.target.agentId,
+    };
+    const traceUtilityHold = async (held: UtilityHeld): Promise<void> => {
+      if (!held.first) return;
+      await traceDispatch(ctx, {
+        outboxId,
+        chatId: row.chatId,
+        chatKind: routing.chatKind,
+        dispatchStatus: "deferred",
+        reason: held.reason,
+        target: holdTarget,
+        authMode: routing.authMode,
+      });
+    };
     if (
       routing.provider === "openclaw" &&
       routing.chatKind !== null &&
@@ -2845,22 +2888,7 @@ export const dispatch = internalAction({
       );
       if (held.kind === "gone") return;
       if (held.kind === "held") {
-        // Traced once per job (its first hold), not at every re-check: a job held for
-        // the length of an approval would otherwise write a row every 15 s.
-        if (held.first) {
-          await traceDispatch(ctx, {
-            outboxId,
-            chatId: row.chatId,
-            chatKind: routing.chatKind,
-            dispatchStatus: "deferred",
-            reason: held.reason,
-            target: {
-              instanceName: routing.target.instanceName,
-              agentId: routing.target.agentId,
-            },
-            authMode: routing.authMode,
-          });
-        }
+        await traceUtilityHold(held);
         return;
       }
     }
@@ -3115,6 +3143,10 @@ export const dispatch = internalAction({
         },
         ...(sendId === null ? {} : { sendId }),
       });
+      if (gate.kind === "held") {
+        await traceUtilityHold(gate);
+        return;
+      }
       if (gate.kind === "gone" || gate.kind === "reparked") return;
       if (gate.kind === "permission_refused") {
         // The owner chose a mode this target is not confirmed to take (an older bridge

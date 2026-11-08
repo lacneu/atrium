@@ -566,15 +566,20 @@ export const timeoutStaleRenditions = internalMutation({
       )
       .take(BATCH);
     let failed = 0;
-    /** Rows this page kept pending for an upload in flight (projection `on` only). */
-    let deferred = 0;
+    /** Rows this page leaves `pending`: still within their window — a recent request, or
+     *  one whose conversion turn is held (re-armed by bridge.holdUtilityDispatch, up to a
+     *  whole page of them) — or kept for an upload in flight (projection `on`). */
+    let kept = 0;
     for (const r of stale) {
       // The clock starts at the LATER of the request and the last deliberate hold of
       // the user's conversion turn (bridge.holdUtilityDispatch): a conversion held while
       // a person decides an approval has not stalled, and gets its whole window once
       // its turn leaves.
       const since = renditionClockStart(r);
-      if (since >= cutoff) continue; // still within the grace window
+      if (since >= cutoff) {
+        kept++; // still within the grace window
+        continue;
+      }
       // The converter chat that may still be locked on THIS rendition (the one read
       // this loop always made; read first now, so the projection's wait can be asked).
       const chat = await ctx.db
@@ -594,7 +599,7 @@ export const timeoutStaleRenditions = internalMutation({
         now - since < RENDITION_TIMEOUT_MS + FILE_JOB_MAX_DEFER_MS &&
         (await uploadInFlightIn(ctx, chat._id, now))
       ) {
-        deferred++;
+        kept++;
         continue;
       }
       await ctx.db.patch(r._id, {
@@ -614,20 +619,18 @@ export const timeoutStaleRenditions = internalMutation({
       }
     }
     if (stale.length === BATCH) {
-      if (deferred > 0) {
-        // A page the wait kept (partly) pending would come back unchanged from the start:
-        // the next step continues PAST it (codex phase 4 pass 24), so every row is reached
-        // and nothing loops. The kept rows are seen again by the cron's next run, and the
-        // job's own deferred check settles them when their upload ends.
-        await ctx.scheduler.runAfter(0, internal.fileRenditions.timeoutStaleRenditions, {
-          after: stale[stale.length - 1]!._creationTime,
-        });
-      } else {
-        // As before phase 4 (no row waits: a conversation never `on` always lands here).
-        await ctx.scheduler.runAfter(0, internal.fileRenditions.timeoutStaleRenditions, {
-          ...(after !== undefined ? { after: stale[stale.length - 1]!._creationTime } : {}),
-        });
-      }
+      // A page that left a row pending would come back unchanged from where this step
+      // started, and a continuation scheduled at once would read it again, and again —
+      // for as long as the rows stay in their window (codex phase 4 pass 24, then again
+      // with the rows a held conversion re-arms). Such a step continues PAST the page, so
+      // every row is reached and nothing loops; the kept rows are seen again by the cron's
+      // next run. Only a page whose rows all failed may be read again from the start: it
+      // no longer holds them.
+      await ctx.scheduler.runAfter(0, internal.fileRenditions.timeoutStaleRenditions, {
+        ...(kept > 0 || after !== undefined
+          ? { after: stale[stale.length - 1]!._creationTime }
+          : {}),
+      });
     }
     return { failed };
   },
