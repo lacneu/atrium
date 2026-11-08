@@ -208,9 +208,6 @@ export interface OpenClawLiveSession {
   /** Its socket: a closed one is a husk awaiting the reaper, reading nothing (codex P1,
    *  0.21.5 pass 25). */
   connection: { readonly isClosed: boolean };
-  /** Whether it answers approvals raised by `sessionKey` — its own session, or one of its
-   *  sub-agents (agent-request-observer.ts `answersFor`). Absent: its own session only. */
-  answersFor?(sessionKey: string): boolean | Promise<boolean>;
 }
 
 /** OpenClaw: re-check at the gateway, then resolve — on the operator connection. */
@@ -218,8 +215,8 @@ export async function respondOpenClaw(
   body: RespondBody,
   gateway: GatewayRpc,
   /** The chat's live socket routed this approval here (its broadcast, or the pending
-   *  list, named this session or one of its descendants). The proof used when the
-   *  approval names no agent to compare. */
+   *  list, named this exact session). The proof used when the approval names no agent to
+   *  compare. */
   routedHere: boolean,
   /** The chat's live session here. The resolution goes on a short operator connection
    *  that ingests nothing: what the agent does once released is read by THIS session's
@@ -231,25 +228,17 @@ export async function respondOpenClaw(
    *  request that still waits. */
   live: OpenClawLiveSession | undefined,
 ): Promise<RespondOutcome> {
-  const isQuestion = body.source === "openclaw.ask_user" || body.source === "openclaw.secret";
-  // The request's session must be the live conversation's — or, for an APPROVAL, one of
-  // its sub-agents: upstream addresses an approval to the raising session's lineage
-  // (approval-session-audience.ts:52-107), the card names the child's session, and what
-  // the child does once released is read by this conversation's socket.
-  const sessionAnswered =
-    live !== undefined &&
-    (sameSession(body.sessionKey, live.sessionKey) ||
-      (!isQuestion &&
-        body.sessionKey !== undefined &&
-        (await live.answersFor?.(body.sessionKey)) === true));
+  // The request's session must be the live conversation's own: one raised by a sub-agent
+  // is refused like any other session's — the observer shows none (agent-request-observer.ts).
   if (
     live === undefined ||
     live.connection.isClosed ||
     live.instanceName !== body.instanceName ||
-    !sessionAnswered
+    !sameSession(body.sessionKey, live.sessionKey)
   ) {
     return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
   }
+  const isQuestion = body.source === "openclaw.ask_user" || body.source === "openclaw.secret";
   if (isQuestion) {
     let record: Record<string, unknown> | null = null;
     try {
@@ -330,8 +319,7 @@ export async function respondOpenClaw(
     // A PENDING snapshot names no session (`sourceSessionKey` is set only on the
     // session-scoped projection; absent from every approval.get captured live on
     // 2026.9.5), but it names the AGENT that asked. An exec or plugin approval whose
-    // agent is not the one of the session the card names (this conversation's, or the
-    // sub-agent's that raised it) is never resolved from here. A system-agent
+    // agent is not this conversation's is never resolved from here. A system-agent
     // approval is raised by the gateway's own system agent, whatever the chat.
     // An exec approval may name NO agent (upstream allows `agentId: null`); it is then
     // answerable only on the proof that this chat's own socket routed it here.

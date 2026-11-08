@@ -433,6 +433,34 @@ export function readOpenClawApprovalTerminalStatus(
     : null;
 }
 
+/**
+ * What a TERMINAL `approval.get` snapshot settles: its status, the decision an allow or a
+ * deny records (`allow-once` | `allow-always` for an allow, `deny` for a deny; none for an
+ * expiry or a cancel: packages/gateway-protocol/src/schema/approvals.ts:239-271 at
+ * v2026.9.36), and the generation it is (`createdAtMs`). Null for a snapshot that is still
+ * pending, or unreadable.
+ */
+export function readOpenClawApprovalTerminal(getResult: unknown): {
+  status: "allowed" | "denied" | "expired" | "cancelled";
+  decision?: ApprovalDecision;
+  createdAtMs: number | null;
+} | null {
+  const status = readOpenClawApprovalTerminalStatus(getResult);
+  if (status === null) return null;
+  const snapshot = obj(obj(getResult)?.approval);
+  const d = snapshot?.decision;
+  const decision =
+    (status === "allowed" && (d === "allow-once" || d === "allow-always")) ||
+    (status === "denied" && d === "deny")
+      ? d
+      : undefined;
+  return {
+    status,
+    ...(decision !== undefined ? { decision } : {}),
+    createdAtMs: num(snapshot?.createdAtMs) ?? null,
+  };
+}
+
 const SCOPE_KINDS = new Set(["message-send", "payment", "external-post", "standing-grant"]);
 
 /** One line naming an owner-declared blast radius, in neutral words the UI localizes

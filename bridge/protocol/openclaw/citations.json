@@ -2982,6 +2982,118 @@
         "for (const field of [\"text\", \"content\", \"partialJson\", \"arguments\", \"thinking\"] as const) {",
         "truncated: true,"
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/approval-session-audience.ts:52-107",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/approval-session-audience.ts",
+      "lines": [
+        [
+          52,
+          107
+        ]
+      ],
+      "literals": [
+        "Resolves the source session and its operator-visible ancestor audience."
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/exec-approval-registration.ts:107-112",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/exec-approval-registration.ts",
+      "lines": [
+        [
+          107,
+          112
+        ]
+      ],
+      "literals": [
+        "audienceSessionKeys = (await params.resolveAudienceSessionKeys?.("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-methods/sessions-subscriptions.ts:116-122",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-methods/sessions-subscriptions.ts",
+      "lines": [
+        [
+          116,
+          122
+        ]
+      ],
+      "literals": [
+        "p.includeApprovals === true"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/operator-approval-session-events.ts:156",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/operator-approval-session-events.ts",
+      "lines": [
+        [
+          156,
+          156
+        ]
+      ],
+      "literals": [
+        "for (const sessionKey of event.record.audienceSessionKeys) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-methods/approval-shared.ts:132-147",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-methods/approval-shared.ts",
+      "lines": [
+        [
+          132,
+          147
+        ]
+      ],
+      "literals": [
+        "request: record.request,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/session-approval-projection.ts:31-48",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "ui/src/pages/chat/session-approval-projection.ts",
+      "lines": [
+        [
+          31,
+          48
+        ]
+      ],
+      "literals": [
+        "sourceSessionKey && sourceSessionKey !== sessionKey"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/components/exec-approval-card.ts:400-408",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "ui/src/components/exec-approval-card.ts",
+      "lines": [
+        [
+          400,
+          408
+        ]
+      ],
+      "literals": [
+        "execApproval.requestedBySession"
+      ]
     }
   ]
 }

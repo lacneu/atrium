@@ -3,11 +3,9 @@
 // Questions (`question.requested` / `question.resolved`) and approvals
 // (`{exec,plugin,openclaw}.approval.{requested,resolved}`) are BROADCASTS: every
 // operator socket with the scope receives them for every session on the gateway. So
-// this observer's first job is isolation — a question is recorded for THIS chat only
-// when it names THIS chat's session key, an approval when it names this chat's session
-// or one of its DESCENDANTS (a sub-agent it spawned: upstream addresses an approval to
-// the raising session's whole lineage, approval-lineage.ts) — and its second is to turn
-// what it keeps into three effects:
+// this observer's first job is isolation — a request is recorded for THIS chat only
+// when it names THIS chat's session key — and its second is to turn what it keeps
+// into three effects:
 //
 //   1. the Convex row the person sees and answers (writer.upsertAgentRequest);
 //   2. the provider's verdict on it (writer.settleAgentRequest);
@@ -20,12 +18,19 @@
 // on THIS connection"). The broadcasts arrive on this socket regardless; what the
 // card SHOWS comes from `approval.get`, the gateway's reviewer-safe projection.
 //
+// An approval raised by a SUB-AGENT is not shown here. Upstream addresses an approval to
+// the raising session and every ancestor (src/gateway/approval-session-audience.ts:52-107
+// at v2026.9.36), computed once when it registers it, and serves that audience only on the
+// session-scoped stream (`session.approval`) this socket does not subscribe to; the
+// broadcast names the raising session alone. Reconstructing that audience from the
+// broadcasts is not done: only the conversation's own session is.
+//
 // A broadcast is sent ONCE, `dropIfSlow` (server-methods/approval-shared.ts:340-368): a
 // socket that was down, or slow, never gets it again. So at every (re)connection the
 // pending ones are LISTED — `exec.approval.list`, `plugin.approval.list`,
 // `openclaw.approval.list`, exactly what the Control UI asks at each connection
 // (ui/src/app/exec-approval.ts:419-473, called from ui/src/app/overlays.ts:209-219) — and
-// each one this conversation answers for goes through the same path as its broadcast.
+// each one of this conversation's own session goes through the same path as its broadcast.
 
 import {
   OPENCLAW_APPROVAL_REQUESTED_EVENTS,
@@ -34,6 +39,7 @@ import {
   readOpenClawApprovalPresentation,
   readOpenClawApprovalRequested,
   readOpenClawApprovalResolved,
+  readOpenClawApprovalTerminal,
   readOpenClawApprovalTerminalStatus,
   readOpenClawQuestionRequested,
   readOpenClawQuestionResolved,
@@ -44,15 +50,6 @@ import {
 import { SIGHTING_EPOCH, nextSightingSeq } from "../../core/sighting-order.js";
 import { payloadOf, type GatewayRpc } from "../../agent-request-rpc.js";
 import { errForLog } from "../../core/log-safe-error.js";
-import type { LineageMatch } from "./approval-lineage.js";
-
-/** Which sessions an approval may come from for this conversation (approval-lineage.ts). */
-export interface ApprovalAudience {
-  /** Without asking the gateway: this session, a known child, a proven descendant. */
-  known(sessionKey: string | null): LineageMatch | null;
-  /** …and, when nothing local can tell, the gateway's own rows. */
-  resolve(sessionKey: string | null): Promise<LineageMatch | null>;
-}
 
 export interface AgentRequestObserverDeps {
   chatId: string;
@@ -81,8 +78,6 @@ export interface AgentRequestObserverDeps {
       hold?: boolean;
     },
   ) => Promise<void>;
-  /** The sessions this conversation answers approvals for. Absent: its own session only. */
-  audience?: ApprovalAudience;
   /** Wake the consume loop: deadlines were armed off-loop. */
   wake: () => void;
   /** Epoch ms (the gateway's deadlines are epoch). */
@@ -127,6 +122,10 @@ const APPROVAL_READ_RETRY_MS = [1_000, 3_000];
 const APPROVAL_RETRY_LATER_MS = 15_000;
 /** Wait before re-reading pending questions after a card could not be recorded. */
 const QUESTION_REPLAY_LATER_MS = 15_000;
+/** What an approval's write ends in when its `approval.get` answered a TERMINAL snapshot:
+ *  the request was settled from it (recordApproval), and its resolution has nothing left
+ *  to settle. */
+const SETTLED_FROM_SNAPSHOT = Symbol("settled-from-snapshot");
 
 type Kind = "question" | "approval";
 
@@ -212,7 +211,7 @@ export class OpenClawAgentRequestObserver {
    * Re-read what is still pending after a (re)connect: a request raised while this
    * socket was down — or whose one broadcast it missed — is otherwise invisible until it
    * expires. The lists are filtered by the gateway to what this client may see; we keep
-   * what this conversation answers for.
+   * this conversation's own session's.
    */
   async replayPending(): Promise<void> {
     await this.replayQuestions();
@@ -242,9 +241,10 @@ export class OpenClawAgentRequestObserver {
   /**
    * The approvals still pending, from the three lists the Control UI reads at every
    * connection. Each entry is the broadcast's own shape, so it takes the broadcast's path
-   * (`onApproval`): membership, `approval.get` for what the card shows and to confirm it
-   * still waits — an approval resolved since the list was read is not raised again — and
-   * the write, idempotent per id. A list the gateway refuses (an older one without it, or
+   * (`onApproval`): this session's only, `approval.get` for what the card shows and to
+   * confirm it still waits — an approval decided since the list was read is not raised
+   * again, its card is settled — and the write, idempotent per id. A list the gateway
+   * refuses (an older one without it, or
    * a socket without `operator.approvals`) is skipped and said so, by method and reason
    * only; the live broadcasts still work.
    */
@@ -287,7 +287,7 @@ export class OpenClawAgentRequestObserver {
       }
       for (const entry of entries) {
         listed += 1;
-        if (await this.onApproval(event, entry, true)) ours += 1;
+        if (await this.onApproval(event, entry)) ours += 1;
       }
     }
     if (listed > 0) {
@@ -362,25 +362,10 @@ export class OpenClawAgentRequestObserver {
   }
 
   /** Did THIS socket route approval `id` to this conversation — i.e. did the gateway's
-   *  broadcast (or its pending list) name this chat's session or one of its descendants?
-   *  The answer path's proof when the approval itself names no agent to check. */
+   *  broadcast (or its pending list) name this chat's exact session? The answer path's
+   *  proof when the approval itself names no agent to check. */
   routedApproval(id: string): boolean {
     return this.known.get(aKey(id)) === "approval";
-  }
-
-  /** Does this conversation answer approvals raised by `sessionKey` — its own session or
-   *  one of its descendants? The answer path's session check: what is known locally
-   *  first, then the gateway's rows (the card may predate this socket's first look at
-   *  the child — a reconnection starts with an empty observer). */
-  async answersFor(sessionKey: string): Promise<boolean> {
-    if (this.membership(sessionKey) !== null) return true;
-    if (this.deps.audience === undefined) return false;
-    return (await this.deps.audience.resolve(sessionKey)) !== null;
-  }
-
-  private membership(sessionKey: string | null): LineageMatch | null {
-    if (this.deps.audience !== undefined) return this.deps.audience.known(sessionKey);
-    return this.ours(sessionKey) ? { relation: "self" } : null;
   }
 
   private replayScheduled = false;
@@ -510,79 +495,33 @@ export class OpenClawAgentRequestObserver {
       );
   }
 
-  /** Approvals whose membership is being asked of the gateway (one ask per id). */
-  private readonly resolvingApprovals = new Set<string>();
-
   /**
    * One approval request — its broadcast, or an entry of a pending list (same shape).
-   * Resolves whether this conversation answers for it. Its own session's approval is
-   * decided at once; a descendant's too when the child is known, else by the gateway's
-   * rows (ApprovalAudience.resolve). That read never holds the consume loop: a broadcast
-   * leaves it detached (`awaitLineage` false), only the replay — itself detached — waits
-   * for it to count what it recorded.
+   * Resolves whether it was recorded here: this conversation's own session's only (see
+   * the header — a sub-agent's request is not shown here).
    */
-  private async onApproval(
-    event: string,
-    payload: unknown,
-    awaitLineage = false,
-  ): Promise<boolean> {
+  private async onApproval(event: string, payload: unknown): Promise<boolean> {
     const a = readOpenClawApprovalRequested(event, payload);
-    if (a === null) return false;
-    if (this.known.has(aKey(a.id))) return this.known.get(aKey(a.id)) === "approval";
-    // Captured NOW: by the time `approval.get` answers, the turn may have moved on.
-    const turnMessageId = this.deps.currentMessageId();
-    const local = this.membership(a.sessionKey);
-    if (local !== null) {
-      await this.recordApproval(event, payload, a, local, turnMessageId);
-      return true;
-    }
-    const audience = this.deps.audience;
-    if (audience === undefined || a.sessionKey === null) return false;
-    if (this.resolvingApprovals.has(a.id)) return false;
-    this.resolvingApprovals.add(a.id);
-    const resolved = audience
-      .resolve(a.sessionKey)
-      .then(async (match) => {
-        if (match === null || this.known.has(aKey(a.id))) return match !== null;
-        await this.recordApproval(event, payload, a, match, turnMessageId);
-        return true;
-      })
-      .catch((err) => {
-        console.error(
-          `[agent-request] approval audience check failed chat=${this.deps.chatId}:`,
-          errForLog(err),
-        );
-        return false;
-      })
-      .finally(() => this.resolvingApprovals.delete(a.id));
-    return awaitLineage ? resolved : false;
+    if (a === null || !this.ours(a.sessionKey)) return false;
+    if (this.known.has(aKey(a.id))) return true;
+    await this.recordApproval(event, payload, a);
+    return true;
   }
 
   private async recordApproval(
     event: string,
     payload: unknown,
     a: NonNullable<ReturnType<typeof readOpenClawApprovalRequested>>,
-    match: LineageMatch,
-    turnMessageId: string | null,
   ): Promise<void> {
     this.remember(aKey(a.id), "approval");
     const sighting = this.newSighting(aKey(a.id));
     const seenSeq = nextSightingSeq();
-    // A descendant's card sits under the bubble its sub-agent was spawned from, when
-    // known: the request is the CHILD's, and the conversation may have moved on to
-    // another turn since (the Control UI shows it in the parent's pane, marked with the
-    // raising session: ui/src/components/exec-approval-card.ts:400-408 — here the card
-    // carries the child's own session and agent).
-    const messageId =
-      match.relation === "descendant" ? (match.anchorMessageId ?? turnMessageId) : turnMessageId;
+    // Captured NOW: by the time `approval.get` answers, the turn may have moved on.
+    const messageId = this.deps.currentMessageId();
     // THIS session's approval bounds THIS turn's wait by its own deadline (the run's
-    // `waiting-approval` carries none). A descendant's does not hold the parent's turn:
-    // the Control UI's waiting state is scoped to the pane's own session
-    // (ui/src/pages/chat/tool-stream.ts:483-490 filters the stream by session first,
-    // tool-stream-status.ts:131-136 the queue).
-    const holdsTurn = match.relation === "self";
+    // `waiting-approval` carries none).
     const noteRequested = async (expiresAtMs: number | null, hold: boolean): Promise<void> => {
-      if (!holdsTurn || this.deps.noteApprovalRequested === undefined) return;
+      if (this.deps.noteApprovalRequested === undefined) return;
       await this.deps.noteApprovalRequested(a.id, {
         kind: a.kind,
         runId: a.runId,
@@ -616,7 +555,33 @@ export class OpenClawAgentRequestObserver {
         }
       }
       const presented = readOpenClawApprovalPresentation(got);
-      if (presented === null) return; // already settled, or nothing we can show
+      if (presented === null) {
+        // Already decided: its one resolution broadcast may never have reached this socket
+        // (sent once, `dropIfSlow`; a replay lists what was pending a moment ago), and the
+        // card an earlier socket recorded would then stand `pending`. Settled from the
+        // gateway's own record, as that resolution would have settled it. A snapshot still
+        // pending (one we cannot show) or unreadable settles nothing.
+        const terminal = readOpenClawApprovalTerminal(got);
+        if (terminal === null) return;
+        await this.deps.noteApprovalSettled(a.id);
+        this.deps.wake();
+        try {
+          await this.deps.settle?.({
+            chatId: this.deps.chatId,
+            providerRequestId: a.id,
+            family: "approval",
+            ...(terminal.createdAtMs !== null ? { providerCreatedAt: terminal.createdAtMs } : {}),
+            status: terminal.status,
+            ...(terminal.decision !== undefined ? { decision: terminal.decision } : {}),
+          });
+        } catch (err) {
+          console.error(
+            `[agent-request] approval settle failed chat=${this.deps.chatId}:`,
+            errForLog(err),
+          );
+        }
+        return SETTLED_FROM_SNAPSHOT;
+      }
       const expiresAt = presented.expiresAtMs ?? a.expiresAtMs;
       // The snapshot's deadline is the record's own; the broadcast's was a copy of it.
       if (presented.expiresAtMs !== null && presented.expiresAtMs !== a.expiresAtMs) {
@@ -625,7 +590,6 @@ export class OpenClawAgentRequestObserver {
       const written = await this.deps.upsert?.({
         chatId: this.deps.chatId,
         messageId,
-        // The agent that ASKED — a sub-agent's own, for a descendant's request.
         agentId: a.agentId ?? this.deps.agentId,
         source:
           a.kind === "exec"
@@ -693,16 +657,14 @@ export class OpenClawAgentRequestObserver {
     const r = readOpenClawApprovalResolved(event, payload);
     if (r === null) return;
     const requestSession = sessionKeyOfRequest(payload);
-    // Routed here (its request was recorded by this socket), or raised by a session this
-    // conversation answers for — no gateway read on a resolution: a request this socket
-    // never recorded has no card here to settle beyond what Convex already holds.
-    if (this.known.get(aKey(r.id)) !== "approval" && this.membership(requestSession) === null) {
-      return;
-    }
+    if (this.known.get(aKey(r.id)) !== "approval" && !this.ours(requestSession)) return;
     await this.deps.noteApprovalSettled(r.id);
     this.deps.wake();
     void this.afterWrite(aKey(r.id))
-      .then(async () => {
+      .then(async (written) => {
+        // Its `approval.get` already answered the terminal snapshot and settled it from
+        // there (recordApproval): once is enough.
+        if (written === SETTLED_FROM_SNAPSHOT) return;
         const verdict = r.denyUnconfirmed ? await this.confirmDeny(r.id, r.resolvedBy ?? null) : null;
         const status = verdict ?? r.status;
         return this.deps.settle?.({

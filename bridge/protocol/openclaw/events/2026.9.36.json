@@ -67,7 +67,7 @@
     },
     "exec.approval.requested": {
       "status": "handled",
-      "by": "agent-request-observer.ts: routed by request.sessionKey — this conversation's session or a sub-agent of its lineage (approval-lineage.ts: a child this socket observed, else the gateway's own rows walked through sessions.describe spawnedBy/parentSessionKey; any other session is refused), then shown through approval.get's reviewer-safe presentation (never the raw request) as a exec approval card, answered with approval.resolve; the pending ones are listed again by exec.approval.list at each (re)connection (replayPending, idempotent upsert), and a request of the turn's own run holds the turn until its own expiresAtMs (+ margin)",
+      "by": "agent-request-observer.ts: routed by request.sessionKey — this conversation's own session only (a sub-agent's request, which upstream addresses to its whole lineage through `session.approval`, is not shown) — then shown through approval.get's reviewer-safe presentation (never the raw request) as a exec approval card, answered with approval.resolve, or settled from approval.get's terminal snapshot when already decided; the pending ones are listed again by exec.approval.list at each (re)connection (replayPending, idempotent upsert), and a request of the turn's own run holds the turn until its own expiresAtMs (+ margin)",
       "anchor": {
         "file": "src/core/agent-requests.ts",
         "token": "[\"exec.approval.requested\", \"exec\"]"
@@ -75,7 +75,7 @@
     },
     "exec.approval.resolved": {
       "status": "handled",
-      "by": "agent-request-observer.ts: settles the exec approval card (allowed / denied / expired / cancelled) of this conversation or of a sub-agent of its lineage, and releases the turn's approval wait",
+      "by": "agent-request-observer.ts: settles the exec approval card (allowed / denied / expired / cancelled) and releases the turn's approval wait",
       "anchor": {
         "file": "src/core/agent-requests.ts",
         "token": "[\"exec.approval.resolved\", \"exec\"]"
@@ -135,7 +135,7 @@
     },
     "openclaw.approval.requested": {
       "status": "handled",
-      "by": "agent-request-observer.ts: routed by request.sessionKey — this conversation's session or a sub-agent of its lineage (approval-lineage.ts: a child this socket observed, else the gateway's own rows walked through sessions.describe spawnedBy/parentSessionKey; any other session is refused), then shown through approval.get's reviewer-safe presentation (never the raw request) as a system-agent approval card, answered with approval.resolve; the pending ones are listed again by openclaw.approval.list at each (re)connection (replayPending, idempotent upsert), and a request of the turn's own run holds the turn until its own expiresAtMs (+ margin)",
+      "by": "agent-request-observer.ts: routed by request.sessionKey — this conversation's own session only (a sub-agent's request, which upstream addresses to its whole lineage through `session.approval`, is not shown) — then shown through approval.get's reviewer-safe presentation (never the raw request) as a system-agent approval card, answered with approval.resolve, or settled from approval.get's terminal snapshot when already decided; the pending ones are listed again by openclaw.approval.list at each (re)connection (replayPending, idempotent upsert), and a request of the turn's own run holds the turn until its own expiresAtMs (+ margin)",
       "anchor": {
         "file": "src/core/agent-requests.ts",
         "token": "[\"openclaw.approval.requested\", \"system-agent\"]"
@@ -143,7 +143,7 @@
     },
     "openclaw.approval.resolved": {
       "status": "handled",
-      "by": "agent-request-observer.ts: settles the system-agent approval card (allowed / denied / expired / cancelled) of this conversation or of a sub-agent of its lineage, and releases the turn's approval wait",
+      "by": "agent-request-observer.ts: settles the system-agent approval card (allowed / denied / expired / cancelled) and releases the turn's approval wait",
       "anchor": {
         "file": "src/core/agent-requests.ts",
         "token": "[\"openclaw.approval.resolved\", \"system-agent\"]"
@@ -151,7 +151,7 @@
     },
     "plugin.approval.requested": {
       "status": "handled",
-      "by": "agent-request-observer.ts: routed by request.sessionKey — this conversation's session or a sub-agent of its lineage (approval-lineage.ts: a child this socket observed, else the gateway's own rows walked through sessions.describe spawnedBy/parentSessionKey; any other session is refused), then shown through approval.get's reviewer-safe presentation (never the raw request) as a plugin approval card, answered with approval.resolve; the pending ones are listed again by plugin.approval.list at each (re)connection (replayPending, idempotent upsert), and a request of the turn's own run holds the turn until its own expiresAtMs (+ margin)",
+      "by": "agent-request-observer.ts: routed by request.sessionKey — this conversation's own session only (a sub-agent's request, which upstream addresses to its whole lineage through `session.approval`, is not shown) — then shown through approval.get's reviewer-safe presentation (never the raw request) as a plugin approval card, answered with approval.resolve, or settled from approval.get's terminal snapshot when already decided; the pending ones are listed again by plugin.approval.list at each (re)connection (replayPending, idempotent upsert), and a request of the turn's own run holds the turn until its own expiresAtMs (+ margin)",
       "anchor": {
         "file": "src/core/agent-requests.ts",
         "token": "[\"plugin.approval.requested\", \"plugin\"]"
@@ -159,7 +159,7 @@
     },
     "plugin.approval.resolved": {
       "status": "handled",
-      "by": "agent-request-observer.ts: settles the plugin approval card (allowed / denied / expired / cancelled) of this conversation or of a sub-agent of its lineage, and releases the turn's approval wait",
+      "by": "agent-request-observer.ts: settles the plugin approval card (allowed / denied / expired / cancelled) and releases the turn's approval wait",
       "anchor": {
         "file": "src/core/agent-requests.ts",
         "token": "[\"plugin.approval.resolved\", \"plugin\"]"
@@ -207,7 +207,7 @@
     },
     "session.approval": {
       "status": "ignored",
-      "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals; Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before) and reads the operator broadcasts `*.approval.requested|resolved` instead, plus the three pending lists (`exec|plugin|openclaw.approval.list`) at each (re)connection — what the Control UI's approval queue reads"
+      "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals; Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before) and reads the operator broadcasts `*.approval.requested|resolved` instead, plus the three pending lists (`exec|plugin|openclaw.approval.list`) at each (re)connection — what the Control UI's approval queue reads. This stream is the only one that carries an approval to the raising session's whole lineage (the audience upstream stores when the approval registers): without it, a sub-agent's approval is not shown in the parent conversation"
     },
     "session.message": {
       "status": "handled",

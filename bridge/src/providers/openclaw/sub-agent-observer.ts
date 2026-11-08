@@ -1164,21 +1164,6 @@ export class SubAgentObserver {
     this.observations.clear();
   }
 
-  /**
-   * Is `childKey` a child of THIS conversation that this observer knows — live, or one it
-   * reaped (the resurrection guard keeps those)? With the bubble it was spawned from, when
-   * that is known. The same contamination-proof admission as the frames (registered from
-   * the parent's own spawn result, or seen with `spawnedBy` = the parent), which is
-   * upstream's own lineage: a session row's `spawnedBy` is the registry owner, else the
-   * stored parent (src/gateway/session-utils-row.ts:618 at v2026.9.36). Null otherwise.
-   */
-  childLineage(childKey: string): { anchorMessageId: string | null } | null {
-    const obs = this.observations.get(childKey);
-    if (obs !== undefined) return { anchorMessageId: obs.parentMessageId ?? null };
-    if (this.recentlyFinal.has(childKey)) return { anchorMessageId: null };
-    return null;
-  }
-
   // -- internals --------------------------------------------------------------
 
   /** Stamp the run a claimed (or ambiguous-batch) sighting was emitted under:

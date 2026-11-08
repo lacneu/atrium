@@ -46,7 +46,6 @@ import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 import type { FinalizeCause } from "./core/finalize-causes.js";
 import { OpenClawAgentRequestObserver } from "./providers/openclaw/agent-request-observer.js";
-import { ApprovalLineage } from "./providers/openclaw/approval-lineage.js";
 import {
   FULL_MESSAGE_MAX_CHARS,
   TranscriptShadow,
@@ -439,23 +438,6 @@ class Session implements BridgeSession {
                 }),
             ...(sessionEvents === undefined ? {} : { events: sessionEvents }),
           });
-    // The sessions this conversation answers approvals for: its own and its sub-agents'
-    // (providers/openclaw/approval-lineage.ts). Known children come from the two readers
-    // that already follow them; anything else is asked of the gateway's own rows.
-    const audience = new ApprovalLineage({
-      sessionKey,
-      knownChild: (key) =>
-        this.observer.childLineage(key) ??
-        (this.childRows?.follows(key) === true ? { anchorMessageId: null } : null),
-      describe: async (key) => {
-        const res = await connection.request("sessions.describe", { key }, 10_000);
-        const session = (res as { payload?: { session?: unknown } } | undefined)?.payload?.session;
-        return session !== null && typeof session === "object" && !Array.isArray(session)
-          ? (session as Record<string, unknown>)
-          : null;
-      },
-      nowMs: () => Date.now(),
-    });
     this.agentRequests = new OpenClawAgentRequestObserver({
       chatId,
       sessionKey,
@@ -473,10 +455,6 @@ class Session implements BridgeSession {
         this.runManager.noteApprovalSettled(id, this.clock()),
       noteApprovalRequested: (id, facts) =>
         this.runManager.noteApprovalRequested(id, facts, this.clock()),
-      audience: {
-        known: (key) => audience.known(key),
-        resolve: (key) => audience.resolve(key),
-      },
       wake: () => this.wake(),
       nowMs: () => Date.now(),
     });
@@ -559,12 +537,6 @@ class Session implements BridgeSession {
    *  observer's `routedApproval`). */
   routedApproval(approvalId: string): boolean {
     return this.agentRequests.routedApproval(approvalId);
-  }
-
-  /** Whether this conversation answers approvals raised by `sessionKey` — its own session
-   *  or one of its descendants (the observer's `answersFor`). */
-  answersFor(sessionKey: string): Promise<boolean> {
-    return this.agentRequests.answersFor(sessionKey);
   }
 
   noteApprovalAnswered(approvalId: string): void {
