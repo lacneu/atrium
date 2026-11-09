@@ -52,7 +52,9 @@ describe("the page runs edge to edge, and makes room for the keyboard", () => {
   // Lot 11: a dialog's lift sat BEFORE a `margin: 0` in its own rule, which zeroed
   // it. A lift counts only if nothing after it in its rule resets it.
   test("every lift by the keyboard survives its rule: no margin reset after it", () => {
-    const LIFT = "margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-kb, 0px)) / 2)";
+    // Lot 26: lifted by what lies below what is shown — the keyboard, where the
+    // layout viewport is the screen's.
+    const LIFT = "margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-vv-bottom, 0px)) / 2)";
     const lifts = [...CSS.matchAll(/([^{}]+)\{([^{}]*margin-top:\s*calc\(\(var\(--oc-vv-top[^{}]*)\}/g)];
     const lifted = lifts.flatMap((m) => m[1].split(",").map((sel) => sel.trim()));
     expect(lifted).toContain('[data-slot="dialog-content"]:not(.oc-search-palette)');
@@ -113,6 +115,10 @@ const FLOATING = ["dropdown-menu-content", "popover-content", "select-content"];
 /** A label shown on hover or focus, gone at the next move: nothing to reach in it. */
 const EXEMPT = ["tooltip-content"];
 const KB = "var(--oc-kb, 0px)";
+/** What lies below what is shown in the layout viewport (lot 26): a fixed layer's
+ *  bottom edge stands on it — the keyboard's height where the layout viewport is the
+ *  screen's, more on a page wider than the screen. */
+const BELOW = "var(--oc-vv-bottom, 0px)";
 
 describe("every kind of layer stays in the visible screen (lot 17)", () => {
   test("every layer of the components is one of the kinds below", () => {
@@ -134,7 +140,7 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
     const lifted = cssRules().some(
       (r) =>
         r.selectors.some((sel) => sel.startsWith(`[data-slot="${slot}"]`)) &&
-        /margin-top:\s*calc\(\(var\(--oc-vv-top, 0px\) - var\(--oc-kb, 0px\)\) \/ 2\)/.test(r.body),
+        /margin-top:\s*calc\(\(var\(--oc-vv-top, 0px\) - var\(--oc-vv-bottom, 0px\)\) \/ 2\)/.test(r.body),
     );
     expect(lifted, `${slot} is not lifted`).toBe(true);
   });
@@ -143,7 +149,7 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
     const sides = ["left", "right"].map((side) => declarationsFor(`[data-slot="sheet-content"][data-side="${side}"]`));
     for (const own of sides) {
       expect(own).toContain("top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top))");
-      expect(own).toContain(`bottom: max(env(safe-area-inset-bottom), ${KB})`);
+      expect(own).toContain(`bottom: max(env(safe-area-inset-bottom), ${BELOW})`);
     }
     expect(declarationsFor('[data-slot="sheet-content"][data-side="top"]')).toContain(
       "top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top))",
@@ -153,7 +159,7 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
       expect(own, side).toMatch(/max-height:\s*var\(--oc-layer-room\);/);
     }
     expect(declarationsFor('[data-slot="sheet-content"][data-side="bottom"]')).toContain(
-      `bottom: max(env(safe-area-inset-bottom), ${KB})`,
+      `bottom: max(env(safe-area-inset-bottom), ${BELOW})`,
     );
   });
 
@@ -416,7 +422,8 @@ describe("the full-page prompt keeps its action bar whole (lots 12, 13)", () => 
   const panel = () => ruleBody(".oc-composer--expanded");
 
   test("anchored by its bottom above the keyboard, never centred", () => {
-    expect(panel()).toMatch(/bottom:\s*calc\(var\(--oc-kb, 0px\) \+ var\(--oc-exp-gap\)\)/);
+    // Lot 26: on what lies below what is shown — the keyboard, on these screens.
+    expect(panel()).toMatch(/bottom:\s*calc\(var\(--oc-vv-bottom, 0px\) \+ var\(--oc-exp-gap\)\)/);
     expect(panel()).not.toMatch(/top:\s*50%/);
     expect(panel()).not.toMatch(/translate\(-50%,\s*-50%\)/);
   });
@@ -530,6 +537,9 @@ function cssLength(expr: string, env: Screen, decls: Decls): number {
     expect(round, `unresolved var() in ${expr}`).toBeLessThan(20);
     src = src.replace(/var\((--[\w-]+)(?:,\s*([^()]*))?\)/g, (_, name: string, fallback?: string) => {
       if (name === "--oc-kb") return `${env.kb}px`;
+      // These screens' layout viewport is the screen's: what lies below what is
+      // shown is the keyboard (lot 26 splits the two on a page wider than it).
+      if (name === "--oc-vv-bottom") return `${env.kb}px`;
       if (name === "--oc-vv-top") return `${env.top ?? 0}px`;
       const own = decls.get(name);
       if (own !== undefined) return `(${own})`;
@@ -1101,5 +1111,320 @@ describe("every dialog and sheet lies inside what is shown, on every screen (lot
     const [from, to] = shown(env);
     expect(left).toBeGreaterThanOrEqual(from - 0.5);
     expect(left + width).toBeLessThanOrEqual(to + 0.5);
+  });
+});
+
+// ---- EVERY FIXED LAYER, AND THE BOTTOM OF WHAT IS SHOWN (lot 26) --------------
+//
+// A page wider than the screen grows Chrome's LAYOUT viewport — where every fixed
+// box is laid out — never the screen: the full-page prompt was centred on it (its
+// action bar under the screen), the toasts and the image viewer's buttons sat past
+// its edge, a side sheet ran 169 px under the screen. Lot 25 bounded the shared
+// layers; every fixed box of the stylesheets is bounded alike, and every bottom
+// edge stands on `--oc-vv-bottom` — what lies below what is shown in the layout
+// viewport, the keyboard included —, never on the keyboard alone (`--oc-kb`, the
+// height the shell and the layers' room give up).
+
+/** How each fixed box of the app's stylesheets keeps to what is shown: a LAYER is
+ *  bounded and placed from what is shown; a BACKDROP covers the layout viewport and
+ *  holds nothing; the detached composer is placed by script (visibleRect). */
+const FIXED_BOXES: Record<string, "layer" | "backdrop" | "script"> = {
+  ".oc-toast__viewport": "layer",
+  ".oc-devfab": "layer",
+  ".oc-lightbox": "layer",
+  ".oc-composer--expanded": "layer",
+  ".oc-composer__backdrop": "backdrop",
+  ".oc-detach": "script",
+};
+
+/** The flattened declarations of `selector` in the app's stylesheets. */
+const appDeclarations = (selector: string) =>
+  new Map(
+    appCssRules()
+      .filter((r) => r.selectors.includes(selector))
+      .flatMap((r) => ruleDeclarations(r.body)),
+  );
+
+describe("every fixed box keeps to what is shown (lot 26)", () => {
+  test("every fixed box of the stylesheets is accounted for", () => {
+    const fixed = new Set<string>();
+    for (const r of appCssRules()) {
+      if (!ruleDeclarations(r.body).some(([p, v]) => p === "position" && v === "fixed")) continue;
+      for (const sel of r.selectors) fixed.add(sel);
+    }
+    expect([...fixed].sort()).toEqual(Object.keys(FIXED_BOXES).sort());
+  });
+
+  const layers = Object.entries(FIXED_BOXES).filter(([, k]) => k === "layer").map(([s]) => s);
+  test.each(layers)("%s: placed across from what is shown, its bottom on --oc-vv-bottom, its width within the bound", (sel) => {
+    const own = appDeclarations(sel);
+    const left = own.get("left") ?? "";
+    const right = own.get("right") ?? "";
+    // Across: a left edge from `--oc-vv-left`, or a right edge from the screen's
+    // right (`100% - 100vw - --oc-vv-left`): never the layout viewport's own edge.
+    expect(
+      left.includes("var(--oc-vv-left") ||
+        right.replace(/\s+/g, "").includes("100%-100vw-var(--oc-vv-left"),
+      `${sel} { left: ${left}; right: ${right} }`,
+    ).toBe(true);
+    const bottom = own.get("bottom");
+    if (bottom !== undefined) expect(bottom, sel).toContain("var(--oc-vv-bottom");
+    for (const prop of ["width", "max-width", "min-width"]) {
+      const v = own.get(prop);
+      if (v === undefined || /^(auto|none|0|0px|max-content|min-content|fit-content)$/.test(v)) continue;
+      expect(v, `${sel} { ${prop} }`).toContain("var(--oc-layer-width)");
+    }
+  });
+
+  test("the backdrop covers the layout viewport and holds nothing to reach", () => {
+    expect(appDeclarations(".oc-composer__backdrop").get("inset")).toBe("0");
+  });
+
+  test("the detached composer: placed on what is shown by script, its floor within the bound", () => {
+    expect(appDeclarations(".oc-detach").get("min-width")).toBe("min(300px, var(--oc-layer-width))");
+    for (const file of ["chat/HeldDictationDock.tsx", "chat/dictationHold.ts"]) {
+      const text = readFileSync(join(SRC, file), "utf-8").replace(/\/\/.*$/gm, "");
+      expect(text, file).toContain("visibleRect(");
+      // Clamped to what is shown, never to the layout viewport's size.
+      expect(text, file).not.toMatch(/\bw:\s*window\.innerWidth/);
+      expect(text, file).not.toMatch(/\bh:\s*window\.innerHeight/);
+    }
+  });
+
+  test("--oc-kb only where the keyboard is meant: no bottom edge, no centring stands on it", () => {
+    const offenders: string[] = [];
+    for (const r of appCssRules()) {
+      for (const [prop, value] of ruleDeclarations(r.body)) {
+        if (!value.includes("var(--oc-kb")) continue;
+        if (/^(bottom|top|margin-top|margin-bottom|inset|inset-block|inset-block-end)$/.test(prop)) {
+          offenders.push(`${r.file} ${r.selectors.join(", ")} { ${prop}: ${value} }`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("the shared layers' bottom edges and the dialogs' centring stand on --oc-vv-bottom", () => {
+    const flat = (sel: string) => declarationsFor(sel).replace(/\s+/g, " ");
+    expect(flat('[data-slot="sheet-content"][data-side="left"]')).toContain(
+      "bottom: max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px));",
+    );
+    expect(flat('[data-slot="sheet-content"][data-side="bottom"]')).toContain(
+      "bottom: max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px));",
+    );
+    expect(flat('[data-slot="dialog-content"]:not(.oc-search-palette)')).toContain(
+      "margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-vv-bottom, 0px)) / 2);",
+    );
+  });
+});
+
+/** A screen, vertically, in px: the layout viewport's height (`100%` of a fixed
+ *  box: grown by a page wider than the screen), the screen's (`100dvh`), what is
+ *  shown — from `--oc-vv-top`, `--oc-vv-bottom` above the layout viewport's bottom
+ *  —, the keyboard, the safe areas, the root font size. */
+type Along = { layout: number; dvh: number; top: number; below: number; kb: number; safeT: number; safeB: number; rem: number };
+
+/** A height or a vertical position of the rules, in px on `env`. */
+function along(expr: string, env: Along): number {
+  const rootDecls = new Map(ruleDeclarations(declarationsFor(":root")));
+  const ownVars: Record<string, number> = {
+    "--oc-vv-top": env.top,
+    "--oc-vv-bottom": env.below,
+    "--oc-kb": env.kb,
+    "--oc-vv-left": 0,
+  };
+  let src = expr;
+  for (let round = 0; /var\(/.test(src); round++) {
+    expect(round, `unresolved var() in ${expr}`).toBeLessThan(10);
+    src = src.replace(/var\((--[\w-]+)(?:,\s*([^()]*))?\)/g, (_, name: string, fallback?: string) => {
+      if (name in ownVars) return `${ownVars[name]}px`;
+      const own = rootDecls.get(name);
+      if (own !== undefined) return `(${own})`;
+      expect(fallback, `no value for ${name}`).toBeDefined();
+      return fallback!;
+    });
+  }
+  src = src
+    .replace(/env\(safe-area-inset-top\)/g, `${env.safeT}px`)
+    .replace(/env\(safe-area-inset-bottom\)/g, `${env.safeB}px`)
+    .replace(/(\d*\.?\d+)%/g, (_, n: string) => `${(Number(n) / 100) * env.layout}`)
+    .replace(/(\d*\.?\d+)dvh/g, (_, n: string) => `${(Number(n) / 100) * env.dvh}`)
+    .replace(/(\d*\.?\d+)rem/g, (_, n: string) => `${Number(n) * env.rem}`)
+    .replace(/(\d*\.?\d+)px/g, "$1")
+    .replace(/\bcalc\(/g, "(")
+    .replace(/\bmin\(/g, "Math.min(")
+    .replace(/\bmax\(/g, "Math.max(");
+  expect(src.replace(/Math\.(min|max)/g, ""), `unread characters in ${expr}`).toMatch(/^[\d.\s()+\-*/,]*$/);
+  return Function(`"use strict"; return (${src});`)() as number;
+}
+
+describe("every fixed box lies inside what is shown, top to bottom, on every screen (lot 26)", () => {
+  const SCREENS: Array<[string, Along]> = [
+    ["a phone, the page wider than the screen (909 px laid out, 740 shown), no keyboard", { layout: 909, dvh: 740, top: 0, below: 169, kb: 0, safeT: 0, safeB: 0, rem: 24 }],
+    ["iOS, a keyboard, the visual viewport scrolled down to reveal a field (lot 19)", { layout: 844, dvh: 844, top: 120, below: 216, kb: 216, safeT: 47, safeB: 34, rem: 16 }],
+    ["a page wider than the screen and a keyboard", { layout: 909, dvh: 740, top: 0, below: 505, kb: 336, safeT: 0, safeB: 0, rem: 16 }],
+    ["a desktop", { layout: 768, dvh: 768, top: 0, below: 0, kb: 0, safeT: 0, safeB: 0, rem: 16 }],
+  ];
+  /** What is shown, top to bottom, less the safe areas: [from, to]. An open
+   *  keyboard covers the bottom safe area (the home bar): the larger of the two. */
+  const shownY = (e: Along) => [e.top + e.safeT, e.layout - Math.max(e.below, e.safeB)];
+
+  test.each(SCREENS)("a side sheet — %s", (_name, env) => {
+    const top = along(decl('[data-slot="sheet-content"][data-side="left"]', "top"), env);
+    const bottom = along(decl('[data-slot="sheet-content"][data-side="left"]', "bottom"), env);
+    const [from, to] = shownY(env);
+    expect(top).toBeGreaterThanOrEqual(from - 0.5);
+    // Its bottom edge at the bottom of what is shown, the safe area kept.
+    expect(env.layout - bottom).toBeCloseTo(to, 1);
+  });
+
+  test.each(SCREENS)("a dialog, at its tallest — %s", (_name, env) => {
+    const room = along("var(--oc-layer-room)", env);
+    const height = room - 2 * env.rem;
+    // Centred on the layout viewport (`top: 50%`, translated by half its height),
+    // moved by its margin.
+    const margin = along(decl('[data-slot="dialog-content"]:not(.oc-search-palette)', "margin-top"), env);
+    const centre = env.layout / 2 + margin;
+    const [from, to] = shownY(env);
+    expect(centre - height / 2).toBeGreaterThanOrEqual(from - 0.5);
+    expect(centre + height / 2).toBeLessThanOrEqual(to + 0.5);
+  });
+
+  test.each(SCREENS)("a toast — %s", (_name, env) => {
+    const bottom = along(appDeclarations(".oc-toast__viewport").get("bottom")!, env);
+    expect(env.layout - bottom).toBeLessThanOrEqual(shownY(env)[1] + 0.5);
+  });
+
+  test.each(SCREENS)("the full-page prompt: its action bar above the bottom of what is shown — %s", (_name, env) => {
+    const own = appDeclarations(".oc-composer--expanded");
+    const gap = along(own.get("--oc-exp-gap")!.replace(/var\(--oc-exp-floor\)/g, own.get("--oc-exp-floor")!), env);
+    const bottom = along(own.get("bottom")!.replace(/var\(--oc-exp-gap\)/g, `${gap}px`), env);
+    expect(env.layout - bottom).toBeLessThanOrEqual(env.layout - env.below + 0.5);
+  });
+
+  test.each(SCREENS)("the image viewer — %s", (_name, env) => {
+    const own = appDeclarations(".oc-lightbox");
+    const top = along(own.get("top")!, env);
+    const bottom = along(own.get("bottom")!, env);
+    expect(top).toBe(env.top);
+    expect(env.layout - bottom).toBe(env.layout - env.below);
+  });
+});
+
+describe("the fixed boxes across, on every screen (lot 26)", () => {
+  const SCREENS: Array<[string, Across]> = [
+    ["a phone, the page wider than the screen (442 px laid out, 360 shown, root 24 px)", { layout: 442, vw: 360, left: 0, safeL: 0, safeR: 0, rem: 24 }],
+    ["the same, panned 82 px to the right", { layout: 442, vw: 360, left: 82, safeL: 0, safeR: 0, rem: 24 }],
+    ["a phone in landscape, its notch and corners (47 px each side)", { layout: 740, vw: 740, left: 0, safeL: 47, safeR: 47, rem: 16 }],
+    ["a computer with a 15 px scrollbar", { layout: 1265, vw: 1280, left: 0, safeL: 0, safeR: 0, rem: 16 }],
+  ];
+  const shown = (e: Across) => [e.left + e.safeL, e.left + Math.min(e.layout, e.vw) - e.safeR];
+
+  test.each(SCREENS)("a toast, at its widest — %s", (_name, env) => {
+    const own = appDeclarations(".oc-toast__viewport");
+    const right = across(own.get("right")!, env);
+    const width = across(own.get("max-width")!, env);
+    const [from, to] = shown(env);
+    expect(env.layout - right).toBeLessThanOrEqual(to + 0.5);
+    expect(env.layout - right - width).toBeGreaterThanOrEqual(from - 0.5);
+  });
+
+  test.each(SCREENS)("the image viewer — %s", (_name, env) => {
+    const own = appDeclarations(".oc-lightbox");
+    const left = across(own.get("left")!, env);
+    const right = across(own.get("right")!, env);
+    const [from, to] = shown(env);
+    expect(left).toBeGreaterThanOrEqual(env.left - 0.5);
+    expect(left).toBeLessThanOrEqual(from + 0.5);
+    expect(env.layout - right).toBeLessThanOrEqual(env.left + Math.min(env.layout, env.vw) + 0.5);
+    expect(env.layout - right).toBeGreaterThanOrEqual(to - 0.5);
+  });
+
+  test.each(SCREENS)("the full-page prompt — %s", (_name, env) => {
+    const own = appDeclarations(".oc-composer--expanded");
+    const width = across(own.get("width")!, env);
+    const centre = across(own.get("left")!, env);
+    const [from, to] = shown(env);
+    expect(centre - width / 2).toBeGreaterThanOrEqual(from - 0.5);
+    expect(centre + width / 2).toBeLessThanOrEqual(to + 0.5);
+  });
+});
+
+describe("no grid track wider than its container (lot 26)", () => {
+  test("a track's floor is min(its length, 100%), never a length alone", () => {
+    // `minmax(15rem, 1fr)` is 360 px under the largest text scale: the KPI cards
+    // ran 40 px past a 360 px phone. The floor yields to the container.
+    const offenders: string[] = [];
+    for (const r of appCssRules()) {
+      for (const [prop, value] of ruleDeclarations(r.body)) {
+        if (!/^grid-template-(columns|rows)$|^grid-auto-(columns|rows)$/.test(prop)) continue;
+        for (const m of value.matchAll(/minmax\(/g)) {
+          // The first argument, its own parentheses balanced.
+          let depth = 0;
+          let floor = "";
+          for (const ch of value.slice(m.index + m[0].length)) {
+            if (ch === "," && depth === 0) break;
+            if (ch === "(") depth++;
+            if (ch === ")") depth--;
+            floor += ch;
+          }
+          floor = floor.trim();
+          if (/^(0|0px|auto|min-content|max-content)$/.test(floor) || /^min\(.*,\s*100%\)$/.test(floor)) continue;
+          offenders.push(`${r.file} ${r.selectors.join(", ")} { ${prop}: ${value} }`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// Lot 26, the pages: what the inventory of every route under the six text scales
+// at 360 px found running past the screen — the settings body scrolling sideways
+// from lg on (chat defaults, voice, bridge, scheduled tasks, instances, trash,
+// KPI, integrations, theme), an agent request's title cut in the conversation.
+// Each row wraps where its controls do not fit side by side; a control wider than
+// its row breaks its label; a floor yields to its container.
+describe("the rows found running past a 360 px screen wrap (lot 26)", () => {
+  const rule = (file: string, selector: string) =>
+    appCssRules()
+      .filter((r) => r.file === file && r.selectors.includes(selector))
+      .map((r) => r.body.replace(/\s+/g, " "))
+      .join(" ");
+  test.each([
+    ["chat/convexChat.css", ".oc-cdefaults__inline", ["flex-wrap: wrap", "min-width: 0"]],
+    ["chat/convexChat.css", ".oc-cdefaults__select", ["max-width: 100%"]],
+    ["chat/convexChat.css", ".oc-dt__bar", ["flex-wrap: wrap"]],
+    ["chat/convexChat.css", ".oc-dt__bar-actions", ["flex-wrap: wrap", "min-width: 0"]],
+    ["chat/convexChat.css", ".oc-bridge-provider__head", ["flex-wrap: wrap"]],
+    ["chat/convexChat.css", ".oc-int__section-head", ["flex-wrap: wrap"]],
+    ["chat/admin/confTabs.css", ".oc-rdefaults__exhead", ["flex-wrap: wrap"]],
+    ["chat/convexChat.css", ".oc-bridge-card__meta > span", ["max-width: 100%"]],
+    ["chat/convexChat.css", ".oc-chart-mine__domains-body", ["min-width: min(16rem, 100%)"]],
+    ["chat/convexChat.css", ".oc-areq__toggle", ["flex: 1 1 max-content", "min-width: 0"]],
+    ["chat/convexChat.css", ".oc-areq__kind", ["min-width: 0", "overflow-wrap: anywhere"]],
+  ] as const)("%s %s", (file, selector, wanted) => {
+    const own = rule(file, selector);
+    for (const w of wanted) expect(own, `${selector} ${w}`).toContain(w);
+    // A segment or a title wider than its row breaks: never held on one line.
+    if (selector === ".oc-bridge-card__meta > span" || selector === ".oc-areq__kind") {
+      expect(own).not.toContain("white-space: nowrap");
+    }
+  });
+
+  test("the theme showroom's columns yield to the page", () => {
+    const own = rule("chat/convexChat.css", ".oc-show__section");
+    expect(own).toContain("grid-template-columns: 220px minmax(0, 1fr)");
+    expect(own).toContain("grid-template-columns: minmax(0, 1fr)");
+  });
+
+  test.each([
+    ["chat/admin/ScheduledTab.tsx", 'flexWrap: "wrap"'],
+    ["chat/admin/DeliveryRecorderCard.tsx", '<div className="flex flex-wrap items-start justify-between gap-4">\n        <div className="min-w-0">'],
+    ["chat/admin/VoiceTab.tsx", '<Badge variant={tts ? "secondary" : "destructive"} className="h-auto shrink whitespace-normal text-left">'],
+    ["chat/admin/VoiceTab.tsx", '<Badge variant={stt ? "secondary" : "destructive"} className="h-auto shrink whitespace-normal text-left">'],
+    ["chat/admin/BlobSweepCard.tsx", 'className="h-auto min-h-8 shrink whitespace-normal text-left text-destructive"'],
+    ["chat/ThemeShowroom.tsx", '<Card className="w-full max-w-80">'],
+  ])("%s", (file, wanted) => {
+    expect(readFileSync(join(SRC, file), "utf-8")).toContain(wanted);
   });
 });

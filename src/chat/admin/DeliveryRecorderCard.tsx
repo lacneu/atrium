@@ -85,8 +85,8 @@ export function DeliveryRecorderCard() {
 
   return (
     <section className="mb-4 flex flex-col gap-3 rounded-lg border border-border p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
           <h3 className="text-sm font-semibold">{m.delivery_title()}</h3>
           <p className="oc-admin__hint">{m.delivery_hint()}</p>
         </div>

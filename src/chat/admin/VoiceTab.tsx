@@ -358,10 +358,10 @@ export function VoiceTab() {
 
       {/* Browser capability line: the engines live client-side, so state it. */}
       <div className="oc-voice__support">
-        <Badge variant={tts ? "secondary" : "destructive"}>
+        <Badge variant={tts ? "secondary" : "destructive"} className="h-auto shrink whitespace-normal text-left">
           {tts ? m.voice_support_tts_ok() : m.voice_support_tts_missing()}
         </Badge>
-        <Badge variant={stt ? "secondary" : "destructive"}>
+        <Badge variant={stt ? "secondary" : "destructive"} className="h-auto shrink whitespace-normal text-left">
           {stt ? m.voice_support_stt_ok() : m.voice_support_stt_missing()}
         </Badge>
       </div>

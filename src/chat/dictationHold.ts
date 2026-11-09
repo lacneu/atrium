@@ -11,6 +11,8 @@
 // Pure module + tiny subscribe surface (no React): unit-testable, and immune
 // to the mount/unmount churn it exists to survive.
 
+import { visibleRect } from "@/lib/virtualKeyboard";
+
 export type HeldGeometry = {
   /** Top-left position in px (viewport). */
   x: number;
@@ -102,11 +104,15 @@ export function getHeldDictation(): HeldDictation | null {
 }
 
 /** Clamp a geometry so the panel always stays reachable on screen (its header
- *  never leaves the viewport). Pure. */
+ *  never leaves the viewport). `viewport` is what is shown, in the layout
+ *  viewport's coordinates (its origin `x`, `y`: 0 unless the page is panned —
+ *  virtualKeyboard.visibleRect; lot 26). Pure. */
 export function clampGeometry(
   g: HeldGeometry,
-  viewport: { w: number; h: number },
+  viewport: { x?: number; y?: number; w: number; h: number },
 ): HeldGeometry {
+  const x0 = viewport.x ?? 0;
+  const y0 = viewport.y ?? 0;
   // Size yields to the viewport as the FINAL bound: on a viewport narrower/
   // shorter than the minimum, the panel shrinks below MIN rather than
   // overflowing (the CSS min-width/min-height are `min(…, 100vw/dvh)` to match).
@@ -115,19 +121,18 @@ export function clampGeometry(
   // Keep the panel FULLY on screen (flush to an edge if it is larger than the
   // viewport) — a persisted off-screen position (a past drag past the edge)
   // must never leave the panel invisible.
-  const x = Math.max(0, Math.min(g.x, viewport.w - w));
-  const y = Math.max(0, Math.min(g.y, viewport.h - h));
+  const x = Math.max(x0, Math.min(g.x, x0 + viewport.w - w));
+  const y = Math.max(y0, Math.min(g.y, y0 + viewport.h - h));
   return { x, y, w, h };
 }
 
 function defaultGeom(): HeldGeometry {
   // Centred near the BOTTOM by default, echoing where the inline composer sat
   // (visual continuity when the composer detaches). Clamped at render time.
-  const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
-  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-  const w = Math.min(720, Math.round(vw * 0.72));
-  const h = Math.min(300, Math.round(vh * 0.42));
-  return { x: Math.round((vw - w) / 2), y: vh - h - 28, w, h };
+  const v = typeof window !== "undefined" ? visibleRect() : { x: 0, y: 0, w: 1200, h: 800 };
+  const w = Math.min(720, Math.round(v.w * 0.72));
+  const h = Math.min(300, Math.round(v.h * 0.42));
+  return { x: v.x + Math.round((v.w - w) / 2), y: v.y + v.h - h - 28, w, h };
 }
 
 function loadGeom(): HeldGeometry {
@@ -156,7 +161,7 @@ function loadGeom(): HeldGeometry {
   // (larger) window was open, or dragged off-screen, must never pin the panel
   // out of view.
   if (typeof window !== "undefined" && window.innerWidth && window.innerHeight) {
-    g = clampGeometry(g, { w: window.innerWidth, h: window.innerHeight });
+    g = clampGeometry(g, visibleRect());
   }
   return g;
 }
@@ -267,15 +272,12 @@ export const syncHeldText = setHeldText;
 /** Move/resize the floating panel (clamped) and persist the geometry. */
 export function setHeldGeometry(geom: HeldGeometry): void {
   if (held === null) return;
-  const vw =
-    typeof window !== "undefined" && window.innerWidth
-      ? window.innerWidth
-      : geom.w;
-  const vh =
-    typeof window !== "undefined" && window.innerHeight
-      ? window.innerHeight
-      : geom.h;
-  const clamped = clampGeometry(geom, { w: vw, h: vh });
+  const clamped = clampGeometry(
+    geom,
+    typeof window !== "undefined" && window.innerWidth && window.innerHeight
+      ? visibleRect()
+      : { w: geom.w, h: geom.h },
+  );
   held = { ...held, geom: clamped };
   saveGeom(clamped);
   emit();

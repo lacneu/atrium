@@ -9,6 +9,8 @@
 // Rendered rather than grepped, like select.test.ts: the classes reach the DOM
 // through `cn()`, which drops the loser of a conflict.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
@@ -73,5 +75,24 @@ describe("tab list containment", () => {
     const list = classesOf(renderList("", "line"), "tabs-list");
     expect(list).toContain("max-w-full");
     expect(list).not.toContain("overflow-y-hidden");
+  });
+});
+
+// Lot 26: the arrow keys move the focus along the list ahead of its value (Voice's
+// list follows the URL), and the trigger they landed on stayed past the edge
+// (263-589 px in a 20-340 px list at 360 px under the largest text scale). The
+// focused trigger is revealed like the active one — and the settings strip's tab.
+describe("the focused tab is brought into view", () => {
+  test("the tab list reveals the trigger a focus moved to", () => {
+    const tabs = readFileSync(join(process.cwd(), "src/components/ui/tabs.tsx"), "utf-8");
+    expect(tabs).toMatch(/addEventListener\("focusin", onFocusIn\)/);
+    expect(tabs).toContain(`revealFocusIn(list, e.target, '[data-slot="tabs-trigger"]')`);
+    expect(tabs).toMatch(/removeEventListener\("focusin", onFocusIn\)/);
+  });
+  test("the settings strip reveals the tab a focus moved to", () => {
+    const nav = readFileSync(join(process.cwd(), "src/chat/admin/SettingsNav.tsx"), "utf-8");
+    expect(nav).toMatch(/bar\.addEventListener\("focusin", onFocusIn\)/);
+    expect(nav).toContain(`revealFocusIn(bar, e.target, '[role="tab"]')`);
+    expect(nav).toMatch(/bar\.removeEventListener\("focusin", onFocusIn\)/);
   });
 });

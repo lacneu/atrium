@@ -80,6 +80,7 @@ import { ChatArrivalWatcher } from "./chat/ChatArrivalWatcher";
 import { useStartNewChat } from "./chat/useStartNewChat";
 import { DevUserSwitcher } from "./chat/DevUserSwitcher";
 import { UserMenu } from "./chat/UserMenu";
+import { DRAWER_HEAD_FITS, TOP_BAR_FITS } from "./chat/topBarFit";
 import { LoginBoundary } from "./AutheliaLogin";
 import { autheliaBrowserLogin } from "./lib/autheliaLogin";
 import { NotificationBell } from "./chat/NotificationBell";
@@ -113,6 +114,8 @@ import { AtriumMark } from "@/components/AtriumMark";
 import { m } from "@/paraglide/messages.js";
 import { useApplyTheme, type ThemeMode } from "@/lib/useTheme";
 import { useApplyFontScale, type FontScale } from "@/lib/useFontScale";
+import { useFitLevel } from "@/lib/useFitLevel";
+import { measureCloneWidths } from "@/lib/measureClone";
 import { useApplyChart, useResolvedMode } from "@/lib/useChart";
 import {
   isMac,
@@ -571,17 +574,12 @@ function RoleGate() {
       <div className="oc-shell">
         <ImpersonationBanner />
         <DevUserSwitcher />
-        <header className="oc-topbar">
-          <span className="oc-topbar__brand">
-            <BrandMark
-              brand={me.resolvedChartBrand}
-              resolvedThemeMode={me.resolvedThemeMode}
-            />
-          </span>
-          <div className="oc-topbar__actions">
-            <UserMenu label={userLabel} mode={me.themeMode} minimal />
-          </div>
-        </header>
+        <PendingTopBar
+          userLabel={userLabel}
+          themeMode={me.themeMode}
+          resolvedThemeMode={me.resolvedThemeMode}
+          brand={me.resolvedChartBrand}
+        />
         <div className="oc-pending">
           <h1 className="oc-pending__title">{m.app_pending_title()}</h1>
           <p className="oc-pending__body">{m.app_pending_body()}</p>
@@ -691,6 +689,93 @@ function BrandMark({
   );
 }
 
+// The bar of an account not approved yet: the brand and the account menu (sign out
+// only). It fits the screen like the app's (topBarFit.ts).
+function PendingTopBar({
+  userLabel,
+  themeMode,
+  resolvedThemeMode,
+  brand,
+}: {
+  userLabel: string;
+  themeMode: ThemeMode | null;
+  resolvedThemeMode: ThemeMode;
+  brand: ChartBrand | undefined;
+}) {
+  const barRef = useRef<HTMLElement>(null);
+  const fit =
+    TOP_BAR_FITS[
+      useFitLevel(
+        () => {
+          const bar = barRef.current;
+          if (bar === null || !(bar.clientWidth > 0)) return null;
+          // The most compact presentation needs no measure: it is what remains.
+          const required = measureCloneWidths(
+            bar,
+            TOP_BAR_FITS.slice(0, -1).map((f) => (clone: HTMLElement) => clone.setAttribute("data-fit", f)),
+            "oc-topbar--measure",
+          );
+          return { available: bar.clientWidth, required };
+        },
+        () => [barRef.current],
+        [],
+      )
+    ];
+  return (
+    <header ref={barRef} className="oc-topbar" data-fit={fit}>
+      <span className="oc-topbar__brand">
+        <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
+      </span>
+      <div className="oc-topbar__actions">
+        <UserMenu label={userLabel} mode={themeMode} minimal />
+      </div>
+    </header>
+  );
+}
+
+// The drawer's head: the brand (back to the chats) and its close button. In a
+// drawer as narrow as the screen allows, a long brand label gives way to the logo
+// (topBarFit.ts).
+function DrawerHead({
+  brand,
+  resolvedThemeMode,
+}: {
+  brand: ChartBrand | undefined;
+  resolvedThemeMode: ThemeMode;
+}) {
+  const headRef = useRef<HTMLDivElement>(null);
+  const fit =
+    DRAWER_HEAD_FITS[
+      useFitLevel(
+        () => {
+          const head = headRef.current;
+          if (head === null || !(head.clientWidth > 0)) return null;
+          const required = measureCloneWidths(
+            head,
+            DRAWER_HEAD_FITS.slice(0, -1).map((f) => (clone: HTMLElement) => clone.setAttribute("data-fit", f)),
+            "oc-drawer__head--measure",
+          );
+          return { available: head.clientWidth, required };
+        },
+        () => [headRef.current],
+        [],
+      )
+    ];
+  return (
+    <div ref={headRef} className="oc-drawer__head" data-fit={fit}>
+      <SheetTitle className="sr-only">{m.app_drawer_title()}</SheetTitle>
+      <Link to="/" className="oc-topbar__brand">
+        <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
+      </Link>
+      <SheetClose asChild>
+        <Button variant="ghost" size="icon" aria-label={m.common_close()}>
+          <X />
+        </Button>
+      </SheetClose>
+    </div>
+  );
+}
+
 // Global top bar: sidebar toggle (left) + brand + single user menu (right). On a
 // phone held in landscape it is a vertical RAIL on the left edge (drawerLayout.ts):
 // the same controls, icons only, spending width where height was short.
@@ -715,8 +800,32 @@ function AppTopBar({
   toggleRef: RefObject<HTMLButtonElement | null>;
   rail: boolean;
 }) {
+  // It fits the screen (topBarFit.ts): measured, except as a rail — a column whose
+  // controls are icons already.
+  const barRef = useRef<HTMLElement>(null);
+  const fit =
+    TOP_BAR_FITS[
+      useFitLevel(
+        () => {
+          const bar = barRef.current;
+          if (rail || bar === null || !(bar.clientWidth > 0)) return null;
+          const required = measureCloneWidths(
+            bar,
+            TOP_BAR_FITS.slice(0, -1).map((f) => (clone: HTMLElement) => clone.setAttribute("data-fit", f)),
+            "oc-topbar--measure",
+          );
+          return { available: bar.clientWidth, required };
+        },
+        () => [barRef.current],
+        [rail],
+      )
+    ];
   return (
-    <header className={rail ? "oc-topbar oc-topbar--rail" : "oc-topbar"}>
+    <header
+      ref={barRef}
+      className={rail ? "oc-topbar oc-topbar--rail" : "oc-topbar"}
+      data-fit={rail ? undefined : fit}
+    >
       <div className="oc-topbar__left">
         <Button
           ref={toggleRef}
@@ -908,17 +1017,7 @@ function AuthenticatedChrome({
               // user moved meanwhile (the composer) stays (lib/returnFocus).
               returnFocus={() => [sidebarToggleRef.current]}
             >
-              <div className="oc-drawer__head">
-                <SheetTitle className="sr-only">{m.app_drawer_title()}</SheetTitle>
-                <Link to="/" className="oc-topbar__brand">
-                  <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
-                </Link>
-                <SheetClose asChild>
-                  <Button variant="ghost" size="icon" aria-label={m.common_close()}>
-                    <X />
-                  </Button>
-                </SheetClose>
-              </div>
+              <DrawerHead brand={brand} resolvedThemeMode={resolvedThemeMode} />
               <div className="oc-sidebar-col oc-sidebar-col--drawer">{sidebarBody}</div>
             </SheetContent>
           </Sheet>

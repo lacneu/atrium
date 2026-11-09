@@ -3,7 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Tabs as TabsPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { revealInline } from "@/lib/revealInline"
+import { revealFocusIn, revealInline } from "@/lib/revealInline"
 import { wheelToInline } from "@/lib/wheelToInline"
 
 function Tabs({
@@ -92,6 +92,16 @@ function TabsList({
     )
     ro.observe(list)
     return () => ro.disconnect()
+  }, [])
+  // The FOCUSED trigger too (lot 26): the arrow keys move the focus along the list
+  // ahead of its value (a list kept in the URL follows it a route later), and a
+  // trigger they landed on past the edge was read unseen.
+  React.useEffect(() => {
+    const list = listRef.current
+    if (!list) return
+    const onFocusIn = (e: FocusEvent) => revealFocusIn(list, e.target, '[data-slot="tabs-trigger"]')
+    list.addEventListener("focusin", onFocusIn)
+    return () => list.removeEventListener("focusin", onFocusIn)
   }, [])
   // A plain mouse wheel scrolls an overflowing list sideways, and gives the page
   // its scroll back at either end (`wheelToInline`). A listener of its own, not

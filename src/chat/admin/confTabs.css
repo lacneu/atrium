@@ -264,6 +264,7 @@
 }
 .oc-rdefaults__exhead {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
@@ -836,7 +837,7 @@
 /* Year grid: 12 mini-months with per-day density dots. */
 .oc-cal__year {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
   gap: 10px;
 }
 .oc-cal__mini {

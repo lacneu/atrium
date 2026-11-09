@@ -556,6 +556,7 @@ export function ScheduledTab() {
       <div
         style={{
           display: "flex",
+          flexWrap: "wrap",
           alignItems: "flex-start",
           gap: 8,
           marginBottom: 12,

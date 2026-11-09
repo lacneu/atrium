@@ -707,7 +707,9 @@
    The sheets (the drawer, the side panels) run the full height of the screen: they
    stop at the safe areas — and above the keyboard, which covers the bottom one
    when it is open (they used to run under it, buttons and all). Where there is
-   neither (every desktop) this is exactly `inset-y-0`. */
+   neither (every desktop) this is exactly `inset-y-0`. Every fixed bottom edge
+   stands on `--oc-vv-bottom` (lot 26): what lies below what is shown in the layout
+   viewport — the keyboard, or the height a page wider than the screen added. */
 :root {
   --oc-layer-room: calc(
     100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - env(safe-area-inset-top) -
@@ -717,7 +719,7 @@
 [data-slot="sheet-content"][data-side="left"],
 [data-slot="sheet-content"][data-side="right"] {
   top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top));
-  bottom: max(env(safe-area-inset-bottom), var(--oc-kb, 0px));
+  bottom: max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px));
   height: auto;
 }
 [data-slot="sheet-content"][data-side="top"],
@@ -728,7 +730,7 @@
   top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top));
 }
 [data-slot="sheet-content"][data-side="bottom"] {
-  bottom: max(env(safe-area-inset-bottom), var(--oc-kb, 0px));
+  bottom: max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px));
 }
 [data-slot="sheet-content"][data-side="left"] {
   left: calc(var(--oc-vv-left, 0px) + env(safe-area-inset-left));
@@ -785,7 +787,7 @@
 }
 [data-slot="dialog-content"]:not(.oc-search-palette),
 [data-slot="alert-dialog-content"] {
-  margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-kb, 0px)) / 2);
+  margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-vv-bottom, 0px)) / 2);
 }
 /* A FLOATING LAYER (popover, menu, select) never exceeds the room Floating UI
    measured for it, `--radix-<kind>-content-available-height`, which its shared
@@ -845,6 +847,62 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
+}
+/* THE TOP BAR FITS THE SCREEN (lot 26, topBarFit.ts): `data-fit` names what it
+   shows, measured on clones of the bar. `full`: the brand's label and the account's
+   name; `logo`: the logo alone (a brand without one keeps its label) and the name
+   shortened; `icon`: the account as its icon. Every label can shorten (ellipsis,
+   its whole text in the title), and in the last presentation the brand gives way
+   too: the bar never runs past the screen. */
+.oc-topbar__left,
+.oc-topbar__actions,
+.oc-topbar__brand,
+.oc-drawer__head .oc-topbar__brand {
+  min-width: 0;
+}
+.oc-topbar__left {
+  flex-shrink: 0;
+}
+.oc-brand__label,
+.oc-usermenu__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-usermenu__icon {
+  display: none;
+}
+.oc-topbar[data-fit="logo"] .oc-brand__logo + .oc-brand__label,
+.oc-topbar[data-fit="icon"] .oc-brand__logo + .oc-brand__label,
+.oc-drawer__head[data-fit="logo"] .oc-brand__logo + .oc-brand__label,
+.oc-topbar[data-fit="icon"] .oc-usermenu__label,
+.oc-topbar[data-fit="icon"] .oc-usermenu__chev {
+  display: none;
+}
+.oc-topbar[data-fit="icon"] .oc-usermenu__icon {
+  display: block;
+}
+.oc-topbar[data-fit="icon"] .oc-topbar__left,
+.oc-topbar[data-fit="icon"] .oc-brand__logo {
+  flex-shrink: 1;
+  min-width: 0;
+}
+/* The clones the fit measures: laid out off-screen at their natural width. A
+   label is measured at its floor where it may shorten: below it, the next
+   presentation. */
+.oc-topbar.oc-topbar--measure,
+.oc-drawer__head.oc-drawer__head--measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+.oc-topbar.oc-topbar--measure[data-fit="logo"] .oc-usermenu__label,
+.oc-topbar.oc-topbar--measure[data-fit="logo"] .oc-brand__label {
+  max-width: 7em;
 }
 /* Flex row (NOT a fixed grid): the sidebar column owns its width via
    `flex: 0 0 <width>px` (resizable, see useSidebarLayout) and the main area
@@ -1884,7 +1942,7 @@
   padding-bottom: 1.1rem;
   border-bottom: 1px solid var(--border);
 }
-.oc-int__section-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.2rem; }
+.oc-int__section-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-bottom: 0.2rem; }
 .oc-int__fields { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.6rem; max-width: 480px; }
 .oc-int__field { display: flex; flex-direction: column; gap: 0.25rem; }
 .oc-int__field-label { font-size: 0.78rem; font-weight: 600; color: var(--foreground); }
@@ -3579,7 +3637,7 @@ button.oc-bmk-rail__count:hover {
 .oc-subpanel__adv-list {
   margin: 0.4rem 0 0;
   display: grid;
-  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  grid-template-columns: minmax(min(5.5rem, 100%), auto) 1fr;
   gap: 0;
   font-size: 0.76rem;
   border: 1px solid var(--border);
@@ -5325,7 +5383,7 @@ button.oc-perm__opt:disabled {
 /* --- Theme showroom ----------------------------------------------------- */
 .oc-show { display: flex; flex-direction: column; gap: 2rem; max-width: 64rem; }
 .oc-show__section {
-  display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem;
+  display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 1.5rem;
   padding-bottom: 1.5rem; border-bottom: 1px solid var(--border);
 }
 .oc-show__title { font-size: 0.95rem; font-weight: 600; }
@@ -5335,7 +5393,7 @@ button.oc-perm__opt:disabled {
 .oc-show__row--col { flex-direction: column; align-items: stretch; }
 .oc-show__check { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; }
 @media (max-width: 720px) {
-  .oc-show__section { grid-template-columns: 1fr; gap: 0.75rem; }
+  .oc-show__section { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
 }
 
 /* --- Apparence: charte graphique (P3) ----------------------------------- */
@@ -5348,7 +5406,7 @@ button.oc-perm__opt:disabled {
 /* Per-user chart picker: a responsive grid of selectable palette cards. */
 .oc-chart-grid {
   display: grid; gap: 0.75rem;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
 }
 .oc-chart-card {
   display: flex; flex-direction: column; gap: 0.625rem;
@@ -5526,17 +5584,17 @@ button.oc-perm__opt:disabled {
   font-size: 0.8rem;
 }
 .oc-chart-mine__domains-body {
-  display: flex; flex-direction: column; gap: 0.4rem; min-width: 16rem;
+  display: flex; flex-direction: column; gap: 0.4rem; min-width: min(16rem, 100%);
 }
 .oc-chart-mine__domains-input { max-width: 18rem; }
 
 /* --- Data table shell + sheet form -------------------------------------- */
 .oc-dt { display: flex; flex-direction: column; gap: 0.75rem; }
 .oc-dt__bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem;
 }
 .oc-dt__title { font-size: 1rem; font-weight: 600; }
-.oc-dt__bar-actions { display: flex; align-items: center; gap: 0.5rem; }
+.oc-dt__bar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
 /* Sortable column header (CHARTE): the whole header label is a button; a muted
    double-chevron hints sortability, replaced by a solid up/down when active. */
 .oc-dt__sort {
@@ -6917,7 +6975,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-kpi__grid {
   display: grid; gap: 0.75rem;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
 }
 .oc-kpi__card-title { font-size: 0.9rem; }
 .oc-kpi__card-metric code {
@@ -7360,7 +7418,7 @@ button.oc-perm__opt:disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  white-space: nowrap;
+  max-width: 100%;
 }
 .oc-bridge-card__hint {
   margin: 0.15rem 0 0;
@@ -7390,6 +7448,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-bridge-provider__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   padding-bottom: 0.55rem;
@@ -7703,11 +7762,19 @@ button.oc-perm__opt:disabled {
    close. On tokens, except the destructive accent stripe (hex, like statuses). */
 .oc-toast__viewport {
   position: fixed; z-index: var(--oc-layer-toast);
-  /* Clear of the home bar and the notch side, and above the iOS keyboard (lot 8). */
-  bottom: calc(1rem + max(env(safe-area-inset-bottom), var(--oc-kb, 0px)));
-  right: calc(1rem + env(safe-area-inset-right));
+  /* Clear of the home bar and the notch side, and above the iOS keyboard (lot 8);
+     in what is shown, like every layer (lots 25-26): its edges from what is shown,
+     its width within the bound. */
+  bottom: calc(1rem + max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px)));
+  right: calc(
+    1rem +
+      max(
+        env(safe-area-inset-right),
+        100% - 100vw - var(--oc-vv-left, 0px) + env(safe-area-inset-right)
+      )
+  );
   display: flex; flex-direction: column; gap: 0.5rem;
-  max-width: min(24rem, calc(100vw - 2rem)); pointer-events: none;
+  max-width: min(24rem, calc(var(--oc-layer-width) - 2rem)); pointer-events: none;
 }
 .oc-toast {
   pointer-events: auto;
@@ -8285,7 +8352,9 @@ button.oc-perm__opt:disabled {
 /* ── DEV user switcher (dev-only floating affordance) ───────────────────────── */
 .oc-devfab {
   /* Sits ABOVE the TanStack Router devtools toggle (also fixed bottom-right in dev). */
-  position: fixed; right: 0.85rem; bottom: 2.9rem; z-index: var(--oc-layer-dev-fab);
+  position: fixed; z-index: var(--oc-layer-dev-fab);
+  right: calc(0.85rem + max(0px, 100% - 100vw - var(--oc-vv-left, 0px)));
+  bottom: calc(2.9rem + var(--oc-vv-bottom, 0px));
   display: inline-flex; align-items: center; gap: 0.3rem;
   padding: 0.3rem 0.55rem; border-radius: 999px; cursor: pointer;
   font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
@@ -9185,7 +9254,7 @@ button.oc-perm__opt:disabled {
 .oc-spanel__kv {
   margin: 0.4rem 0 0;
   display: grid;
-  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  grid-template-columns: minmax(min(5.5rem, 100%), auto) 1fr;
   gap: 0;
   font-size: 0.8rem;
   border: 1px solid var(--border);
@@ -9249,8 +9318,13 @@ button.oc-perm__opt:disabled {
 /* Chat-defaults tab: Atrium-side summarize-threshold field (number + inline save). */
 .oc-cdefaults__inline {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
+}
+.oc-cdefaults__select {
+  max-width: 100%;
 }
 .oc-cdefaults__number {
   max-width: 9rem;
@@ -9456,7 +9530,12 @@ button.oc-perm__opt:disabled {
 /* Lightbox overlay (portaled to body). */
 .oc-lightbox {
   position: fixed;
-  inset: 0;
+  /* What is shown, not the layout viewport: a page wider than the screen left its
+     bar's buttons past the screen's edge (lot 26). */
+  top: var(--oc-vv-top, 0px);
+  bottom: var(--oc-vv-bottom, 0px);
+  left: var(--oc-vv-left, 0px);
+  right: max(0px, calc(100% - 100vw - var(--oc-vv-left, 0px)));
   z-index: var(--oc-layer-lightbox);
   background: rgba(0, 0, 0, 0.82);
   display: flex;
@@ -10680,14 +10759,20 @@ button.oc-perm__opt:disabled {
    12): nothing here is centred or fixed in height any more. */
 .oc-composer--expanded {
   position: fixed;
-  left: 50%;
+  /* Centred on what is shown, between its safe areas, within the bound (lots
+     25-26): centred on a layout viewport grown by a page wider than the screen, it
+     ran past the screen and its action bar sank below it. */
+  left: calc(
+    var(--oc-vv-left, 0px) + min(50%, 50vw) +
+      (env(safe-area-inset-left) - env(safe-area-inset-right)) / 2
+  );
   top: auto;
   transform: translateX(-50%);
   z-index: var(--oc-layer-focus-panel);
   /* A GENEROUS workspace on big screens (dictation comfort), still bounded for
      line readability. Fills most of the height so a long dictated prompt is
      visible at once; small screens fall back to the viewport and scroll. */
-  width: min(94vw, 1040px);
+  width: min(94vw, 1040px, var(--oc-layer-width));
   max-width: none;
   /* The floor: what the column cannot give up — the bar (44 px on touch), the
      gap above it, the smallest paddings and the borders (60 px); the region
@@ -10697,7 +10782,7 @@ button.oc-perm__opt:disabled {
     0px,
     min(5dvh, calc((100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - var(--oc-exp-floor)) / 2))
   );
-  bottom: calc(var(--oc-kb, 0px) + var(--oc-exp-gap));
+  bottom: calc(var(--oc-vv-bottom, 0px) + var(--oc-exp-gap));
   height: max(
     var(--oc-exp-floor),
     calc(100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - 2 * var(--oc-exp-gap))
@@ -10916,7 +11001,7 @@ button.oc-perm__opt:disabled {
   flex-direction: column;
   /* Yield to a sub-minimum viewport so the panel never overflows the screen
      (matches clampGeometry, which caps size at the viewport). */
-  min-width: min(300px, 100vw);
+  min-width: min(300px, var(--oc-layer-width));
   min-height: min(200px, 100dvh);
   padding-left: 20px; /* room for the left move-handle */
   border-radius: 0.9rem;
@@ -11384,9 +11469,10 @@ button.oc-perm__opt:disabled {
 }
 .oc-areq__toggle {
   /* Sized on its title alone (the summary claims no width of its own): the
-     line breaks before the title is cut. */
-  flex: 1 1 0;
-  min-width: min-content;
+     line breaks before the title is cut, and a title wider than the card breaks
+     too (lot 26: at 360 px under the largest text scale it was cut). */
+  flex: 1 1 max-content;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 0.55rem;
@@ -11404,9 +11490,10 @@ button.oc-perm__opt:disabled {
   border-radius: 6px;
 }
 .oc-areq__kind {
-  flex-shrink: 0;
-  /* One line, whole: its width is what the head's line break is measured on. */
-  white-space: nowrap;
+  /* One line, whole, while the card has room for it: its width is what the
+     head's line break is measured on; narrower, it breaks. */
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-weight: 600;
   color: color-mix(in oklch, var(--tone) 80%, var(--foreground));
   letter-spacing: 0.005em;

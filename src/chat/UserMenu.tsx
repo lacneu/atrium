@@ -74,9 +74,19 @@ export function UserMenu({
             <CircleUserRound />
           </Button>
         ) : (
-          <Button variant="ghost" size="sm" className="gap-1.5">
-            {label}
-            <ChevronDown className="opacity-60" />
+          // Every presentation the top bar's fit chooses from (topBarFit.ts): the
+          // label — shortened where the bar is tight, its whole text in the title —
+          // or the icon alone, named by the label. The bar's `data-fit` shows one.
+          <Button
+            variant="ghost"
+            size="sm"
+            className="oc-usermenu__trigger min-w-0 shrink gap-1.5"
+            aria-label={label}
+            title={label}
+          >
+            <CircleUserRound className="oc-usermenu__icon" aria-hidden />
+            <span className="oc-usermenu__label">{label}</span>
+            <ChevronDown className="oc-usermenu__chev opacity-60" aria-hidden />
           </Button>
         )}
       </DropdownMenuTrigger>

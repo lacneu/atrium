@@ -52,6 +52,7 @@ import { getLocale } from "@/paraglide/runtime.js";
 import { createPortal } from "react-dom";
 import { useToast } from "@/components/ui/toast";
 import { currentEngineGen } from "./dictationHold";
+import { visibleRect } from "@/lib/virtualKeyboard";
 
 /** A pointer drag reporting incremental deltas from the last position. Shared
  *  by the header (move) and the corner (resize). */
@@ -103,15 +104,22 @@ export function HeldDictationDock() {
   const onHeaderDown = useDrag(moveBy);
   const onCornerDown = useDrag(resizeBy);
 
-  // Re-clamp to the viewport on window resize (the panel must never strand
-  // off-screen).
+  // Re-clamp to what is shown on window resize, and when what is shown moves or
+  // resizes (a page panned, a keyboard): the panel must never strand off-screen.
   useEffect(() => {
     const onResize = () => {
       const g = getHeldDictation()?.geom;
       if (g !== undefined) setHeldGeometry(g);
     };
+    const vv = window.visualViewport;
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    vv?.addEventListener("resize", onResize);
+    vv?.addEventListener("scroll", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      vv?.removeEventListener("resize", onResize);
+      vv?.removeEventListener("scroll", onResize);
+    };
   }, []);
 
   // Local dictation engine (owned by the store while detached).
@@ -198,10 +206,7 @@ export function HeldDictationDock() {
 
   if (held === null) return null;
 
-  const clamped: HeldGeometry = clampGeometry(held.geom, {
-    w: window.innerWidth,
-    h: window.innerHeight,
-  });
+  const clamped: HeldGeometry = clampGeometry(held.geom, visibleRect());
 
   // Portal to <body>: a `position: fixed` panel rendered inside the chrome can
   // be trapped by an ancestor containing block (the same "invisible fixed"

@@ -72,7 +72,7 @@ export function BlobSweepCard() {
           <Button
             variant="ghost"
             size="sm"
-            className="text-destructive"
+            className="h-auto min-h-8 shrink whitespace-normal text-left text-destructive"
             disabled={busy || view.applyBlock !== null}
             onClick={() => void apply()}
           >

@@ -269,3 +269,17 @@ describe("held dictation store (the pin's lifecycle)", () => {
     expect(getHeldDictation()).toBeNull();
   });
 });
+
+// Lot 26: what is shown begins where the page is panned to (a page wider than the
+// screen, visibleRect): the panel was clamped to the layout viewport — 0 to 594 px
+// on a 360 px phone — its close button past the screen.
+describe("clampGeometry on what is shown", () => {
+  it("keeps the panel inside a visible rectangle that does not start at 0", () => {
+    const shown = { x: 82, y: 30, w: 360, h: 740 };
+    const g = clampGeometry({ x: 0, y: 0, w: 720, h: 300 }, shown);
+    expect(g).toEqual({ x: 82, y: 30, w: 360, h: 300 });
+    const right = clampGeometry({ x: 900, y: 900, w: 300, h: 200 }, shown);
+    expect(right.x + right.w).toBe(82 + 360);
+    expect(right.y + right.h).toBe(30 + 740);
+  });
+});

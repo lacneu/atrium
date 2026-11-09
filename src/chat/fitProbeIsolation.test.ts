@@ -159,6 +159,32 @@ const FITS: Fit[] = [
     kind: "ghost",
     modes: [{ on: "react" }],
   },
+  // Lot 26: the top bar fits the screen (topBarFit.ts) — the app's, a pending
+  // account's, and the drawer's head.
+  {
+    view: "top bar",
+    caller: "src/router.tsx:AppTopBar",
+    owner: "oc-topbar",
+    probe: "oc-topbar--measure",
+    kind: "clone",
+    modes: [{ attr: "data-fit", on: "self" }],
+  },
+  {
+    view: "pending account's top bar",
+    caller: "src/router.tsx:PendingTopBar",
+    owner: "oc-topbar",
+    probe: "oc-topbar--measure",
+    kind: "clone",
+    modes: [{ attr: "data-fit", on: "self" }],
+  },
+  {
+    view: "drawer head",
+    caller: "src/router.tsx:DrawerHead",
+    owner: "oc-drawer__head",
+    probe: "oc-drawer__head--measure",
+    kind: "clone",
+    modes: [{ attr: "data-fit", on: "self" }],
+  },
 ];
 
 /** Attributes some components write that are NOT a fit's mode. */
@@ -169,7 +195,7 @@ const NOT_A_FIT: { file: string; attr: string; why: string }[] = [
     why: "the brand logo preview's light/dark background, chosen by the user",
   },
 ];
-const MODE_ATTRS = ["data-layout", "data-labels", "data-moved", "data-mode"];
+const MODE_ATTRS = ["data-layout", "data-labels", "data-moved", "data-mode", "data-fit"];
 
 // ---- sources -------------------------------------------------------------------
 

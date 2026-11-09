@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
-import { revealInline } from "@/lib/revealInline";
+import { revealFocusIn, revealInline } from "@/lib/revealInline";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -215,7 +215,15 @@ export function SettingsTabBar() {
     const ro = new ResizeObserver(reveal);
     ro.observe(bar);
     for (const item of Array.from(bar.children)) ro.observe(item);
-    return () => ro.disconnect();
+    // The FOCUSED tab too (lot 26): walked with Tab, a tab partly past the edge got
+    // the focus unseen — the browser scrolls a focused element in only when none
+    // of it shows.
+    const onFocusIn = (e: FocusEvent) => revealFocusIn(bar, e.target, '[role="tab"]');
+    bar.addEventListener("focusin", onFocusIn);
+    return () => {
+      ro.disconnect();
+      bar.removeEventListener("focusin", onFocusIn);
+    };
   }, [activeTab, groupTabs.length]);
 
   if (group === undefined || groupTabs.length === 0) return null;
