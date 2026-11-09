@@ -134,9 +134,10 @@ describe("every kind of layer stays in the visible screen (lot 17)", () => {
     );
   });
 
-  test.each(CENTRED)("%s: no taller than the room less a margin, moved to the visible centre", (slot) => {
+  test.each(CENTRED)("%s: no taller than the room less a margin while there is room for one, moved to the visible centre", (slot) => {
     const own = declarationsFor(`[data-slot="${slot}"]`);
-    expect(own).toMatch(/max-height:\s*calc\(var\(--oc-layer-room\) - 2rem\);/);
+    // Lot 28: the margin gives way under the dialog's floor (7rem), down to the room.
+    expect(own).toMatch(/max-height:\s*max\(calc\(var\(--oc-layer-room\) - 2rem\), min\(var\(--oc-layer-room\), 7rem\)\);/);
     const lifted = cssRules().some(
       (r) =>
         r.selectors.some((sel) => sel.startsWith(`[data-slot="${slot}"]`)) &&
@@ -442,16 +443,18 @@ describe("the full-page prompt keeps its action bar whole (lots 12, 13)", () => 
     expect(ruleBody(".oc-composer--expanded > .oc-composer__bar")).toMatch(/flex:\s*none/);
   });
 
-  test("inside the region the field gives way first, down to a line, and scrolls its own text", () => {
+  test("inside the region the field and the two stacks that scroll give way, the field down to a line", () => {
     const field = ruleBody(".oc-composer--expanded .oc-composer__input");
     expect(field).toMatch(/flex:\s*1 1 auto/);
     expect(field).toMatch(/min-height:\s*[\d.]+rem/);
     expect(field).toMatch(/overflow-y:\s*auto/);
-    // The rest keeps its height: an attachment row squeezed to nothing would hide
-    // what is attached — the region scrolls instead.
-    expect(ruleBody(".oc-composer--expanded > .oc-composer__body > :not(.oc-composer__input)")).toMatch(
-      /flex-shrink:\s*0/,
-    );
+    // Lot 28: the region scrolled the field out of view under a keyboard while the
+    // attachments kept their height above it. The two stacks that scroll (the quotes,
+    // the attachments) give way with the field; the rest keeps its height
+    // (layoutFloor.test.ts lays it out).
+    expect(
+      ruleBody(".oc-composer--expanded > .oc-composer__body > :not(.oc-composer__input, .oc-composer__quotes, .oc-attachrow)"),
+    ).toMatch(/flex-shrink:\s*0/);
   });
 
   test("inline, the region lays out nothing of its own: the card's column as before", () => {
@@ -722,10 +725,11 @@ describe("the full-page prompt's geometry over the review's grid (lots 12, 13)",
   });
 
   test("tight on a scrolled screen, its margins are shared evenly between the visible top and the keyboard", () => {
-    // 80 px shown from 200 px down a 390 px layout: room for the floor and 10 px
-    // above and below — not for 5dvh on each side.
+    // 144 px shown from 200 px down a 390 px layout: room for the floor (7.75rem since
+    // lot 28, the field's line in it) and 10 px above and below — not for 5dvh on
+    // each side.
     for (const content of [0, 600]) {
-      const g = geometry(390, 110, content, 200);
+      const g = geometry(390, 46, content, 200);
       expect(g.top - 200).toBeCloseTo(g.visible - g.foot, 3);
       expect(g.top).toBeGreaterThanOrEqual(200 - 0.001);
     }
@@ -739,13 +743,15 @@ describe("the full-page prompt's geometry over the review's grid (lots 12, 13)",
   test("the computation agrees with the browser: the bar's foot as measured, whatever the content", () => {
     // Measured in the browser with --oc-kb set, on touch, with and without the people
     // row, with four attachments and with a dictation preview — the same foot each
-    // time (l13-apres-*-composeur-plancher-*).
+    // time (l13-apres-*-composeur-plancher-*). Measured again in lot 28 (the keyboard
+    // through the visual viewport, the floor holding the field's line:
+    // l28-apres-pied-du-prompt): the feet the higher floor moves moved with it.
     const measured: [number, number, number][] = [
-      [360, 220, 114.7],
-      [360, 280, 65.4],
+      [360, 220, 124.7],
+      [360, 280, 75.4],
       [360, 336, 19.4],
       [390, 220, 141.9],
-      [390, 280, 84.6],
+      [390, 280, 104.1],
       [390, 336, 49.4],
       [740, 280, 409],
       [844, 336, 451.9],
@@ -1488,5 +1494,26 @@ describe("no fixed box's floor above what is shown (lot 27)", () => {
     const floor = along(appDeclarations(".oc-detach").get("min-height")!, env);
     const shown = env.layout - env.top - env.below;
     expect(floor).toBeLessThanOrEqual(shown + 0.5);
+  });
+});
+
+// ---- THE TRANSCRIPT'S SPACE IS SCROLLED CONTENT (lot 28) ---------------------
+//
+// Its padding was a floor it could not give up: with the header, it pushed the
+// composer under the keyboard. The space above and below the messages is two
+// spacers in the scrolled content (laid out by layoutFloor.test.ts); the reserve the
+// queued cards set still eases in, and still does not under reduced motion.
+describe("the transcript's spacers (lot 28)", () => {
+  // The rule of the spacer below alone (the two spacers share another).
+  const after = () => /(?:^|\})\s*\.oc-thread__viewport::after \{([^}]*)\}/.exec(CSS)?.[1] ?? "";
+  test("no block padding: the space is the spacers'", () => {
+    expect(ruleBody(".oc-thread__viewport")).toMatch(/padding:\s*0 1rem;/);
+    expect(after()).toMatch(/height:\s*calc\(2rem \+ var\(--oc-dock-pad, 0px\)\)/);
+  });
+  test("the reserve below eases in as the padding did, and not under reduced motion", () => {
+    expect(after()).toMatch(/transition:\s*height 200ms ease/);
+    expect(CSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.oc-thread__viewport,\s*\.oc-thread__viewport::after \{[^}]*transition:\s*none/,
+    );
   });
 });

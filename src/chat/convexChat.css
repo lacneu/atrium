@@ -776,7 +776,13 @@
    it from there. */
 [data-slot="dialog-content"],
 [data-slot="alert-dialog-content"] {
-  max-height: calc(var(--oc-layer-room) - 2rem);
+  /* What surrounds the action bar gives way before it (lot 28): the 1rem margin
+     above and below goes once the room is under the dialog's floor plus that
+     margin — the dialog then takes the room, down to the whole of it — and its
+     padding, down to 0.5rem. At 100 px shown a dialog was 60 px tall, 50 of them
+     padding, its footer cut. */
+  max-height: max(calc(var(--oc-layer-room) - 2rem), min(var(--oc-layer-room), 7rem));
+  padding-block: clamp(0.5rem, calc((var(--oc-layer-room) - 8rem) / 4), 1.25rem);
   /* As wide as what is shown less a margin, narrowed by its own `max-width`, and
      centred between the safe areas of what is shown (lot 25). */
   width: calc(var(--oc-layer-width) - 2rem);
@@ -979,10 +985,26 @@
   position: relative; /* anchor for the absolute scroll-to-bottom pill */
   /* Query container so the chat header adapts to the WORKSPACE width (sidebar
      open/closed + window), NOT the viewport — a narrow workspace on a wide screen
-     must still compact. inline-size only (block size stays content-driven, so the
-     flex column height is unaffected). Already a containing block via
+     must still compact — and folds when the thread is too short for it (lot 28,
+     below). Both sizes: the thread's height is the flex column's (the shell's less
+     the keyboard), never its content's. Already a containing block via
      position:relative, so this doesn't change the scroll-pill anchoring. */
-  container: chatpane / inline-size;
+  container: chatpane / size;
+}
+/* WHAT GIVES WAY (lot 28). A thread shorter than its content (a keyboard over a
+   phone held sideways) gives up the transcript first (its padding included: the
+   spacers below), then the header, then what the composer holds — its quotes and
+   attachments shrink and scroll, its field down to one line —, never the bar; under
+   even the composer's floor, the bar's foot stays in view, as the full-page
+   prompt's does (lot 12). It used to lose its bottom: 140 px shown, the header kept
+   its 44 px and the transcript its padding, the send bar wholly cut.
+   The header folds in a thread too short for it AND the composer's floor (its field
+   on one line, its bar, its chrome: 7 to 8rem with a quote and attachments) — under
+   11rem, a keyboard over a phone held sideways. */
+@container chatpane (max-height: 11rem) {
+  .oc-thread > .oc-chathead {
+    display: none;
+  }
 }
 /* Conversation column. Messages are centered in a readable column whose width
    tracks the workspace (the cap keeps line length comfortable; collapsing the
@@ -1000,18 +1022,35 @@
      event reads as juddering (user report). Smooth-scroll the follow, and
      ease the dock reserve so the thread glides instead of snapping. */
   scroll-behavior: smooth;
-  transition:
-    padding-bottom 200ms ease,
-    opacity 160ms ease;
-  /* --oc-dock-pad: set by QueuedDock (its measured height) so the queued
-     cards never mask the end of the in-flight reply — auto-scroll keeps the
-     bottom visible ABOVE the frosted cards; manual scroll still slides the
-     text behind them (the blur effect). */
-  padding: 1.5rem 1rem calc(2rem + var(--oc-dock-pad, 0px));
+  transition: opacity 160ms ease;
+  /* Its space above and below the messages is SCROLLED CONTENT (the spacers below),
+     not padding (lot 28): a padding is a floor the transcript could not give up,
+     and with the header it pushed the composer under the keyboard. */
+  padding: 0 1rem;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1.75rem;
+  --oc-thread-gap: 1.75rem;
+  gap: var(--oc-thread-gap);
+}
+/* The spacers: 1.5rem above the first message, 2rem below the last — plus
+   --oc-dock-pad, set by QueuedDock (its measured height) so the queued cards never
+   mask the end of the in-flight reply: auto-scroll keeps the bottom visible ABOVE
+   the frosted cards; manual scroll still slides the text behind them (the blur
+   effect). Each cancels the gap that separates it from the messages. */
+.oc-thread__viewport::before,
+.oc-thread__viewport::after {
+  content: "";
+  flex: none;
+}
+.oc-thread__viewport::before {
+  height: 1.5rem;
+  margin-bottom: calc(-1 * var(--oc-thread-gap));
+}
+.oc-thread__viewport::after {
+  height: calc(2rem + var(--oc-dock-pad, 0px));
+  margin-top: calc(-1 * var(--oc-thread-gap));
+  transition: height 200ms ease;
 }
 /* LANDING (user report: opening a chat scrolled visibly from the first message to the
    last). The smooth scroll above is for FOLLOWING new content; applied to the initial
@@ -3986,7 +4025,8 @@ button.oc-bmk-rail__count:hover {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .oc-thread__viewport {
+  .oc-thread__viewport,
+  .oc-thread__viewport::after {
     scroll-behavior: auto;
     transition: none;
   }
@@ -4448,6 +4488,18 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__body {
   display: contents;
 }
+/* INLINE, THE CARD NEVER RUNS PAST THE THREAD (lot 28): it shrinks to what the
+   thread leaves it. What it holds gives way first — the quotes and the attachments
+   shrink and scroll, before the lines of a long text —, the field down to one line,
+   never the bar; under even those, the card's top leaves first, the bar's foot in
+   view. */
+.oc-composer:not(.oc-composer--expanded) {
+  min-height: 0;
+  justify-content: flex-end;
+}
+.oc-composer:not(.oc-composer--expanded) > .oc-composer__body > :is(.oc-composer__quotes, .oc-attachrow) {
+  flex-shrink: 100;
+}
 /* Stand-in note where the inline composer would be, while a composer is pinned
    (detached to the floating panel): every conversation shows this instead of a
    composer, so the sole editable composer is unmistakably the movable one. */
@@ -4546,9 +4598,11 @@ button.oc-bmk-rail__count:hover {
    chat's staged quote stays visible + cancellable while its composer floats. */
 /* The staged passages inside the DETACHED dock. The dock is a small clamped
    panel, so the stack scrolls rather than pushing the textarea off it — the
-   same rule the composer's own stack follows. */
+   same rule the composer's own stack follows — and gives way first (lot 28): at
+   6rem whatever the panel's height, three quotes left the field no line and the
+   send bar under a keyboard. */
 .oc-detach__quotes {
-  flex: none;
+  flex: 0 1 auto;
   max-height: 6rem;
   overflow-y: auto;
 }
@@ -4614,7 +4668,9 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__input {
   width: 100%;
   resize: none;
-  min-height: 1.5rem;
+  /* One line of text at least, its top padding added (lot 28): 1.5rem held the
+     padding and 18 px of a 24 px line. */
+  min-height: calc(1.5em + 0.4rem);
   /* The same bound on a short screen, so text and attachments together still
      leave the action bar in sight (unchanged from 768 px of height up). */
   max-height: min(12rem, 25dvh);
@@ -8565,6 +8621,20 @@ button.oc-perm__opt:disabled {
 .oc-spanel[data-slot="sheet-content"] {
   width: min(26rem, var(--oc-layer-width)) !important;
   max-width: 100vw !important;
+  /* Its own height decides how much the actions zone keeps (lot 28). */
+  container: oc-spanel / size;
+}
+/* A SHORT SHEET KEEPS ITS ACTIONS IN VIEW (lot 28): the zone's heading and most of
+   its padding go, the three actions stay — a keyboard over a phone held sideways
+   left 140 px, and the 158 px zone lost its last action under it. */
+@container oc-spanel (max-height: 24rem) {
+  .oc-spanel__actions {
+    padding-block: 0.5rem;
+    gap: 0.35rem;
+  }
+  .oc-spanel__actions > .oc-spanel__cat {
+    display: none;
+  }
 }
 .oc-spanel__body {
   flex: 1 1 auto;
@@ -10775,9 +10845,12 @@ button.oc-perm__opt:disabled {
   width: min(94vw, 1040px, var(--oc-layer-width));
   max-width: none;
   /* The floor: what the column cannot give up — the bar (44 px on touch), the
-     gap above it, the smallest paddings and the borders (60 px); the region
-     above the bar can give up everything (lot 13). */
-  --oc-exp-floor: 3.75rem;
+     gap above it, the paddings, the borders — and one line of the field with the
+     gaps of the stacks above it, even squeezed to nothing (lot 28: the bar alone
+     was the floor, and the margins kept 5dvh while the field had no line); the rest
+     of the region gives up everything (lot 13). Between this floor and 10dvh more,
+     the panel IS the floor: the margins take the rest. */
+  --oc-exp-floor: 7.75rem;
   --oc-exp-gap: max(
     0px,
     min(5dvh, calc((100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - var(--oc-exp-floor)) / 2))
@@ -10824,10 +10897,11 @@ button.oc-perm__opt:disabled {
 .oc-composer--expanded > .oc-composer__bar {
   flex: none;
 }
-/* Inside the region the field gives way first, down to a line; the rest keeps its
-   height (an attachment row squeezed to nothing would hide what is attached) and
-   the region scrolls. */
-.oc-composer--expanded > .oc-composer__body > :not(.oc-composer__input) {
+/* Inside the region the field and the two stacks that scroll (the quotes, the
+   attachments) give way, the field down to a line; the rest keeps its height (lot
+   28: the region scrolled the field out of view under a keyboard, the attachments
+   kept whole above it). */
+.oc-composer--expanded > .oc-composer__body > :not(.oc-composer__input, .oc-composer__quotes, .oc-attachrow) {
   flex-shrink: 0;
 }
 /* A panel too short for its header (a keyboard over a phone held sideways): the
@@ -10999,6 +11073,9 @@ button.oc-perm__opt:disabled {
   z-index: var(--oc-layer-detached-composer);
   display: flex;
   flex-direction: column;
+  /* Under its floor, what is left leaves at the top (lot 28): the head first, the
+     bar last. */
+  justify-content: flex-end;
   /* Yield to a sub-minimum viewport so the panel never overflows the screen
      (matches clampGeometry, which caps size at what is shown): its floor is never
      above what is shown — 100dvh stays the screen's above a keyboard, and a 200 px
@@ -11092,7 +11169,9 @@ button.oc-perm__opt:disabled {
 }
 .oc-detach__input {
   flex: 1 1 auto;
-  min-height: 0;
+  /* One line at least, its paddings added (lot 28): at 0 it gave way before the
+     quotes and showed no line. */
+  min-height: calc(1.5em + 1.2rem);
   resize: none;
   border: none;
   background: transparent;
