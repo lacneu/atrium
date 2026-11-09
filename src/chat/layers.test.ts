@@ -424,8 +424,8 @@ describe.skipIf(chrome === null)("every layer in every stylesheet the app loads 
     const sweepPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: sweepCases })};${SWEEP_SCRIPT}</script></body></html>`;
     const layerPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: layerCases, screens: SCREENS, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB })};${LAYER_SCRIPT}</script></body></html>`;
     return {
-      sweep: runChrome<SweepRow[]>(chrome!, sweepPage),
-      layers: runChrome<LayerOut>(chrome!, layerPage, { budgetMs: 60000 }),
+      sweep: await runChrome<SweepRow[]>(chrome!, sweepPage),
+      layers: await runChrome<LayerOut>(chrome!, layerPage, { budgetMs: 60000 }),
       layerCases,
     };
   })();

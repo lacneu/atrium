@@ -56,6 +56,7 @@ import { m } from "@/paraglide/messages.js";
 import { useIsShortScreen } from "@/lib/useSidebarLayout";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
+import { stopReserveFollow } from "./queueReserve";
 import {
   answersFromDrafts,
   blockedBy,
@@ -133,6 +134,8 @@ function scrollToRequest(request: AgentRequestView): void {
       : null);
   if (!target) return;
   const viewport = target.closest<HTMLElement>(".oc-thread__viewport");
+  // The queued cards' follow would take this smooth scroll back (queueReserve.ts).
+  stopReserveFollow(viewport);
   if (viewport) {
     const delta = target.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
     viewport.scrollTo({

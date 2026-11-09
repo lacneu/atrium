@@ -1,4 +1,5 @@
-// THE RESERVE UNDER THE QUEUED CARDS FOLLOWS ITSELF (lot 29).
+// THE RESERVE UNDER THE QUEUED CARDS FOLLOWS ITSELF (lot 29), AND GIVES WAY TO THE
+// READER (lot 30).
 //
 // The queued cards float over the end of the transcript, and the transcript keeps a
 // reserve of their height below its last message (`--oc-dock-pad`, QueuedDock.tsx), so
@@ -6,20 +7,47 @@
 // transcript's bottom spacer — content, not padding — and assistant-ui's follow no
 // longer sees it grow: it listens to the viewport's own box (a ResizeObserver, which
 // a spacer leaves unchanged) and to its DOM (a MutationObserver that ignores a `style`
-// write — and the reserve is one). Before, the padding changed the viewport's content
-// box on every frame of its transition, and the follow caught up frame by frame; with
-// the spacer, when no text arrives afterwards (a tool running, the agent thinking), the
-// end of the reply stayed under the frosted cards.
+// write — and the reserve is one). When no text arrives afterwards (a tool running, the
+// agent thinking), the end of the reply stayed under the frosted cards.
 //
-// So the reserve asks for the follow itself, through assistant-ui's own API (the
-// thread's viewport store, the one its "latest messages" button uses), and only while
-// the reader is at the end: at once — under reduced motion the spacer has no
-// transition —, then on every frame of the spacer's transition, and once after it. It
-// stops as soon as the reader takes the scroll (a pointer, a wheel, a touch).
+// So the reserve follows itself, only while the reader is at the end (assistant-ui's
+// `isAtBottom`): at once — under reduced motion the spacer has no transition —, then on
+// every frame of the spacer's transition, and once after it. Each frame is an INSTANT
+// scroll to the end, the spacer's own transition being the motion. Never a smooth one:
+// a smooth scroll under way swallows the reader's wheel, touch and scrollbar (measured
+// in Chrome), and outlives the follow's stop. And never through assistant-ui's
+// `scrollToBottom` (lot 29): that plants assistant-ui's own bottom intent, which a scroll
+// up clears only while the content's height holds still — never during the transition —
+// so the next text brought the reader back to the end.
+//
+// The follow stops for good, and never scrolls again, as soon as the reader takes the
+// scroll up (lot 30, pass 19) — up only: it holds them at the end, where nothing goes
+// further down. Before each frame's scroll, at the first of:
+//   - a pointer or a touch on the transcript (its scrollbar included), a wheel up on it;
+//   - a key the browser answers by scrolling the transcript up — PageUp, ArrowUp (with
+//     any modifier: Cmd+ArrowUp goes to the top on a Mac), Home, Shift+Space — with the
+//     focus in the transcript (not in a field, Space not on a control it presses) or on
+//     the page itself (the browser then scrolls the scroller last pressed in); a key
+//     toward the end is the follow's own way;
+//   - the focus landing in the transcript on an element not wholly in view (a screen
+//     reader, Tab, a script): the browser scrolls it into view;
+//   - any move up already made that the follow did not make (a script, an assistive
+//     technology, find in page): the transcript above where the follow left it, and not
+//     at its end — a shrinking end pulls the scroll up with it, at the end;
+//   - assistant-ui reading the reader away from the end;
+//   - the app, before it scrolls the transcript itself (`stopReserveFollow`): a SMOOTH
+//     scroll shows no move before the follow's next frame, whose instant scroll cancels
+//     it (measured in Chrome). A smooth scroll from outside the app (an extension, a
+//     smooth find in page) within the follow's 300 ms is taken back: nothing announces
+//     it.
+// The reader's position is the one they chose. assistant-ui, which holds no intent of
+// the follow's, reads them away from the end on their own scroll (`isAtBottom` false),
+// so the next text does not bring them back either. A reader who pressed without
+// scrolling is still at the end for assistant-ui: the next text follows them there.
 
 /** What the follow needs of assistant-ui's thread viewport store. */
 export type ViewportFollowStore = {
-  getState(): { isAtBottom: boolean; scrollToBottom: (config?: { behavior?: ScrollBehavior }) => void };
+  getState(): { isAtBottom: boolean };
 };
 
 /** The longest of a computed `transition-duration` / `transition-delay` list, in ms. */
@@ -34,33 +62,119 @@ export function longestTimeMs(list: string): number {
   return max;
 }
 
+// Where a key edits rather than scrolls.
+const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+// What Space presses rather than scrolls.
+const PRESSED_BY_SPACE =
+  "button, summary, [role='button'], [role='checkbox'], [role='switch'], [role='radio'], [role='tab'], [role='option'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio']";
+
+/** Whether the browser answers this key by scrolling the transcript UP: PageUp, ArrowUp,
+ *  Home or Shift+Space, with the focus in the transcript — not in a field, Space not on a
+ *  control it presses — or on the page itself, where the browser scrolls the scroller
+ *  the reader last pressed in. */
+export function keyScrollsTranscriptUp(
+  e: { key: string; shiftKey: boolean; target: EventTarget | null },
+  viewport: HTMLElement,
+): boolean {
+  const space = e.key === " ";
+  if (!(e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home" || (space && e.shiftKey))) return false;
+  const node = e.target as Node | null;
+  if (node === null || node.nodeType !== 1) return false;
+  const el = node as Element;
+  const doc = viewport.ownerDocument;
+  if (el === doc.body || el === doc.documentElement) return true;
+  if (!viewport.contains(el)) return false;
+  if (el.closest(EDITABLE) !== null) return false;
+  return !(space && el.closest(PRESSED_BY_SPACE) !== null);
+}
+
+/** Whether the browser scrolls the transcript to show what the focus lands on: an
+ *  element not wholly inside its box. */
+export function focusScrollsTranscript(target: EventTarget | null, viewport: HTMLElement): boolean {
+  const node = target as Node | null;
+  if (node === null || node.nodeType !== 1 || node === viewport) return false;
+  const r = (node as Element).getBoundingClientRect();
+  const v = viewport.getBoundingClientRect();
+  return r.top < v.top - 0.5 || r.bottom > v.bottom + 0.5;
+}
+
+// The follow under way on each transcript, so that the app can end it before scrolling
+// the transcript itself.
+const running = new WeakMap<HTMLElement, () => void>();
+
+/** Ends the follow under way on this transcript, if any: the app is about to scroll it
+ *  (to a bookmark, a request, a sub-agent's message, a linked message). A smooth scroll
+ *  shows no move before the follow's next frame (measured in Chrome), whose instant
+ *  scroll to the end would cancel it: the follow can only be told. */
+export function stopReserveFollow(viewport: HTMLElement | null): void {
+  if (viewport !== null) running.get(viewport)?.();
+}
+
 /** Follows the end of the transcript while its reserve changes; returns the stop. */
 export function followReserve(viewport: HTMLElement, store: ViewportFollowStore): () => void {
-  if (!store.getState().isAtBottom) return () => {};
-  const win = viewport.ownerDocument.defaultView ?? window;
+  running.get(viewport)?.();
+  const doc = viewport.ownerDocument;
+  const win = doc.defaultView ?? window;
   // The spacer's own transition, as the stylesheet sets it (none under reduced motion).
   const after = win.getComputedStyle(viewport, "::after");
   const until =
     win.performance.now() + longestTimeMs(after.transitionDuration) + longestTimeMs(after.transitionDelay) + 100;
   let frame = 0;
   let stopped = false;
+  // Where the follow last left the transcript — or its end, wherever the end has gone
+  // since: a shrinking end pulls the scroll up with it, and that is no one's move.
+  let left = viewport.scrollTop;
+  const movedUpByOther = () => {
+    if (viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1) {
+      left = viewport.scrollTop;
+      return false;
+    }
+    return viewport.scrollTop < left - 0.5;
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (keyScrollsTranscriptUp(e, viewport)) stop();
+  };
+  const onWheel = (e: WheelEvent) => {
+    if (e.deltaY < 0) stop();
+  };
+  const onFocus = (e: FocusEvent) => {
+    if (focusScrollsTranscript(e.target, viewport)) stop();
+  };
+  const onScroll = () => {
+    if (movedUpByOther()) stop();
+  };
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    if (running.get(viewport) === stop) running.delete(viewport);
     win.cancelAnimationFrame(frame);
-    for (const type of ["pointerdown", "wheel", "touchstart"]) viewport.removeEventListener(type, stop);
+    viewport.removeEventListener("pointerdown", stop);
+    viewport.removeEventListener("touchstart", stop);
+    viewport.removeEventListener("wheel", onWheel);
+    viewport.removeEventListener("focusin", onFocus);
+    viewport.removeEventListener("scroll", onScroll);
+    doc.removeEventListener("keydown", onKey, true);
   };
+  // The first step runs at once: a reader who is not at the end is asked nothing.
   const step = () => {
     if (stopped) return;
-    if (!store.getState().isAtBottom) {
+    if (!store.getState().isAtBottom || movedUpByOther()) {
       stop();
       return;
     }
-    store.getState().scrollToBottom();
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior: "instant" });
+    left = viewport.scrollTop;
     if (win.performance.now() < until) frame = win.requestAnimationFrame(step);
     else stop();
   };
-  for (const type of ["pointerdown", "wheel", "touchstart"]) viewport.addEventListener(type, stop, { passive: true });
+  viewport.addEventListener("pointerdown", stop, { passive: true });
+  viewport.addEventListener("touchstart", stop, { passive: true });
+  viewport.addEventListener("wheel", onWheel, { passive: true });
+  viewport.addEventListener("focusin", onFocus);
+  viewport.addEventListener("scroll", onScroll, { passive: true });
+  // Capture: before the key reaches what it is pressed on, whatever stops it there.
+  doc.addEventListener("keydown", onKey, true);
+  running.set(viewport, stop);
   step();
   return stop;
 }

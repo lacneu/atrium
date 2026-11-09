@@ -243,6 +243,7 @@ import { InlineTurnActivity } from "./InlineTurnActivity";
 import { CommentaryNote, ThinkingBlock } from "./ReasoningBlocks";
 import { QueuedDock } from "./QueuedDock";
 import { QueueDockContext, type QueueDockValue, type QueuedTurnView } from "./queueDockContext";
+import { stopReserveFollow } from "./queueReserve";
 import { QueuedTurnContext } from "./queuedTurnContext";
 import {
   CustodyBadge,
@@ -1084,6 +1085,8 @@ function useFocusMessage(
         `[data-message-id="${CSS.escape(focusMessageId)}"]`,
       );
       if (el) {
+        // The queued cards' follow would take this smooth scroll back (queueReserve.ts).
+        stopReserveFollow(el.closest<HTMLElement>(".oc-thread__viewport"));
         el.scrollIntoView({ block: "center", behavior: "smooth" });
         // CSS-class flash (re-add to retrigger the keyframes). We do NOT clear the
         // `?m` param here — the navigate caused a thread REMOUNT that discarded

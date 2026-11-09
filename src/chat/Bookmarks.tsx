@@ -64,6 +64,7 @@ import {
   type BookmarkView,
 } from "./bookmarkView";
 import { blockOffer, resolveChosen } from "./quoteBlocks";
+import { stopReserveFollow } from "./queueReserve";
 import {
   SHORTCUT_BOOKMARK_NEXT,
   SHORTCUT_BOOKMARK_PREV,
@@ -132,6 +133,8 @@ export function focusAnchor(
       if (alreadyVisible) {
         // fall through to the flash below without moving the page
       } else if (viewport) {
+        // The queued cards' follow would take this scroll back (queueReserve.ts).
+        stopReserveFollow(viewport);
         const delta =
           target.getBoundingClientRect().top -
           viewport.getBoundingClientRect().top;

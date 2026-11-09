@@ -3,8 +3,8 @@
 // Not a test itself (vitest runs *.test.ts only): where a Chrome is, the app's
 // stylesheets as its build loads them, and one headless run that returns what a page
 // wrote in <pre id="out">.
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import tailwindcss from "@tailwindcss/vite";
@@ -137,38 +137,108 @@ export async function appCss(): Promise<string> {
   }
 }
 
-/** One headless Chrome run of `page`; what it wrote in <pre id="out">, parsed. */
-export function runChrome<T>(chrome: string, page: string, opts: { flags?: string[]; budgetMs?: number } = {}): T {
+// GOOGLE CHROME CAN HANG AT ITS VERY START (lot 30). Sampled on a Mac during the suite:
+// the browser forks, the forked child waits forever on a lock in its XPC at-fork handler,
+// and the browser waits on the child; stuck there, it launches no helper process at all.
+// A launch that has started none (nothing with a --type= flag: no renderer, no GPU or
+// utility process) within STARTUP_MS is killed with its process group and Chrome is
+// launched again on a fresh profile, LAUNCHES times at most. Each relaunch is noted in
+// the file ATRIUM_CHROME_LAUNCHES names, when it is set.
+const STARTUP_MS = 30_000;
+const LAUNCHES = 3;
+
+/** Whether the process `pid` has launched a helper: a child process with a --type= flag. */
+function launchedHelper(pid: number): boolean {
+  const ps = spawnSync("ps", ["-axo", "ppid=,command="], { encoding: "utf8" });
+  return (ps.stdout ?? "").split("\n").some((line) => {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    return m !== null && Number(m[1]) === pid && m[2].includes("--type=");
+  });
+}
+function killGroup(proc: ChildProcess): void {
+  try {
+    if (proc.pid !== undefined) process.kill(-proc.pid, "SIGKILL");
+  } catch {
+    // gone already
+  }
+}
+function noteRelaunch(what: string, launch: number): void {
+  const file = process.env.ATRIUM_CHROME_LAUNCHES;
+  if (file) appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), what, hungLaunch: launch })}\n`);
+}
+
+/** One Chrome run to its exit, in its own process group: its output, `hung` when the
+ *  watchdog killed it at its start, `late` when it ran past `timeoutMs`. */
+function runToExit(
+  chrome: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ hung: boolean; late: boolean; status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(chrome, args, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    proc.stdout!.on("data", (d: Buffer) => out.push(d));
+    proc.stderr!.on("data", (d: Buffer) => err.push(d));
+    const t0 = Date.now();
+    let started = false;
+    let hung = false;
+    let late = false;
+    const watch = setInterval(() => {
+      if (!started) started = launchedHelper(proc.pid!);
+      const elapsed = Date.now() - t0;
+      if (!started && elapsed > STARTUP_MS) hung = true;
+      else if (elapsed > timeoutMs) late = true;
+      else return;
+      clearInterval(watch);
+      killGroup(proc);
+    }, 500);
+    proc.on("close", (status) => {
+      clearInterval(watch);
+      resolve({ hung, late, status, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+    });
+  });
+}
+
+/** One headless Chrome run of `page` in virtual time; what it wrote in <pre id="out">, parsed. */
+export async function runChrome<T>(chrome: string, page: string, opts: { flags?: string[]; budgetMs?: number } = {}): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "atrium-probe-"));
   try {
     const file = join(dir, "probe.html");
     writeFileSync(file, page);
     const shell = /headless[-_]shell/.test(chrome);
-    const res = spawnSync(
-      chrome,
-      [
-        ...(shell ? [] : ["--headless=new"]),
-        "--no-sandbox",
-        "--disable-gpu",
-        "--no-first-run",
-        "--no-default-browser-check",
-        `--user-data-dir=${join(dir, "profile")}`,
-        "--window-size=1200,1000",
-        // A phone: a coarse pointer, no hover (the 44 px targets).
-        "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
-        ...(opts.flags ?? []),
-        `--virtual-time-budget=${opts.budgetMs ?? 20000}`,
-        "--dump-dom",
-        `file://${file}`,
-      ],
-      { encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024 },
-    );
-    const m = /<pre id="out">([\s\S]*?)<\/pre>/.exec(res.stdout ?? "");
-    if (!m) throw new Error(`Chrome returned no result (status ${res.status}): ${(res.stderr ?? "").slice(0, 400)}`);
-    const text = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-    return JSON.parse(text) as T;
+    for (let launch = 1; launch <= LAUNCHES; launch++) {
+      const res = await runToExit(
+        chrome,
+        [
+          ...(shell ? [] : ["--headless=new"]),
+          "--no-sandbox",
+          "--disable-gpu",
+          "--no-first-run",
+          "--no-default-browser-check",
+          `--user-data-dir=${join(dir, `profile-${launch}`)}`,
+          "--window-size=1200,1000",
+          // A phone: a coarse pointer, no hover (the 44 px targets).
+          "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
+          ...(opts.flags ?? []),
+          `--virtual-time-budget=${opts.budgetMs ?? 20000}`,
+          "--dump-dom",
+          `file://${file}`,
+        ],
+        180_000,
+      );
+      if (res.hung) {
+        noteRelaunch("runChrome", launch);
+        continue;
+      }
+      const m = /<pre id="out">([\s\S]*?)<\/pre>/.exec(res.stdout);
+      if (!m) throw new Error(`Chrome returned no result (status ${res.status}${res.late ? ", past 180 s" : ""}): ${res.stderr.slice(0, 400)}`);
+      const text = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      return JSON.parse(text) as T;
+    }
+    throw new Error(`Chrome hung at its start ${LAUNCHES} times (no helper process within ${STARTUP_MS / 1000} s)`);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 
@@ -180,42 +250,65 @@ export function scriptData(value: unknown): string {
 /** A page that runs in REAL time (frames, transitions, animation frames — virtual time
  *  produces none of them): Chrome driven over its DevTools protocol, the page opened
  *  after the media to emulate is set, its <pre id="out"> read until it holds a JSON
- *  object whose `stage` is "done" (or whose `errors` are not empty). */
+ *  object whose `stage` is "done" (or whose `errors` are not empty).
+ *
+ *  With `input`, the page can ask for REAL input — keys, wheel, touch, presses, which a
+ *  page's own synthetic events never scroll with: it calls
+ *  `__cdpInput(JSON.stringify({ id, events: [{ method: "Input.…", params }] }))`, the
+ *  events are dispatched in order through the protocol, then `__cdpInputDone(id, error)`
+ *  is called in the page (`error` empty when every event went through). */
 export async function runChromeLive<T extends { stage?: string; errors?: unknown[] }>(
   chrome: string,
   page: string,
-  opts: { media?: Array<{ name: string; value: string }>; timeoutMs?: number } = {},
+  opts: { media?: Array<{ name: string; value: string }>; timeoutMs?: number; input?: boolean } = {},
 ): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "atrium-live-"));
   const file = join(dir, "probe.html");
   writeFileSync(file, page);
   const shell = /headless[-_]shell/.test(chrome);
-  const proc = spawn(
-    chrome,
-    [
-      ...(shell ? [] : ["--headless=new"]),
-      "--no-sandbox",
-      "--disable-gpu",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${join(dir, "profile")}`,
-      "--window-size=1200,1000",
-      "about:blank",
-    ],
-    { stdio: "ignore" },
-  );
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const deadline = Date.now() + (opts.timeoutMs ?? 60_000);
   let ws: WebSocket | null = null;
+  let proc: ChildProcess | null = null;
   try {
+    // Chrome past its own start: its DevTools port open and a helper launched (see
+    // STARTUP_MS), else killed with its group and launched again on a fresh profile.
     let port = 0;
-    while (port === 0 && Date.now() < deadline) {
-      await sleep(100);
-      const portFile = join(dir, "profile", "DevToolsActivePort");
-      if (existsSync(portFile)) port = Number(readFileSync(portFile, "utf8").split("\n")[0]) || 0;
+    for (let launch = 1; port === 0; launch++) {
+      if (launch > LAUNCHES) throw new Error(`Chrome hung at its start ${LAUNCHES} times (no helper process within ${STARTUP_MS / 1000} s)`);
+      const profile = join(dir, `profile-${launch}`);
+      const started = spawn(
+        chrome,
+        [
+          ...(shell ? [] : ["--headless=new"]),
+          "--no-sandbox",
+          "--disable-gpu",
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--remote-debugging-port=0",
+          `--user-data-dir=${profile}`,
+          "--window-size=1200,1000",
+          "about:blank",
+        ],
+        { detached: true, stdio: "ignore" },
+      );
+      proc = started;
+      const t0 = Date.now();
+      let helped = false;
+      while (Date.now() < deadline) {
+        await sleep(100);
+        const portFile = join(profile, "DevToolsActivePort");
+        if (port === 0 && existsSync(portFile)) port = Number(readFileSync(portFile, "utf8").split("\n")[0]) || 0;
+        if (!helped) helped = launchedHelper(started.pid!);
+        if (port !== 0 && helped) break;
+        if (Date.now() - t0 > STARTUP_MS) break;
+      }
+      if (port !== 0 && helped) break;
+      if (Date.now() >= deadline) throw new Error("Chrome opened no DevTools port");
+      killGroup(started);
+      noteRelaunch("runChromeLive", launch);
+      port = 0;
     }
-    if (port === 0) throw new Error("Chrome opened no DevTools port");
     let target: string | null = null;
     while (target === null && Date.now() < deadline) {
       try {
@@ -230,17 +323,58 @@ export async function runChromeLive<T extends { stage?: string; errors?: unknown
     ws = socket;
     let next = 0;
     const pending = new Map<number, (m: { result?: unknown; error?: unknown }) => void>();
+    let onInput: (payload: string) => void = () => {};
     socket.onmessage = (ev) => {
-      const msg = JSON.parse(String(ev.data)) as { id?: number; result?: unknown; error?: unknown };
+      const msg = JSON.parse(String(ev.data)) as {
+        id?: number;
+        result?: unknown;
+        error?: unknown;
+        method?: string;
+        params?: { name?: string; payload?: string };
+      };
       if (msg.id !== undefined) pending.get(msg.id)?.(msg);
+      else if (msg.method === "Runtime.bindingCalled" && msg.params?.name === "__cdpInput") onInput(msg.params.payload ?? "");
     };
     await new Promise((r) => (socket.onopen = r));
+    // A call Chrome does not answer within a minute fails by name, rather than leave the
+    // run waiting on a browser that stopped.
     const send = (method: string, params: Record<string, unknown> = {}) =>
       new Promise<unknown>((res, rej) => {
         const id = ++next;
-        pending.set(id, (m) => (m.error ? rej(new Error(`${method}: ${JSON.stringify(m.error)}`)) : res(m.result)));
+        const late = setTimeout(() => {
+          pending.delete(id);
+          rej(new Error(`Chrome did not answer ${method} within 60 s`));
+        }, 60_000);
+        pending.set(id, (m) => {
+          clearTimeout(late);
+          pending.delete(id);
+          if (m.error) rej(new Error(`${method}: ${JSON.stringify(m.error)}`));
+          else res(m.result);
+        });
         socket.send(JSON.stringify({ id, method, params }));
       });
+    if (opts.input) {
+      // One request at a time, in the order the page made them.
+      let chain = Promise.resolve();
+      onInput = (payload) => {
+        const { id, events } = JSON.parse(payload) as { id: number; events: Array<{ method: string; params: Record<string, unknown> }> };
+        chain = chain.then(async () => {
+          let failure = "";
+          try {
+            for (const e of events) {
+              if (!e.method.startsWith("Input.")) throw new Error(`not an input: ${e.method}`);
+              await send(e.method, e.params);
+            }
+          } catch (err) {
+            failure = String(err);
+          }
+          // The page's request settles either way: a failure is its error.
+          await send("Runtime.evaluate", { expression: `window.__cdpInputDone(${Number(id)}, ${JSON.stringify(failure)})` });
+        }).catch(() => {}); // a page gone: the poll below reports it
+      };
+      await send("Runtime.enable");
+      await send("Runtime.addBinding", { name: "__cdpInput" });
+    }
     if (opts.media) await send("Emulation.setEmulatedMedia", { features: opts.media });
     await send("Page.navigate", { url: `file://${file}` });
     while (Date.now() < deadline) {
@@ -262,13 +396,17 @@ export async function runChromeLive<T extends { stage?: string; errors?: unknown
     throw new Error("the page never finished");
   } finally {
     ws?.close();
-    // Its profile is removed once Chrome has let go of it.
-    await new Promise<void>((r) => {
-      const done = () => r();
-      proc.once("exit", done);
-      proc.kill();
-      setTimeout(done, 3000);
-    });
+    // Its profile is removed once Chrome — its whole process group — has let go of it.
+    const last = proc;
+    if (last !== null) {
+      await new Promise<void>((r) => {
+        const done = () => r();
+        last.once("exit", done);
+        last.kill();
+        setTimeout(done, 3000);
+      });
+      killGroup(last);
+    }
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }

@@ -44,6 +44,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { ActivityRow } from "./ActivityRow";
 import { AgentMarkdown } from "./MarkdownText";
 import { ToolCard } from "./ToolCard";
+import { stopReserveFollow } from "./queueReserve";
 import { useToast } from "@/components/ui/toast";
 import {
   SubAgentReportDialog,
@@ -87,6 +88,8 @@ function scrollToSpawnMessage(messageId: string): void {
   // right sub-agent panel (a shared ancestor scrolled). Targeting the thread viewport
   // directly moves the conversation alone; the panel never budges.
   const viewport = el.closest<HTMLElement>(".oc-thread__viewport");
+  // The queued cards' follow would take this smooth scroll back (queueReserve.ts).
+  stopReserveFollow(viewport);
   if (viewport) {
     const delta =
       el.getBoundingClientRect().top - viewport.getBoundingClientRect().top;

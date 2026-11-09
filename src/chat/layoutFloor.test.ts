@@ -448,7 +448,7 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     const css = await appCss();
     const docks: Record<string, Record<number, { x: number; y: number; w: number; h: number }>> = {};
     for (const fx of fixtures) if (fx.box === "dock") docks[fx.name] = dockGeometry(fx);
-    out = runChrome<ProbeOut>(chrome!, probePage(css, fixtures, docks));
+    out = await runChrome<ProbeOut>(chrome!, probePage(css, fixtures, docks));
     // What the browser measured, for the floors a lot reports (opt-in).
     if (process.env.ATRIUM_LAYOUT_DUMP) writeFileSync(process.env.ATRIUM_LAYOUT_DUMP, JSON.stringify(out));
   })();
