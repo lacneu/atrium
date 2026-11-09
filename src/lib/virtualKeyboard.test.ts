@@ -171,8 +171,13 @@ function fakeWindow() {
   const docListeners = new Map<string, () => void>();
   const vvListeners = new Map<string, () => void>();
   const props = new Map<string, string>();
-  const timers: Array<() => void> = [];
+  const timers: Array<{ f: () => void; cleared: boolean }> = [];
   let fontSize = "16px";
+  // The two sentinels' boxes: the layout viewport (`inset: 0`) and `100dvh` — by
+  // default the window's height and the initial containing block's, a screen
+  // without dynamic toolbars.
+  let dvh: number | null = null;
+  let layout: number | null = null;
   let mutation: (() => void) | null = null;
   let resize: (() => void) | null = null;
   const observed: unknown[] = [];
@@ -201,7 +206,10 @@ function fakeWindow() {
     visualViewport: vv,
     addEventListener: (k: string, f: () => void) => listeners.set(k, f),
     removeEventListener: (k: string) => listeners.delete(k),
-    setTimeout: (f: () => void) => timers.push(f),
+    setTimeout: (f: () => void) => timers.push({ f, cleared: false }) - 1,
+    clearTimeout: (id: number) => {
+      if (timers[id] !== undefined) timers[id].cleared = true;
+    },
     getComputedStyle: () => ({ fontSize }),
     MutationObserver: class {
       constructor(cb: () => void) {
@@ -238,6 +246,12 @@ function fakeWindow() {
           style: {} as Record<string, string>,
           attrs,
           setAttribute: (k: string, v: string) => attrs.set(k, v),
+          getBoundingClientRect: () => ({
+            height:
+              el.style.height === "100dvh"
+                ? (dvh ?? root.clientHeight)
+                : (layout ?? win.innerHeight),
+          }),
           remove: () => {
             const i = appended.indexOf(el);
             if (i >= 0) appended.splice(i, 1);
@@ -265,6 +279,12 @@ function fakeWindow() {
     disconnected,
     setFontSize: (f: string) => {
       fontSize = f;
+    },
+    setDvh: (h: number | null) => {
+      dvh = h;
+    },
+    setLayout: (h: number | null) => {
+      layout = h;
     },
     fireMutation: () => mutation?.(),
     fireResize: () => resize?.(),
@@ -297,10 +317,14 @@ describe("installKeyboardInset, lot 26: two heights, never stale", () => {
   test("the page widens and narrows with no event of its own: the sentinel's size reads it again", () => {
     const w = fakeWindow();
     installKeyboardInset(w.win);
-    // The sentinel spans the layout viewport and is the one element observed for size.
-    expect(w.appended).toHaveLength(1);
-    expect(w.observed).toContain(w.appended[0]);
-    expect(w.appended[0].style).toMatchObject({ position: "fixed", inset: "0", visibility: "hidden", pointerEvents: "none" });
+    // One sentinel spans the layout viewport, one is 100dvh tall: both observed.
+    expect(w.appended).toHaveLength(2);
+    const layoutBox = w.appended.find((el) => el.attrs.has("data-viewport-sentinel"))!;
+    const dynamicBox = w.appended.find((el) => el.attrs.has("data-dvh-sentinel"))!;
+    expect(w.observed).toContain(layoutBox);
+    expect(w.observed).toContain(dynamicBox);
+    expect(layoutBox.style).toMatchObject({ position: "fixed", inset: "0", visibility: "hidden", pointerEvents: "none" });
+    expect(dynamicBox.style).toMatchObject({ position: "fixed", top: "0", height: "100dvh", visibility: "hidden", pointerEvents: "none" });
     expect(w.appended[0].attrs.get("aria-hidden")).toBe("true");
     w.raw.innerHeight = 909;
     w.fireResize();
@@ -341,8 +365,20 @@ describe("installKeyboardInset, lot 26: two heights, never stale", () => {
     // …and again after the measured bars have shed detail (the page narrowed back).
     expect(w.timers).toHaveLength(1);
     w.raw.innerHeight = 740;
-    w.timers[0]();
+    w.timers[0].f();
     expect(w.props.get("--oc-vv-bottom")).toBe("0px");
+  });
+
+  test("two scale changes in a row: one second read, once the last has settled (lot 27)", () => {
+    const w = fakeWindow();
+    installKeyboardInset(w.win);
+    w.setFontSize("24px");
+    w.fireMutation();
+    w.setFontSize("20px");
+    w.fireMutation();
+    // The first change's second read gives way to the last's: the one timer undo has
+    // to cancel is the one still pending.
+    expect(w.timers.map((t) => t.cleared)).toEqual([true, false]);
   });
 
   test("undo: every listener, both observers and the sentinel go, every property is removed", () => {
@@ -386,10 +422,68 @@ describe("the layout viewport's height, to the fraction (lot 26)", () => {
   test("read off the sentinel's box, not the rounded innerHeight", () => {
     const w = fakeWindow();
     w.raw.innerHeight = 909;
-    // The sentinel the inset appends spans the layout viewport: 909.67 px tall.
-    const create = w.raw.document.createElement;
-    w.raw.document.createElement = () => Object.assign(create(), { getBoundingClientRect: () => ({ height: 909.67 }) });
+    // The sentinel spanning the layout viewport: 909.67 px tall.
+    w.setLayout(909.67);
     installKeyboardInset(w.win);
     expect(w.props.get("--oc-vv-bottom")).toBe("170px");
+  });
+});
+
+// Lot 27: ONE BASE. The shell, the layers' room and the full-page prompt are
+// `100dvh` less the keyboard; the keyboard was measured against the initial
+// containing block, which no dynamic toolbar changes while `100dvh` follows them.
+// iOS, its toolbars retracted, its keyboard open — 640 px of ICB, 100dvh 740, 440
+// shown —: a 200 px keyboard, a 540 px shell for 440 shown, the composer 100 px
+// under the keyboard. Measured against 100dvh (a sentinel that tall), every
+// height that subtracts it ends where what is shown ends.
+describe("one base: the keyboard measured against 100dvh (lot 27)", () => {
+  type Screen = { icb: number; dvh: number; layout: number; shown: number; top: number; kb: number; below: number };
+  const SCREENS: Array<[string, Screen]> = [
+    ["iOS, toolbars shown, no keyboard", { icb: 640, dvh: 640, layout: 640, shown: 640, top: 0, kb: 0, below: 0 }],
+    ["iOS, toolbars retracted, no keyboard", { icb: 640, dvh: 740, layout: 740, shown: 740, top: 0, kb: 0, below: 0 }],
+    ["iOS, toolbars shown, a keyboard", { icb: 640, dvh: 640, layout: 640, shown: 440, top: 0, kb: 200, below: 200 }],
+    ["iOS, toolbars retracted, a keyboard (the review's case)", { icb: 640, dvh: 740, layout: 740, shown: 440, top: 0, kb: 300, below: 300 }],
+    ["iOS, toolbars retracted, a keyboard, the view scrolled down (lot 19)", { icb: 640, dvh: 740, layout: 740, shown: 440, top: 120, kb: 180, below: 180 }],
+    ["iOS, toolbars shown, a keyboard, the view scrolled down (lot 19)", { icb: 640, dvh: 640, layout: 640, shown: 440, top: 120, kb: 80, below: 80 }],
+    ["Chrome on Android, resizes-content, a keyboard", { icb: 404, dvh: 404, layout: 404, shown: 404, top: 0, kb: 0, below: 0 }],
+    ["Chrome on Android, no keyboard", { icb: 740, dvh: 740, layout: 740, shown: 740, top: 0, kb: 0, below: 0 }],
+    ["a page wider than the screen (lot 26)", { icb: 740, dvh: 740, layout: 909, shown: 740, top: 0, kb: 0, below: 169 }],
+    ["a desktop", { icb: 768, dvh: 768, layout: 768, shown: 768, top: 0, kb: 0, below: 0 }],
+    ["a desktop with a horizontal scrollbar", { icb: 753, dvh: 768, layout: 753, shown: 753, top: 0, kb: 15, below: 0 }],
+  ];
+  test.each(SCREENS)("%s", (_name, e) => {
+    const w = fakeWindow();
+    w.root.clientHeight = e.icb;
+    w.setDvh(e.dvh);
+    w.setLayout(e.layout);
+    w.raw.innerHeight = Math.round(e.layout);
+    w.vv.height = e.shown;
+    w.vv.offsetTop = e.top;
+    installKeyboardInset(w.win);
+    const kb = parseFloat(w.props.get("--oc-kb")!);
+    expect(kb).toBe(e.kb);
+    expect(parseFloat(w.props.get("--oc-vv-bottom")!)).toBe(e.below);
+    // What subtracts it, from the same base: the shell (100dvh - kb) ends where what
+    // is shown ends; the visible height (100dvh - top - kb) is what is shown.
+    expect(e.dvh - kb).toBe(e.top + e.shown);
+    expect(e.dvh - e.top - kb).toBe(e.shown);
+  });
+});
+
+describe("undone, the inset writes nothing more (lot 27)", () => {
+  test("the text scale's pending read is cancelled, and a read that still runs writes nothing", () => {
+    const w = fakeWindow();
+    const undo = installKeyboardInset(w.win);
+    w.setFontSize("24px");
+    w.fireMutation();
+    expect(w.timers).toHaveLength(1);
+    undo();
+    expect(w.timers[0].cleared).toBe(true);
+    // A timer the browser already queued runs anyway: nothing is written back.
+    w.raw.innerHeight = 909;
+    w.timers[0].f();
+    for (const k of ["--oc-kb", "--oc-vv-top", "--oc-vv-left", "--oc-vv-bottom"]) {
+      expect(w.props.has(k), k).toBe(false);
+    }
   });
 });

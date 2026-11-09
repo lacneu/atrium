@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   appendDictated,
@@ -281,5 +283,30 @@ describe("clampGeometry on what is shown", () => {
     const right = clampGeometry({ x: 900, y: 900, w: 300, h: 200 }, shown);
     expect(right.x + right.w).toBe(82 + 360);
     expect(right.y + right.h).toBe(30 + 740);
+  });
+});
+
+// Lot 27: the dock wrote the clamped geometry back on every resize, pan and scroll
+// of what is shown — a keyboard opening moved the place the person chose for
+// good, every scroll event wrote localStorage. It is clamped at render, and only a
+// gesture (moving, resizing) stores a geometry.
+describe("the dock stores only the person's gestures (lot 27)", () => {
+  const dock = readFileSync(join(process.cwd(), "src/chat/HeldDictationDock.tsx"), "utf-8").replace(/\/\/.*$/gm, "");
+  it("what is shown changing re-renders the panel, never stores it", () => {
+    const effect = /const \[, viewChanged\] = useReducer[\s\S]*?\}, \[\]\);/.exec(dock)?.[0] ?? "";
+    expect(effect).toContain('window.addEventListener("resize", viewChanged)');
+    expect(effect).toContain('vv?.addEventListener("resize", viewChanged)');
+    expect(effect).toContain('vv?.addEventListener("scroll", viewChanged)');
+    expect(effect).not.toContain("setHeldGeometry");
+  });
+  it("a gesture starts from the panel as shown, and is the one writer", () => {
+    expect((dock.match(/setHeldGeometry\(/g) ?? []).length).toBe(2);
+    for (const gesture of ["moveBy", "resizeBy"]) {
+      const body = new RegExp(`const ${gesture} = useCallback\\(\\(dx: number, dy: number\\) => \\{[\\s\\S]*?\\}, \\[\\]\\);`).exec(dock)?.[0] ?? "";
+      expect(body, gesture).toContain("const g = clampGeometry(stored, visibleRect());");
+      expect(body, gesture).toContain("setHeldGeometry(");
+    }
+    // At render: clamped to what is shown, whatever is stored.
+    expect(dock).toContain("const clamped: HeldGeometry = clampGeometry(held.geom, visibleRect());");
   });
 });

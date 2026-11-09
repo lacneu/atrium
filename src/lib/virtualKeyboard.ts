@@ -29,22 +29,33 @@
 // keyboard plus whatever a grown layout viewport adds. And nothing fires when that
 // viewport grows or shrinks: every event that may come with it reads again, and a
 // fixed sentinel that spans it is observed — never a value left from before.
+//
+// ONE BASE FOR THE KEYBOARD AND WHAT SUBTRACTS IT (lot 27). The shell, the layers'
+// room and the full-page prompt are all `100dvh` less the keyboard: the keyboard is
+// measured against `100dvh` too. The initial containing block is not affected by
+// any dynamic toolbar, while `100dvh` follows them (the viewport-resize explainer,
+// github.com/bramus/viewport-resize-behavior): iOS, its toolbars retracted and its
+// keyboard open — `clientHeight` 640, `100dvh` 740, 440 px shown — read a 200 px
+// keyboard, and the shell (740 - 200) stood 100 px under it. A second sentinel is
+// `100dvh` tall: its height is the base. It is the screen's on a page wider than
+// the screen too (no false keyboard), and shrinks with the keyboard where Chrome
+// resizes the content.
 
 /**
- * The height the keyboard covers, from the height of the initial containing block
- * (`documentElement.clientHeight`: the screen's, never a layout viewport grown by
- * a page wider than the screen). A zoomed visual viewport (pinch, scale > 1) is the
- * reader zooming, not a keyboard: 0. Android's resized layout leaves nothing
- * between the two heights: 0 as well.
+ * The height the keyboard covers, against `100dvh` — the base every height that
+ * subtracts it starts from (the shell, the layers' room, the full-page prompt):
+ * `100dvh` less this is the bottom of what is shown. A zoomed visual viewport
+ * (pinch, scale > 1) is the reader zooming, not a keyboard: 0. Android's resized
+ * layout leaves nothing between the two heights: 0 as well.
  */
 export function keyboardInset(
-  screenHeight: number,
+  dynamicHeight: number,
   visualHeight: number,
   visualOffsetTop: number,
   scale: number,
 ): number {
   if (scale > 1.01) return 0;
-  return Math.max(0, Math.round(screenHeight - visualHeight - visualOffsetTop));
+  return Math.max(0, Math.round(dynamicHeight - visualHeight - visualOffsetTop));
 }
 
 /**
@@ -85,12 +96,10 @@ export function visibleBottomInset(
   return Math.max(0, Math.ceil(layoutHeight - visualHeight - visualOffsetTop - 0.01));
 }
 
-/** The sentinel's style: the layout viewport itself, invisible and inert. Set
- *  property by property: nothing outside the stylesheets writes `cssText`
- *  (touchType.test.ts). */
+/** The sentinels' style: invisible and inert. Set property by property: nothing
+ *  outside the stylesheets writes `cssText` (touchType.test.ts). */
 const SENTINEL_STYLE = {
   position: "fixed",
-  inset: "0",
   visibility: "hidden",
   pointerEvents: "none",
   zIndex: "-1",
@@ -103,24 +112,35 @@ export function installKeyboardInset(win: Window & typeof globalThis = window): 
   if (!vv) return () => undefined;
   const doc = win.document;
   const root = doc.documentElement;
-  // The sentinel spans the layout viewport: observed, it says when that viewport
-  // grows or shrinks, and its box gives its height to the fraction (`innerHeight` is
-  // rounded: a bottom edge stood 0.7 px under the screen).
-  let sentinel: HTMLElement | null = null;
-  if (typeof win.ResizeObserver === "function" && doc.body !== null) {
-    sentinel = doc.createElement("div");
-    sentinel.setAttribute("aria-hidden", "true");
-    sentinel.setAttribute("data-viewport-sentinel", "");
-    Object.assign(sentinel.style, SENTINEL_STYLE);
-    doc.body.appendChild(sentinel);
-  }
-  const layoutHeight = () => {
-    const h = sentinel?.getBoundingClientRect?.().height;
-    return h !== undefined && h > 0 ? h : win.innerHeight;
+  // Two sentinels, both observed: one spans the layout viewport (`inset: 0`, where a
+  // fixed box is laid out: its height to the fraction — `innerHeight` is rounded, a
+  // bottom edge stood 0.7 px under the screen); one is `100dvh` tall (the base of the
+  // keyboard and of every height that subtracts it). Where `dvh` is not understood
+  // its box is empty, and the window's height stands in.
+  const sentinel = (name: string, place: Record<string, string>): HTMLElement | null => {
+    if (doc.body === null) return null;
+    const el = doc.createElement("div");
+    el.setAttribute("aria-hidden", "true");
+    el.setAttribute(name, "");
+    Object.assign(el.style, SENTINEL_STYLE, place);
+    doc.body.appendChild(el);
+    return el;
   };
+  const layoutSentinel = sentinel("data-viewport-sentinel", { inset: "0" });
+  const dynamicSentinel = sentinel("data-dvh-sentinel", { top: "0", left: "0", width: "0", height: "100dvh" });
+  const heightOf = (el: HTMLElement | null) => {
+    const h = el?.getBoundingClientRect?.().height;
+    return h !== undefined && h > 0 ? h : null;
+  };
+  // No body to measure on: the window's height, as before (lots 8-19).
+  const layoutHeight = () => heightOf(layoutSentinel) ?? win.innerHeight;
+  const dynamicHeight = () => heightOf(dynamicSentinel) ?? win.innerHeight;
   let last = "";
+  let disposed = false;
   const update = () => {
-    const bottom = keyboardInset(root.clientHeight, vv.height, vv.offsetTop, vv.scale);
+    // Undone: a read still pending (the text scale's second one) writes nothing.
+    if (disposed) return;
+    const bottom = keyboardInset(dynamicHeight(), vv.height, vv.offsetTop, vv.scale);
     const top = visibleTopInset(vv.offsetTop, vv.scale);
     const left = visibleLeftInset(vv.offsetLeft, vv.scale);
     const below = visibleBottomInset(layoutHeight(), vv.height, vv.offsetTop, vv.scale);
@@ -136,9 +156,14 @@ export function installKeyboardInset(win: Window & typeof globalThis = window): 
   // The text scale changed (the root's font size): the page widens or narrows
   // with it, and again once its measured bars have shed or regained detail — read
   // now, and once more after that has settled.
+  let pending: number | null = null;
   const rescaled = () => {
     update();
-    win.setTimeout(update, 0);
+    if (pending !== null) win.clearTimeout(pending);
+    pending = win.setTimeout(() => {
+      pending = null;
+      update();
+    }, 0);
   };
   vv.addEventListener("resize", update);
   vv.addEventListener("scroll", update);
@@ -159,11 +184,14 @@ export function installKeyboardInset(win: Window & typeof globalThis = window): 
       : null;
   scaleWatch?.observe(root, { attributes: true, attributeFilter: ["style", "class"] });
   let sizeWatch: ResizeObserver | null = null;
-  if (sentinel !== null) {
+  if (typeof win.ResizeObserver === "function") {
     sizeWatch = new win.ResizeObserver(update);
-    sizeWatch.observe(sentinel);
+    if (layoutSentinel !== null) sizeWatch.observe(layoutSentinel);
+    if (dynamicSentinel !== null) sizeWatch.observe(dynamicSentinel);
   }
   return () => {
+    disposed = true;
+    if (pending !== null) win.clearTimeout(pending);
     vv.removeEventListener("resize", update);
     vv.removeEventListener("scroll", update);
     win.removeEventListener("resize", update);
@@ -171,7 +199,8 @@ export function installKeyboardInset(win: Window & typeof globalThis = window): 
     doc.removeEventListener("focusout", update);
     scaleWatch?.disconnect();
     sizeWatch?.disconnect();
-    sentinel?.remove();
+    layoutSentinel?.remove();
+    dynamicSentinel?.remove();
     root.style.removeProperty("--oc-kb");
     root.style.removeProperty("--oc-vv-top");
     root.style.removeProperty("--oc-vv-left");

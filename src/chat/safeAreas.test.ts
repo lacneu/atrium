@@ -1428,3 +1428,65 @@ describe("the rows found running past a 360 px screen wrap (lot 26)", () => {
     expect(readFileSync(join(SRC, file), "utf-8")).toContain(wanted);
   });
 });
+
+// ---- ONE BASE FOR THE KEYBOARD AND WHAT SUBTRACTS IT (lot 27) -----------------
+//
+// The shell, the layers' room and the full-page prompt subtract the keyboard from
+// `100dvh`; the keyboard was measured against the initial containing block, which
+// no dynamic toolbar changes while `100dvh` follows them: iOS, toolbars retracted,
+// a keyboard — the shell stood 100 px under it. The inset measures the keyboard
+// against a `100dvh` sentinel (virtualKeyboard.test.ts plays the screens); here,
+// every height that subtracts it starts from `100dvh` — and nothing else.
+describe("one base for the keyboard and every height that subtracts it (lot 27)", () => {
+  test("every value that subtracts --oc-kb starts from 100dvh (the safe area it covers aside)", () => {
+    const offenders: string[] = [];
+    for (const r of appCssRules()) {
+      for (const [prop, value] of ruleDeclarations(r.body)) {
+        if (!value.includes("var(--oc-kb")) continue;
+        // The home bar's safe area, which an open keyboard covers: no viewport base.
+        if (!value.replaceAll("env(safe-area-inset-bottom) - var(--oc-kb, 0px)", "").includes("var(--oc-kb")) continue;
+        const bases = value.match(/\d*\.?\d+(?:d?vh|svh|lvh|%)/g) ?? [];
+        if (!value.includes("100dvh") || bases.some((b) => !/dvh$/.test(b))) {
+          offenders.push(`${r.file} ${r.selectors.join(", ")} { ${prop}: ${value} }`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("the inset measures the keyboard on a 100dvh sentinel, never on the initial containing block", () => {
+    const text = readFileSync(join(SRC, "lib/virtualKeyboard.ts"), "utf-8").replace(/\/\/.*$/gm, "");
+    expect(text).toContain("keyboardInset(dynamicHeight(), vv.height, vv.offsetTop, vv.scale)");
+    expect(text).toContain('sentinel("data-dvh-sentinel", { top: "0", left: "0", width: "0", height: "100dvh" })');
+    expect(text).not.toMatch(/keyboardInset\(\s*root\.clientHeight/);
+  });
+});
+
+describe("no fixed box's floor above what is shown (lot 27)", () => {
+  // `.oc-detach { min-height: min(200px, 100dvh) }`: 100dvh stays the screen's
+  // above a keyboard — the 200 px floor beat the 140 px the script gave the panel,
+  // its send bar 60 px under the keyboard.
+  test("every floor of a fixed box is bounded by what is shown", () => {
+    for (const sel of Object.keys(FIXED_BOXES)) {
+      const own = appDeclarations(sel);
+      const height = own.get("min-height");
+      if (height !== undefined && !/^(0|0px|auto)$/.test(height)) {
+        expect(height, `${sel} { min-height }`).toContain("var(--oc-layer-room)");
+      }
+      const width = own.get("min-width");
+      if (width !== undefined && !/^(0|0px|auto)$/.test(width)) {
+        expect(width, `${sel} { min-width }`).toContain("var(--oc-layer-width)");
+      }
+    }
+  });
+
+  const ROOM_SCREENS: Array<[string, Along]> = [
+    ["a phone held sideways, a keyboard: 140 px shown", { layout: 360, dvh: 360, top: 0, below: 220, kb: 220, safeT: 0, safeB: 0, rem: 16 }],
+    ["iOS, toolbars retracted, a keyboard, scrolled", { layout: 740, dvh: 740, top: 120, below: 180, kb: 180, safeT: 47, safeB: 34, rem: 16 }],
+  ];
+  test.each(ROOM_SCREENS)("the detached composer's floor fits what is shown — %s", (_name, env) => {
+    const floor = along(appDeclarations(".oc-detach").get("min-height")!, env);
+    const shown = env.layout - env.top - env.below;
+    expect(floor).toBeLessThanOrEqual(shown + 0.5);
+  });
+});

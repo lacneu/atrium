@@ -118,3 +118,41 @@ describe("the stylesheet shows the presentation `data-fit` names", () => {
     expect(ruleWith('.oc-topbar.oc-topbar--measure[data-fit="logo"] .oc-usermenu__label')).toContain("max-width: 7em");
   });
 });
+
+// Lot 27: in the `logo` and `icon` presentations — and in the landscape rail — the
+// brand link held a decorative logo (alt="", aria-hidden) and a hidden label: a
+// link without a name for a screen reader, on a phone. Every control of the bars
+// carries its name whatever the bar shows.
+describe("every control of the bars is named, whatever they show (lot 27)", () => {
+  const router = readFileSync(join(SRC, "router.tsx"), "utf-8");
+  const component = (name: string) => {
+    const start = router.indexOf(`function ${name}(`);
+    expect(start, name).toBeGreaterThan(-1);
+    const next = router.indexOf("\nfunction ", start + 1);
+    return router.slice(start, next < 0 ? undefined : next);
+  };
+
+  test("the brand link is named by the brand's label, in the bar and in the drawer's head", () => {
+    for (const name of ["AppTopBar", "DrawerHead"]) {
+      expect(component(name), name).toContain('<Link to="/" className="oc-topbar__brand" aria-label={brandLabelOf(brand)}>');
+    }
+    // One name for the brand, the one its label shows: the brand's own label.
+    expect(component("BrandMark")).toContain("const label = brandLabelOf(brand);");
+    expect(component("brandLabelOf")).toMatch(/^function brandLabelOf\(brand: ChartBrand \| undefined\): string \{\s*return brand\?\.label \?\? "Atrium";\s*\}/);
+  });
+
+  test.each(["AppTopBar", "PendingTopBar", "DrawerHead"])("%s: every link and button it renders has an aria-label", (name) => {
+    const body = component(name);
+    const offenders = [...body.matchAll(/<(Link|Button|button|a)\b([^>]*)>/g)]
+      .filter((m) => !/aria-label=/.test(m[2]))
+      .map((m) => m[0]);
+    expect(offenders).toEqual([]);
+  });
+
+  test("the controls rendered by their own components are named too", () => {
+    const bell = readFileSync(join(SRC, "chat/NotificationBell.tsx"), "utf-8");
+    const search = readFileSync(join(SRC, "chat/GlobalSearch.tsx"), "utf-8");
+    expect(bell).toMatch(/className="oc-bell"[\s\S]{0,400}aria-label=|aria-label=[\s\S]{0,400}className="oc-bell"/);
+    expect(search).toMatch(/aria-label=\{m\.search_trigger_aria\(\)\}/);
+  });
+});

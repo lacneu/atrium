@@ -11000,9 +11000,12 @@ button.oc-perm__opt:disabled {
   display: flex;
   flex-direction: column;
   /* Yield to a sub-minimum viewport so the panel never overflows the screen
-     (matches clampGeometry, which caps size at the viewport). */
+     (matches clampGeometry, which caps size at what is shown): its floor is never
+     above what is shown — 100dvh stays the screen's above a keyboard, and a 200 px
+     floor beat the 140 px the script gave it, its send bar 60 px under the keyboard
+     (lot 27). */
   min-width: min(300px, var(--oc-layer-width));
-  min-height: min(200px, 100dvh);
+  min-height: min(200px, var(--oc-layer-room));
   padding-left: 20px; /* room for the left move-handle */
   border-radius: 0.9rem;
   border: 1px solid color-mix(in srgb, var(--voice) 35%, var(--border));

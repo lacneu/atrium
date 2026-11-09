@@ -643,6 +643,13 @@ function ImpersonationBanner() {
   );
 }
 
+/** The brand's name: the chart's label, "Atrium" by default. The brand link's name
+ *  too — its label is hidden where the bar shows the logo alone, and the logo is
+ *  decorative (lot 27: the link was left without a name on a phone). */
+function brandLabelOf(brand: ChartBrand | undefined): string {
+  return brand?.label ?? "Atrium";
+}
+
 // Brand shown in the top bar = the ACTIVE chart's brand (label + optional logo),
 // from getMe.resolvedChartBrand. An uploaded logo is rendered as <img> (never
 // inlined → no script execution); a missing/broken URL falls back to the bundled
@@ -660,7 +667,7 @@ function BrandMark({
   // (the raw user `themeMode` may be null while an admin default resolves the
   // theme). "system" is still resolved to light/dark, consistently with the app.
   const mode = useResolvedMode(resolvedThemeMode);
-  const label = brand?.label ?? "Atrium";
+  const label = brandLabelOf(brand);
   const isDefault = brand?.isDefault ?? true;
   const logoUrl = pickLogoUrl(brand, mode);
   const [imgFailed, setImgFailed] = useState(false);
@@ -764,7 +771,7 @@ function DrawerHead({
   return (
     <div ref={headRef} className="oc-drawer__head" data-fit={fit}>
       <SheetTitle className="sr-only">{m.app_drawer_title()}</SheetTitle>
-      <Link to="/" className="oc-topbar__brand">
+      <Link to="/" className="oc-topbar__brand" aria-label={brandLabelOf(brand)}>
         <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
       </Link>
       <SheetClose asChild>
@@ -837,7 +844,7 @@ function AppTopBar({
           {sidebarOpen ? <PanelLeftClose /> : <PanelLeftOpen />}
         </Button>
         {/* Brand (active chart's logo + label) returns to the chat surface. */}
-        <Link to="/" className="oc-topbar__brand">
+        <Link to="/" className="oc-topbar__brand" aria-label={brandLabelOf(brand)}>
           <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
         </Link>
       </div>

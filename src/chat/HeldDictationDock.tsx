@@ -8,6 +8,7 @@
 import {
   useCallback,
   useEffect,
+  useReducer,
   useRef,
   useSyncExternalStore,
 } from "react";
@@ -91,34 +92,37 @@ export function HeldDictationDock() {
   // chrome — logout / impersonation remounts it, stopping + purging the hold.
   useEffect(() => () => void releaseHeldDictation(), []);
 
+  // A gesture starts from the panel as it is SHOWN (clamped to what is shown), and
+  // only a gesture stores a geometry: the place and size the person chose.
   const moveBy = useCallback((dx: number, dy: number) => {
-    const g = getHeldDictation()?.geom;
-    if (g === undefined) return;
+    const stored = getHeldDictation()?.geom;
+    if (stored === undefined) return;
+    const g = clampGeometry(stored, visibleRect());
     setHeldGeometry({ ...g, x: g.x + dx, y: g.y + dy });
   }, []);
   const resizeBy = useCallback((dx: number, dy: number) => {
-    const g = getHeldDictation()?.geom;
-    if (g === undefined) return;
+    const stored = getHeldDictation()?.geom;
+    if (stored === undefined) return;
+    const g = clampGeometry(stored, visibleRect());
     setHeldGeometry({ ...g, w: g.w + dx, h: g.h + dy });
   }, []);
   const onHeaderDown = useDrag(moveBy);
   const onCornerDown = useDrag(resizeBy);
 
-  // Re-clamp to what is shown on window resize, and when what is shown moves or
-  // resizes (a page panned, a keyboard): the panel must never strand off-screen.
+  // Clamped again to what is shown when the window resizes and when what is shown
+  // moves or resizes (a page panned, a keyboard): the panel never strands off-screen.
+  // Clamped AT RENDER, never stored (lot 27): a keyboard opening, a resize, a pan
+  // moved the place the person chose for good, and every scroll event wrote it.
+  const [, viewChanged] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
-    const onResize = () => {
-      const g = getHeldDictation()?.geom;
-      if (g !== undefined) setHeldGeometry(g);
-    };
     const vv = window.visualViewport;
-    window.addEventListener("resize", onResize);
-    vv?.addEventListener("resize", onResize);
-    vv?.addEventListener("scroll", onResize);
+    window.addEventListener("resize", viewChanged);
+    vv?.addEventListener("resize", viewChanged);
+    vv?.addEventListener("scroll", viewChanged);
     return () => {
-      window.removeEventListener("resize", onResize);
-      vv?.removeEventListener("resize", onResize);
-      vv?.removeEventListener("scroll", onResize);
+      window.removeEventListener("resize", viewChanged);
+      vv?.removeEventListener("resize", viewChanged);
+      vv?.removeEventListener("scroll", viewChanged);
     };
   }, []);
 
