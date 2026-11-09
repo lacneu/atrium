@@ -780,9 +780,11 @@
      above and below goes once the room is under the dialog's floor plus that
      margin — the dialog then takes the room, down to the whole of it — and its
      padding, down to 0.5rem. At 100 px shown a dialog was 60 px tall, 50 of them
-     padding, its footer cut. */
+     padding, its footer cut. The padding is the caller's (lot 29): the slot only
+     carries the value the shared class's `py-(--oc-layer-pad-y)` reads, so that a
+     caller's own padding class replaces it — set here, it beat the palette's `p-0`. */
   max-height: max(calc(var(--oc-layer-room) - 2rem), min(var(--oc-layer-room), 7rem));
-  padding-block: clamp(0.5rem, calc((var(--oc-layer-room) - 8rem) / 4), 1.25rem);
+  --oc-layer-pad-y: clamp(0.5rem, calc((var(--oc-layer-room) - 8rem) / 4), 1.25rem);
   /* As wide as what is shown less a margin, narrowed by its own `max-width`, and
      centred between the safe areas of what is shown (lot 25). */
   width: calc(var(--oc-layer-width) - 2rem);
@@ -1005,6 +1007,124 @@
   .oc-thread > .oc-chathead {
     display: none;
   }
+  /* The banner with it (lot 29): given way, its border and its margin still cost
+     the composer 10 px — out of the layout, still read out. */
+  .oc-thread > .oc-chat-banner {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+/* WHAT SITS ABOVE THE COMPOSER GIVES WAY BEFORE IT (lot 29): a banner, the queued
+   messages, the agent's pending request. A banner kept its 59 px, two queued cards
+   their 122, a pending request its 163: the composer was squeezed to its border, its
+   bar under the keyboard. The order:
+   1. the banner's text, the queued cards, the request's question shrink first — a
+      thousand times faster than the composer —: the banner down to nothing, clipped
+      (its spacing is its content's margin); the cards and the question scroll;
+   2. the composer's quotes, attachments and extra lines (lot 28), down to its floor;
+   3. the request keeps its FLOOR — its bar and its response controls, whole, its
+      card's head scrolled behind them —, the composer its own; when both do not fit
+      (the thresholds below), the one whose field has the keyboard stays and the
+      other steps aside. */
+.oc-thread > :is(.oc-chat-banner, .oc-queue-dock, .oc-areq-dock) {
+  flex-shrink: 1000;
+  min-height: 0;
+  overflow: clip;
+}
+.oc-thread > .oc-queue-dock {
+  /* Scrolled, not clipped: a queued message's edit and cancel stay within reach. */
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+/* The queued cards float over the end of the TRANSCRIPT, never over what sits
+   between them: they covered a banner whole (its 44 px under their negative margin),
+   and in a short thread the header's foot. Under a banner they take their own room;
+   over the transcript, the transcript keeps the room they float over and tuck into —
+   room the cards and the composer cover, so it costs nothing. */
+.oc-chat-banner + .oc-queue-dock {
+  margin-top: 0.35rem;
+}
+.oc-thread > .oc-areq-dock {
+  /* Its floor, never taller than the thread less its margins: answered in a thread
+     too short even for it, it stays above the keyboard, its list scrolled to the
+     focused field. */
+  min-height: min(var(--oc-areq-floor), calc(100cqh - 0.9rem));
+}
+/* WHEN BOTH FLOORS DO NOT FIT (lot 29) — the composer's (its field on one line, its
+   bar: 5.375rem + 4px, measured in lot 28) and the request's: the keyboard is for
+   the field that has the focus, and that field's controls stay.
+   - The composer's, by default (its field has the focus when the keyboard rises):
+     the request steps aside to its bar — the panel holds it whole —, then, shorter,
+     out of the thread; it comes back with the room.
+   - The request's while the reader answers it (the focus in its card): the composer
+     steps aside, its draft kept, and comes back when the answer is sent.
+   The thresholds are the floors' sums: the header (2.75rem, above 11rem), the
+   request's floor (below), its margins (0.9rem), the banner's (0.5rem and its
+   border), the composer's floor (6.25rem, its largest: upright, measured). One row
+   of response controls: 16.15rem + 8px; three (a narrow thread): 20.55rem + 8px;
+   the bar alone: 13.05rem + 6px. */
+@container chatpane (height < calc(16.15rem + 8px)) {
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within)) > .oc-areq-dock {
+    --oc-areq-list-floor: 0px;
+  }
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within))
+    > .oc-areq-dock
+    > :is(.oc-areq-dock__list, .oc-areq-dock__bar > [aria-controls]) {
+    display: none;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > form.oc-composer:not(.oc-composer--expanded) {
+    display: none;
+  }
+}
+@container chatpane (width < 44rem) and (height < calc(20.55rem + 8px)) {
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within)) > .oc-areq-dock {
+    --oc-areq-list-floor: 0px;
+  }
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within))
+    > .oc-areq-dock
+    > :is(.oc-areq-dock__list, .oc-areq-dock__bar > [aria-controls]) {
+    display: none;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > form.oc-composer:not(.oc-composer--expanded) {
+    display: none;
+  }
+}
+@container chatpane (height < calc(13.05rem + 6px)) {
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within)) > .oc-areq-dock {
+    display: none;
+  }
+}
+/* Shorter still, its card focused: the request's bar goes, and the header with it, in
+   a thread too short for them and its floor — 11rem, as the header's own fold; in a
+   narrow thread, whose controls take three rows, 14.3rem + 8px (the header 2.75rem,
+   the bar 2.65rem, the list's floor 7.5rem, the margins 0.9rem, a banner's 0.5rem).
+   The request then
+   fits the thread: its list scrolls to the focused field, the controls pinned at its
+   foot. Folded at 11rem alone, the narrow request came back cut just above it, the
+   header and the bar back at once. */
+@container chatpane (height < 11rem) {
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock {
+    --oc-areq-floor-bar: 2px;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock > .oc-areq-dock__bar {
+    display: none;
+  }
+}
+@container chatpane (width < 44rem) and (height < calc(14.3rem + 8px)) {
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock {
+    --oc-areq-floor-bar: 2px;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-chathead,
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock > .oc-areq-dock__bar {
+    display: none;
+  }
 }
 /* Conversation column. Messages are centered in a readable column whose width
    tracks the workspace (the cap keeps line length comfortable; collapsing the
@@ -1051,6 +1171,11 @@
   height: calc(2rem + var(--oc-dock-pad, 0px));
   margin-top: calc(-1 * var(--oc-thread-gap));
   transition: height 200ms ease;
+}
+/* Under queued cards that float over its end, the transcript keeps the room they
+   float over and tuck into (lot 29, the rule on the queue above). */
+.oc-thread:has(> .oc-scrolldown-anchor + .oc-queue-dock) > .oc-thread__viewport {
+  min-height: calc(3.25rem + 0.85rem);
 }
 /* LANDING (user report: opening a chat scrolled visibly from the first message to the
    last). The smooth scroll above is for FOLLOWING new content; applied to the initial
@@ -4500,6 +4625,39 @@ button.oc-bmk-rail__count:hover {
 .oc-composer:not(.oc-composer--expanded) > .oc-composer__body > :is(.oc-composer__quotes, .oc-attachrow) {
   flex-shrink: 100;
 }
+/* AND SO DOES EVERYTHING ELSE THE CARD HOLDS (lot 29): the upload's progress, the
+   dictation's live preview — whatever sits above or below the field, now or later —
+   shrinks with the quotes, before the field's lines, down to nothing, clipped. A long
+   dictation hypothesis kept its whole height and pushed the field out at the top.
+   Given way, it costs the card nothing: the preview, between the field and the bar,
+   spaces itself with its content and takes back the gap above it; above the field, in
+   a thread too short for them beside the floors below (the request's and the
+   composer's, the header: 20rem), the upload's progress leaves the layout (still read
+   out: the screen-reader-only box) and the people of a room fold — a row of faces
+   whose names show above them, out of their box, that a clip would cut. */
+.oc-composer:not(.oc-composer--expanded)
+  > .oc-composer__body
+  > :not(.oc-composer__input, .oc-composer__quotes, .oc-attachrow, .oc-presence) {
+  flex-shrink: 100;
+  min-height: 0;
+  overflow: clip;
+}
+@container chatpane (height < 20rem) {
+  .oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-presence {
+    display: none;
+  }
+  .oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-upload {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
 /* Stand-in note where the inline composer would be, while a composer is pinned
    (detached to the floating panel): every conversation shows this instead of a
    composer, so the sole editable composer is unmistakably the movable one. */
@@ -7166,13 +7324,18 @@ button.oc-perm__opt:disabled {
   margin: 0 auto 0.5rem;
   max-width: 48rem;
   width: 100%;
-  padding: 0.6rem 0.9rem;
+  /* Its space above and below is its content's margin, not its padding (lot 29): a
+     padding is a floor the banner could not give up in a short thread. */
+  padding: 0 0.9rem;
   border-radius: var(--radius, 0.5rem);
   font-size: 0.85rem;
   line-height: 1.4;
 }
 .oc-chat-banner > svg {
   flex-shrink: 0;
+}
+.oc-chat-banner > * {
+  margin-block: 0.6rem;
 }
 .oc-chat-banner--error {
   background: color-mix(in srgb, var(--destructive) 12%, var(--background));
@@ -9776,12 +9939,14 @@ button.oc-perm__opt:disabled {
 .oc-afiles__curate { margin-left: 0.25rem; }
 .oc-afiles__curate-status { margin-left: 0.25rem; opacity: 0.8; }
 /* Near-fullscreen review (the before/after must be COMFORTABLY readable —
-   user feedback 2026-07-05): same sizing pattern as the file editor dialog. */
+   user feedback 2026-07-05): same sizing pattern as the file editor dialog — the
+   bound of every dialog, and in a room too short for its margin, the room itself
+   (lot 29: its footer was cut under 89 px shown). */
 [data-slot="dialog-content"].oc-afiles__review {
   display: flex;
   flex-direction: column;
   max-width: 96rem;
-  height: calc(var(--oc-layer-room) - 2rem);
+  height: max(calc(var(--oc-layer-room) - 2rem), min(var(--oc-layer-room), 7rem));
 }
 .oc-afiles__review-sizes { font-size: 0.9rem; opacity: 0.9; display: flex; align-items: center; gap: 0.3rem; }
 .oc-afiles__review-diff { font-size: 0.9rem; opacity: 0.75; margin-top: -0.25rem; }
@@ -9799,7 +9964,8 @@ button.oc-perm__opt:disabled {
   background: var(--oc-surface-2, rgba(127,127,127,0.08)); border-radius: 0.5rem;
   border: 1px solid var(--oc-border, rgba(127,127,127,0.2));
 }
-.oc-afiles__review-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.75rem; }
+/* The dialog's footer (lot 29): its gap from the panes is the dialog's own. */
+.oc-afiles__review-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 .oc-afiles__reject-form { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
 .oc-afiles__reject-textarea {
   width: 100%; resize: vertical; font-size: 0.9rem; line-height: 1.5;
@@ -10754,6 +10920,15 @@ button.oc-perm__opt:disabled {
   color: color-mix(in srgb, var(--voice) 55%, var(--muted-foreground));
   animation: oc-interim-in 160ms ease;
 }
+/* Inline, its spacing is its content's (lot 29): the card's gap above it taken back,
+   its own below — given way, it costs the card nothing. */
+.oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-composer__interim {
+  margin-top: -0.4rem;
+  padding-bottom: 0;
+}
+.oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-composer__interim > * {
+  margin-block: 0.4rem 0.15rem;
+}
 .oc-composer__interim-dot {
   flex: none;
   width: 0.45rem;
@@ -11183,14 +11358,25 @@ button.oc-perm__opt:disabled {
   overflow-y: auto;
 }
 .oc-detach__interim {
-  padding: 0 0.7rem 0.3rem;
+  /* Its space below is its content's (lot 29): given way, it costs nothing. */
+  padding: 0 0.7rem;
   font-size: 0.82rem;
   font-style: italic;
   line-height: 1.4;
   color: color-mix(in srgb, var(--voice) 55%, var(--muted-foreground));
-  flex: none;
   max-height: 3.2rem;
   overflow: hidden;
+}
+.oc-detach__interim-text {
+  display: block;
+  padding-bottom: 0.3rem;
+}
+/* Whatever the detached composer holds besides its head, its field and its bar — its
+   quotes, the dictation's live preview, now or later — gives way first (lot 29): the
+   preview kept its 3.2rem, and under a keyboard the field went out at the top. */
+.oc-detach > :not(.oc-detach__head, .oc-detach__input, .oc-detach__bar, .oc-detach__handle, .oc-detach__resize) {
+  flex-shrink: 100;
+  min-height: 0;
 }
 .oc-detach__bar {
   display: flex;
@@ -12006,6 +12192,100 @@ button.oc-perm__opt:disabled {
 .oc-areq-dock__list > * {
   flex-shrink: 0;
 }
+/* THE DOCK GIVES WAY BY ITS LIST (lot 29): a column, its bar kept while its list
+   shrinks and scrolls; the open card's response controls — allow, deny, send — stay
+   at the foot of the list, opaque over the question that scrolls behind them (its
+   head included), as a dialog's footer does. They are primary controls: at 360 px
+   held sideways, with no keyboard, the list cut them by two pixels.
+   For them to rise over the card's head, the CARD is the box they stick within: in
+   the dock its body and the form or approval inside it lay out nothing of their own
+   (`display: contents`), their content the card's own column.
+   Its FLOOR, below which the thread does not squeeze it (the rule above): its bar
+   (1.75rem buttons in 0.9rem of padding) and its borders; with an open card that
+   can be answered, the list's foot (0.55rem), the card's borders and the controls'
+   rows (1.75rem buttons, 0.45rem apart, in 0.8rem of padding): one row, or three in
+   a thread narrower than 44rem, where the decisions may wrap — four of them need
+   36rem in a row; three wrapped in two rows at 360 px, in three at 150 %; the
+   confirmation of "always" adds its sentence. */
+.oc-areq-dock {
+  --oc-areq-floor-bar: calc(2.65rem + 2px);
+  --oc-areq-list-floor: 0px;
+  --oc-areq-floor: calc(var(--oc-areq-floor-bar) + var(--oc-areq-list-floor));
+  display: flex;
+  flex-direction: column;
+}
+.oc-areq-dock:has(> .oc-areq-dock__list:not([hidden]) .oc-areq__actions) {
+  --oc-areq-list-floor: calc(0.55rem + 2px + 2.55rem);
+}
+@container chatpane (width < 44rem) {
+  .oc-areq-dock:has(> .oc-areq-dock__list:not([hidden]) .oc-areq__actions) {
+    --oc-areq-list-floor: calc(0.55rem + 2px + 6.95rem);
+  }
+}
+.oc-areq-dock:has(> .oc-areq-dock__list:not([hidden]) .oc-areq__confirm) {
+  --oc-areq-list-floor: calc(0.55rem + 2px + 7.4rem);
+}
+.oc-areq-dock__bar {
+  flex: none;
+}
+.oc-areq-dock__list {
+  flex: 0 1 auto;
+  min-height: 0;
+  /* Never capped under its floor (a third of a sideways phone is 7.4rem at 150 %). */
+  max-height: max(var(--oc-areq-list-floor), min(46dvh, 28rem));
+  /* The focused answer field scrolls into view above the pinned controls. */
+  scroll-padding-bottom: 2.55rem;
+}
+.oc-shell--short .oc-areq-dock__list {
+  max-height: max(var(--oc-areq-list-floor), 33dvh);
+}
+.oc-areq--dock {
+  /* Clipped without being a scroll container: the controls stick to the LIST. */
+  overflow: clip;
+  display: flex;
+  flex-direction: column;
+}
+.oc-areq--dock > .oc-areq__head {
+  flex: none;
+}
+.oc-areq--dock > .oc-areq__body,
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form) {
+  display: contents;
+}
+/* What they spaced, each part of the card's content now spaces itself: the body's
+   sides and foot, the column's 0.7rem. */
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form) > *,
+.oc-areq--dock > .oc-areq__body > .oc-areq__note {
+  margin-inline: 0.95rem;
+  margin-block-start: 0.7rem;
+}
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form) > :first-child {
+  margin-block-start: 0.1rem;
+}
+.oc-areq--dock > .oc-areq__body > :last-child,
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form):last-child > :last-child {
+  margin-block-end: 0.9rem;
+}
+.oc-areq--dock :is(.oc-areq__actions, .oc-areq__confirm) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+.oc-areq--dock .oc-areq__actions {
+  padding-block: 0.4rem;
+  background: color-mix(in oklch, var(--tone) 4%, var(--card));
+}
+.oc-areq--dock .oc-areq__confirm {
+  /* Opaque: its tint over the card's own, not over the question scrolling behind. */
+  background:
+    linear-gradient(color-mix(in oklch, var(--tone) 9%, transparent), color-mix(in oklch, var(--tone) 9%, transparent)),
+    color-mix(in oklch, var(--tone) 4%, var(--card));
+}
+.oc-areq--dock .oc-areq__confirm .oc-areq__actions {
+  position: static;
+  padding-block: 0;
+  background: none;
+}
 .oc-areq--dock { border-radius: 0.75rem; box-shadow: none; animation: none; }
 .oc-areq--dock .oc-areq__head { min-height: 2.35rem; padding-top: 0.25rem; padding-bottom: 0.25rem; }
 .oc-areq--dock .oc-areq__body { padding-left: 0.95rem; }
@@ -12014,8 +12294,12 @@ button.oc-perm__opt:disabled {
 .oc-areq-panel {
   display: flex;
   flex-direction: column;
-  width: min(30rem, var(--oc-layer-width));
   max-width: 100vw;
+}
+/* Its width, as specific as the side sheets' shared one (lot 29): a class alone lost
+   to it — the panel ran 75% of the screen, 960 px on a desktop for its 30rem. */
+.oc-areq-panel[data-slot="sheet-content"] {
+  width: min(30rem, var(--oc-layer-width));
 }
 .oc-areq-panel__filters {
   display: flex;

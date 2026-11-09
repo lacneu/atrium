@@ -329,7 +329,8 @@ export function HeldDictationDock() {
       />
       {(recording || held.finalizing) && held.interim !== "" ? (
         <div className="oc-detach__interim" aria-hidden>
-          {held.interim}
+          {/* Its spacing is its content's: given way, the preview costs nothing (lot 29). */}
+          <span className="oc-detach__interim-text">{held.interim}</span>
         </div>
       ) : null}
 

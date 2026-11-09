@@ -1,0 +1,274 @@
+// THE BROWSER HALF OF THE GUARDS THAT LAY OUT THE APP IN A REAL CHROME (lots 28-29):
+// layoutFloor.test.ts, layerFeet.test.ts, slotRules.test.ts, queueReserve.test.ts.
+// Not a test itself (vitest runs *.test.ts only): where a Chrome is, the app's
+// stylesheets as its build loads them, and one headless run that returns what a page
+// wrote in <pre id="out">.
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
+import tailwindcss from "@tailwindcss/vite";
+import { createServer } from "vite";
+
+export const ROOT = join(__dirname, "..", "..");
+const SRC = join(ROOT, "src");
+
+/** ATRIUM_CHROME, else Playwright's headless shell, else Chrome or Chromium where they
+ *  install; null when none is here. */
+export function findChrome(): string | null {
+  const env = process.env.ATRIUM_CHROME;
+  if (env && existsSync(env)) return env;
+  for (const base of [join(homedir(), "Library/Caches/ms-playwright"), join(homedir(), ".cache/ms-playwright")]) {
+    if (!existsSync(base)) continue;
+    for (const dir of readdirSync(base).filter((d) => d.startsWith("chromium_headless_shell-")).sort().reverse()) {
+      for (const sub of readdirSync(join(base, dir))) {
+        const bin = join(base, dir, sub, "chrome-headless-shell");
+        if (existsSync(bin)) return bin;
+      }
+    }
+  }
+  for (const p of [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ]) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** A guard that lays out runs where a browser is; on CI (CI=true) a missing one fails. */
+export function chromeOrFail(guard: string): string | null {
+  const chrome = findChrome();
+  if (chrome === null && process.env.CI) {
+    throw new Error(`${guard} lays out in a real browser: set ATRIUM_CHROME (a Chrome or a chrome-headless-shell)`);
+  }
+  return chrome;
+}
+
+const IMPORT_RE =
+  /(?:^|[\s;])(?:import\s+(?:[^'"`;]*?\s+from\s+)?|export\s+[^'"`;]*?\s+from\s+)["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;
+
+function resolveModule(spec: string, from: string): string | null {
+  let base: string;
+  if (spec.startsWith("@/")) base = join(SRC, spec.slice(2));
+  else if (spec.startsWith(".")) base = resolve(dirname(from), spec);
+  else return null; // a package: its stylesheets come through index.css's @imports
+  for (const cand of [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx")]) {
+    if (existsSync(cand) && statSync(cand).isFile()) return cand;
+  }
+  // `.js` specifiers that name a TypeScript source.
+  if (/\.js$/.test(base)) {
+    for (const cand of [base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ".tsx")]) if (existsSync(cand)) return cand;
+  }
+  return null;
+}
+
+/** Every stylesheet the app loads, in the order its build serves them: the static
+ *  imports depth first from src/main.tsx (the main bundle's CSS, in import order),
+ *  then each lazily loaded module's (its chunk's CSS, appended when it loads). */
+export function appStylesheets(): string[] {
+  const css: string[] = [];
+  const seen = new Set<string>();
+  const lazy: string[] = [];
+  const visit = (file: string) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    if (file.endsWith(".css")) {
+      css.push(file);
+      return;
+    }
+    if (!/\.(ts|tsx)$/.test(file) || /\.test\.tsx?$/.test(file)) return;
+    const text = readFileSync(file, "utf8");
+    for (const m of text.matchAll(IMPORT_RE)) {
+      const spec = m[1] ?? m[2];
+      const target = resolveModule(spec, file);
+      if (target === null) continue;
+      if (m[2] !== undefined) lazy.push(target);
+      else visit(target);
+    }
+  };
+  visit(join(SRC, "main.tsx"));
+  for (let i = 0; i < lazy.length; i++) visit(lazy[i]);
+  return css.map((f) => `/${relative(ROOT, f).split("\\").join("/")}`);
+}
+
+/** Every stylesheet under src/ (what the walk above must reach). */
+export function sourceStylesheets(): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const f = join(dir, e);
+      if (statSync(f).isDirectory()) {
+        if (e !== "paraglide") walk(f);
+      } else if (e.endsWith(".css")) out.push(`/${relative(ROOT, f).split("\\").join("/")}`);
+    }
+  };
+  walk(SRC);
+  return out.sort();
+}
+
+/** The app's stylesheets compiled by Vite with the app's Tailwind plugin, in the
+ *  build's order. Tailwind's plugin alone: the app's config would run Paraglide too,
+ *  whose compile rewrites src/paraglide without the declarations the typecheck reads. */
+export async function appCss(): Promise<string> {
+  const server = await createServer({
+    root: ROOT,
+    configFile: false,
+    plugins: [tailwindcss()],
+    resolve: { alias: { "@": SRC } },
+    logLevel: "error",
+    server: { middlewareMode: true, hmr: false, watch: null },
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+  });
+  try {
+    const out: string[] = [];
+    for (const file of appStylesheets()) {
+      const r = await server.transformRequest(`${file}?direct`);
+      if (!r) throw new Error(`no stylesheet for ${file}`);
+      out.push(r.code);
+    }
+    return out.join("\n");
+  } finally {
+    await server.close();
+  }
+}
+
+/** One headless Chrome run of `page`; what it wrote in <pre id="out">, parsed. */
+export function runChrome<T>(chrome: string, page: string, opts: { flags?: string[]; budgetMs?: number } = {}): T {
+  const dir = mkdtempSync(join(tmpdir(), "atrium-probe-"));
+  try {
+    const file = join(dir, "probe.html");
+    writeFileSync(file, page);
+    const shell = /headless[-_]shell/.test(chrome);
+    const res = spawnSync(
+      chrome,
+      [
+        ...(shell ? [] : ["--headless=new"]),
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--user-data-dir=${join(dir, "profile")}`,
+        "--window-size=1200,1000",
+        // A phone: a coarse pointer, no hover (the 44 px targets).
+        "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
+        ...(opts.flags ?? []),
+        `--virtual-time-budget=${opts.budgetMs ?? 20000}`,
+        "--dump-dom",
+        `file://${file}`,
+      ],
+      { encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024 },
+    );
+    const m = /<pre id="out">([\s\S]*?)<\/pre>/.exec(res.stdout ?? "");
+    if (!m) throw new Error(`Chrome returned no result (status ${res.status}): ${(res.stderr ?? "").slice(0, 400)}`);
+    const text = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    return JSON.parse(text) as T;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** A page's data, safe inside a <script>. */
+export function scriptData(value: unknown): string {
+  return JSON.stringify(value).replace(/<\//g, "<\\/");
+}
+
+/** A page that runs in REAL time (frames, transitions, animation frames — virtual time
+ *  produces none of them): Chrome driven over its DevTools protocol, the page opened
+ *  after the media to emulate is set, its <pre id="out"> read until it holds a JSON
+ *  object whose `stage` is "done" (or whose `errors` are not empty). */
+export async function runChromeLive<T extends { stage?: string; errors?: unknown[] }>(
+  chrome: string,
+  page: string,
+  opts: { media?: Array<{ name: string; value: string }>; timeoutMs?: number } = {},
+): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "atrium-live-"));
+  const file = join(dir, "probe.html");
+  writeFileSync(file, page);
+  const shell = /headless[-_]shell/.test(chrome);
+  const proc = spawn(
+    chrome,
+    [
+      ...(shell ? [] : ["--headless=new"]),
+      "--no-sandbox",
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--remote-debugging-port=0",
+      `--user-data-dir=${join(dir, "profile")}`,
+      "--window-size=1200,1000",
+      "about:blank",
+    ],
+    { stdio: "ignore" },
+  );
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const deadline = Date.now() + (opts.timeoutMs ?? 60_000);
+  let ws: WebSocket | null = null;
+  try {
+    let port = 0;
+    while (port === 0 && Date.now() < deadline) {
+      await sleep(100);
+      const portFile = join(dir, "profile", "DevToolsActivePort");
+      if (existsSync(portFile)) port = Number(readFileSync(portFile, "utf8").split("\n")[0]) || 0;
+    }
+    if (port === 0) throw new Error("Chrome opened no DevTools port");
+    let target: string | null = null;
+    while (target === null && Date.now() < deadline) {
+      try {
+        const list = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as Array<{ type: string; webSocketDebuggerUrl: string }>;
+        target = list.find((t) => t.type === "page")?.webSocketDebuggerUrl ?? null;
+      } catch {
+        await sleep(100);
+      }
+    }
+    if (target === null) throw new Error("Chrome showed no page");
+    const socket = new WebSocket(target);
+    ws = socket;
+    let next = 0;
+    const pending = new Map<number, (m: { result?: unknown; error?: unknown }) => void>();
+    socket.onmessage = (ev) => {
+      const msg = JSON.parse(String(ev.data)) as { id?: number; result?: unknown; error?: unknown };
+      if (msg.id !== undefined) pending.get(msg.id)?.(msg);
+    };
+    await new Promise((r) => (socket.onopen = r));
+    const send = (method: string, params: Record<string, unknown> = {}) =>
+      new Promise<unknown>((res, rej) => {
+        const id = ++next;
+        pending.set(id, (m) => (m.error ? rej(new Error(`${method}: ${JSON.stringify(m.error)}`)) : res(m.result)));
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+    if (opts.media) await send("Emulation.setEmulatedMedia", { features: opts.media });
+    await send("Page.navigate", { url: `file://${file}` });
+    while (Date.now() < deadline) {
+      await sleep(200);
+      const r = (await send("Runtime.evaluate", {
+        expression: `document.getElementById("out")?.textContent ?? ""`,
+        returnByValue: true,
+      })) as { result: { value: string } };
+      const text = r.result.value;
+      if (!text) continue;
+      let out: T;
+      try {
+        out = JSON.parse(text) as T;
+      } catch {
+        continue;
+      }
+      if (out.stage === "done" || (out.errors?.length ?? 0) > 0) return out;
+    }
+    throw new Error("the page never finished");
+  } finally {
+    ws?.close();
+    // Its profile is removed once Chrome has let go of it.
+    await new Promise<void>((r) => {
+      const done = () => r();
+      proc.once("exit", done);
+      proc.kill();
+      setTimeout(done, 3000);
+    });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+}

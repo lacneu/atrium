@@ -12,6 +12,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -677,7 +678,9 @@ function AgentFileEditor({
                 {m.afiles_save_error()}
               </p>
             ) : null}
-            <div className="oc-afiles__editor-foot">
+            {/* Its footer, pinned at the foot of the dialog as every layer's is (lot 29):
+                a house foot scrolled away with the source, "Save" out of view. */}
+            <DialogFooter className="oc-afiles__editor-foot flex-row">
               <span className={`oc-afiles__count${over ? " is-over" : ""}`}>
                 {m.afiles_chars({
                   count: charFmt.format(draft.length),
@@ -693,7 +696,7 @@ function AgentFileEditor({
                   {saving ? m.conf_applying() : m.afiles_save()}
                 </Button>
               ) : null}
-            </div>
+            </DialogFooter>
           </>
         )}
 
@@ -938,36 +941,40 @@ function CurationReviewDialog({
               value={rejectComment}
               onChange={(e) => setRejectComment(e.target.value)}
             />
-            <div className="oc-afiles__review-actions">
-              <Button
-                variant="ghost"
-                onClick={() => setRejecting(false)}
-                disabled={busy !== null}
-              >
-                {m.afiles_curation_reject_cancel()}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => void doReject(false)}
-                disabled={busy !== null}
-              >
-                {busy === "reject"
-                  ? m.conf_applying()
-                  : m.afiles_curation_reject_only()}
-              </Button>
-              <Button
-                variant="default"
-                onClick={() => void doReject(true)}
-                disabled={busy !== null}
-              >
-                {busy === "reject"
-                  ? m.conf_applying()
-                  : m.afiles_curation_reject_relaunch()}
-              </Button>
-            </div>
           </div>
+        ) : null}
+        {/* One footer for both steps, pinned at the dialog's foot as every layer's is
+            (lot 29): a house foot scrolled out of view with the proposal. */}
+        {rejecting ? (
+          <DialogFooter className="oc-afiles__review-actions">
+            <Button
+              variant="ghost"
+              onClick={() => setRejecting(false)}
+              disabled={busy !== null}
+            >
+              {m.afiles_curation_reject_cancel()}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void doReject(false)}
+              disabled={busy !== null}
+            >
+              {busy === "reject"
+                ? m.conf_applying()
+                : m.afiles_curation_reject_only()}
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => void doReject(true)}
+              disabled={busy !== null}
+            >
+              {busy === "reject"
+                ? m.conf_applying()
+                : m.afiles_curation_reject_relaunch()}
+            </Button>
+          </DialogFooter>
         ) : (
-          <div className="oc-afiles__review-actions">
+          <DialogFooter className="oc-afiles__review-actions">
             <Button
               variant="outline"
               onClick={() => setRejecting(true)}
@@ -984,7 +991,7 @@ function CurationReviewDialog({
                 ? m.conf_applying()
                 : m.afiles_curation_approve()}
             </Button>
-          </div>
+          </DialogFooter>
         )}
       </DialogContent>
     </Dialog>

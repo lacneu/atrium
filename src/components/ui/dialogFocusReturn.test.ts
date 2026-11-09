@@ -271,6 +271,7 @@ const RADIX_WRAPPERS: Record<string, { allowed: Record<string, string>; layers: 
       useMessage: "hook",
       useThread: "hook",
       useThreadRuntime: "hook",
+      useThreadViewportStore: "hook",
       fromThreadMessageLike: "data conversion",
       AppendMessage: "type",
       Attachment: "type",

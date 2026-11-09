@@ -1,8 +1,9 @@
 // @vitest-environment node
 //
 // EVERY BOX BOUNDED BY WHAT IS SHOWN KEEPS ITS PRIMARY CONTROLS IN VIEW (lot 28),
-// laid out by a REAL browser. The app's own stylesheets, compiled by Vite with the
-// app's Tailwind plugin, lay out the DOM the app renders (layoutFloor.fixtures.ts,
+// laid out by a REAL browser. Every stylesheet the app loads (lot 29: all of them, in
+// the build's order — browserProbe.testkit.ts), compiled by Vite with the app's
+// Tailwind plugin, lays out the DOM the app renders (layoutFloor.fixtures.ts,
 // captured from the running app, its text replaced by filler) in a headless Chrome,
 // under each text scale and keyboard height, on a phone held both ways. The inset's
 // variables are written as lib/virtualKeyboard.ts writes them; the detached composer
@@ -21,77 +22,17 @@
 // A browser is needed: ATRIUM_CHROME, else Playwright's headless shell, else Chrome or
 // Chromium where they install. Without one the guard is skipped locally and fails on
 // CI (CI=true): it is the only one here that lays out.
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import tailwindcss from "@tailwindcss/vite";
-import { createServer } from "vite";
 import { describe, expect, test } from "vitest";
+import { appCss, appStylesheets, chromeOrFail, ROOT, runChrome, scriptData, sourceStylesheets } from "./browserProbe.testkit";
 import { clampGeometry } from "./dictationHold";
 import { LAYOUT_FIXTURES, type LayoutFixture } from "./layoutFloor.fixtures";
 
-const ROOT = join(__dirname, "..", "..");
 const SCALES = { sm: "87.5%", md: "", lg: "112.5%", xl: "125%", "2xl": "137.5%", "3xl": "150%" } as const;
 const KEYBOARDS = [0, 160, 200, 220, 260] as const;
 // Lot 12's physical limit: a portrait keyboard over a phone held sideways.
 const LIMIT_KB = 336;
-
-function findChrome(): string | null {
-  const env = process.env.ATRIUM_CHROME;
-  if (env && existsSync(env)) return env;
-  for (const base of [join(homedir(), "Library/Caches/ms-playwright"), join(homedir(), ".cache/ms-playwright")]) {
-    if (!existsSync(base)) continue;
-    for (const dir of readdirSync(base).filter((d) => d.startsWith("chromium_headless_shell-")).sort().reverse()) {
-      for (const sub of readdirSync(join(base, dir))) {
-        const bin = join(base, dir, sub, "chrome-headless-shell");
-        if (existsSync(bin)) return bin;
-      }
-    }
-  }
-  for (const p of [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-  ]) {
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
-/** The app's stylesheets as its build serves them (index.css with Tailwind's
- *  utilities, then the stylesheets these boxes use). Tailwind's plugin alone: the
- *  app's config would run Paraglide too, whose compile rewrites src/paraglide without
- *  the declarations the typecheck reads. */
-async function appCss(): Promise<string> {
-  const server = await createServer({
-    root: ROOT,
-    configFile: false,
-    plugins: [tailwindcss()],
-    resolve: { alias: { "@": join(ROOT, "src") } },
-    logLevel: "error",
-    server: { middlewareMode: true, hmr: false, watch: null },
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-  });
-  try {
-    const out: string[] = [];
-    for (const file of [
-      "/src/index.css",
-      "/src/chat/convexChat.css",
-      "/src/chat/chatParticipants.css",
-    ]) {
-      const r = await server.transformRequest(`${file}?direct`);
-      if (!r) throw new Error(`no stylesheet for ${file}`);
-      out.push(r.code);
-    }
-    return out.join("\n");
-  } finally {
-    await server.close();
-  }
-}
 
 type Seen = { top: number; bottom: number; height: number; seen: number; whole: boolean };
 type Cell = {
@@ -101,23 +42,47 @@ type Cell = {
   shown: number;
   field: (Seen & { oneLine: boolean }) | null;
   bar: Seen | null;
-  /** The stacks that give way before the field's lines (quotes, attachments). */
+  /** What gives way before the field's lines (quotes, attachments, a live preview, an
+   *  upload's progress; the detached composer's quotes and preview). */
   stacks: number;
+  /** How far the inline card paints above its own top. */
+  overCard?: number;
   /** The field's height with nothing pressing on it (no keyboard). */
   fieldNatural: number | null;
   /** The detached composer's head and its quotes, as seen. */
   head: Seen | null;
   quotesSeen: number;
   ok: boolean;
+  /** In the thread: the pending request's response controls, and what sits above the
+   *  composer (each one's height in the thread). */
+  request?: "whole" | "cut" | "absent";
+  above?: { banner: number; queue: number; dock: number };
+  /** What the queued cards cover, of what they must not. */
+  covers?: string[];
+  composerShown?: boolean;
+  /** In the request's regime: the composer's own controls whole. */
+  composerOk?: boolean;
 };
 type Spacing = { fixture: string; scale: string; above: number; below: number; rem: number };
 type FloorRow = { fixture: string; scale: string; floor: number | null; bound: number; parts: Record<string, number> };
-type ProbeOut = { cells: Cell[]; floors: FloorRow[]; limit: Cell[]; spacing: Spacing[]; errors: string[] };
+type ProbeOut = {
+  cells: Cell[];
+  floors: FloorRow[];
+  limit: Cell[];
+  spacing: Spacing[];
+  /** The thread with the request's card focused: its cells and the request's floor. */
+  focus: Cell[];
+  requestFloors: Array<{ fixture: string; scale: string; floor: number | null; focused: boolean }>;
+  /** The thread at every height shown, 4 px apart, in each regime. */
+  sweep: Array<{ fixture: string; scale: string; shown: number; ok: boolean; request: string; above: number }>;
+  sweepFocus: Array<{ fixture: string; scale: string; shown: number; ok: boolean; request: string; composerShown: boolean; composerOk: boolean; dockBottom: number; roomy: boolean }>;
+  errors: string[];
+};
 
 /** The page Chrome runs: one iframe per fixture, at the fixture's screen size (its
  *  viewport is the screen: 100dvh, the media queries), each text scale, each keyboard. */
 function probePage(css: string, fixtures: LayoutFixture[], docks: Record<string, Record<number, { x: number; y: number; w: number; h: number }>>): string {
-  const data = JSON.stringify({ css, fixtures, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB, docks }).replace(/<\//g, "<\\/");
+  const data = scriptData({ css, fixtures, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB, docks });
   return `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>
 const DATA = ${data};
 ${PROBE_SCRIPT}
@@ -127,12 +92,18 @@ ${PROBE_SCRIPT}
 // Runs in Chrome. Kept as a string: it is the browser's code, not the test's.
 const PROBE_SCRIPT = String.raw`
 const errors = [];
-const cells = [], floors = [], limit = [], spacings = [];
-function seen(w, el, shownBottom, inset) {
+const cells = [], floors = [], limit = [], spacings = [], focus = [], requestFloors = [], sweep = [], sweepFocus = [];
+function seen(w, el, shownBottom, inset, card) {
   if (!el) return null;
   const r = el.getBoundingClientRect();
   // inset: the paddings to leave out (a field's line is in its content box).
   let top = Math.max(r.top + (inset ? inset[0] : 0), 0), bottom = Math.min(r.bottom - (inset ? inset[1] : 0), shownBottom);
+  // card: the box a control belongs to (lot 29): out of it, a field runs over what sits
+  // above it — the request's controls, under a composer squeezed past its floor.
+  if (card) {
+    const cr = card.getBoundingClientRect();
+    top = Math.max(top, cr.top); bottom = Math.min(bottom, cr.bottom);
+  }
   for (let p = el.parentElement; p && p !== w.document.documentElement; p = p.parentElement) {
     const cs = w.getComputedStyle(p);
     if (cs.overflowY !== "visible" || cs.overflowX !== "visible") {
@@ -146,12 +117,12 @@ function seen(w, el, shownBottom, inset) {
 }
 /** A field shows a line when the part of its CONTENT box a person sees holds one: a
  *  field seen by its padding alone shows no line. */
-function fieldLine(w, el, shownBottom) {
-  const s = seen(w, el, shownBottom);
+function fieldLine(w, el, shownBottom, card) {
+  const s = seen(w, el, shownBottom, null, card);
   if (!s) return null;
   const cs = w.getComputedStyle(el);
   const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
-  const content = seen(w, el, shownBottom, [parseFloat(cs.paddingTop), parseFloat(cs.paddingBottom)]);
+  const content = seen(w, el, shownBottom, [parseFloat(cs.paddingTop), parseFloat(cs.paddingBottom)], card);
   return { ...s, oneLine: content.seen >= line - 0.5, line };
 }
 function px(w, value) {
@@ -179,7 +150,7 @@ function setKeyboard(w, fx, kb, scale) {
 }
 function primary(w, fx) {
   const d = w.document;
-  if (fx.box === "composer") { const f = d.querySelector("form.oc-composer:not(.oc-composer--expanded)"); return { field: f && f.querySelector(".oc-composer__input"), bar: f && f.querySelector(".oc-composer__bar") }; }
+  if (fx.box === "composer" || fx.box === "thread") { const f = d.querySelector("form.oc-composer:not(.oc-composer--expanded)"); return { field: f && f.querySelector(".oc-composer__input"), bar: f && f.querySelector(".oc-composer__bar") }; }
   if (fx.box === "expanded") { const f = d.querySelector(".oc-composer--expanded"); return { field: f && f.querySelector(".oc-composer__input"), bar: f && f.querySelector(".oc-composer__bar") }; }
   if (fx.box === "dock") { const f = d.querySelector(".oc-detach"); return { field: f && f.querySelector(".oc-detach__input"), bar: f && f.querySelector(".oc-detach__bar") }; }
   const layer = [...d.querySelectorAll('[data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]')].pop();
@@ -189,18 +160,62 @@ function measure(w, fx, kb, scale) {
   setKeyboard(w, fx, kb, scale);
   const shown = fx.screen[1] - kb;
   const p = primary(w, fx);
-  const field = p.field ? fieldLine(w, p.field, shown) : null;
-  const bar = seen(w, p.bar, shown);
+  // The inline card's field and bar count within the card.
+  const card = fx.box === "composer" || fx.box === "thread" ? w.document.querySelector("form.oc-composer:not(.oc-composer--expanded)") : null;
+  const field = p.field ? fieldLine(w, p.field, shown, card) : null;
+  const bar = seen(w, p.bar, shown, null, card);
   // A layer's action bar is whole when every control in it is.
   let barOk = !!bar && bar.whole;
   if (fx.box === "layer" && p.bar) barOk = barOk && [...p.bar.querySelectorAll("button")].every((b) => { const s = seen(w, b, shown); return !s || s.height === 0 || s.whole; });
   const ok = barOk && (p.field ? !!field && field.oneLine : true);
   const box = p.field && p.field.closest("form.oc-composer");
-  const stacks = box ? [...box.querySelectorAll(".oc-composer__quotes, .oc-attachrow")].reduce((n, el) => n + el.getBoundingClientRect().height, 0) : 0;
+  const stacks = box
+    ? [...box.querySelectorAll(".oc-composer__quotes, .oc-attachrow, .oc-composer__interim, .oc-upload")].reduce((n, el) => n + el.getBoundingClientRect().height, 0)
+    : fx.box === "dock"
+      ? [...w.document.querySelectorAll(".oc-detach__quotes, .oc-detach__interim")].reduce((n, el) => n + el.getBoundingClientRect().height, 0)
+      : 0;
   const dock = fx.box === "dock" ? w.document.querySelector(".oc-detach") : null;
   const head = dock ? seen(w, dock.querySelector(".oc-detach__head"), shown) : null;
   const quotes = dock ? seen(w, dock.querySelector(".oc-detach__quotes"), shown) : null;
-  return { fixture: fx.name, scale, kb, shown, field, bar, stacks, head, quotesSeen: quotes ? quotes.seen : 0, ok };
+  // What the inline card holds besides its field and bar, painted above its own top:
+  // nothing, above its floor (the field's padding is the floor's to cut, lot 28).
+  let above = 0;
+  if (box && (fx.box === "composer" || fx.box === "thread")) {
+    const top = box.getBoundingClientRect().top;
+    for (const c of inFlow(w, box.querySelector(".oc-composer__body") || box)) {
+      if (c.classList.contains("oc-composer__input")) continue;
+      const r = c.getBoundingClientRect();
+      if (r.height > 0.5 && r.top < top - 0.5) above = Math.max(above, top - r.top);
+    }
+  }
+  const cell = { fixture: fx.name, scale, kb, shown, field, bar, stacks, head, quotesSeen: quotes ? quotes.seen : 0, ok, overCard: above };
+  if (fx.box === "thread") {
+    const d = w.document;
+    // The request's response controls: whole, cut, or not shown at all (folded, out of
+    // the thread) — never cut.
+    const buttons = [...d.querySelectorAll(".oc-thread > .oc-areq-dock .oc-areq__actions button")]
+      .map((b) => seen(w, b, shown))
+      .filter((s) => s.height > 0);
+    cell.request = buttons.length === 0 || buttons.every((b) => b.seen <= 0) ? "absent" : buttons.every((b) => b.whole) ? "whole" : "cut";
+    const h = (sel) => { const el = d.querySelector(sel); return el ? seen(w, el, shown).seen : 0; };
+    cell.above = { banner: h(".oc-thread > .oc-chat-banner"), queue: h(".oc-thread > .oc-queue-dock"), dock: h(".oc-thread > .oc-areq-dock") };
+    // The queued cards float over the end of the transcript only: never over the
+    // banner, nor over the header.
+    const q = d.querySelector(".oc-thread > .oc-queue-dock");
+    const shownBox = (sel) => { const el = d.querySelector(sel); if (!el || w.getComputedStyle(el).display === "none") return null; const r = el.getBoundingClientRect(); return r.height > 0 ? r : null; };
+    const qr = q ? q.getBoundingClientRect() : null;
+    const over = (r) => !!(qr && r && qr.height > 0.5 && qr.top < r.bottom - 0.5 && qr.bottom > r.top + 0.5);
+    cell.covers = [over(shownBox(".oc-thread > .oc-chat-banner")) ? "banner" : null, over(shownBox(".oc-thread > .oc-chathead")) ? "header" : null].filter(Boolean);
+    const form = d.querySelector("form.oc-composer:not(.oc-composer--expanded)");
+    cell.composerShown = !!form && w.getComputedStyle(form).display !== "none";
+  }
+  return cell;
+}
+/** With the request's card focused (its first response control), the request's own
+ *  regime: its controls are the primary ones. */
+function measureFocused(w, fx, kb, scale) {
+  const c = measure(w, fx, kb, scale);
+  return { ...c, composerOk: c.ok, ok: c.request === "whole" };
 }
 /** The transcript's space above its first message and below its last, scrolled to its
  *  end: the spacers that replaced its padding (lot 28) keep 1.5rem and 2rem. */
@@ -238,15 +253,17 @@ function bound(w, fx) {
   const d = w.document, cs = (el) => w.getComputedStyle(el), n = (v) => parseFloat(v) || 0;
   const p = primary(w, fx);
   const parts = { bar: p.bar ? p.bar.getBoundingClientRect().height : 0 };
-  if (fx.box === "composer" || fx.box === "expanded" || fx.box === "dock") {
+  if (fx.box === "composer" || fx.box === "thread" || fx.box === "expanded" || fx.box === "dock") {
     const field = p.field, box = field.closest(fx.box === "dock" ? ".oc-detach" : "form.oc-composer");
     const b = cs(box);
     parts.field = n(cs(field).minHeight);
     parts.border = n(b.borderTopWidth) + n(b.borderBottomWidth);
-    if (fx.box === "composer") {
+    if (fx.box === "composer" || fx.box === "thread") {
       parts.padding = n(b.paddingTop) + n(b.paddingBottom);
       parts.margin = n(b.marginBottom);
-      parts.gaps = Math.max(0, inFlow(w, box).length - 1) * n(b.rowGap);
+      // One gap, between the field and the bar (lot 29): what else the card holds
+      // gives way whole, its gaps with it — counted, they hid a preview's 9 px.
+      parts.gaps = n(b.rowGap);
       // Held sideways the bar is a rail; upright the top bar stays above the thread.
       const top = d.querySelector(".oc-topbar:not(.oc-topbar--rail)");
       if (top && top.getBoundingClientRect().width > top.getBoundingClientRect().height) parts.topbar = top.getBoundingClientRect().height;
@@ -291,6 +308,38 @@ for (const fx of DATA.fixtures) {
       floors.push({ fixture: fx.name, scale, floor: floorOf(w, fx, scale), bound: b.total, parts: b.parts });
       const natural = measure(w, fx, 0, scale).field;
       for (const kb of DATA.kbs) cells.push({ ...measure(w, fx, kb, scale), fieldNatural: natural ? natural.height : null });
+      if (fx.box === "thread") {
+        // Every height shown, 4 px apart: what lies between the keyboards of the grid.
+        for (let shown = fx.screen[1]; shown >= 40; shown -= 4) {
+          const c = measure(w, fx, fx.screen[1] - shown, scale);
+          sweep.push({ fixture: fx.name, scale, shown, ok: c.ok, request: c.request, above: c.above.banner + c.above.queue + c.above.dock });
+        }
+        setKeyboard(w, fx, 0, scale);
+        const first = d.querySelector(".oc-thread > .oc-areq-dock .oc-areq__actions button");
+        // Reachable: the card is shown at rest (a request folded to its bar, in a thread
+        // too short for it, is answered from its panel).
+        if (first && first.getClientRects().length > 0) {
+          first.focus();
+          const focused = !!first.closest(".oc-areq-dock__list") && first.closest(".oc-areq-dock__list").matches(":focus-within");
+          for (const kb of DATA.kbs) focus.push(measureFocused(w, fx, kb, scale));
+          let floor = null;
+          if (measureFocused(w, fx, 0, scale).ok) {
+            let lo = 0, hi = fx.screen[1];
+            while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); if (measureFocused(w, fx, fx.screen[1] - mid, scale).ok) hi = mid; else lo = mid; }
+            floor = hi;
+          }
+          requestFloors.push({ fixture: fx.name, scale, floor, focused });
+          for (let shown = fx.screen[1]; shown >= 40; shown -= 4) {
+            const c = measureFocused(w, fx, fx.screen[1] - shown, scale);
+            const dock = d.querySelector(".oc-thread > .oc-areq-dock").getBoundingClientRect();
+            const thread = d.querySelector(".oc-thread").getBoundingClientRect();
+            // What the request cannot give up: its margins and borders.
+            const chrome = px(w, "0.9rem") + 4;
+            sweepFocus.push({ fixture: fx.name, scale, shown, ok: c.ok, request: c.request, composerShown: c.composerShown, composerOk: c.composerOk, dockBottom: dock.bottom, roomy: Math.min(thread.bottom, shown) - thread.top >= chrome });
+          }
+          first.blur();
+        }
+      }
       const sp = fx.box === "composer" ? spacing(w, fx, scale) : null;
       if (sp) spacings.push(sp);
       // Under its floor a layer scrolls: its action bar is where its scroll ends.
@@ -303,41 +352,8 @@ for (const fx of DATA.fixtures) {
     frame.remove();
   } catch (e) { errors.push(fx.name + ": " + String(e && e.stack || e)); }
 }
-document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, spacing: spacings, errors });
+document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, spacing: spacings, focus, requestFloors, sweep, sweepFocus, errors });
 `;
-
-function runChrome(chrome: string, page: string): ProbeOut {
-  const dir = mkdtempSync(join(tmpdir(), "atrium-layout-"));
-  try {
-    const file = join(dir, "probe.html");
-    writeFileSync(file, page);
-    const shell = /headless[-_]shell/.test(chrome);
-    const res = spawnSync(
-      chrome,
-      [
-        ...(shell ? [] : ["--headless=new"]),
-        "--no-sandbox",
-        "--disable-gpu",
-        "--no-first-run",
-        "--no-default-browser-check",
-        `--user-data-dir=${join(dir, "profile")}`,
-        "--window-size=1200,1000",
-        // A phone: a coarse pointer, no hover (the 44 px targets).
-        "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
-        "--virtual-time-budget=20000",
-        "--dump-dom",
-        `file://${file}`,
-      ],
-      { encoding: "utf8", timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
-    );
-    const m = /<pre id="out">([\s\S]*?)<\/pre>/.exec(res.stdout ?? "");
-    if (!m) throw new Error(`Chrome returned no result (status ${res.status}): ${(res.stderr ?? "").slice(0, 400)}`);
-    const text = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-    return JSON.parse(text) as ProbeOut;
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
 
 /** The detached composer's geometry for each keyboard, as the app clamps it. */
 function dockGeometry(fx: LayoutFixture): Record<number, { x: number; y: number; w: number; h: number }> {
@@ -371,6 +387,20 @@ const RELIED: Array<[string, string]> = [
   ["oc-detach__bar", "chat/HeldDictationDock.tsx"],
   ["oc-spanel", "chat/SessionPanel.tsx"],
   ["oc-spanel__actions", "chat/SessionPanel.tsx"],
+  ["oc-scrolldown-anchor", "chat/ConvexChat.tsx"],
+  ["oc-chat-banner", "chat/ConvexChat.tsx"],
+  ["oc-queue-dock", "chat/QueuedDock.tsx"],
+  ["oc-queue-card", "chat/QueuedDock.tsx"],
+  ["oc-areq-dock", "chat/AgentRequests.tsx"],
+  ["oc-areq-dock__bar", "chat/AgentRequests.tsx"],
+  ["oc-areq-dock__list", "chat/AgentRequests.tsx"],
+  ["oc-areq__body", "chat/AgentRequests.tsx"],
+  ["oc-areq__approval", "chat/AgentRequests.tsx"],
+  ["oc-areq__actions", "chat/AgentRequests.tsx"],
+  ["oc-composer__interim", "chat/ConvexChat.tsx"],
+  ["oc-upload", "chat/ConvexChat.tsx"],
+  ["oc-presence", "chat/ConversationPanel.tsx"],
+  ["oc-detach__interim", "chat/HeldDictationDock.tsx"],
   ['data-slot="dialog-content"', "components/ui/dialog.tsx"],
   ['data-slot="dialog-footer"', "components/ui/dialog.tsx"],
   ['data-slot="sheet-content"', "components/ui/sheet.tsx"],
@@ -394,10 +424,22 @@ describe("the fixtures are the DOM the components render (lot 28)", () => {
   });
 });
 
-const chrome = findChrome();
-if (chrome === null && process.env.CI) {
-  throw new Error("layoutFloor.test.ts lays out in a real browser: set ATRIUM_CHROME (a Chrome or a chrome-headless-shell)");
-}
+// EVERY STYLESHEET THE APP LOADS lays the boxes out (lot 29): the guard compiled three
+// of them, and a rule in another (the agent-file editor's height, confTabs.css) went
+// unseen. The walk follows the build: the static imports from src/main.tsx, then the
+// lazily loaded modules', whose chunks' CSS comes after.
+describe("the guards lay out with every stylesheet the app loads (lot 29)", () => {
+  test("the walk from src/main.tsx reaches every stylesheet under src/, in the build's order", () => {
+    const loaded = appStylesheets();
+    expect([...loaded].sort()).toEqual(sourceStylesheets());
+    expect(new Set(loaded).size).toBe(loaded.length);
+    // The main bundle's sheets come before a lazily loaded tab's.
+    expect(loaded.indexOf("/src/chat/convexChat.css")).toBeLessThan(loaded.indexOf("/src/chat/admin/confTabs.css"));
+    expect(loaded.indexOf("/src/index.css")).toBeLessThan(loaded.indexOf("/src/chat/convexChat.css"));
+  });
+});
+
+const chrome = chromeOrFail("layoutFloor.test.ts");
 
 describe.skipIf(chrome === null)("every bounded box keeps its primary controls in view — laid out by Chrome (lot 28)", () => {
   let out: ProbeOut;
@@ -406,7 +448,9 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     const css = await appCss();
     const docks: Record<string, Record<number, { x: number; y: number; w: number; h: number }>> = {};
     for (const fx of fixtures) if (fx.box === "dock") docks[fx.name] = dockGeometry(fx);
-    out = runChrome(chrome!, probePage(css, fixtures, docks));
+    out = runChrome<ProbeOut>(chrome!, probePage(css, fixtures, docks));
+    // What the browser measured, for the floors a lot reports (opt-in).
+    if (process.env.ATRIUM_LAYOUT_DUMP) writeFileSync(process.env.ATRIUM_LAYOUT_DUMP, JSON.stringify(out));
   })();
 
   test("the browser laid out every fixture", async () => {
@@ -417,10 +461,10 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     expect(out.limit.length).toBe(out.floors.length);
   }, 180_000);
 
-  test("the quotes and the attachments give way before the lines of a long text", async () => {
+  test("the quotes and the attachments give way before the lines of a long text — and, in the detached composer, the quotes and the live preview (lot 29)", async () => {
     await ready;
-    // Three lines typed: while either stack still has height, the field keeps all three.
-    const typed = out.cells.filter((c) => c.fixture.includes("typed"));
+    // Three lines typed: while a stack still has height, the field keeps all three.
+    const typed = out.cells.filter((c) => c.fixture.includes("typed") || c.fixture.startsWith("dock-interim"));
     expect(typed.length).toBeGreaterThan(0);
     const bad = typed
       // The field gives a hundredth of the shortage while the stacks remain (their
@@ -458,12 +502,124 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     expect(over).toEqual([]);
   }, 180_000);
 
+  test("what a box holds besides its controls adds nothing to its floor: loaded, it is the plain box's (lot 29)", async () => {
+    await ready;
+    const floor = new Map(out.floors.map((f) => [`${f.fixture}/${f.scale}`, f.floor]));
+    const pairs: Array<[string, string]> = [];
+    for (const o of ["landscape", "portrait"]) {
+      pairs.push([`composer-live-${o}`, `composer-${o}`], [`dock-interim-${o}`, `dock-${o}`]);
+      for (const t of ["banner", "queue", "request", "all"]) pairs.push([`thread-${t}-${o}`, `composer-${o}`]);
+    }
+    pairs.push(["composer-typed-landscape", "composer-landscape"]);
+    const bad: string[] = [];
+    for (const [loaded, plain] of pairs) {
+      for (const scale of Object.keys(SCALES)) {
+        const a = floor.get(`${loaded}/${scale}`);
+        const b = floor.get(`${plain}/${scale}`);
+        expect(a, `${loaded} ${scale}`).not.toBeUndefined();
+        if (a === null || b === null || a! > b! + 1) bad.push(`${loaded} ${scale}: floor ${a} > ${plain}'s ${b}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("above its floor, what the inline card holds besides its controls paints nothing above its top (lot 29)", async () => {
+    await ready;
+    const floor = new Map(out.floors.map((f) => [`${f.fixture}/${f.scale}`, f.floor ?? Infinity]));
+    const bad = out.cells
+      .filter((c) => c.overCard !== undefined && c.shown >= floor.get(`${c.fixture}/${c.scale}`)! && c.overCard > 0.5)
+      .map((c) => `${c.fixture} ${c.scale} keyboard ${c.kb}: ${c.overCard!.toFixed(1)} px painted above the card`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
   test("above its floor, at every keyboard, the field shows a line and the bar is whole", async () => {
     await ready;
     const floor = new Map(out.floors.map((f) => [`${f.fixture}/${f.scale}`, f.floor ?? Infinity]));
     const bad = out.cells
       .filter((c) => c.shown >= floor.get(`${c.fixture}/${c.scale}`)! && !c.ok)
       .map((c) => `${c.fixture} ${c.scale} keyboard ${c.kb}: ${c.shown} px shown, field ${c.field ? `${c.field.seen.toFixed(1)}/${c.field.height.toFixed(1)}` : "-"}, bar ${c.bar ? `${c.bar.seen.toFixed(1)}/${c.bar.height.toFixed(1)}` : "none"}`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("a pending request's response controls are whole or not shown, never cut — at every keyboard, in both regimes (lot 29)", async () => {
+    await ready;
+    const thread = [...out.cells, ...out.focus].filter((c) => c.request !== undefined);
+    expect(thread.length).toBeGreaterThan(0);
+    expect(thread.some((c) => c.request === "whole")).toBe(true);
+    const bad = thread
+      .filter((c) => c.request === "cut")
+      .map((c) => `${c.fixture} ${c.scale} keyboard ${c.kb}: the request's controls cut, ${c.shown} px shown`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("between the keyboards too, every 4 px of height: never a request cut, nothing held over the composer's floor (lot 29)", async () => {
+    await ready;
+    expect(out.sweep.length).toBeGreaterThan(1000);
+    const floor = new Map(out.floors.map((f) => [`${f.fixture}/${f.scale}`, f.floor ?? Infinity]));
+    const bad = out.sweep
+      .filter(
+        (c) =>
+          c.request === "cut" ||
+          (!c.ok && c.above > 2.5) ||
+          (c.shown >= floor.get(`${c.fixture}/${c.scale}`)! && !c.ok),
+      )
+      .map((c) => `${c.fixture} ${c.scale} ${c.shown} px shown: composer ${c.ok ? "whole" : "under its floor"}, request ${c.request}, ${c.above.toFixed(1)} px above it`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("between the keyboards too, the request's card focused: above its floor its controls are whole, the composer aside or whole (lot 29)", async () => {
+    await ready;
+    expect(out.sweepFocus.length).toBeGreaterThan(500);
+    // Under its floor (its controls, its bar and the header, as the composer's under
+    // its own), the owner of the keyboard is cut: what does not fit at all.
+    const floor = new Map(out.requestFloors.map((f) => [`${f.fixture}/${f.scale}`, f.floor ?? Infinity]));
+    const bad = out.sweepFocus
+      .filter((c) => c.shown >= floor.get(`${c.fixture}/${c.scale}`)! && (!c.ok || (c.composerShown && !c.composerOk)))
+      .map((c) => `${c.fixture} ${c.scale} ${c.shown} px shown: request ${c.request}, composer ${c.composerShown ? (c.composerOk ? "whole" : "cut") : "aside"}`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("answered, the request never runs under the keyboard, however short the thread (lot 29)", async () => {
+    await ready;
+    // Where the thread has room for its margins and borders at all.
+    expect(out.sweepFocus.filter((c) => c.roomy).length).toBeGreaterThan(500);
+    const bad = out.sweepFocus
+      .filter((c) => c.roomy && c.dockBottom > c.shown + 0.5)
+      .map((c) => `${c.fixture} ${c.scale} ${c.shown} px shown: the request reaches ${c.dockBottom.toFixed(1)}`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("the queued cards float over the end of the transcript, never over the banner or the header (lot 29)", async () => {
+    await ready;
+    const queued = out.cells.filter((c) => c.covers !== undefined && (c.above?.queue ?? 0) > 0);
+    expect(queued.length).toBeGreaterThan(0);
+    const bad = queued
+      .filter((c) => c.covers!.length > 0)
+      .map((c) => `${c.fixture} ${c.scale} keyboard ${c.kb}: the queued cards cover the ${c.covers!.join(" and the ")}`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("nothing above the composer keeps its height while the composer is under its floor (lot 29)", async () => {
+    await ready;
+    const thread = out.cells.filter((c) => c.above !== undefined);
+    expect(thread.length).toBeGreaterThan(0);
+    const bad = thread
+      // A banner's own border (2 px) is all it keeps, given way.
+      .filter((c) => !c.ok && c.above!.banner + c.above!.queue + c.above!.dock > 2.5)
+      .map((c) => `${c.fixture} ${c.scale} keyboard ${c.kb}: composer under its floor (${c.shown} px shown) while banner ${c.above!.banner.toFixed(1)}, queue ${c.above!.queue.toFixed(1)}, request ${c.above!.dock.toFixed(1)} px`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  test("with its card focused, the request keeps its controls and the composer steps aside (lot 29)", async () => {
+    await ready;
+    expect(out.requestFloors.length).toBeGreaterThan(0);
+    // The focus is real (:focus-within matched): the regime the stylesheet keys on.
+    expect(out.requestFloors.filter((f) => !f.focused).map((f) => `${f.fixture} ${f.scale}`)).toEqual([]);
+    expect(out.requestFloors.filter((f) => f.floor === null).map((f) => `${f.fixture} ${f.scale}`)).toEqual([]);
+    const floor = new Map(out.requestFloors.map((f) => [`${f.fixture}/${f.scale}`, f.floor ?? Infinity]));
+    const bad = out.focus
+      .filter((c) => c.shown >= floor.get(`${c.fixture}/${c.scale}`)! && (c.request !== "whole" || (c.composerShown && !c.composerOk)))
+      .map((c) => `${c.fixture} ${c.scale} keyboard ${c.kb}: request ${c.request}, composer ${c.composerShown ? (c.composerOk ? "whole" : "cut") : "aside"}`);
     expect(bad).toEqual([]);
   }, 180_000);
 

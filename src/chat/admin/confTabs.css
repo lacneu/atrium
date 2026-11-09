@@ -105,17 +105,23 @@
   color: var(--destructive);
 }
 
-/* Full-screen editor dialog (overrides the dialog's default max-w-md card). */
+/* Full-screen editor dialog (overrides the dialog's default max-w-md card): the
+   height of every dialog's bound, the room less its margin — and, in a room too
+   short for that margin, the room itself, as the shared rule gives (lot 28). Its
+   footer is the dialog's, pinned at its foot over the scrolled source (lot 29: a
+   house foot, "Save" scrolled out of view at 140 px shown). */
 [data-slot="dialog-content"].oc-afiles__editor {
   display: flex;
   flex-direction: column;
   max-width: 72rem;
-  height: calc(var(--oc-layer-room) - 2rem);
+  height: max(calc(var(--oc-layer-room) - 2rem), min(var(--oc-layer-room), 7rem));
 }
 
 .oc-afiles__source {
   flex: 1 1 auto;
-  min-height: 0;
+  /* Three lines at least: shorter, the dialog scrolls under its pinned footer
+     rather than crush the text to nothing. */
+  min-height: 4.5rem;
   resize: none;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.8rem;
