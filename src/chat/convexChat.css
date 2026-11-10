@@ -6108,6 +6108,13 @@ button.oc-perm__opt:disabled {
   align-items: center;
   gap: 0.6rem;
   justify-content: space-between;
+  /* On the narrowest phones at a large text scale (lot 32: a Galaxy Fold folded, 280
+     px), a card's title was wider than the card: the badge goes to the next line, and a
+     word of the title breaks where it must. */
+  flex-wrap: wrap;
+}
+.oc-injcard__head .oc-field__label {
+  overflow-wrap: anywhere;
 }
 .oc-injcard__text {
   width: 100%;
@@ -6150,11 +6157,15 @@ button.oc-perm__opt:disabled {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--background);
+  /* Never wider than the card (lot 32): a placeholder's name breaks inside its chip. */
+  max-width: 100%;
 }
 .oc-injcard__ph-chip code {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.75rem;
   color: var(--foreground);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .oc-injcard__preview {
   display: flex;
@@ -8256,9 +8267,17 @@ button.oc-perm__opt:disabled {
 .oc-agentcard__head > * {
   flex: 0 0 auto;
 }
-/* A head of controls only (a reserved agent's actions) wraps as a whole. */
+/* A head of controls only (a reserved agent's actions) wraps as a whole — and a control
+   longer than the card's row (lifting the reservation, at a large text scale on a phone)
+   wraps its label inside it (lot 32). */
 .oc-agentcard__head:not(:has(> .oc-agentcard__main)) {
   flex-wrap: wrap;
+}
+.oc-agentcard__head:not(:has(> .oc-agentcard__main)) > [data-slot="button"] {
+  max-width: 100%;
+  height: auto;
+  min-height: 1.75rem;
+  white-space: normal;
 }
 /* The name and what qualifies it (model, badges, the default action) share the
    rest of the row: they wrap UNDER the name, aligned with it, where the row runs
@@ -8282,6 +8301,26 @@ button.oc-perm__opt:disabled {
   font-weight: 500;
   overflow-wrap: anywhere;
 }
+/* What qualifies it never runs past the card either (lot 32): at a large text scale on a
+   phone, a reservation's badge (the group's name), a model id or the default action is
+   wider than the row, and wraps inside it. */
+.oc-agentcard__main > :not(.oc-agentcard__name) {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+/* On one line, the same box as before: a badge's 1.25rem (its padding gone, its line
+   where it was), a button's 1.75rem. */
+.oc-agentcard__main > [data-slot="badge"] {
+  height: auto;
+  min-height: 1.25rem;
+  padding-block: 0;
+  white-space: normal;
+}
+.oc-agentcard__main > [data-slot="button"] {
+  height: auto;
+  min-height: 1.75rem;
+  white-space: normal;
+}
 /* TYPES row: a label + the SELECTED types as read-only chips + a "Manage" popover
    trigger. Only selected types show here (scales to many types — the full catalogue
    lives in the popover), aligned under the agent name (past the enable checkbox). */
@@ -8299,10 +8338,19 @@ button.oc-perm__opt:disabled {
   color: var(--muted-foreground);
 }
 .oc-agenttype__chip {
-  max-width: 14rem;
+  /* Never wider than its row (lot 32): 14rem is wider than a card on a phone at a large
+     text scale. */
+  max-width: min(14rem, 100%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The label in a box of its own (lot 32): the chip is a flex box, which draws no
+   ellipsis — a long type was cut off at both ends. Here it ends in "…". */
+.oc-agenttype__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Type-catalogue popover: each type = a checkbox + label + DESCRIPTION (so an admin
    understands it). Scrollable so a growing catalogue (10+ types) stays usable. */
@@ -8464,6 +8512,15 @@ button.oc-perm__opt:disabled {
 .oc-access__row > .oc-agentpicker__label {
   flex: 1 1 auto;
   min-width: 0;
+}
+/* Where even an empty name leaves the controls no room (a phone at the largest text
+   scale), they go to the next line instead of past the list (lot 32). The name grows
+   from nothing, so the row breaks only then: where it fits, nothing moves. */
+.oc-access__row {
+  flex-wrap: wrap;
+}
+.oc-access__row > :is(.oc-access__who, .oc-access__label, .oc-agentpicker__label) {
+  flex-basis: 0;
 }
 .oc-access__label {
   overflow: hidden;
@@ -9983,6 +10040,9 @@ button.oc-perm__opt:disabled {
 
 /* Injections tab: content-language selector */
 .oc-injtab__content-locale { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+/* Its 11 rem as long as the line holds them, never wider than the line (lot 32): on a
+   280 px phone at a large text scale they ran past the page. As the picker above. */
+.oc-injtab__content-locale > [data-slot="select-trigger"] { min-width: min(11rem, 100%); }
 .oc-injtab__content-locale > span { font-size: 0.9rem; font-weight: 600; }
 .oc-injtab__content-locale .oc-admin__hint { flex-basis: 100%; margin: 0; }
 

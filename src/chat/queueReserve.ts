@@ -33,23 +33,33 @@
 //     reader, Tab, a script): the browser scrolls it into view;
 //   - any move up already made that neither the follow nor the layout made (a script,
 //     an assistive technology, find in page): the transcript above where the follow
-//     left it, and short of its end by more than the reserve has grown since;
+//     left it, short of its end, with the layout as it was then — its content's height,
+//     the reserve aside, and its box (lot 32);
 //   - assistant-ui reading the reader away from the end;
 //   - the app, before it scrolls the transcript itself (`stopReserveFollow`): a SMOOTH
 //     scroll shows no move before the follow's next frame, whose instant scroll cancels
 //     it (measured in Chrome). A smooth scroll from outside the app (an extension, a
 //     smooth find in page) within the follow's 300 ms is taken back: nothing announces
 //     it.
-// What the layout moves is no one's move (lot 31, pass 20). The end shrinking (a widget
-// reporting a smaller height, a block that folds, an image replaced), the transcript's
-// box growing (the composer cleared by a send, the keyboard closing, a banner leaving,
-// the header folding), the browser's scroll anchoring: each pulls the scroll up WITH the
-// end, at the end — and the reserve, whose transition Chrome advances at the start of a
-// frame, has grown before anyone looks: the transcript is short of its end by that growth
-// only. The follow takes it back to the end at once, in its listener on the document (the
-// capture phase: ahead of assistant-ui's own listener on the transcript), so that
-// assistant-ui too reads the reader at the end — else it reads them away from it, the
-// follow stops on its word, and the next text no longer follows them.
+// What the layout moves is no one's move (lots 31-32, passes 20-21). The end shrinking (a
+// widget reporting a smaller height, a block that folds, an image replaced), the
+// transcript's box growing (the composer cleared by a send, the keyboard closing, a banner
+// leaving, the header folding), the browser's scroll anchoring: each pulls the scroll up
+// WITH the end, at the end — and before anyone looks, the reserve (whose transition Chrome
+// advances at the start of a frame) or other content may have grown below. From where it
+// all ends, that cannot be told from another's move: the same position, the same height.
+// So a move up is another's only if the layout has not moved since the follow left the
+// transcript at its end; once it has, the move is the layout's, and the follow takes it
+// back to the end at once, in its listener on the document (the capture phase: ahead of
+// assistant-ui's own listener on the transcript), so that assistant-ui too reads the
+// reader at the end — else it reads them away from it, the follow stops on its word, and
+// the next text no longer follows them. What this costs, declared: a move another makes
+// in the same interval as a change of the layout is taken back; and two changes that
+// exactly cancel out within one interval (a block folding while another grows as much)
+// are no change: the pull of the first is read as another's move, and the follow stops.
+// Its window is the clock's (lot 32, pass 21): past its transition and 100 ms, a late frame
+// (a long task, a hidden tab) lands once, only if no one has moved the transcript since
+// the follow left it, and no scroll event is taken back any more.
 // The reader's position is the one they chose. assistant-ui, which holds no intent of
 // the follow's, reads them away from the end on their own scroll (`isAtBottom` false),
 // so the next text does not bring them back either. A reader who pressed without
@@ -135,23 +145,36 @@ export function followReserve(viewport: HTMLElement, store: ViewportFollowStore)
   let frame = 0;
   let stopped = false;
   // Where the follow last left the transcript at its end — or its end, wherever the end
-  // has gone since — and the reserve's height then.
-  let left = viewport.scrollTop;
-  let reserveThen = reserve();
+  // has gone since — and the layout then: the content's height, the reserve aside, and
+  // the transcript's box.
+  let left = 0;
+  let contentThen = 0;
+  let boxThen = 0;
+  const mark = () => {
+    left = viewport.scrollTop;
+    contentThen = viewport.scrollHeight - reserve();
+    boxThen = viewport.clientHeight;
+  };
+  mark();
+  // Another's move up (lot 32, pass 21): above where the follow left the transcript,
+  // short of its end, the layout as it was then (its content within 1 px, the reserve
+  // aside; its box). From where it ends, a pull of the layout followed by content that
+  // grows cannot be told from another's move — the same position, the same height: once
+  // the layout has moved, the move is the layout's, and taken back.
   const movedUpByOther = () => {
-    const gap = short();
-    if (gap <= 1) {
-      left = viewport.scrollTop;
-      reserveThen = reserve();
+    if (short() <= 1) {
+      mark();
       return false;
     }
-    // Pulled up with the end, then short of it by what the reserve grew: the layout's.
-    return viewport.scrollTop < left - 0.5 && gap > reserve() - reserveThen + 1;
+    return (
+      viewport.scrollTop < left - 0.5 &&
+      Math.abs(viewport.scrollHeight - reserve() - contentThen) <= 1 &&
+      viewport.clientHeight === boxThen
+    );
   };
   const toEnd = () => {
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "instant" });
-    left = viewport.scrollTop;
-    reserveThen = reserve();
+    mark();
   };
   const onKey = (e: KeyboardEvent) => {
     if (keyScrollsTranscriptUp(e, viewport)) stop();
@@ -163,10 +186,12 @@ export function followReserve(viewport: HTMLElement, store: ViewportFollowStore)
     if (focusScrollsTranscript(e.target, viewport)) stop();
   };
   // A scroll of the transcript: another's move up stops the follow; any other scroll that
-  // leaves it short of its end is taken back at once, before assistant-ui reads it.
+  // leaves it short of its end is taken back at once, before assistant-ui reads it. Past
+  // the follow's window, by the clock, it scrolls no more: it stops, and the scroll stays
+  // whose it is.
   const onScroll = (e: Event) => {
     if (e.target !== viewport) return;
-    if (movedUpByOther()) stop();
+    if (win.performance.now() >= until || movedUpByOther()) stop();
     else if (short() > 1) toEnd();
   };
   const stop = () => {
@@ -181,16 +206,23 @@ export function followReserve(viewport: HTMLElement, store: ViewportFollowStore)
     doc.removeEventListener("scroll", onScroll, true);
     doc.removeEventListener("keydown", onKey, true);
   };
-  // The first step runs at once: a reader who is not at the end is asked nothing.
+  // The first step runs at once: a reader who is not at the end is asked nothing. The
+  // window is the clock's, not the frames' (lot 32, pass 21): a frame that comes late — a
+  // long task, a hidden tab — lands the reserve's last growth only if no one has moved
+  // the transcript since the follow left it, then stops; else it stops without a scroll.
   const step = () => {
     if (stopped) return;
     if (!store.getState().isAtBottom || movedUpByOther()) {
       stop();
       return;
     }
+    if (win.performance.now() >= until) {
+      if (viewport.scrollTop === left && short() > 1) toEnd();
+      stop();
+      return;
+    }
     toEnd();
-    if (win.performance.now() < until) frame = win.requestAnimationFrame(step);
-    else stop();
+    frame = win.requestAnimationFrame(step);
   };
   viewport.addEventListener("pointerdown", stop, { passive: true });
   viewport.addEventListener("touchstart", stop, { passive: true });

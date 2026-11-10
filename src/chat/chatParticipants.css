@@ -484,6 +484,13 @@
   gap: 0.6rem;
   min-height: 3rem;
   padding: 0.45rem 0.6rem;
+  /* Where even an empty name leaves the role and the actions no room (a phone at the
+     largest text scales), they go to the next line — the list clips its rounded
+     corners, and cut the actions off (lot 32). The name grows from nothing, so the row
+     breaks only then. And a button's tap zone stays within its padding and its gap,
+     inside the list that clips it. */
+  flex-wrap: wrap;
+  --oc-hit-w: 2.7rem;
 }
 .oc-convpanel__member + .oc-convpanel__member {
   border-top: 1px solid var(--border);
@@ -514,7 +521,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
 }
 .oc-convpanel__name {
   display: flex;
@@ -525,6 +532,17 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+/* The name in a box of its own (lot 32): a flex box draws no ellipsis — its text is an
+   anonymous item `text-overflow` does not reach —, and a long name was cut off mid-letter
+   on a phone. Here it ends in "…", and what follows it ("you", the crown) stays shown. */
+.oc-convpanel__nametext {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-convpanel__name > :not(.oc-convpanel__nametext) {
+  flex: none;
 }
 .oc-convpanel__sub {
   display: inline-flex;
@@ -680,6 +698,8 @@
   justify-content: space-between;
   gap: 0.75rem;
   font-size: 0.85rem;
+  /* The select goes under its label where both no longer fit (lot 32). */
+  flex-wrap: wrap;
 }
 
 /* ── Sidebar: the group mark on a row ─────────────────────────────────────

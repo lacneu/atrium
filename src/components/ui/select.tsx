@@ -54,6 +54,10 @@ function SelectTrigger({
         // past the border and shoves the chevron out. Styled by slot because
         // Radix's `Select.Value` drops the `className` it is given.
         "[&>[data-slot=select-value]]:min-w-0 [&>[data-slot=select-value]]:truncate",
+        // And the box stays within what holds it (lot 32): a trigger as wide as its value
+        // (`w-fit`) is never wider than its container, so a value longer than the room it
+        // has is truncated inside it instead of pushing a dialog past its edge.
+        "max-w-full",
         className,
       )}
       {...props}

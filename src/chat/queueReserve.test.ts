@@ -28,7 +28,14 @@
 //   cleared by a send — the scroll pulled up with the end, before the next frame grows
 //   the reserve. On lot 30 assistant-ui and the follow took the pull for the reader's
 //   own: the reader was left 53 px short of the end, under the cards, and the next text
-//   no longer followed them.
+//   no longer followed them. Nor a pull followed, in the same task, by another block
+//   growing below (lot 32, pass 21), laid out as Safari does it, without scroll anchoring:
+//   on lot 31 the follow took it for another's move.
+// - The follow's window is the clock's, not the frames' (lot 32, pass 21): a frame that
+//   comes late lands once, only if no one has moved the transcript, and a scroll past the
+//   window is taken back no more. Two seconds of a busy main thread delay the follow's
+//   frame past its window; a smooth scroll nothing announces, begun at the end of that
+//   task, is kept. On lot 31 the late frame scrolled to the end first and cancelled it.
 // - Every scroll the app makes of the transcript tells the follow first (the AST of
 //   src/): a smooth scroll shows no move before the follow's next frame.
 //
@@ -91,6 +98,13 @@ let widgetOn = false;
 let widgetFrame = null;
 // The widget's frame has reported a size: its script runs, it will answer.
 let widgetReported = false;
+// Another block at the end of the transcript, below the reply its widget closes, that
+// grows from nothing to 60 px in the same task as the widget shrinks, once the shrink is
+// laid out (lot 32, pass 21). In the transcript's column, not in the message's row,
+// where it would only be as tall as the widget beside it.
+let growerOn = false;
+let growAfterShrink = false;
+let setGrowerHeight = null;
 // An experiment's change of the layout, recorded in the layout effect that applies it —
 // where it is, the transcript, and the reserve's height — after, when it asks for one, a
 // layout computed before the next frame (a measure, as any component's).
@@ -137,8 +151,22 @@ const Widget = () => {
   useLayoutEffect(() => {
     widgetFrame = ref.current;
     applied("widget:" + height);
+    if (height === 387 && growAfterShrink) {
+      // The shrink laid out (the scroll pulled up with the end), then the other block
+      // grows, in this task: from where it ends, another's move up.
+      void vp().scrollHeight;
+      growAfterShrink = false;
+      setGrowerHeight(60);
+    }
   }, [height]);
   return h("iframe", { ref, className: "oc-widget__frame", title: "widget", sandbox: SIMPLE_FRAME_SANDBOX, referrerPolicy: "no-referrer", srcDoc: WIDGET_DOC, style: { height } });
+};
+const Grower = () => {
+  const [height, setHeight] = useState(0);
+  setGrowerHeight = setHeight;
+  useLayoutEffect(() => applied("grower:" + height), [height]);
+  // Never shrunk by the transcript's column, which holds more than it shows.
+  return h("div", { className: "oc-probe-grower", style: { height, flex: "none" } });
 };
 // A block the first message holds, far above the end (a reasoning, a tool's card), that
 // folds from 300 px to 200 when the experiment asks.
@@ -180,7 +208,7 @@ function Thread() {
   return h(
     ThreadPrimitive.Root,
     { className: "oc-thread", style: { height: "600px" } },
-    h(ThreadPrimitive.Viewport, { className: "oc-thread__viewport" }, h(ThreadPrimitive.Messages, { components: { Message } }), h(Tail)),
+    h(ThreadPrimitive.Viewport, { className: "oc-thread__viewport" }, h(ThreadPrimitive.Messages, { components: { Message } }), h(Tail), growerOn ? h(Grower) : null),
     h("div", { className: "oc-scrolldown-anchor" }),
     h(QueueDockContext.Provider, { value: dock }, h(QueuedDock), h(Probe)),
     h(
@@ -326,6 +354,8 @@ async function mount(setup = {}) {
   runtimeNow = null;
   widgetOn = setup.widget === true;
   widgetReported = false;
+  growerOn = setup.grower === true;
+  growAfterShrink = false;
   blockOn = setup.block === true;
   composerRows = setup.rows || 1;
   expected = null;
@@ -428,6 +458,24 @@ const ACTIONS = {
   // of assistant-ui's own).
   // - the end shrinking: the widget closing the last reply reports 387 px instead of 500;
   widgetShrinks: { kind: "keeps", widget: true, layout: true, run: (v, t0) => change(t0, "widget:387", true, () => widgetFrame.contentWindow.postMessage(387, "*")) },
+  // - the end shrinking, then another block below it growing 60 px in the same task, the
+  //   shrink laid out in between (lot 32, pass 21): from where it ends — 60 px short, the
+  //   reserve's growth on top —, the pull cannot be told from another's move up; only the
+  //   layout, which moved, can tell. As Safari lays it out, with no scroll anchoring:
+  //   Chrome's keeps the end where it was as the block grows (measured: the transcript at
+  //   its end, 60 px further), and there the follow has nothing to tell apart.
+  widgetShrinksAnotherGrows: {
+    kind: "keeps",
+    widget: true,
+    grower: true,
+    layout: true,
+    run: (v, t0) =>
+      change(t0, "grower:60", true, () => {
+        v.style.overflowAnchor = "none";
+        growAfterShrink = true;
+        widgetFrame.contentWindow.postMessage(387, "*");
+      }),
+  },
   // - a block far above the end folding, 300 px down to 187 (the browser's scroll
   //   anchoring keeps what is shown in place, the scroll up by as much);
   aboveShrinks: { kind: "keeps", block: true, layout: true, run: (v, t0) => change(t0, "block:187", true, () => setTimeout(() => setBlockHeight(187), 0)) },
@@ -435,6 +483,31 @@ const ACTIONS = {
   //   composer's draft, four lines down to one.
   composerShrinks: { kind: "keeps", rows: 4, afterFrame: true, layout: true, run: (v, t0) => change(t0, "rows:1", true, () => setTimeout(() => setComposerRows(1), 0)) },
   readerAbove: { kind: "away" },
+  // A long task, then a smooth scroll nothing announces (lot 32, pass 21): the reserve's
+  // transition over, the follow's window not yet — two seconds of a busy main thread
+  // delay its next frame past its window; the scroll begins at the end of that task. On
+  // lot 31 that late frame scrolled to the end first, which cancelled the smooth scroll.
+  longTaskThenSmooth: {
+    kind: "takes",
+    window: true,
+    run: async (v, t0) => {
+      // The reserve at rest: its transition is over.
+      let last = spacer(v);
+      for (;;) {
+        await nextFrame();
+        const now = spacer(v);
+        if (Math.abs(now - last) < 0.01) break;
+        last = now;
+      }
+      const act = { t: Math.round(performance.now() - t0), top: v.scrollTop, spacer: spacer(v), short: v.scrollHeight - v.scrollTop - v.clientHeight };
+      const busy = performance.now() + 2000;
+      while (performance.now() < busy) {
+        // A long task: no frame runs until it ends.
+      }
+      v.scrollTo({ top: v.scrollTop - 400, behavior: "smooth" });
+      return act;
+    },
+  },
 };
 
 // The experiment ran as designed: from the end of the whole thread, and the reader's
@@ -445,6 +518,15 @@ function precondition(a, out) {
   const b = out.before;
   if (!(b.atEnd && b.bubbles === 10 && b.overflow)) return { met: false, why: "not at the end of the whole thread: " + JSON.stringify(b) };
   if (!a.run) return { met: true };
+  // A long task begun inside the follow's window, the reserve at rest: past its
+  // transition, short of its window (its longest time and 100 ms).
+  if (a.window) {
+    const w = out.windowAct;
+    const until = reserve.longestTimeMs(out.transition) + 100;
+    return w !== null && w.t < until && w.short <= 1
+      ? { met: true }
+      : { met: false, why: "the long task began at " + (w ? w.t + " ms, " + w.short.toFixed(1) + " px short of the end" : "no time") + ", the window ending at " + until + " ms" };
+  }
   // A change of the layout counts when it is laid out; an input, when the page has it.
   const at = out.changed || out.first || out.acted;
   if (reducedMotion) return at.t < 100 ? { met: true } : { met: false, why: "acted at " + at.t + " ms, past the follow's 100 ms" };
@@ -468,6 +550,7 @@ async function attempt(name) {
     acted: null,
     first: null,
     changed: null,
+    windowAct: null,
     atKey: null,
     target: null,
     away: null,
@@ -514,6 +597,7 @@ async function attempt(name) {
       // A layout change resolves to where it was laid out (scrollTo's promise, in this
       // Chrome, to whether it was interrupted).
       if (a.layout) out.changed = await a.run(v, t0);
+      else if (a.window) out.windowAct = await a.run(v, t0);
       else await a.run(v);
     }
     await sampling;
@@ -628,6 +712,8 @@ type Run = {
   first: { type: string; t: number; top: number; spacer: number } | null;
   // A change of the layout the experiment made, as it was laid out.
   changed: { t: number; top: number; max: number; spacer: number } | null;
+  // A long task the experiment began inside the follow's window, the reserve at rest.
+  windowAct?: { t: number; top: number; spacer: number; short: number } | null;
   atKey: number | null;
   target: number | null;
   away: number | null;
@@ -770,6 +856,14 @@ function fakeDom(geometry: { top: number; height: number; client: number }) {
       viewport.clientHeight += px;
       viewport.scrollTop = Math.min(viewport.scrollTop, viewport.scrollHeight - viewport.clientHeight);
     },
+    // Content growing at the end (another widget, a block that unfolds), and the box
+    // shrinking (the keyboard opening, the composer growing): the scroll stays.
+    growContent: (px: number) => {
+      viewport.scrollHeight += px;
+    },
+    shrinkBox: (px: number) => {
+      viewport.clientHeight -= px;
+    },
     listening: () => [...listeners.values()].reduce((n, s) => n + s.size, 0),
     // Runs the frames asked for, `ms` later.
     frame: (ms = 16) => {
@@ -777,6 +871,10 @@ function fakeDom(geometry: { top: number; height: number; client: number }) {
       const due = [...frames.values()];
       frames.clear();
       for (const f of due) f();
+    },
+    // Time passing with no frame (a long task, a hidden tab).
+    tick: (ms: number) => {
+      now += ms;
     },
     pending: () => frames.size,
   };
@@ -856,7 +954,7 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
     followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
     expect(dom.scrolls()).toBe(1);
     for (let i = 0; i < 6; i++) {
-      vp.scrollHeight += 10; // the spacer grows
+      dom.grow(10); // the spacer grows
       dom.frame(50);
       expect(vp.scrollTop).toBe(vp.scrollHeight - vp.clientHeight);
     }
@@ -891,12 +989,12 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
       const dom = fakeDom({ top: 500, height: 1000, client: 500 });
       const vp = dom.viewport;
       followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
-      vp.scrollHeight += 10;
+      dom.grow(10);
       dom.frame();
       act(dom);
       const top = vp.scrollTop;
       const scrolls = dom.scrolls();
-      vp.scrollHeight += 10;
+      dom.grow(10);
       dom.frame();
       dom.frame();
       expect(vp.scrollTop).toBe(top);
@@ -923,10 +1021,10 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
       const dom = fakeDom({ top: 500, height: 1000, client: 500 });
       const vp = dom.viewport;
       followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
-      vp.scrollHeight += 10;
+      dom.grow(10);
       dom.frame();
       act(dom);
-      vp.scrollHeight += 10;
+      dom.grow(10);
       dom.frame();
       expect(vp.scrollTop).toBe(vp.scrollHeight - vp.clientHeight);
     });
@@ -985,29 +1083,151 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
     expect(read).toEqual([true]);
   });
 
-  for (const seen of ["in the scroll event", "on its next frame"] as const) {
-    test(`a move up another makes as the end shrinks still stops it for good: short of the end by more than the reserve grew — ${seen} (lot 31)`, () => {
-      const dom = fakeDom({ top: 500, height: 1000, client: 500 });
-      const vp = dom.viewport;
-      followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
-      dom.grow(10);
-      dom.frame();
-      dom.shrinkEnd(100);
-      dom.grow(4);
-      // 8 px: more than the 4 the reserve grew since the follow left it at the end.
-      vp.scrollTop -= 8;
-      if (seen === "in the scroll event") dom.fire("vp", "scroll");
-      else dom.frame();
-      const top = vp.scrollTop;
-      const scrolls = dom.scrolls();
-      dom.grow(10);
-      dom.frame();
-      dom.frame();
-      expect(vp.scrollTop).toBe(top);
-      expect(dom.scrolls()).toBe(scrolls);
-      expect(dom.listening()).toBe(0);
-    });
+  // Two changes before the follow looks (lot 32, pass 21): pulled up with the end, then
+  // content growing below it, or the box changing besides — from where it all ends, the
+  // position and the height of another's move up. Only the layout tells them apart: it
+  // moved, so the move is its own, taken back.
+  const twice: Array<[string, (dom: ReturnType<typeof fakeDom>) => void]> = [
+    ["a widget shrinking 113 px, then another growing 60 and the reserve 4", (d) => (d.shrinkEnd(113), d.growContent(60), d.grow(4))],
+    ["another widget growing 60 px, then one shrinking 113, and the reserve 4", (d) => (d.growContent(60), d.shrinkEnd(113), d.grow(4))],
+    ["a widget shrinking 113 px as the keyboard opens 100 px, and the reserve 4", (d) => (d.shrinkEnd(113), d.shrinkBox(100), d.grow(4))],
+    ["the composer cleared (the box 72 px taller), then a widget growing 60, and the reserve 4", (d) => (d.growBox(72), d.growContent(60), d.grow(4))],
+    ["the keyboard closing (the box 260 px taller), then a widget growing 60", (d) => (d.growBox(260), d.growContent(60))],
+  ];
+  for (const [what, changes] of twice) {
+    for (const seen of ["in the scroll event", "on its next frame"] as const) {
+      test(`it keeps holding the end through ${what} — ${seen} (lot 32)`, () => {
+        const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+        const vp = dom.viewport;
+        const shortOf = () => vp.scrollHeight - vp.scrollTop - vp.clientHeight;
+        followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+        dom.grow(10);
+        dom.frame();
+        changes(dom);
+        expect(shortOf()).toBeGreaterThan(1);
+        if (seen === "in the scroll event") {
+          dom.fire("vp", "scroll");
+          expect(shortOf()).toBe(0);
+        }
+        dom.frame();
+        expect(shortOf()).toBe(0);
+        for (let i = 0; i < 6; i++) {
+          dom.grow(5);
+          dom.frame(50);
+          expect(shortOf()).toBe(0);
+        }
+        expect(dom.pending()).toBe(0);
+        expect(dom.listening()).toBe(0);
+      });
+    }
   }
+
+  // Another's move up with the layout as the follow left it — the reserve may have grown
+  // meanwhile, it is set aside — is another's: the follow stops for good (lot 32).
+  for (const reserveGrew of [0, 4]) {
+    for (const seen of ["in the scroll event", "on its next frame"] as const) {
+      test(`a move up another makes, the layout as the follow left it and the reserve grown ${reserveGrew} px, stops it for good — ${seen} (lot 32)`, () => {
+        const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+        const vp = dom.viewport;
+        followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+        dom.grow(10);
+        dom.frame();
+        dom.grow(reserveGrew);
+        vp.scrollTop -= 8;
+        if (seen === "in the scroll event") dom.fire("vp", "scroll");
+        else dom.frame();
+        const top = vp.scrollTop;
+        const scrolls = dom.scrolls();
+        dom.grow(10);
+        dom.frame();
+        dom.frame();
+        expect(vp.scrollTop).toBe(top);
+        expect(dom.scrolls()).toBe(scrolls);
+        expect(dom.listening()).toBe(0);
+      });
+    }
+  }
+
+  // What the rule costs, declared (lot 32): a move another makes in the same interval as
+  // a change of the layout cannot be told from the layout's own pull — it is taken back.
+  test("a move up another makes in the same interval as a change of the layout is taken back, the follow going on (lot 32)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const vp = dom.viewport;
+    followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+    dom.grow(10);
+    dom.frame();
+    dom.shrinkEnd(100);
+    dom.grow(4);
+    vp.scrollTop -= 8;
+    dom.fire("vp", "scroll");
+    expect(vp.scrollHeight - vp.scrollTop - vp.clientHeight).toBe(0);
+    expect(dom.listening()).toBeGreaterThan(0);
+  });
+
+  // THE WINDOW IS THE CLOCK'S (lot 32, pass 21), not the frames': a frame that comes late —
+  // a long task, a hidden tab — or a scroll past the window.
+  test("a frame 2 s late lands the reserve's last growth once, no one having moved, and stops (lot 32)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const vp = dom.viewport;
+    followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+    dom.grow(10);
+    dom.frame();
+    dom.grow(4);
+    const scrolls = dom.scrolls();
+    dom.frame(2000);
+    expect(vp.scrollHeight - vp.scrollTop - vp.clientHeight).toBe(0);
+    expect(dom.scrolls()).toBe(scrolls + 1);
+    expect(dom.pending()).toBe(0);
+    expect(dom.listening()).toBe(0);
+  });
+
+  test("a frame 2 s late, the transcript at its end, scrolls nothing — a smooth scroll begun meanwhile goes on — and stops (lot 32)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const vp = dom.viewport;
+    followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+    dom.grow(10);
+    dom.frame();
+    const scrolls = dom.scrolls();
+    // 2250 ms in all, as Codex reproduced it: no frame in between.
+    dom.frame(2234);
+    expect(dom.scrolls()).toBe(scrolls);
+    expect(dom.pending()).toBe(0);
+    expect(dom.listening()).toBe(0);
+  });
+
+  test("a frame 2 s late, after another moved the transcript during the long task, stops without a scroll (lot 32)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const vp = dom.viewport;
+    followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+    dom.grow(10);
+    dom.frame();
+    dom.grow(20);
+    // Down, toward the end: never another's move up, and short of the end all the same.
+    vp.scrollTop += 10;
+    const top = vp.scrollTop;
+    const scrolls = dom.scrolls();
+    dom.frame(2000);
+    expect(vp.scrollTop).toBe(top);
+    expect(dom.scrolls()).toBe(scrolls);
+    expect(dom.listening()).toBe(0);
+  });
+
+  test("a scroll event past the window takes nothing back, and stops the follow (lot 32)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const vp = dom.viewport;
+    followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+    dom.grow(10);
+    dom.frame();
+    dom.tick(400);
+    dom.shrinkEnd(100);
+    dom.grow(4);
+    const top = vp.scrollTop;
+    const scrolls = dom.scrolls();
+    dom.fire("vp", "scroll");
+    expect(vp.scrollTop).toBe(top);
+    expect(dom.scrolls()).toBe(scrolls);
+    expect(dom.listening()).toBe(0);
+  });
 
   test("assistant-ui reading the reader away from the end stops it; a new follow ends the one under way", () => {
     const dom = fakeDom({ top: 500, height: 1000, client: 500 });
@@ -1015,7 +1235,7 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
     let isAtBottom = true;
     followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom }) });
     isAtBottom = false;
-    vp.scrollHeight += 10;
+    dom.grow(10);
     dom.frame();
     expect(vp.scrollTop).toBe(500);
     expect(dom.listening()).toBe(0);
@@ -1051,11 +1271,13 @@ const MOTION = [
   "PageDown",
   "wheelDown",
   "widgetShrinks",
+  "widgetShrinksAnotherGrows",
   "aboveShrinks",
   "composerShrinks",
   "readerAbove",
+  "longTaskThenSmooth",
 ];
-const REDUCED = ["untouched", "PageUp", "focusAbove", "scriptInstant", "wheelUp", "widgetShrinks", "aboveShrinks", "composerShrinks", "readerAbove"];
+const REDUCED = ["untouched", "PageUp", "focusAbove", "scriptInstant", "wheelUp", "widgetShrinks", "widgetShrinksAnotherGrows", "aboveShrinks", "composerShrinks", "readerAbove", "longTaskThenSmooth"];
 
 describe.skipIf(chrome === null)("the end of the reply above the queued cards, and the reader's own scroll — assistant-ui's own follow, in Chrome (lots 29-30)", () => {
   // Both runs, once, when a test first needs them — one after the other: each experiment
@@ -1255,15 +1477,32 @@ describe.skipIf(chrome === null)("the end of the reply above the queued cards, a
   for (const media of ["motion", "reduced"] as const) {
     for (const [name, what] of [
       ["widgetShrinks", "the end shrinking under the reader (a widget reports 387 px instead of 500, laid out before the next frame)"],
+      ["widgetShrinksAnotherGrows", "the end shrinking, then another block below it growing 60 px in the same task (lot 32, pass 21)"],
       ["aboveShrinks", "a block far above folding (300 px to 187, the scroll anchored up with it)"],
       ["composerShrinks", "the transcript's box growing (the composer cleared by a send, a frame after the card)"],
     ] as const) {
       test(`${media}: ${what} does not stop the follow: at the end, the bubble above the cards, the next text followed`, async (ctx) => {
         const { run } = await runOf(media, name, ctx);
         expect(run.changed).not.toBeNull();
-        keeps(run, media);
+        // The block grows in a task between two frames: the page's sampler, first on the
+        // next frame, sees what the follow takes back on that same frame, before it is
+        // painted. That one is judged once the transcript has settled, in both runs.
+        keeps(run, name === "widgetShrinksAnotherGrows" ? "motion" : media);
       }, 900_000);
     }
+  }
+
+  // THE FOLLOW'S WINDOW IS THE CLOCK'S (lot 32, pass 21): two seconds of a busy main thread,
+  // begun inside the window with the reserve at rest, delay the follow's next frame past
+  // it; a smooth scroll nothing announces begins at the end of that task. The late frame
+  // does not take it back: the position it reaches is kept, and assistant-ui reads the
+  // reader away from the end. On lot 31 the late frame scrolled to the end first.
+  for (const media of ["motion", "reduced"] as const) {
+    test(`${media}: a long task, then a smooth scroll nothing announces — the late frame does not take it back (lot 32)`, async (ctx) => {
+      const { run } = await runOf(media, "longTaskThenSmooth", ctx);
+      expect(run.windowAct).not.toBeNull();
+      takes(run);
+    }, 900_000);
   }
 });
 

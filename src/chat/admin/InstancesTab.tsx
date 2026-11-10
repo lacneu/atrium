@@ -1108,7 +1108,7 @@ function AgentTypesEditor({
           className="oc-agenttype__chip"
           title={agentTypeDesc(code)}
         >
-          {agentTypeLabel(code)}
+          <span className="oc-agenttype__label">{agentTypeLabel(code)}</span>
         </Badge>
       ))}
       <Popover>

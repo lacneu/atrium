@@ -57,10 +57,11 @@ function AlertDialogOverlay({
 // stylesheet subtracts the keyboard and the safe areas, lifts it, keeps its
 // actions in view, and sizes and centres it across what is shown (lot 25;
 // convexChat.css, safeAreas.test.ts). Its padding gives way with the room, the
-// caller's to replace, as the dialog's (lot 29). The z-index utility stays
-// on the element, after its `data-slot` (overlayLayer.test.ts).
+// caller's to replace, as the dialog's (lot 29); its column is its width, as the
+// dialog's (lot 32). The z-index utility stays on the element, after its
+// `data-slot` (overlayLayer.test.ts).
 export const alertDialogContentClassName =
-  "fixed top-1/2 grid max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding px-5 py-(--oc-layer-pad-y) text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+  "fixed top-1/2 grid grid-cols-1 max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding px-5 py-(--oc-layer-pad-y) text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
 
 function AlertDialogContent({
   className,

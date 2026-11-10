@@ -264,6 +264,80 @@ export function scriptData(value: unknown): string {
   return JSON.stringify(value).replace(/<\//g, "<\\/");
 }
 
+// A LAYER HOLDS ITS CONTENT IN ITS WIDTH (lots 31-32), whatever the scrollbars and the
+// font. The scrollbars: Windows' take 17 px of a scroller's room and Linux's 15, where a
+// Mac's float over it and take none; a document with this rule lays out as Windows' does,
+// on any platform (an element that names its own scrollbar-width keeps the platform's).
+export const CLASSIC_SCROLLBARS = "::-webkit-scrollbar { width: 17px; height: 17px; }";
+
+// The fonts: this platform's (the app's own stack), and one as wide on every platform —
+// monospace's glyphs, 0.6 em each, wider than a UI font's —, set through the app's own
+// token (charts set it so). Twice named: the generic alone would shrink the root's font
+// size (the monospace quirk).
+export const WIDTH_FONTS: Array<[string, string | null]> = [
+  ["this platform's font", null],
+  ["text as wide as monospace", "monospace, monospace"],
+];
+
+/** One thing that runs past its width in a layer, as `overruns` (OVERRUNS_SCRIPT) finds it. */
+export type Overrun = { box: string; kind: "scrolls" | "cuts" | "spills"; over: number; culprit: string };
+
+/** A page's function `overruns(w, layer)`: what runs past its width in the layer, the
+ *  layer itself included — a box whose content is wider than it is:
+ *  - the layer, whatever its overflow: a dialog that scrolls in width, or spills;
+ *  - a scroller inside it, save those made to scroll in width: a code block (pre), a
+ *    table and the table's box, a tab strip, the settings' tabs, the permission matrix,
+ *    the project's columns (their lines, columns and tabs are not to wrap), and a form
+ *    field, which scrolls its own text;
+ *  - a box whose hidden overflow cuts its content off, save a text it truncates with an
+ *    ellipsis (the reader sees "…"), a form field, and what is visually hidden on purpose
+ *    (a box of a pixel or less: a screen reader's text). An ellipsis is drawn by a block
+ *    container only (lot 32): a flex or grid box's text is an anonymous item that
+ *    `text-overflow` does not reach — such a box, its text clipped, cuts it.
+ *  Each names the box, by how much, and what reaches farthest past it. */
+export const OVERRUNS_SCRIPT = String.raw`
+const MADE_TO_SCROLL_WIDE = "pre, table, [data-slot='table-container'], [data-slot='tabs-list'], .oc-settings-tabs, .oc-matrix__scroll, .oc-projpage__cols";
+const FIELDS = "input, textarea, select";
+const DRAWS_ELLIPSIS = /^(block|inline-block|list-item|flow-root|table-cell|table-caption|-webkit-box)$/;
+function boxName(el) {
+  const slot = el.getAttribute("data-slot");
+  const own = typeof el.className === "string" ? el.className.split(/\s+/).find((c) => c.startsWith("oc-")) : undefined;
+  return el.tagName.toLowerCase() + (slot ? "[" + slot + "]" : "") + (own ? "." + own : "");
+}
+// What makes a box too wide: of what reaches past its content box, the outermost box on
+// one line (a box that wraps is only as wide as what it holds), else the deepest box.
+function culprit(w, el) {
+  const cs = w.getComputedStyle(el);
+  const edge = el.getBoundingClientRect().left + el.clientLeft + el.clientWidth - parseFloat(cs.paddingRight);
+  const past = [...el.querySelectorAll("*")].filter((c) => { const r = c.getBoundingClientRect(); return r.width > 0 && r.right - edge > 0.5; });
+  if (past.length === 0) return "nothing past its content box";
+  const oneLine = past.filter((c) => /^(nowrap|pre)$/.test(w.getComputedStyle(c).whiteSpace));
+  const it = oneLine.length > 0 ? oneLine.find((c) => !oneLine.some((o) => o !== c && o.contains(c))) : past[past.length - 1];
+  return boxName(it) + ", " + Math.round(it.getBoundingClientRect().width) + " px wide" + (oneLine.length > 0 ? " on one line" : "");
+}
+function overruns(w, layer) {
+  const out = [];
+  for (const el of [layer, ...layer.querySelectorAll("*")]) {
+    const over = el.scrollWidth - el.clientWidth;
+    if (!(over > 0.5)) continue;
+    const cs = w.getComputedStyle(el);
+    const x = cs.overflowX;
+    let kind = null;
+    if (x === "auto" || x === "scroll") kind = el === layer || !(el.matches(MADE_TO_SCROLL_WIDE) || el.matches(FIELDS)) ? "scrolls" : null;
+    else if (x === "hidden" || x === "clip") kind = (cs.textOverflow === "ellipsis" && DRAWS_ELLIPSIS.test(cs.display)) || el.matches(FIELDS) || (el.clientWidth <= 1 && el.clientHeight <= 1) ? null : "cuts";
+    else if (el === layer) kind = "spills";
+    if (kind !== null) out.push({ box: boxName(el), kind, over, culprit: culprit(w, el) });
+  }
+  return out;
+}
+`;
+
+/** An overrun, said. */
+export function overrunText(o: Overrun): string {
+  const what = o.kind === "scrolls" ? "scrolls in width" : o.kind === "cuts" ? "cuts its content" : "spills";
+  return `${o.box} ${what} by ${o.over} px (${o.culprit})`;
+}
+
 /** A page that runs in REAL time (frames, transitions, animation frames — virtual time
  *  produces none of them): Chrome driven over its DevTools protocol, the page opened
  *  after the media to emulate is set, its <pre id="out"> read until it holds a JSON

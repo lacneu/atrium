@@ -18,24 +18,36 @@
 // px shown), the bar's foot stays in view — a layer's where its scroll ends. And what
 // gives way first does: the quotes and attachments before the lines of a long text,
 // the detached composer's quotes before its head; the transcript keeps its spacing.
+// And what a layer holds fits its width (lot 32) — these layers, and the dialogs,
+// popovers and settings page captured for their content (layerContent.fixtures.ts) —,
+// with scrollbars that take room as Windows' and Linux's do, in this platform's font and
+// in a wider one.
 //
 // A browser is needed (browserProbe.testkit.ts's findChrome says which). Without one
 // the guard is skipped locally and fails on CI (CI=true).
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { describe, expect, test } from "vitest";
+import { cn } from "@/lib/utils";
 import {
   appCss,
   appStylesheets,
+  CLASSIC_SCROLLBARS,
   type ChromeSearch,
   chromeOrFail,
   findChrome,
+  OVERRUNS_SCRIPT,
+  type Overrun,
+  overrunText,
   ROOT,
   runChrome,
   scriptData,
   sourceStylesheets,
+  WIDTH_FONTS,
 } from "./browserProbe.testkit";
 import { clampGeometry } from "./dictationHold";
+import { LAYER_CONTENT_FIXTURES, type LayerContentFixture } from "./layerContent.fixtures";
 import { LAYOUT_FIXTURES, type LayoutFixture } from "./layoutFloor.fixtures";
 
 const SCALES = { sm: "87.5%", md: "", lg: "112.5%", xl: "125%", "2xl": "137.5%", "3xl": "150%" } as const;
@@ -85,15 +97,24 @@ type ProbeOut = {
   /** The thread at every height shown, 4 px apart, in each regime. */
   sweep: Array<{ fixture: string; scale: string; shown: number; ok: boolean; request: string; above: number }>;
   sweepFocus: Array<{ fixture: string; scale: string; shown: number; ok: boolean; request: string; composerShown: boolean; composerOk: boolean; dockBottom: number; roomy: boolean }>;
+  /** Each layer fixture, and each layer captured for its content, with scrollbars that
+   *  take room: what runs past its width. */
+  widths: Array<{ fixture: string; scale: string; font: string; kb: number; overruns: Overrun[] }>;
   errors: string[];
 };
 
 /** The page Chrome runs: one iframe per fixture, at the fixture's screen size (its
  *  viewport is the screen: 100dvh, the media queries), each text scale, each keyboard. */
-function probePage(css: string, fixtures: LayoutFixture[], docks: Record<string, Record<number, { x: number; y: number; w: number; h: number }>>): string {
-  const data = scriptData({ css, fixtures, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB, docks });
+function probePage(
+  css: string,
+  fixtures: LayoutFixture[],
+  docks: Record<string, Record<number, { x: number; y: number; w: number; h: number }>>,
+  contents: LayerContentFixture[],
+): string {
+  const data = scriptData({ css, fixtures, contents, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB, docks, fonts: WIDTH_FONTS, classicScrollbars: CLASSIC_SCROLLBARS });
   return `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>
 const DATA = ${data};
+${OVERRUNS_SCRIPT}
 ${PROBE_SCRIPT}
 </script></body></html>`;
 }
@@ -101,7 +122,7 @@ ${PROBE_SCRIPT}
 // Runs in Chrome. Kept as a string: it is the browser's code, not the test's.
 const PROBE_SCRIPT = String.raw`
 const errors = [];
-const cells = [], floors = [], limit = [], spacings = [], focus = [], requestFloors = [], sweep = [], sweepFocus = [];
+const cells = [], floors = [], limit = [], spacings = [], focus = [], requestFloors = [], sweep = [], sweepFocus = [], widths = [];
 function seen(w, el, shownBottom, inset, card) {
   if (!el) return null;
   const r = el.getBoundingClientRect();
@@ -361,7 +382,41 @@ for (const fx of DATA.fixtures) {
     frame.remove();
   } catch (e) { errors.push(fx.name + ": " + String(e && e.stack || e)); }
 }
-document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, spacing: spacings, focus, requestFloors, sweep, sweepFocus, errors });
+// WHAT A LAYER HOLDS FITS ITS WIDTH (lot 32): each layer fixture again — the app's own
+// content —, and each layer captured for its content alone (a dialog, a popover in its
+// Floating UI wrapper, a settings page's scrolling body), in a document whose scrollbars
+// take room as Windows' do, at every scale, font and keyboard.
+const CONTENT_OF = {
+  layer: '[data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]',
+  popover: '[data-slot="popover-content"]',
+  page: ".oc-admin__body",
+};
+for (const fx of [...DATA.fixtures.filter((f) => f.box === "layer"), ...DATA.contents]) {
+  try {
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "border:0;position:absolute;left:0;top:0;width:" + fx.screen[0] + "px;height:" + fx.screen[1] + "px";
+    document.body.appendChild(frame);
+    const d = frame.contentDocument;
+    d.open();
+    d.write('<!doctype html><html lang="fr" class="' + fx.htmlClass + '" style="' + fx.htmlStyle + '"><head><meta charset="utf-8"><style>' + DATA.css + '</style><style>*,*::before,*::after{animation:none!important;transition:none!important}</style><style>' + DATA.classicScrollbars + '</style></head><body>' + fx.html + '</body></html>');
+    d.close();
+    const w = frame.contentWindow;
+    const layer = [...d.querySelectorAll(CONTENT_OF[fx.box])].pop();
+    for (const [scale, size] of Object.entries(DATA.scales)) {
+      d.documentElement.style.fontSize = size;
+      for (const [font, stack] of DATA.fonts) {
+        if (stack === null) d.documentElement.style.removeProperty("--ui-font-sans");
+        else d.documentElement.style.setProperty("--ui-font-sans", stack);
+        for (const kb of DATA.kbs) {
+          setKeyboard(w, fx, kb, scale);
+          widths.push({ fixture: fx.name, scale, font, kb, overruns: overruns(w, layer) });
+        }
+      }
+    }
+    frame.remove();
+  } catch (e) { errors.push(fx.name + " (widths): " + String(e && e.stack || e)); }
+}
+document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, spacing: spacings, focus, requestFloors, sweep, sweepFocus, widths, errors });
 `;
 
 /** The detached composer's geometry for each keyboard, as the app clamps it. */
@@ -410,15 +465,75 @@ const RELIED: Array<[string, string]> = [
   ["oc-upload", "chat/ConvexChat.tsx"],
   ["oc-presence", "chat/ConversationPanel.tsx"],
   ["oc-detach__interim", "chat/HeldDictationDock.tsx"],
+  ["oc-cronedit", "chat/admin/ScheduledTab.tsx"],
+  ["oc-tzcombo__trigger", "chat/admin/TimezoneCombobox.tsx"],
+  ["oc-dtp__trigger", "chat/admin/DateTimePicker.tsx"],
+  ["oc-dtp__pop", "chat/admin/DateTimePicker.tsx"],
+  ["oc-dtp__grid", "chat/admin/DateTimePicker.tsx"],
+  ["oc-dtp__time", "chat/admin/DateTimePicker.tsx"],
+  ["oc-access__list", "chat/admin/InstancesTab.tsx"],
+  ["oc-agentcard__head", "chat/admin/InstancesTab.tsx"],
+  ["oc-agentcard__main", "chat/admin/InstancesTab.tsx"],
+  ["oc-convpicker", "chat/ConversationPanel.tsx"],
+  ["oc-convpicker__role", "chat/ConversationPanel.tsx"],
+  ["oc-access__tabs", "chat/admin/GroupsTab.tsx"],
+  ["oc-access__search", "chat/admin/GroupsTab.tsx"],
+  ["oc-bridge-config-dialog", "chat/admin/BridgeTab.tsx"],
+  ["oc-bridge-config__grid", "chat/admin/BridgeTab.tsx"],
+  ["oc-convpanel__members", "chat/ConversationPanel.tsx"],
+  ["oc-convpanel__member", "chat/ConversationPanel.tsx"],
+  ["oc-convpanel__role", "chat/ConversationPanel.tsx"],
+  ["oc-convpanel__nametext", "chat/ConversationPanel.tsx"],
+  ["oc-agenttype__label", "chat/admin/InstancesTab.tsx"],
+  ["oc-talk__settings", "chat/TalkControl.tsx"],
+  ["oc-talk__setting", "chat/TalkControl.tsx"],
+  ["oc-admin__body", "router.tsx"],
+  ["oc-injtab__content-locale", "chat/admin/PromptInjectionsTab.tsx"],
+  ['data-slot="popover-content"', "components/ui/popover.tsx"],
+  ['data-slot="tabs-list"', "components/ui/tabs.tsx"],
   ['data-slot="dialog-content"', "components/ui/dialog.tsx"],
   ['data-slot="dialog-footer"', "components/ui/dialog.tsx"],
   ['data-slot="sheet-content"', "components/ui/sheet.tsx"],
   ['data-slot="sheet-footer"', "components/ui/sheet.tsx"],
 ];
 
+/** What the call sites of a shared component pass as its `className` (lot 32): nothing
+ *  (""), or a string. */
+function callerClasses(component: string): Set<string> {
+  const out = new Set<string>([""]);
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((e) => {
+      const f = join(dir, e);
+      if (statSync(f).isDirectory()) return e === "paraglide" ? [] : walk(f);
+      return e.endsWith(".tsx") && !e.endsWith(".test.tsx") ? [f] : [];
+    });
+  for (const file of walk(join(ROOT, "src"))) {
+    const text = readFileSync(file, "utf-8");
+    if (!text.includes(`<${component}`)) continue;
+    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const visit = (n: ts.Node): void => {
+      if ((ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) && n.tagName.getText(sf) === component) {
+        for (const p of n.attributes.properties) {
+          if (!ts.isJsxAttribute(p) || p.name.getText(sf) !== "className" || !p.initializer) continue;
+          const v = p.initializer;
+          if (ts.isStringLiteral(v)) out.add(v.text);
+          else if (ts.isJsxExpression(v) && v.expression && ts.isStringLiteralLike(v.expression)) out.add(v.expression.text);
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  return out;
+}
+
 describe("the fixtures are the DOM the components render (lot 28)", () => {
-  const html = LAYOUT_FIXTURES.map((f) => f.html).join("\n");
+  const html = [...LAYOUT_FIXTURES, ...LAYER_CONTENT_FIXTURES].map((f) => f.html).join("\n");
   const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const classes = (s: string) => s.split(/\s+/).filter(Boolean).sort().join(" ");
+  const unescape = (t: string) => t.replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  const classesOf = (slot: string) =>
+    [...html.matchAll(new RegExp(`data-slot="${slot}"[^>]*?class="([^"]*)"`, "g"))].map((m) => classes(unescape(m[1])));
   test.each(RELIED)("%s: in the fixtures, and rendered by %s", (token, file) => {
     const source = readFileSync(join(ROOT, "src", file), "utf-8");
     if (token.startsWith("data-slot=")) {
@@ -430,6 +545,31 @@ describe("the fixtures are the DOM the components render (lot 28)", () => {
     const inFixture = new RegExp(`class="[^"]*(?<![\\w-])${escape(token)}(?![\\w-])`);
     expect(html, token).toMatch(inFixture);
     expect(source, token).toMatch(new RegExp(`(?<![\\w-])${escape(token)}(?![\\w-])`));
+  });
+  // The selects are the shared SelectTrigger as it renders now (lot 32): the fixtures
+  // were captured, and a change to the component (its max-w-full) reaches the guard only
+  // if they follow it — recaptured, or edited to match. Each one is the component's
+  // classes merged, as its cn() merges them, with what one of its call sites passes.
+  test("every select trigger of the fixtures has the classes the shared SelectTrigger renders with a call site's, no more, no fewer", () => {
+    const source = readFileSync(join(ROOT, "src", "components", "ui", "select.tsx"), "utf-8");
+    const trigger = source.slice(source.indexOf("function SelectTrigger("), source.indexOf("function SelectContent("));
+    const call = trigger.slice(trigger.indexOf("className={cn("), trigger.indexOf("className,", trigger.indexOf("className={cn(")));
+    const own = [...call.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const renders = [...callerClasses("SelectTrigger")].map((caller) => classes(cn(...own, caller)));
+    const triggers = classesOf("select-trigger");
+    expect(triggers.length).toBeGreaterThan(0);
+    for (const t of triggers) expect(renders, t).toContain(t);
+  });
+  // And the dialogs (lot 32): their column is the primitive's (grid-cols-1), which a
+  // captured dialog holds only if it follows the component.
+  test("every dialog of the fixtures has the classes the shared DialogContent renders with a call site's, no more, no fewer", () => {
+    const source = readFileSync(join(ROOT, "src", "components", "ui", "dialog.tsx"), "utf-8");
+    const own = /export const dialogContentClassName =\s*"([^"]+)"/.exec(source)?.[1];
+    expect(own).toBeDefined();
+    const renders = [...callerClasses("DialogContent")].map((caller) => classes(cn("z-50", own!, caller)));
+    const dialogs = classesOf("dialog-content");
+    expect(dialogs.length).toBeGreaterThan(0);
+    for (const t of dialogs) expect(renders, t).toContain(t);
   });
 });
 
@@ -480,7 +620,7 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     const css = await appCss();
     const docks: Record<string, Record<number, { x: number; y: number; w: number; h: number }>> = {};
     for (const fx of fixtures) if (fx.box === "dock") docks[fx.name] = dockGeometry(fx);
-    out = await runChrome<ProbeOut>(chrome!, probePage(css, fixtures, docks));
+    out = await runChrome<ProbeOut>(chrome!, probePage(css, fixtures, docks, LAYER_CONTENT_FIXTURES));
     // What the browser measured, for the floors a lot reports (opt-in).
     if (process.env.ATRIUM_LAYOUT_DUMP) writeFileSync(process.env.ATRIUM_LAYOUT_DUMP, JSON.stringify(out));
   })();
@@ -660,6 +800,24 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     const bad = out.limit
       .filter((c) => !c.bar || c.bar.seen <= 0 || c.bar.bottom > c.shown + 0.5)
       .map((c) => `${c.fixture} ${c.scale}: bar ${c.bar ? `${c.bar.top.toFixed(1)}-${c.bar.bottom.toFixed(1)}, ${c.bar.seen.toFixed(1)} seen` : "none"} for ${c.shown} px shown`);
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  // WHAT A LAYER HOLDS FITS ITS WIDTH (lot 32): the report-a-problem dialog and the
+  // session settings sheet as the app renders them, and the layers captured for their
+  // content (layerContent.fixtures.ts), with scrollbars that take room as Windows' (17 px)
+  // and Linux's (15 px) do — a Mac's take none —, at every text scale and keyboard, in
+  // this platform's font and in one as wide as monospace: nothing scrolls in width,
+  // nothing is cut by a hidden overflow (OVERRUNS_SCRIPT, browserProbe.testkit.ts; the
+  // layers guard holds every layer's frame so, with generic content). Under Linux the
+  // dialog's category select, as wide as its value and on one line, ran 4 px past the
+  // dialog when its scrollbar took room, and a scrollbar in width took 15 px more.
+  test("what a layer holds fits its width — no scroll in width, nothing cut — at every scale and keyboard, in this platform's font and in text as wide as monospace, with scrollbars that take room (lot 32)", async () => {
+    await ready;
+    const layers = [...fixtures.filter((f) => f.box === "layer"), ...LAYER_CONTENT_FIXTURES];
+    expect(layers.length).toBeGreaterThan(0);
+    expect(out.widths.length).toBe(layers.length * Object.keys(SCALES).length * WIDTH_FONTS.length * KEYBOARDS.length);
+    const bad = out.widths.flatMap((c) => c.overruns.map((o) => `${c.fixture} ${c.scale} keyboard ${c.kb}, ${c.font}: ${overrunText(o)}`));
     expect(bad).toEqual([]);
   }, 180_000);
 });

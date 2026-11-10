@@ -583,7 +583,7 @@ function AgentsTab({
       <AgentFace agent={a} />
       <span className="oc-convpanel__who">
         <span className="oc-convpanel__name">
-          {agentName(a)}
+          <span className="oc-convpanel__nametext">{agentName(a)}</span>
           {primary ? (
             <Crown
               size={12}
@@ -728,7 +728,9 @@ function AgentsTab({
           <>
             <AgentFace agent={a} />
             <span className="oc-convpanel__who">
-              <span className="oc-convpanel__name">{agentName(a)}</span>
+              <span className="oc-convpanel__name">
+                <span className="oc-convpanel__nametext">{agentName(a)}</span>
+              </span>
               <span className="oc-convpanel__sub">
                 <Server size={10} aria-hidden /> {a.instanceName}
                 {a.description ? ` · ${a.description}` : ""}
@@ -759,7 +761,9 @@ function AgentsTab({
           <>
             <AgentFace agent={a} />
             <span className="oc-convpanel__who">
-              <span className="oc-convpanel__name">{agentName(a)}</span>
+              <span className="oc-convpanel__name">
+                <span className="oc-convpanel__nametext">{agentName(a)}</span>
+              </span>
               <span className="oc-convpanel__sub">
                 <Server size={10} aria-hidden /> {a.instanceName}
               </span>
@@ -856,7 +860,7 @@ function PeopleTab({
               <Avatar userId={String(p.userId)} name={p.name} />
               <span className="oc-convpanel__who">
                 <span className="oc-convpanel__name">
-                  {p.name}
+                  <span className="oc-convpanel__nametext">{p.name}</span>
                   {p.isSelf ? (
                     <span className="oc-convpanel__you">
                       {m.conversation_you()}
@@ -1012,7 +1016,9 @@ function PeopleTab({
           <>
             <Avatar userId={String(p.userId)} name={p.name} />
             <span className="oc-convpanel__who">
-              <span className="oc-convpanel__name">{p.name}</span>
+              <span className="oc-convpanel__name">
+                <span className="oc-convpanel__nametext">{p.name}</span>
+              </span>
             </span>
           </>
         )}

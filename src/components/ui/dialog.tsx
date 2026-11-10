@@ -63,11 +63,15 @@ function DialogOverlay({
 // (`--oc-layer-pad-y`, set by the stylesheet on the slot: 1.25rem down to 0.5rem),
 // and is here, in the class, so that a caller's own padding replaces it — a rule on
 // the slot beat the search palette's `p-0`.
+// ITS COLUMN IS ITS WIDTH (lot 32): `grid-cols-1` is `minmax(0, 1fr)`, where the
+// implicit column was `auto` — as wide as the widest content of a child on one line (a
+// select's value, a tab bar), which pushed the dialog's content past its edge on a
+// phone. Where the content fits, the column is the dialog's width either way.
 // The z-index utility stays on the element, after its `data-slot`:
 // overlayLayer.test.ts pairs the two by position to prove the surface is raised
 // by the app's layer rule.
 export const dialogContentClassName =
-  "fixed top-1/2 grid max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding px-5 py-(--oc-layer-pad-y) text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+  "fixed top-1/2 grid grid-cols-1 max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding px-5 py-(--oc-layer-pad-y) text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
 
 function DialogContent({
   className,

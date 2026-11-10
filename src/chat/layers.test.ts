@@ -20,15 +20,31 @@
 //   where the layer's scroll ends. The agent-file editor kept its "Save" in a house
 //   foot that scrolled away with the source, at a height set by a stylesheet the guard
 //   did not read.
-// - A FOOTER FITS ITS LAYER'S WIDTH (lot 31), in this platform's font and in a wider one
-//   that is the same everywhere: the guards load no web font, and what a font does to
-//   a layout is what the platform's does (SF on a Mac, DejaVu Sans under Linux).
+// - A LAYER HOLDS ITS CONTENT IN ITS WIDTH (lots 31-32): nothing scrolls in width or is cut
+//   off, in this platform's font and in a wider one that is the same everywhere (the
+//   guards load no web font: what a font does to a layout is what the platform's does,
+//   SF on a Mac, DejaVu Sans under Linux), with scrollbars that take room as Windows' and
+//   Linux's do, emulated on the Mac. Its content holds a control wider than any layer, on
+//   one line, capped at what holds it and truncated with an ellipsis — the select
+//   trigger's mechanism: a layer whose column takes its content's width (a grid's `auto`
+//   column, as the dialog's was) runs past its edge; one that bounds it truncates it.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
 import { cn } from "@/lib/utils";
-import { appCss, chromeOrFail, ROOT, runChrome, scriptData } from "./browserProbe.testkit";
+import {
+  appCss,
+  CLASSIC_SCROLLBARS,
+  chromeOrFail,
+  OVERRUNS_SCRIPT,
+  type Overrun,
+  overrunText,
+  ROOT,
+  runChrome,
+  scriptData,
+  WIDTH_FONTS,
+} from "./browserProbe.testkit";
 
 const SRC = join(ROOT, "src");
 const UI = join(SRC, "components", "ui");
@@ -313,20 +329,12 @@ type LayerCase = { where: string; component: string; caller: string; html: strin
 type LayerCell = { where: string; caller: string; screen: string; scale: string; kb: number; shown: number; box: [number, number]; footer: { whole: boolean; seen: number; height: number; bottom: number } | null };
 type LayerFloor = { where: string; caller: string; screen: string; scale: string; floor: number | null; bound: number };
 // How far a layer's footer runs past its width, in one of the fonts.
-type LayerFit = { where: string; caller: string; screen: string; scale: string; font: string; over: number };
-type LayerOut = { cells: LayerCell[]; floors: LayerFloor[]; limit: LayerCell[]; fits: LayerFit[]; errors: string[] };
-
-// The fonts a footer must fit its width in: this platform's (the app's own stack), and one
-// as wide on every platform — monospace's glyphs, 0.6 em each, wider than a UI font's —,
-// set through the app's own token (charts set it so). Twice named: the generic alone would
-// shrink the root's font size (the monospace quirk).
-const FONTS: Array<[string, string | null]> = [
-  ["this platform's font", null],
-  ["text as wide as monospace", "monospace, monospace"],
-];
+// What runs past its width in a layer, at one screen, scale, font and keyboard.
+type LayerWidth = { where: string; caller: string; screen: string; scale: string; font: string; kb: number; overruns: Overrun[] };
+type LayerOut = { cells: LayerCell[]; floors: LayerFloor[]; limit: LayerCell[]; widths: LayerWidth[]; errors: string[] };
 
 const LAYER_SCRIPT = String.raw`
-const cells = [], floors = [], limit = [], fits = [], errors = [];
+const cells = [], floors = [], limit = [], widths = [], errors = [];
 function seen(w, el, shownBottom) {
   const r = el.getBoundingClientRect();
   let top = Math.max(r.top, 0), bottom = Math.min(r.bottom, shownBottom);
@@ -398,34 +406,61 @@ for (const c of DATA.cases) {
           layer.scrollTo({ top: layer.scrollHeight, behavior: "instant" });
           limit.push(measure(w, c, screen, Math.max(0, screen[1] - 24), scale));
           layer.scrollTo({ top: 0, behavior: "instant" });
-          setKeyboard(w, 0);
-          for (const [font, stack] of DATA.fonts) {
-            if (stack === null) d.documentElement.style.removeProperty("--ui-font-sans");
-            else d.documentElement.style.setProperty("--ui-font-sans", stack);
-            fits.push({ where: c.where, caller: c.caller, screen: screen.join("x"), scale, font, over: foot.scrollWidth - foot.clientWidth });
-          }
-          d.documentElement.style.removeProperty("--ui-font-sans");
         }
       }
       frame.remove();
     } catch (e) { errors.push(c.where + " " + screen.join("x") + ": " + String(e && e.stack || e)); }
   }
 }
-document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, fits, errors });
+// What runs past its width (lots 31-32): each layer again, in a document whose scrollbars
+// take room as Windows' do, at every scale, font and keyboard.
+for (const c of DATA.cases) {
+  for (const screen of DATA.screens) {
+    try {
+      const frame = document.createElement("iframe");
+      frame.style.cssText = "border:0;position:absolute;left:0;top:0;width:" + screen[0] + "px;height:" + screen[1] + "px";
+      document.body.appendChild(frame);
+      const d = frame.contentDocument;
+      d.open();
+      d.write('<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>' + DATA.css + '</style><style>*,*::before,*::after{animation:none!important;transition:none!important}</style><style>' + DATA.classicScrollbars + '</style></head><body>' + c.html + '</body></html>');
+      d.close();
+      const w = frame.contentWindow;
+      const layer = d.querySelector("[data-slot$='-content']");
+      for (const [scale, size] of Object.entries(DATA.scales)) {
+        d.documentElement.style.fontSize = size;
+        for (const [font, stack] of DATA.fonts) {
+          if (stack === null) d.documentElement.style.removeProperty("--ui-font-sans");
+          else d.documentElement.style.setProperty("--ui-font-sans", stack);
+          for (const kb of DATA.kbs) {
+            setKeyboard(w, kb);
+            widths.push({ where: c.where, caller: c.caller, screen: screen.join("x"), scale, font, kb, overruns: overruns(w, layer) });
+          }
+        }
+      }
+      frame.remove();
+    } catch (e) { errors.push(c.where + " " + screen.join("x") + " (widths): " + String(e && e.stack || e)); }
+  }
+}
+document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, widths, errors });
 `;
 
-/** A layer as its component renders it: its content, its header, a body long enough to
- *  scroll, its footer (with two of the buttons the app's Button renders) when it has one. */
+/** A layer as its component renders it: its content, its header, a control wider than
+ *  the layer in a row of its own (lot 32), a body long enough to scroll, its footer
+ *  (with two of the buttons the app's Button renders) when it has one. */
 function layerHtml(l: Layer, caller: string): string {
   const kind = l.slot.replace(/-content$/, "");
   const content = classOf(l.slot, caller).merged;
   const header = classOf(`${kind}-header`, "").merged;
   const button = "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-transparent px-2.5 text-sm font-medium whitespace-nowrap";
+  // As the shared select trigger is built (its value on one line, truncated; the box
+  // capped at what holds it), with a value longer than any layer is wide.
+  const value = "Une valeur choisie, bien plus longue que la couche ne peut la montrer d'un bloc, ".repeat(3);
+  const wide = `<div class="oc-layer-probe-row" style="display:flex;align-items:center;gap:0.5rem"><button type="button" style="display:flex;align-items:center;gap:0.5rem;max-width:100%;white-space:nowrap;padding:0 0.625rem;border:1px solid"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${value}</span></button></div>`;
   const body = Array.from({ length: 30 }, () => "<p>Le contenu de la couche, assez long pour la faire defiler sous son pied.</p>").join("");
   const footer = l.footer
     ? `<div data-slot="${kind}-footer" class="${classOf(`${kind}-footer`, l.footer.classes[0] ?? "").merged}"><button type="button" class="${button}">Annuler</button><button type="button" class="${button}">Confirmer</button></div>`
     : "";
-  return `<div role="dialog" data-slot="${l.slot}" data-state="open" data-side="${l.side}" class="${content}"><div data-slot="${kind}-header" class="${header}"><h2>Titre de la couche</h2><p>Une description de la couche, sur une ligne ou deux.</p></div><div class="oc-layer-probe-body">${body}</div>${footer}</div>`;
+  return `<div role="dialog" data-slot="${l.slot}" data-state="open" data-side="${l.side}" class="${content}"><div data-slot="${kind}-header" class="${header}"><h2>Titre de la couche</h2><p>Une description de la couche, sur une ligne ou deux.</p></div>${wide}<div class="oc-layer-probe-body">${body}</div>${footer}</div>`;
 }
 
 const chrome = chromeOrFail("layers.test.ts");
@@ -443,7 +478,7 @@ describe.skipIf(chrome === null)("every layer in every stylesheet the app loads 
       [...new Set(l.classes ?? [])].map((caller) => ({ where: l.where, component: l.component, caller, html: layerHtml(l, caller), hasFooter: l.footer !== null })),
     );
     const sweepPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: sweepCases })};${SWEEP_SCRIPT}</script></body></html>`;
-    const layerPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: layerCases, screens: SCREENS, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB, fonts: FONTS })};${LAYER_SCRIPT}</script></body></html>`;
+    const layerPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: layerCases, screens: SCREENS, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB, fonts: WIDTH_FONTS, classicScrollbars: CLASSIC_SCROLLBARS })};${OVERRUNS_SCRIPT}${LAYER_SCRIPT}</script></body></html>`;
     return {
       sweep: await runChrome<SweepRow[]>(chrome!, sweepPage),
       layers: await runChrome<LayerOut>(chrome!, layerPage, { budgetMs: 60000 }),
@@ -511,17 +546,19 @@ describe.skipIf(chrome === null)("every layer in every stylesheet the app loads 
     expect(bad).toEqual([]);
   }, 240_000);
 
-  // A FOOTER FITS ITS LAYER'S WIDTH (lot 31): its controls wrap rather than run past it,
-  // in this platform's font and in a wider one, the same on every platform. Under Linux
-  // (DejaVu Sans, its scrollbars taking room) the agent-file editor's row of controls ran
-  // 3 px past its width at the largest text scale, and the scrollbar that this opened took
-  // 15 of the 24 px shown: the dialog's foot went out of view.
-  test("a layer's footer fits its width — its controls wrap rather than run past it — in this platform's font and in text as wide as monospace (lot 31)", async () => {
+  // A LAYER HOLDS ITS CONTENT IN ITS WIDTH (lots 31-32): no scroll in width, nothing cut by
+  // a hidden overflow (OVERRUNS_SCRIPT, browserProbe.testkit.ts), at every screen, text
+  // scale and keyboard, in this platform's font and in a wider one that is the same
+  // everywhere, with scrollbars that take room as Windows' (17 px) and Linux's (15 px) do —
+  // a Mac's take none. Under Linux (DejaVu Sans, its scrollbars) the agent-file editor's
+  // row of controls ran 3 px past its width at the largest text scale, and the scrollbar
+  // this opened took 15 of the 24 px shown: the dialog's foot went out of view.
+  test("a layer holds its content in its width — no scroll in width, nothing cut — in this platform's font and in text as wide as monospace, with scrollbars that take room (lots 31-32)", async () => {
     const { layers, layerCases } = await ready;
-    expect(layers.fits.length).toBe(layerCases.filter((c) => c.hasFooter).length * SCREENS.length * Object.keys(SCALES).length * FONTS.length);
-    const bad = layers.fits
-      .filter((f) => f.over > 0.5)
-      .map((f) => `${f.where} "${f.caller}" ${f.screen} ${f.scale}, ${f.font}: ${f.over.toFixed(1)} px past its width`);
+    expect(layers.widths.length).toBe(layerCases.length * SCREENS.length * Object.keys(SCALES).length * WIDTH_FONTS.length * KEYBOARDS.length);
+    const bad = layers.widths.flatMap((c) =>
+      c.overruns.map((o) => `${c.where} "${c.caller}" ${c.screen} ${c.scale} keyboard ${c.kb}, ${c.font}: ${overrunText(o)}`),
+    );
     expect(bad).toEqual([]);
   }, 240_000);
 });
