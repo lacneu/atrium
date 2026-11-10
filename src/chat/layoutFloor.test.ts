@@ -100,6 +100,8 @@ type ProbeOut = {
   /** Each layer fixture, and each layer captured for its content, with scrollbars that
    *  take room: what runs past its width. */
   widths: Array<{ fixture: string; scale: string; font: string; kb: number; overruns: Overrun[] }>;
+  /** The names that shrink with their row (lot 33): how many of their characters show. */
+  names: Array<{ fixture: string; scale: string; font: string; item: string; length: number; shown: number; fits: boolean }>;
   errors: string[];
 };
 
@@ -122,7 +124,37 @@ ${PROBE_SCRIPT}
 // Runs in Chrome. Kept as a string: it is the browser's code, not the test's.
 const PROBE_SCRIPT = String.raw`
 const errors = [];
-const cells = [], floors = [], limit = [], spacings = [], focus = [], requestFloors = [], sweep = [], sweepFocus = [], widths = [];
+const cells = [], floors = [], limit = [], spacings = [], focus = [], requestFloors = [], sweep = [], sweepFocus = [], widths = [], names = [];
+// The names lot 32 let shrink with their row (a flex basis of 0), and what shows of each
+// (lot 33): its characters counted by their own boxes against the name's, the ellipsis's
+// room kept.
+const SHRINKING_NAMES = ".oc-convpanel__who, .oc-access__row > .oc-access__who, .oc-access__row > .oc-access__label, .oc-access__row > .oc-agentpicker__label";
+function nameShown(w, d, item) {
+  const holders = [item, ...item.querySelectorAll("*")].filter((e) => { const cs = w.getComputedStyle(e); return cs.textOverflow === "ellipsis" && cs.overflowX !== "visible"; });
+  const box = holders.length ? holders[holders.length - 1] : item;
+  const cs = w.getComputedStyle(box);
+  const right = box.getBoundingClientRect().left + box.clientLeft + box.clientWidth - parseFloat(cs.paddingRight);
+  const probe = d.createElement("span");
+  probe.textContent = "\u2026";
+  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+  box.appendChild(probe);
+  const ell = probe.getBoundingClientRect().width;
+  probe.remove();
+  const fits = box.scrollWidth <= box.clientWidth + 0.5;
+  const length = box.textContent.replace(/\s/g, "").length;
+  let count = 0;
+  const walker = d.createTreeWalker(box, 4);
+  const range = d.createRange();
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    for (let i = 0; i < t.data.length; i++) {
+      range.setStart(t, i);
+      range.setEnd(t, i + 1);
+      const r = range.getBoundingClientRect();
+      if (r.width > 0 && r.right <= (fits ? right : right - ell) + 0.5) count++;
+    }
+  }
+  return { item: String(item.className).split(/\s+/).find((k) => k.startsWith("oc-")) || item.tagName.toLowerCase(), length, shown: fits ? length : Math.min(count, length), fits };
+}
 function seen(w, el, shownBottom, inset, card) {
   if (!el) return null;
   const r = el.getBoundingClientRect();
@@ -411,12 +443,13 @@ for (const fx of [...DATA.fixtures.filter((f) => f.box === "layer"), ...DATA.con
           setKeyboard(w, fx, kb, scale);
           widths.push({ fixture: fx.name, scale, font, kb, overruns: overruns(w, layer) });
         }
+        for (const item of layer.querySelectorAll(SHRINKING_NAMES)) names.push(Object.assign({ fixture: fx.name, scale, font }, nameShown(w, d, item)));
       }
     }
     frame.remove();
   } catch (e) { errors.push(fx.name + " (widths): " + String(e && e.stack || e)); }
 }
-document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, spacing: spacings, focus, requestFloors, sweep, sweepFocus, widths, errors });
+document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, spacing: spacings, focus, requestFloors, sweep, sweepFocus, widths, names, errors });
 `;
 
 /** The detached composer's geometry for each keyboard, as the app clamps it. */
@@ -818,6 +851,20 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     expect(layers.length).toBeGreaterThan(0);
     expect(out.widths.length).toBe(layers.length * Object.keys(SCALES).length * WIDTH_FONTS.length * KEYBOARDS.length);
     const bad = out.widths.flatMap((c) => c.overruns.map((o) => `${c.fixture} ${c.scale} keyboard ${c.kb}, ${c.font}: ${overrunText(o)}`));
+    expect(bad).toEqual([]);
+  }, 180_000);
+
+  // A NAME KEEPS A FEW CHARACTERS BEFORE ITS ROW BREAKS (lot 33): the names lot 32 let
+  // shrink with their row — a member's, an access row's — grew from nothing, and the row
+  // broke only where even an empty name left its controls no room: before that, a name
+  // showed one letter and its ellipsis. Each keeps three characters, or all of its own,
+  // at every scale and in both fonts, on the phones the layers were captured on.
+  test("a name that shrinks with its row keeps three of its characters, or all of its own, before the row breaks — at every scale, in both fonts (lot 33)", async () => {
+    await ready;
+    expect(out.names.length).toBeGreaterThan(0);
+    const bad = out.names
+      .filter((c) => c.shown < Math.min(3, c.length))
+      .map((c) => `${c.fixture} ${c.scale}, ${c.font}: ${c.item} shows ${c.shown} of its ${c.length} characters`);
     expect(bad).toEqual([]);
   }, 180_000);
 });

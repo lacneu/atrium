@@ -293,7 +293,10 @@ export type Overrun = { box: string; kind: "scrolls" | "cuts" | "spills"; over: 
  *    ellipsis (the reader sees "…"), a form field, and what is visually hidden on purpose
  *    (a box of a pixel or less: a screen reader's text). An ellipsis is drawn by a block
  *    container only (lot 32): a flex or grid box's text is an anonymous item that
- *    `text-overflow` does not reach — such a box, its text clipped, cuts it.
+ *    `text-overflow` does not reach — such a box, its text clipped, cuts it. And it is
+ *    drawn on the box's own lines only (lot 33): what passes its content box from a
+ *    block-level child of its — whose lines are the child's, `text-overflow` not inherited
+ *    — is cut.
  *  Each names the box, by how much, and what reaches farthest past it. */
 export const OVERRUNS_SCRIPT = String.raw`
 const MADE_TO_SCROLL_WIDE = "pre, table, [data-slot='table-container'], [data-slot='tabs-list'], .oc-settings-tabs, .oc-matrix__scroll, .oc-projpage__cols";
@@ -315,6 +318,28 @@ function culprit(w, el) {
   const it = oneLine.length > 0 ? oneLine.find((c) => !oneLine.some((o) => o !== c && o.contains(c))) : past[past.length - 1];
   return boxName(it) + ", " + Math.round(it.getBoundingClientRect().width) + " px wide" + (oneLine.length > 0 ? " on one line" : "");
 }
+// Of a box that draws an ellipsis, the block-level child of its whose box or lines pass its
+// content box (lot 33): the ellipsis is drawn on the box's own lines, not on the child's.
+// A child's own visible overflow counts with it (a child that hides or scrolls its own
+// overflow is judged on its own). None: what passes is the box's own inline content.
+function blockPast(w, el) {
+  const cs = w.getComputedStyle(el);
+  const edge = el.getBoundingClientRect().left + el.clientLeft + el.clientWidth - parseFloat(cs.paddingRight);
+  const kids = [...el.children];
+  for (let i = 0; i < kids.length; i++) {
+    const c = kids[i];
+    const ccs = w.getComputedStyle(c);
+    if (ccs.display === "contents") {
+      kids.push(...c.children);
+      continue;
+    }
+    if (ccs.display === "none" || /^inline/.test(ccs.display)) continue;
+    const r = c.getBoundingClientRect();
+    const reach = ccs.overflowX === "visible" ? Math.max(r.right, r.left + c.clientLeft + c.scrollWidth) : r.right;
+    if (reach - edge > 0.5) return c;
+  }
+  return null;
+}
 function overruns(w, layer) {
   const out = [];
   for (const el of [layer, ...layer.querySelectorAll("*")]) {
@@ -323,10 +348,14 @@ function overruns(w, layer) {
     const cs = w.getComputedStyle(el);
     const x = cs.overflowX;
     let kind = null;
+    let why = null;
     if (x === "auto" || x === "scroll") kind = el === layer || !(el.matches(MADE_TO_SCROLL_WIDE) || el.matches(FIELDS)) ? "scrolls" : null;
-    else if (x === "hidden" || x === "clip") kind = (cs.textOverflow === "ellipsis" && DRAWS_ELLIPSIS.test(cs.display)) || el.matches(FIELDS) || (el.clientWidth <= 1 && el.clientHeight <= 1) ? null : "cuts";
-    else if (el === layer) kind = "spills";
-    if (kind !== null) out.push({ box: boxName(el), kind, over, culprit: culprit(w, el) });
+    else if (x === "hidden" || x === "clip") {
+      const block = cs.textOverflow === "ellipsis" && DRAWS_ELLIPSIS.test(cs.display) ? blockPast(w, el) : undefined;
+      kind = block === null || el.matches(FIELDS) || (el.clientWidth <= 1 && el.clientHeight <= 1) ? null : "cuts";
+      if (block) why = boxName(block) + ", a block whose own lines its ellipsis does not reach";
+    } else if (el === layer) kind = "spills";
+    if (kind !== null) out.push({ box: boxName(el), kind, over, culprit: why || culprit(w, el) });
   }
   return out;
 }

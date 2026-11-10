@@ -520,7 +520,10 @@
 .oc-convpanel__who {
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  /* A few characters of the name before the row breaks (lot 33): from nothing, a name
+     squeezed by its row's controls showed one letter and its ellipsis. Never wider than
+     the row. */
+  min-width: min(3rem, 100%);
   flex: 1 1 0;
 }
 .oc-convpanel__name {

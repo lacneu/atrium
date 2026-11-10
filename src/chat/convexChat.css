@@ -8521,6 +8521,8 @@ button.oc-perm__opt:disabled {
 }
 .oc-access__row > :is(.oc-access__who, .oc-access__label, .oc-agentpicker__label) {
   flex-basis: 0;
+  /* A few characters of the name before the row breaks (lot 33), never wider than it. */
+  min-width: min(3rem, 100%);
 }
 .oc-access__label {
   overflow: hidden;
