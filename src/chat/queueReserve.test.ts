@@ -1,11 +1,11 @@
 // @vitest-environment node
 //
 // THE END OF THE REPLY IS FOLLOWED ABOVE THE QUEUED CARDS (lot 29), AND THE FOLLOW GIVES
-// WAY TO THE READER (lot 30), by assistant-ui's REAL follow — ThreadPrimitive.Viewport
-// and its useThreadViewportAutoScroll — with the app's real QueuedDock and every
-// stylesheet the app loads, in a real Chrome, in real time, with REAL input (keys,
-// wheel, touch, presses, through the DevTools protocol: a page's own synthetic events
-// never scroll).
+// WAY TO THE READER (lot 30) — TO NO ONE ELSE (lot 31), by assistant-ui's REAL follow —
+// ThreadPrimitive.Viewport and its useThreadViewportAutoScroll — with the app's real
+// QueuedDock and every stylesheet the app loads, in a real Chrome, in real time, with
+// REAL input (keys, wheel, touch, presses, through the DevTools protocol: a page's own
+// synthetic events never scroll).
 //
 // - The reader is at the end of a reply, a message is queued and no text arrives after
 //   it: once the reserve's transition is over — at once under reduced motion — the
@@ -23,6 +23,12 @@
 // - What does not take the scroll up does not stop the follow: typing in the composer,
 //   Shift+Space on a control, the focus landing in view, PageDown, a wheel down. A
 //   reader above the end is not moved by a card.
+// - Nor does what the layout moves, no one scrolling (lot 31, pass 20): a widget closing
+//   the reply that reports a smaller height, a block far above that folds, the composer
+//   cleared by a send — the scroll pulled up with the end, before the next frame grows
+//   the reserve. On lot 30 assistant-ui and the follow took the pull for the reader's
+//   own: the reader was left 53 px short of the end, under the cards, and the next text
+//   no longer followed them.
 // - Every scroll the app makes of the transcript tells the follow first (the AST of
 //   src/): a smooth scroll shows no move before the follow's next frame.
 //
@@ -51,12 +57,13 @@ const ENTRY = "virtual:queue-reserve-probe";
 
 // The page's code: plain createElement, the bundle's only source of its own.
 const ENTRY_CODE = String.raw`
-import { createElement as h, useState, useSyncExternalStore } from "react";
+import { createElement as h, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useLocalRuntime, useThreadViewportStore } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useLocalRuntime, useMessage, useThreadViewportStore } from "@assistant-ui/react";
 import { QueuedDock } from "/src/chat/QueuedDock.tsx";
 import { QueueDockContext } from "/src/chat/queueDockContext.ts";
 import * as reserve from "/src/chat/queueReserve.ts";
+import { SIMPLE_FRAME_SANDBOX, WIDGET_SIZE, clampReportedHeight, isFromWidgetFrame } from "/src/chat/widgets/widgetSandbox.ts";
 
 const LINE = "Une ligne de la reponse, assez longue pour revenir a la ligne dans la colonne du fil. ";
 const messages = Array.from({ length: 10 }, (_, i) => ({
@@ -71,15 +78,104 @@ const Tail = () => {
   const text = useSyncExternalStore((f) => (tailSubs.add(f), () => tailSubs.delete(f)), () => tail);
   return text ? h("p", { className: "oc-probe-tail" }, text) : null;
 };
-// A message the focus can land on (a screen reader, a script), and a control in it.
-const Message = () =>
-  h(MessagePrimitive.Root, { className: "oc-msg", tabIndex: -1 }, h(MessagePrimitive.Content, null), h("button", { type: "button", className: "oc-probe-copy" }, "Copier"));
+// A widget closing the last reply, sized as WidgetPart sizes it (its simple mode): its
+// frame reports its height (openclaw:widget-size), WidgetPart's own helpers check where
+// the message comes from and clamp it, and the frame's style takes it. It reports 500 px
+// once loaded, then whatever height the page asks it for.
+const WIDGET_DOC =
+  "<!doctype html><html><body><script>" +
+  "const size = (height) => parent.postMessage({ type: " + JSON.stringify(WIDGET_SIZE) + ", height }, '*');" +
+  "size(500); addEventListener('message', (e) => { if (typeof e.data === 'number') size(e.data); });" +
+  "<\/script></body></html>";
+let widgetOn = false;
+let widgetFrame = null;
+// The widget's frame has reported a size: its script runs, it will answer.
+let widgetReported = false;
+// An experiment's change of the layout, recorded in the layout effect that applies it —
+// where it is, the transcript, and the reserve's height — after, when it asks for one, a
+// layout computed before the next frame (a measure, as any component's).
+let expected = null;
+const applied = (what) => {
+  const c = expected;
+  if (c === null || c.what !== what) return;
+  expected = null;
+  const v = vp();
+  if (c.measure) void v.scrollHeight;
+  c.resolve({ t: Math.round(performance.now() - c.t0), top: v.scrollTop, max: v.scrollHeight - v.clientHeight, spacer: spacer(v) });
+};
+const change = (t0, what, measure, act) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (expected === null || expected.what !== what) return;
+      expected = null;
+      reject(new WaitTimeout("waited " + DEADLINE_MS + " ms for the layout change " + what + ": " + JSON.stringify(where())));
+    }, DEADLINE_MS);
+    const done = (r) => {
+      clearTimeout(timer);
+      resolve(r);
+    };
+    expected = { t0, what, measure, resolve: done };
+    act();
+  });
+const Widget = () => {
+  const [height, setHeight] = useState(500);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onMessage = (event) => {
+      const frame = ref.current;
+      if (!isFromWidgetFrame(event, frame && frame.contentWindow, "null")) return;
+      const d = event.data;
+      if (!d || typeof d !== "object" || d.type !== WIDGET_SIZE) return;
+      const next = clampReportedHeight(d.height);
+      if (next === null) return;
+      widgetReported = true;
+      setHeight(next);
+    };
+    addEventListener("message", onMessage);
+    return () => removeEventListener("message", onMessage);
+  }, []);
+  useLayoutEffect(() => {
+    widgetFrame = ref.current;
+    applied("widget:" + height);
+  }, [height]);
+  return h("iframe", { ref, className: "oc-widget__frame", title: "widget", sandbox: SIMPLE_FRAME_SANDBOX, referrerPolicy: "no-referrer", srcDoc: WIDGET_DOC, style: { height } });
+};
+// A block the first message holds, far above the end (a reasoning, a tool's card), that
+// folds from 300 px to 200 when the experiment asks.
+let blockOn = false;
+let setBlockHeight = null;
+const Block = () => {
+  const [height, setHeight] = useState(300);
+  setBlockHeight = setHeight;
+  useLayoutEffect(() => applied("block:" + height), [height]);
+  return h("div", { className: "oc-probe-block", style: { height } });
+};
+// A message the focus can land on (a screen reader, a script), and a control in it; the
+// last one closed by the widget, the first holding the block, when the experiment has them.
+const Message = () => {
+  const index = useMessage((m) => m.index);
+  const last = useMessage((m) => m.isLast);
+  return h(
+    MessagePrimitive.Root,
+    { className: "oc-msg", tabIndex: -1 },
+    index === 0 && blockOn ? h(Block) : null,
+    h(MessagePrimitive.Content, null),
+    last && widgetOn ? h(Widget) : null,
+    h("button", { type: "button", className: "oc-probe-copy" }, "Copier"),
+  );
+};
 let setQueued = null;
 let store = null;
 const Probe = () => ((store = useThreadViewportStore()), null);
+// The composer's lines: a draft of several, cleared by a send.
+let composerRows = 1;
+let setComposerRows = null;
 function Thread() {
   const [queued, set] = useState([]);
   setQueued = set;
+  const [rows, setRows] = useState(composerRows);
+  setComposerRows = setRows;
+  useLayoutEffect(() => applied("rows:" + rows), [rows]);
   const dock = { queuedTurns: queued, cancelQueued: async () => true };
   return h(
     ThreadPrimitive.Root,
@@ -90,7 +186,7 @@ function Thread() {
     h(
       "form",
       { className: "oc-composer" },
-      h("textarea", { className: "oc-composer__input", rows: 1 }),
+      h("textarea", { className: "oc-composer__input", rows }),
       h("div", { className: "oc-composer__bar" }, h("button", { type: "button", className: "oc-composer__send" }, "Envoyer")),
     ),
   );
@@ -220,21 +316,28 @@ const still = () => {
   };
 };
 const atTheEnd = () => atEnd(vp()) && store.getState().isAtBottom;
-// Mounts a fresh thread; returns how long it took to stand at its end, in time and frames.
-async function mount() {
+// Mounts a fresh thread — with the widget closing its last reply and the composer's draft
+// of several lines, when the experiment asks for them; returns how long it took to stand
+// at its end, in time and frames.
+async function mount(setup = {}) {
   if (root) root.unmount();
   tail = "";
   store = null;
   runtimeNow = null;
+  widgetOn = setup.widget === true;
+  widgetReported = false;
+  blockOn = setup.block === true;
+  composerRows = setup.rows || 1;
+  expected = null;
   root = createRoot(document.getElementById("root"));
   const watch = frameWatch();
   root.render(h(App));
   // Its 10 messages rendered, the thread scrolling, at its end — for assistant-ui too.
   await until(
-    "the thread at its end with its 10 messages",
+    "the thread at its end with its 10 messages (and its widget's size, when it has one)",
     () => {
       const v = vp();
-      return v !== null && store !== null && v.querySelectorAll(".oc-msg").length === 10 && v.scrollHeight > v.clientHeight + 100 && atTheEnd();
+      return v !== null && store !== null && v.querySelectorAll(".oc-msg").length === 10 && v.scrollHeight > v.clientHeight + 100 && atTheEnd() && (!widgetOn || widgetReported);
     },
     5,
     watch,
@@ -293,13 +396,44 @@ const ACTIONS = {
     },
   },
   wheelUp: { kind: "takes", run: (v) => { const r = v.getBoundingClientRect(); return input([{ method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x: r.left + 200, y: r.top + 200, deltaX: 0, deltaY: -300 } }]); } },
-  touch: { kind: "takes", run: (v) => { const r = v.getBoundingClientRect(); return input([{ method: "Input.synthesizeScrollGesture", params: { x: r.left + 200, y: r.top + 150, yDistance: 300, gestureSourceType: "touch", speed: 1200 } }]); } },
+  // A finger dragging the transcript down 300 px, a move a frame: touch events, which
+  // scroll in Chrome under Linux too — its synthesized touch gesture does not (measured,
+  // lot 31: a press and a release, the transcript unmoved).
+  touch: {
+    kind: "takes",
+    run: async (v) => {
+      const r = v.getBoundingClientRect();
+      const finger = (type, dy) => ({ method: "Input.dispatchTouchEvent", params: { type, touchPoints: type === "touchEnd" ? [] : [{ x: r.left + 200, y: r.top + 150 + dy }] } });
+      await input([finger("touchStart", 0)]);
+      for (let i = 1; i <= 15; i++) {
+        await nextFrame();
+        await input([finger("touchMove", 20 * i)]);
+      }
+      await input([finger("touchEnd", 0)]);
+    },
+  },
   scrollbar: { kind: "takes", run: async (v) => { const r = v.getBoundingClientRect(); await input([mouse("mousePressed", r.right - 4, r.top + 30)]); await sleep(60); await input([mouse("mouseReleased", r.right - 4, r.top + 30)]); } },
   typing: { kind: "keeps", focus: "composer", run: () => input(keyEvents("a").concat(keyEvents("ArrowUp"), keyEvents("PageUp"))) },
   ShiftSpaceOnControl: { kind: "keeps", focus: "control", run: () => input(keyEvents("ShiftSpace")) },
   focusInView: { kind: "keeps", run: (v) => [...v.querySelectorAll(".oc-probe-copy")].pop().focus() },
   PageDown: { kind: "keeps", focus: "message", run: () => input(keyEvents("PageDown")) },
   wheelDown: { kind: "keeps", run: (v) => { const r = v.getBoundingClientRect(); return input([{ method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x: r.left + 200, y: r.top + 200, deltaX: 0, deltaY: 120 } }]); } },
+  // What layout moves during the transition, no one scrolling — each change made in a
+  // task between two frames, and laid out before the next one (a measure, as any
+  // component's: the scroll is pulled up with the end there, and the reserve grows at the
+  // start of the next frame, before anyone looks). Each folds by 113 px, which the next
+  // text's lines do not add up to: assistant-ui knows a change of the content by its
+  // height alone, and a fold of 100 px the next text's 100 px made up for went unseen
+  // (measured, lot 31: the reader left short of the end — the follow long over, a matter
+  // of assistant-ui's own).
+  // - the end shrinking: the widget closing the last reply reports 387 px instead of 500;
+  widgetShrinks: { kind: "keeps", widget: true, layout: true, run: (v, t0) => change(t0, "widget:387", true, () => widgetFrame.contentWindow.postMessage(387, "*")) },
+  // - a block far above the end folding, 300 px down to 187 (the browser's scroll
+  //   anchoring keeps what is shown in place, the scroll up by as much);
+  aboveShrinks: { kind: "keeps", block: true, layout: true, run: (v, t0) => change(t0, "block:187", true, () => setTimeout(() => setBlockHeight(187), 0)) },
+  // - the transcript's box growing: a frame after the card, the send clears the
+  //   composer's draft, four lines down to one.
+  composerShrinks: { kind: "keeps", rows: 4, afterFrame: true, layout: true, run: (v, t0) => change(t0, "rows:1", true, () => setTimeout(() => setComposerRows(1), 0)) },
   readerAbove: { kind: "away" },
 };
 
@@ -311,7 +445,8 @@ function precondition(a, out) {
   const b = out.before;
   if (!(b.atEnd && b.bubbles === 10 && b.overflow)) return { met: false, why: "not at the end of the whole thread: " + JSON.stringify(b) };
   if (!a.run) return { met: true };
-  const at = out.first || out.acted;
+  // A change of the layout counts when it is laid out; an input, when the page has it.
+  const at = out.changed || out.first || out.acted;
   if (reducedMotion) return at.t < 100 ? { met: true } : { met: false, why: "acted at " + at.t + " ms, past the follow's 100 ms" };
   return at.spacer < out.spacerFinal - 1
     ? { met: true }
@@ -320,7 +455,7 @@ function precondition(a, out) {
 
 async function attempt(name) {
   const a = ACTIONS[name];
-  const mounted = await mount();
+  const mounted = await mount(a);
   const v = vp();
   const out = {
     name,
@@ -332,6 +467,7 @@ async function attempt(name) {
     after: [],
     acted: null,
     first: null,
+    changed: null,
     atKey: null,
     target: null,
     away: null,
@@ -371,10 +507,14 @@ async function attempt(name) {
     setQueued([{ messageId: "q1", text: "Un message mis en file pendant que l'agent travaille", pending: false, mine: true, canCancel: true }]);
     const sampling = sampleUntilSettled(t0, out.samples);
     if (a.run) {
-      await sleep(50);
+      if (a.afterFrame) await nextFrame();
+      else await sleep(50);
       out.acted = { t: Math.round(performance.now() - t0), top: v.scrollTop, spacer: spacer(v) };
       if (a.target !== undefined) out.target = Math.max(0, v.scrollTop + a.target);
-      await a.run(v);
+      // A layout change resolves to where it was laid out (scrollTo's promise, in this
+      // Chrome, to whether it was interrupted).
+      if (a.layout) out.changed = await a.run(v, t0);
+      else await a.run(v);
     }
     await sampling;
   } finally {
@@ -486,6 +626,8 @@ type Run = {
   after: Sample[];
   acted: { t: number; top: number; spacer: number } | null;
   first: { type: string; t: number; top: number; spacer: number } | null;
+  // A change of the layout the experiment made, as it was laid out.
+  changed: { t: number; top: number; max: number; spacer: number } | null;
   atKey: number | null;
   target: number | null;
   away: number | null;
@@ -555,7 +697,8 @@ function page(css: string, code: string, scenarios: string[]): string {
 }
 
 // A transcript, a document and a window, enough for the follow's own logic (Chrome
-// runs the real one below): listeners called by hand, frames run one by one.
+// runs the real one below): listeners called by hand — the document's first, as the
+// capture phase does —, frames run one by one, the reserve's height readable.
 function fakeDom(geometry: { top: number; height: number; client: number }) {
   const listeners = new Map<string, Set<(e: unknown) => void>>();
   const on = (prefix: string) => ({
@@ -569,8 +712,15 @@ function fakeDom(geometry: { top: number; height: number; client: number }) {
   const frames = new Map<number, () => void>();
   let ids = 0;
   let now = 0;
+  let reserve = 0;
   const win = {
-    getComputedStyle: () => ({ transitionDuration: "0.2s", transitionDelay: "0s" }),
+    getComputedStyle: () => ({
+      transitionDuration: "0.2s",
+      transitionDelay: "0s",
+      get height() {
+        return `${reserve}px`;
+      },
+    }),
     performance: { now: () => now },
     requestAnimationFrame: (f: () => void) => {
       frames.set(++ids, f);
@@ -599,8 +749,26 @@ function fakeDom(geometry: { top: number; height: number; client: number }) {
     doc,
     inside,
     scrolls: () => scrolls,
-    fire: (target: "vp" | "doc", type: string, e: unknown = {}) => {
-      for (const f of [...(listeners.get(`${target}:${type}`) ?? [])]) f(e);
+    // An event dispatched at the transcript or the document: the document's listeners first.
+    fire: (target: "vp" | "doc", type: string, e: Record<string, unknown> = {}) => {
+      const ev = target === "vp" ? { target: viewport, ...e } : e;
+      for (const f of [...(listeners.get(`doc:${type}`) ?? [])]) f(ev);
+      if (target === "vp") for (const f of [...(listeners.get(`vp:${type}`) ?? [])]) f(ev);
+    },
+    // The reserve's spacer grows, and the transcript's content with it.
+    grow: (px: number) => {
+      reserve += px;
+      viewport.scrollHeight += px;
+    },
+    // A layout before the next frame: the content shrinking under the end, or the
+    // transcript's box growing — the scroll pulled up with the end, as the browser clamps it.
+    shrinkEnd: (px: number) => {
+      viewport.scrollHeight -= px;
+      viewport.scrollTop = Math.min(viewport.scrollTop, viewport.scrollHeight - viewport.clientHeight);
+    },
+    growBox: (px: number) => {
+      viewport.clientHeight += px;
+      viewport.scrollTop = Math.min(viewport.scrollTop, viewport.scrollHeight - viewport.clientHeight);
     },
     listening: () => [...listeners.values()].reduce((n, s) => n + s.size, 0),
     // Runs the frames asked for, `ms` later.
@@ -764,6 +932,83 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
     });
   }
 
+  // What the layout moves is no one's move (lot 31, pass 20): pulled up with the end, at
+  // the end, before the next frame — then the reserve grows at the start of that frame,
+  // before the follow looks, in the scroll event of the pull or on its next frame.
+  const layouts: Array<[string, (dom: ReturnType<typeof fakeDom>) => void]> = [
+    ["the end shrinking (a widget, 100 px)", (d) => d.shrinkEnd(100)],
+    ["the transcript's box growing (the composer, 72 px)", (d) => d.growBox(72)],
+  ];
+  for (const [what, pull] of layouts) {
+    for (const seen of ["in the scroll event", "on its next frame"] as const) {
+      test(`it keeps holding the end through ${what}, the reserve grown before it looks — ${seen} (lot 31)`, () => {
+        const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+        const vp = dom.viewport;
+        const atEnd = () => vp.scrollHeight - vp.scrollTop - vp.clientHeight;
+        followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+        dom.grow(10);
+        dom.frame();
+        pull(dom);
+        expect(atEnd()).toBe(0);
+        dom.grow(4);
+        expect(atEnd()).toBe(4);
+        if (seen === "in the scroll event") {
+          dom.fire("vp", "scroll");
+          expect(atEnd()).toBe(0);
+        }
+        dom.frame();
+        expect(atEnd()).toBe(0);
+        for (let i = 0; i < 6; i++) {
+          dom.grow(5);
+          dom.frame(50);
+          expect(atEnd()).toBe(0);
+        }
+        // Its window ran out, not its patience.
+        expect(dom.pending()).toBe(0);
+        expect(dom.listening()).toBe(0);
+      });
+    }
+  }
+
+  test("assistant-ui, its listener on the transcript reading after the follow's, reads the reader at the end through the layout's pull (lot 31)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const vp = dom.viewport;
+    // assistant-ui's reading of a scroll (useThreadViewportAutoScroll): at the end within 1 px.
+    const read: boolean[] = [];
+    vp.addEventListener("scroll", () => read.push(Math.abs(vp.scrollHeight - vp.scrollTop - vp.clientHeight) <= 1));
+    followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+    dom.grow(10);
+    dom.frame();
+    dom.shrinkEnd(100);
+    dom.grow(4);
+    dom.fire("vp", "scroll");
+    expect(read).toEqual([true]);
+  });
+
+  for (const seen of ["in the scroll event", "on its next frame"] as const) {
+    test(`a move up another makes as the end shrinks still stops it for good: short of the end by more than the reserve grew — ${seen} (lot 31)`, () => {
+      const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+      const vp = dom.viewport;
+      followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+      dom.grow(10);
+      dom.frame();
+      dom.shrinkEnd(100);
+      dom.grow(4);
+      // 8 px: more than the 4 the reserve grew since the follow left it at the end.
+      vp.scrollTop -= 8;
+      if (seen === "in the scroll event") dom.fire("vp", "scroll");
+      else dom.frame();
+      const top = vp.scrollTop;
+      const scrolls = dom.scrolls();
+      dom.grow(10);
+      dom.frame();
+      dom.frame();
+      expect(vp.scrollTop).toBe(top);
+      expect(dom.scrolls()).toBe(scrolls);
+      expect(dom.listening()).toBe(0);
+    });
+  }
+
   test("assistant-ui reading the reader away from the end stops it; a new follow ends the one under way", () => {
     const dom = fakeDom({ top: 500, height: 1000, client: 500 });
     const vp = dom.viewport;
@@ -805,9 +1050,12 @@ const MOTION = [
   "focusInView",
   "PageDown",
   "wheelDown",
+  "widgetShrinks",
+  "aboveShrinks",
+  "composerShrinks",
   "readerAbove",
 ];
-const REDUCED = ["untouched", "PageUp", "focusAbove", "scriptInstant", "wheelUp", "readerAbove"];
+const REDUCED = ["untouched", "PageUp", "focusAbove", "scriptInstant", "wheelUp", "widgetShrinks", "aboveShrinks", "composerShrinks", "readerAbove"];
 
 describe.skipIf(chrome === null)("the end of the reply above the queued cards, and the reader's own scroll — assistant-ui's own follow, in Chrome (lots 29-30)", () => {
   // Both runs, once, when a test first needs them — one after the other: each experiment
@@ -1000,6 +1248,23 @@ describe.skipIf(chrome === null)("the end of the reply above the queued cards, a
       keeps(run, "motion");
     }, 900_000);
   }
+
+  // What layout moves is no one's move (lot 31, pass 20): the end shrinking, or the
+  // transcript's box growing, pulls the scroll up with the end — and the reserve grows
+  // before anyone looks. Held at the end through it, and the next text followed.
+  for (const media of ["motion", "reduced"] as const) {
+    for (const [name, what] of [
+      ["widgetShrinks", "the end shrinking under the reader (a widget reports 387 px instead of 500, laid out before the next frame)"],
+      ["aboveShrinks", "a block far above folding (300 px to 187, the scroll anchored up with it)"],
+      ["composerShrinks", "the transcript's box growing (the composer cleared by a send, a frame after the card)"],
+    ] as const) {
+      test(`${media}: ${what} does not stop the follow: at the end, the bubble above the cards, the next text followed`, async (ctx) => {
+        const { run } = await runOf(media, name, ctx);
+        expect(run.changed).not.toBeNull();
+        keeps(run, media);
+      }, 900_000);
+    }
+  }
 });
 
 // EVERY SCROLL THE APP MAKES OF THE TRANSCRIPT TELLS THE FOLLOW FIRST. A smooth scroll
@@ -1025,7 +1290,7 @@ const SCROLLS: Record<string, string | null> = {
   "src/chat/admin/CalendarView.tsx › scrollUnderHead › scrollTop": "the admin calendar",
   "src/chat/admin/ReasoningDefaultsCard.tsx › move › scrollIntoView": "an option of an admin list box",
   "src/chat/admin/ScheduledTab.tsx › ScheduledTab › scrollIntoView": "the admin schedule list",
-  "src/chat/queueReserve.ts › step › scrollTo": "the follow itself",
+  "src/chat/queueReserve.ts › toEnd › scrollTo": "the follow itself",
 };
 
 function sourceFiles(dir: string, out: string[] = []): string[] {

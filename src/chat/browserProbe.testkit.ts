@@ -1,5 +1,5 @@
 // THE BROWSER HALF OF THE GUARDS THAT LAY OUT THE APP IN A REAL CHROME (lots 28-29):
-// layoutFloor.test.ts, layerFeet.test.ts, slotRules.test.ts, queueReserve.test.ts.
+// layoutFloor.test.ts, layers.test.ts, queueReserve.test.ts.
 // Not a test itself (vitest runs *.test.ts only): where a Chrome is, the app's
 // stylesheets as its build loads them, and one headless run that returns what a page
 // wrote in <pre id="out">.
@@ -13,28 +13,45 @@ import { createServer } from "vite";
 export const ROOT = join(__dirname, "..", "..");
 const SRC = join(ROOT, "src");
 
-/** ATRIUM_CHROME, else Playwright's headless shell, else Chrome or Chromium where they
- *  install; null when none is here. */
-export function findChrome(): string | null {
-  const env = process.env.ATRIUM_CHROME;
-  if (env && existsSync(env)) return env;
-  for (const base of [join(homedir(), "Library/Caches/ms-playwright"), join(homedir(), ".cache/ms-playwright")]) {
-    if (!existsSync(base)) continue;
-    for (const dir of readdirSync(base).filter((d) => d.startsWith("chromium_headless_shell-")).sort().reverse()) {
-      for (const sub of readdirSync(join(base, dir))) {
+/** What findChrome looks at: the variable, the files, the home directory. */
+export type ChromeSearch = {
+  env: string | undefined;
+  exists: (path: string) => boolean;
+  list: (dir: string) => string[];
+  home: string;
+};
+
+const SYSTEM_CHROMES = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+];
+
+/** ATRIUM_CHROME, else the Chrome or Chromium the system installs, else Playwright's
+ *  headless shell; null when none is here. The system's browser comes before the shell
+ *  because it is what CI lays out in (its runner has no Playwright: /usr/bin/google-chrome),
+ *  at the frame rate a reader gets, 60 a second; the shell draws about 120 here, which
+ *  twice hid a defect that counted frames (lot 30). */
+export function findChrome(
+  search: ChromeSearch = {
+    env: process.env.ATRIUM_CHROME,
+    exists: existsSync,
+    list: (dir) => readdirSync(dir),
+    home: homedir(),
+  },
+): string | null {
+  if (search.env && search.exists(search.env)) return search.env;
+  for (const p of SYSTEM_CHROMES) if (search.exists(p)) return p;
+  for (const base of [join(search.home, "Library/Caches/ms-playwright"), join(search.home, ".cache/ms-playwright")]) {
+    if (!search.exists(base)) continue;
+    for (const dir of search.list(base).filter((d) => d.startsWith("chromium_headless_shell-")).sort().reverse()) {
+      for (const sub of search.list(join(base, dir))) {
         const bin = join(base, dir, sub, "chrome-headless-shell");
-        if (existsSync(bin)) return bin;
+        if (search.exists(bin)) return bin;
       }
     }
-  }
-  for (const p of [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-  ]) {
-    if (existsSync(p)) return p;
   }
   return null;
 }

@@ -19,13 +19,22 @@
 // gives way first does: the quotes and attachments before the lines of a long text,
 // the detached composer's quotes before its head; the transcript keeps its spacing.
 //
-// A browser is needed: ATRIUM_CHROME, else Playwright's headless shell, else Chrome or
-// Chromium where they install. Without one the guard is skipped locally and fails on
-// CI (CI=true): it is the only one here that lays out.
+// A browser is needed (browserProbe.testkit.ts's findChrome says which). Without one
+// the guard is skipped locally and fails on CI (CI=true).
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { appCss, appStylesheets, chromeOrFail, ROOT, runChrome, scriptData, sourceStylesheets } from "./browserProbe.testkit";
+import {
+  appCss,
+  appStylesheets,
+  type ChromeSearch,
+  chromeOrFail,
+  findChrome,
+  ROOT,
+  runChrome,
+  scriptData,
+  sourceStylesheets,
+} from "./browserProbe.testkit";
 import { clampGeometry } from "./dictationHold";
 import { LAYOUT_FIXTURES, type LayoutFixture } from "./layoutFloor.fixtures";
 
@@ -436,6 +445,29 @@ describe("the guards lay out with every stylesheet the app loads (lot 29)", () =
     // The main bundle's sheets come before a lazily loaded tab's.
     expect(loaded.indexOf("/src/chat/convexChat.css")).toBeLessThan(loaded.indexOf("/src/chat/admin/confTabs.css"));
     expect(loaded.indexOf("/src/index.css")).toBeLessThan(loaded.indexOf("/src/chat/convexChat.css"));
+  });
+});
+
+// THE BROWSER THE GUARDS LAY OUT IN (lot 31): the system's Chrome or Chromium — CI's, at
+// a reader's 60 frames a second — before Playwright's headless shell, which draws about
+// 120 here; ATRIUM_CHROME before both. findChrome, over files of its own.
+describe("the guards' browser: ATRIUM_CHROME, then the system's Chrome or Chromium, then Playwright's shell (lot 31)", () => {
+  const MAC = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const SHELL = "/home/r/.cache/ms-playwright/chromium_headless_shell-1234/chrome-linux/chrome-headless-shell";
+  const search = (env: string | undefined, files: string[]): ChromeSearch => ({
+    env,
+    exists: (p) => files.some((f) => f === p || f.startsWith(`${p}/`)),
+    list: (dir) => [...new Set(files.filter((f) => f.startsWith(`${dir}/`)).map((f) => f.slice(dir.length + 1).split("/")[0]))],
+    home: "/home/r",
+  });
+  test("the system's browser before the shell, the variable before both, null when there is none", () => {
+    expect(findChrome(search(undefined, [MAC, SHELL]))).toBe(MAC);
+    expect(findChrome(search(undefined, ["/usr/bin/google-chrome", SHELL]))).toBe("/usr/bin/google-chrome");
+    expect(findChrome(search(undefined, ["/usr/bin/chromium", SHELL]))).toBe("/usr/bin/chromium");
+    expect(findChrome(search(undefined, [SHELL]))).toBe(SHELL);
+    expect(findChrome(search("/opt/chrome", ["/opt/chrome", MAC, SHELL]))).toBe("/opt/chrome");
+    expect(findChrome(search("/opt/missing", [SHELL]))).toBe(SHELL);
+    expect(findChrome(search(undefined, []))).toBe(null);
   });
 });
 

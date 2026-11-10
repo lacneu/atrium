@@ -20,6 +20,9 @@
 //   where the layer's scroll ends. The agent-file editor kept its "Save" in a house
 //   foot that scrolled away with the source, at a height set by a stylesheet the guard
 //   did not read.
+// - A FOOTER FITS ITS LAYER'S WIDTH (lot 31), in this platform's font and in a wider one
+//   that is the same everywhere: the guards load no web font, and what a font does to
+//   a layout is what the platform's does (SF on a Mac, DejaVu Sans under Linux).
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
@@ -309,10 +312,21 @@ const SCREENS: Array<[number, number]> = [
 type LayerCase = { where: string; component: string; caller: string; html: string; hasFooter: boolean };
 type LayerCell = { where: string; caller: string; screen: string; scale: string; kb: number; shown: number; box: [number, number]; footer: { whole: boolean; seen: number; height: number; bottom: number } | null };
 type LayerFloor = { where: string; caller: string; screen: string; scale: string; floor: number | null; bound: number };
-type LayerOut = { cells: LayerCell[]; floors: LayerFloor[]; limit: LayerCell[]; errors: string[] };
+// How far a layer's footer runs past its width, in one of the fonts.
+type LayerFit = { where: string; caller: string; screen: string; scale: string; font: string; over: number };
+type LayerOut = { cells: LayerCell[]; floors: LayerFloor[]; limit: LayerCell[]; fits: LayerFit[]; errors: string[] };
+
+// The fonts a footer must fit its width in: this platform's (the app's own stack), and one
+// as wide on every platform — monospace's glyphs, 0.6 em each, wider than a UI font's —,
+// set through the app's own token (charts set it so). Twice named: the generic alone would
+// shrink the root's font size (the monospace quirk).
+const FONTS: Array<[string, string | null]> = [
+  ["this platform's font", null],
+  ["text as wide as monospace", "monospace, monospace"],
+];
 
 const LAYER_SCRIPT = String.raw`
-const cells = [], floors = [], limit = [], errors = [];
+const cells = [], floors = [], limit = [], fits = [], errors = [];
 function seen(w, el, shownBottom) {
   const r = el.getBoundingClientRect();
   let top = Math.max(r.top, 0), bottom = Math.min(r.bottom, shownBottom);
@@ -384,13 +398,20 @@ for (const c of DATA.cases) {
           layer.scrollTo({ top: layer.scrollHeight, behavior: "instant" });
           limit.push(measure(w, c, screen, Math.max(0, screen[1] - 24), scale));
           layer.scrollTo({ top: 0, behavior: "instant" });
+          setKeyboard(w, 0);
+          for (const [font, stack] of DATA.fonts) {
+            if (stack === null) d.documentElement.style.removeProperty("--ui-font-sans");
+            else d.documentElement.style.setProperty("--ui-font-sans", stack);
+            fits.push({ where: c.where, caller: c.caller, screen: screen.join("x"), scale, font, over: foot.scrollWidth - foot.clientWidth });
+          }
+          d.documentElement.style.removeProperty("--ui-font-sans");
         }
       }
       frame.remove();
     } catch (e) { errors.push(c.where + " " + screen.join("x") + ": " + String(e && e.stack || e)); }
   }
 }
-document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, errors });
+document.getElementById("out").textContent = JSON.stringify({ cells, floors, limit, fits, errors });
 `;
 
 /** A layer as its component renders it: its content, its header, a body long enough to
@@ -422,7 +443,7 @@ describe.skipIf(chrome === null)("every layer in every stylesheet the app loads 
       [...new Set(l.classes ?? [])].map((caller) => ({ where: l.where, component: l.component, caller, html: layerHtml(l, caller), hasFooter: l.footer !== null })),
     );
     const sweepPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: sweepCases })};${SWEEP_SCRIPT}</script></body></html>`;
-    const layerPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: layerCases, screens: SCREENS, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB })};${LAYER_SCRIPT}</script></body></html>`;
+    const layerPage = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre><script>const DATA = ${scriptData({ css, cases: layerCases, screens: SCREENS, scales: SCALES, kbs: KEYBOARDS, limitKb: LIMIT_KB, fonts: FONTS })};${LAYER_SCRIPT}</script></body></html>`;
     return {
       sweep: await runChrome<SweepRow[]>(chrome!, sweepPage),
       layers: await runChrome<LayerOut>(chrome!, layerPage, { budgetMs: 60000 }),
@@ -487,6 +508,20 @@ describe.skipIf(chrome === null)("every layer in every stylesheet the app loads 
     const bad = layers.limit
       .filter((c) => !c.footer || c.footer.seen <= 0 || c.footer.bottom > c.shown + 0.5)
       .map((c) => `${c.where} "${c.caller}" ${c.screen} ${c.scale}: footer ${c.footer ? `${c.footer.seen.toFixed(1)} seen, foot at ${c.footer.bottom.toFixed(1)}` : "none"} for ${c.shown} shown`);
+    expect(bad).toEqual([]);
+  }, 240_000);
+
+  // A FOOTER FITS ITS LAYER'S WIDTH (lot 31): its controls wrap rather than run past it,
+  // in this platform's font and in a wider one, the same on every platform. Under Linux
+  // (DejaVu Sans, its scrollbars taking room) the agent-file editor's row of controls ran
+  // 3 px past its width at the largest text scale, and the scrollbar that this opened took
+  // 15 of the 24 px shown: the dialog's foot went out of view.
+  test("a layer's footer fits its width — its controls wrap rather than run past it — in this platform's font and in text as wide as monospace (lot 31)", async () => {
+    const { layers, layerCases } = await ready;
+    expect(layers.fits.length).toBe(layerCases.filter((c) => c.hasFooter).length * SCREENS.length * Object.keys(SCALES).length * FONTS.length);
+    const bad = layers.fits
+      .filter((f) => f.over > 0.5)
+      .map((f) => `${f.where} "${f.caller}" ${f.screen} ${f.scale}, ${f.font}: ${f.over.toFixed(1)} px past its width`);
     expect(bad).toEqual([]);
   }, 240_000);
 });
