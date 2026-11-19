@@ -5,8 +5,11 @@ description: >-
   end to end: trace it in the pinned upstream sources, decide its use for
   Atrium, implement the full chain when adopted, prove it on the live bench or
   the golden corpus, and record the verdict in the coverage manifest under the
-  truth ratchet. No supposition — every claim carries an upstream file+symbol.
-  Triggers: "/frame-discovery <Schema.field>", "instruis la trame", "découverte
+  truth ratchet — or, for an EMISSION of the `agent` channel (a stream, a
+  stream/phase pair or a data key), in the emission registry under the
+  emission ratchet. No supposition — every claim carries an upstream file+symbol.
+  Triggers: "/frame-discovery <Schema.field>", "/frame-discovery agent:<stream>
+  [/<phase>|.<key>]", "instruis la trame", "instruis l'émission", "découverte
   de trame", "analyse ce champ du protocole", "frame discovery".
 ---
 
@@ -27,6 +30,13 @@ finish green, stop, report.**
 
 - The field path, e.g. `CronJobState.consecutiveErrors`. Provider defaults to
   openclaw; say `hermes:` for the Hermes surface.
+- OR an emission of the OpenClaw `agent` channel: `agent:<stream>` (a stream),
+  `agent:<stream>/<phase>` (a pair, `-` = no phase key) or `agent:<stream>.<key>`
+  (a data key). `AgentEventSchema.data` has no schema upstream, so these are not
+  in the coverage manifest: they are listed by the vendored emission inventory
+  (`bridge/protocol/openclaw/<version>/agent-emissions.json`) and classified in
+  the emission registry (see "Emission mode" below). `add-gateway-version` sends
+  every emission its diff reports as added or modified here, BEFORE the bench.
 - Optional guidance (which Atrium surface the maintainer has in mind).
 
 ## Steps
@@ -89,11 +99,49 @@ finish green, stop, report.**
    `FROZEN_TRUTH_FLOOR` in `bridge/test/coverage-truth.test.ts`, same change.
    Update `COVERAGE_SUMMARY` (counts + gapList) in
    `bridge/src/providers/openclaw/protocol-drift.ts` — the drift test recounts
-   the manifest and refuses a stale literal.
+   the manifest and refuses a stale literal. If the field is read in a function
+   no group of `bridge/protocol/openclaw/read-sites.json` names, add that read
+   site to its schema's group: the truth guard (`coverage-truth.test.ts` V3)
+   refuses a `gap`/`ignored` field its schema's read sites touch, and a schema
+   the bridge reads with no read site at all.
 
 8. **Gates, then stop.** `cd bridge && npm run typecheck && npm test`; repo root
    `npm run typecheck && npm test` when convex/src changed. Report: dossier
    summary, decision, proof, files touched. Do not commit.
+
+## Emission mode (`agent:<stream>[/<phase>|.<key>]`)
+
+The same steps, with the emission's own ledger and proofs:
+
+- **Ledger**: `bridge/protocol/openclaw/emissions/<version>.json` (meta-schema
+  `bridge/protocol/emissions.schema.json`, ratchet
+  `bridge/test/emissions-coverage.test.ts`). Pairs live under
+  `streams.<stream>.phases`, data keys under `streams.<stream>.keys`, keys a
+  gateway rewrite adds after emission under `rewrites` (`<scope>:<function>:<key>`).
+- **Step 3, the dossier**: start from the inventory's rows for the emission —
+  `file`, `function`, `lines`, the emitter `chain`, the keys and whether they are
+  `optional` — then read those sites in the pinned checkout. A row marked opaque
+  carries its reason and origin: say what the value really is, or why it cannot
+  be known. Read what the Control UI does with it (`ui/src`): it is upstream's
+  own reading of the frame.
+- **Step 4, decide**: `handled` (Atrium reads it), `ignored` (a deliberate
+  exclusion — the why must not describe a breakage, or it is a `gap`), or `gap`
+  with the identifier of the écart it belongs to (`F1`, `N4`, …) and its impact.
+- **Step 6, prove**: a `golden-corpus` proof names a scenario (or
+  `<version>/<scenario>`) whose capture CARRIES the pair or the unmasked key — the
+  ratchet opens the file and checks; otherwise a `deterministic-test` proof names
+  a bridge test that names the phase or key, with the note saying why no capture
+  shows it. The live bench lists the inventoried pairs no run has captured
+  (`emission-check.md` of the run): that list is the queue of scenarios to write.
+- **Step 7, record**: the entry (`status`, `by` + `anchor` + `proof` for handled;
+  `gap` + `note`; `why`). If the inventory itself changed (a new version
+  vendored), regenerate the drift detector's known vocabulary
+  (`cd bridge && node scripts/emission-vocabulary.mjs --write`;
+  `emission-vocabulary.test.ts` holds it to the inventory element by element)
+  and, when a coverage schema describes that stream's data
+  (`read-sites.json` `emissionStreams`, e.g. `AgentActivityItem` ↔ `item`), keep
+  its manifest entries consistent with the registry: the truth guard refuses a
+  contradiction.
 
 ## Guardrails
 

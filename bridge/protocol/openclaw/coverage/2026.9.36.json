@@ -9,8 +9,8 @@
           "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields); on DELIVERY runs (announce/task) the item sub-fields name/phase/status/meta are the ONLY tool telemetry (no tool stream there) - item-derived tool cards + estimated plan advance (normalizer item branch, 2026-07-14). Lifecycle (0.103.5): `waiting-approval` / `approval-resolved` with their approvalId (+ toolCallId) hold and release the turn's approval wait (normalizer holdForApproval / releaseApproval); an `error` ends the turn only when DEFINITIVE by upstream's rule (lifecycle-terminal.ts isDefinitiveLifecycleError <- isDefinitiveRunLifecycle: executionSettled, fallbackExhaustedFailure, or a terminal reason other than `failed`) — any other is left to the gateway's own terminal (its `chat` error once the retry grace is spent, or the retried run's end)"
         },
         "isHeartbeat": {
-          "status": "ignored",
-          "why": "keep-alive; any own frame already refreshes the recv budget (armRecv)"
+          "status": "handled",
+          "by": "normalizer feedFrame: a run the gateway flags isHeartbeat is remembered (heartbeatRunIds) and never adopted as the turn's continuation (foreignRunRefusal 'heartbeat'). CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored as a keep-alive"
         },
         "runId": {
           "status": "handled",
@@ -394,7 +394,7 @@
         },
         "agentId": {
           "status": "ignored",
-          "why": "session-scoped connection per agent"
+          "why": "not read: the exact sessionKey match already embeds the agent (agent:<id>:…). A socket receives the chat of every session it may see, so it is the session key, not the connection, that scopes a frame. CORRECTED 2026-11-08: the earlier reason said the connection was session-scoped per agent"
         },
         "spawnedBy": {
           "status": "handled",
@@ -469,8 +469,8 @@
           "by": "normalizer isolation gate (exact match)"
         },
         "agentId": {
-          "status": "ignored",
-          "why": "the connection is already session-scoped per agent (buildSessionKey)"
+          "status": "handled",
+          "by": "live-text-baseline projectChat: a delta's base is the previous text of the same sessionKey AND agentId (the per-agent key upstream's chat stream merge uses too). CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored on the premise that the connection is session-scoped per agent — it is not, a socket receives the chat of every session it may see"
         },
         "spawnedBy": {
           "status": "handled",
@@ -514,7 +514,7 @@
         },
         "agentId": {
           "status": "ignored",
-          "why": "session-scoped connection per agent"
+          "why": "not read: the exact sessionKey match already embeds the agent (agent:<id>:…). A socket receives the chat of every session it may see, so it is the session key, not the connection, that scopes a frame. CORRECTED 2026-11-08: the earlier reason said the connection was session-scoped per agent"
         },
         "spawnedBy": {
           "status": "handled",
@@ -590,7 +590,7 @@
         },
         "agentId": {
           "status": "ignored",
-          "why": "session-scoped connection per agent"
+          "why": "not read: the exact sessionKey match already embeds the agent (agent:<id>:…). A socket receives the chat of every session it may see, so it is the session key, not the connection, that scopes a frame. CORRECTED 2026-11-08: the earlier reason said the connection was session-scoped per agent"
         },
         "spawnedBy": {
           "status": "handled",
@@ -650,8 +650,8 @@
           "why": "the agent roster comes from agents.list; a history read is not where Atrium learns it (the delta branch of the union)"
         },
         "inFlightRun": {
-          "status": "ignored",
-          "why": "the reconnect adoption of an in-flight run (Control UI CU-22) belongs to phase 4; the shadow reconciler adopts nothing (the delta branch of the union)"
+          "status": "handled",
+          "by": "on a tail page (no cursor): follow-up-mode readSessionRunFacts reads inFlightRun.runId among the session's run facts, and openclaw-client onLiveTextGap re-reads a missing live-text base from it; the cursor read itself adopts nothing from it. CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored (\"the shadow reconciler adopts nothing\")"
         },
         "metadata": {
           "status": "ignored",
@@ -707,8 +707,8 @@
           "why": "the agent roster comes from agents.list; a history read is not where Atrium learns it"
         },
         "inFlightRun": {
-          "status": "ignored",
-          "why": "the reconnect adoption of an in-flight run (Control UI CU-22) belongs to phase 4; the shadow reconciler adopts nothing"
+          "status": "handled",
+          "by": "on a tail page (no cursor): follow-up-mode readSessionRunFacts reads inFlightRun.runId among the session's run facts, and openclaw-client onLiveTextGap re-reads a missing live-text base from it; the cursor read itself adopts nothing from it. CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored (\"the shadow reconciler adopts nothing\")"
         },
         "metadata": {
           "status": "ignored",
@@ -908,8 +908,8 @@
           ]
         },
         "nextBefore": {
-          "status": "ignored",
-          "why": "the older-page cursor of the pending list: the guard reads the newest page only (bounded 20), as the Control UI's refresh does"
+          "status": "handled",
+          "by": "transcript-rows readPendingInputs: a page with an older page (nextBefore present) is not the whole list, so the receipts it lacks prove nothing. CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored"
         }
       }
     },
@@ -1056,8 +1056,8 @@
     "ChatStatusEvent": {
       "fields": {
         "agentId": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "ignored",
+          "why": "not read: the exact sessionKey match already embeds the agent (agent:<id>:…). A socket receives the chat of every session it may see, so it is the session key, not the connection, that scopes a frame. CORRECTED 2026-11-08: the earlier reason said the connection was session-scoped per agent"
         },
         "phase": {
           "status": "gap",
@@ -1213,8 +1213,8 @@
     "ConnectParams": {
       "fields": {
         "auth": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — {token, password} carrying the same operator credential (token mode reads token, the trusted-proxy machine path password). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "caps": {
           "status": "handled",
@@ -1233,28 +1233,28 @@
           ]
         },
         "client": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — {id, version, platform, mode} (CLIENT_ID / CLIENT_MODE are `cli`, N5). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "commands": {
           "status": "gap",
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "device": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — the device identity signed over the challenge nonce (signChallenge). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "locale": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — en-US. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "maxProtocol": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — 4. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "minProtocol": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — 3. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "pathEnv": {
           "status": "gap",
@@ -1265,16 +1265,16 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "role": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — CLIENT_ROLE (operator). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "scopes": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — DEFAULT_SCOPES. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "userAgent": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: sent on every connection — atrium-bridge/<version>. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "computerUse": {
           "status": "ignored",
@@ -1609,8 +1609,8 @@
           "why": "a gateway-side alias; the tab shows `name`, and two names for one job would confuse more than help"
         },
         "owner": {
-          "status": "ignored",
-          "why": "the gateway-side owner tag; Atrium's ownership is its own user/agent policy"
+          "status": "handled",
+          "by": "cron-manage normalizeCronJobDetail: owner.sessionKey is kept as the job's ownerSessionKey (the ownership check of the Scheduled tab). CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored"
         },
         "agentId": {
           "status": "handled",
@@ -1681,8 +1681,8 @@
           "by": "fetchCronJobs: the next occurrence the calendar view places"
         },
         "lastRunAtMs": {
-          "status": "ignored",
-          "why": "the detail shows the state block; this duplicate at job level is redundant"
+          "status": "handled",
+          "by": "cron-manage normalizeCronJobDetail (and server fetchCronJobs for lastDelivered / lastDeliveryError): the job-level copy, read when the job's state carries none (the older gateways' shape). CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored"
         },
         "lastRunStatus": {
           "status": "handled",
@@ -1693,16 +1693,16 @@
           "why": "the raw error TEXT of the last run — free text on a surface Atrium renders; the status badge carries the signal"
         },
         "lastDelivered": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+          "status": "handled",
+          "by": "cron-manage normalizeCronJobDetail (and server fetchCronJobs for lastDelivered / lastDeliveryError): the job-level copy, read when the job's state carries none (the older gateways' shape). CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored"
         },
         "lastDeliveryStatus": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+          "status": "handled",
+          "by": "cron-manage normalizeCronJobDetail (and server fetchCronJobs for lastDelivered / lastDeliveryError): the job-level copy, read when the job's state carries none (the older gateways' shape). CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored"
         },
         "lastDeliveryError": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+          "status": "handled",
+          "by": "cron-manage normalizeCronJobDetail (and server fetchCronJobs for lastDelivered / lastDeliveryError): the job-level copy, read when the job's state carries none (the older gateways' shape). CORRECTED 2026-11-08 (coverage-truth V3): it was declared ignored"
         },
         "lastFailureNotificationDelivered": {
           "status": "ignored",
@@ -2607,8 +2607,8 @@
     "HelloOk": {
       "fields": {
         "auth": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: auth.deviceToken with auth.issuedAtMs is the device token promoted after the handshake (token mode only); auth.role / auth.scopes are not read (the debug line reads payload.role / payload.scopes, which the hello-ok does not carry). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "controlUiTabs": {
           "status": "gap",
@@ -2619,24 +2619,24 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "features": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: features.events, the families the gateway announces, judged by the drift detector (protocolDrift.observeAnnouncedEvents). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "pluginSurfaceUrls": {
           "status": "gap",
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "policy": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: policy.maxPayload (the inbound attachment ceiling) and policy.maxBufferedBytes (the send-buffer ceiling); policy.attachments and policy.tickIntervalMs are not read (S3, T1). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "protocol": {
           "status": "gap",
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "server": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: server.version is the gateway version the compat manifest and the capability policy key on (connection.gatewayVersion); server.connId is logged in debug only. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "snapshot": {
           "status": "gap",
@@ -4402,8 +4402,8 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "contextTokens": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "the context window — models-roster parseSessionMeta: published as the conversation header's session meta (publishSessionMeta). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "controlOwnerSessionKey": {
           "status": "gap",
@@ -4442,8 +4442,8 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "estimatedCostUsd": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "the estimated cost — models-roster parseSessionMeta: published as the conversation header's session meta (publishSessionMeta). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "execCwd": {
           "status": "gap",
@@ -4506,12 +4506,12 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "model": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "the model — models-roster parseSessionMeta: published as the conversation header's session meta (publishSessionMeta). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "modelProvider": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "its provider — models-roster parseSessionMeta: published as the conversation header's session meta (publishSessionMeta). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "outputTokens": {
           "status": "gap",
@@ -4586,12 +4586,12 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "totalTokens": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "the tokens used — models-roster parseSessionMeta: published as the conversation header's session meta (publishSessionMeta). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "totalTokensFresh": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "whether that count is fresh — models-roster parseSessionMeta: published as the conversation header's session meta (publishSessionMeta). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "unread": {
           "status": "gap",
@@ -5866,12 +5866,19 @@
     "ShutdownEvent": {
       "fields": {
         "reason": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "connection-end readShutdownNotice: its PRESENCE is recorded with the connection end (reasonPresent); the text itself is never propagated. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "restartExpectedMs": {
           "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "note": "S1: read and carried by readShutdownNotice, but classifyConnectionEnd names every announced shutdown gateway_restarting — so its ABSENCE, which upstream sends for a plain stop (run-loop.ts restartExpectedMs: isRestart ? 1500 : null), still reads as a restart to the user. CORRECTED 2026-11-08 (coverage-truth V3): it was declared «not yet instructed»",
+          "knownReaders": [
+            {
+              "file": "bridge/src/providers/openclaw/connection-end.ts",
+              "token": "payload.restartExpectedMs",
+              "note": "readShutdownNotice reads it; classifyConnectionEnd ignores its absence and announces a restart for a stop (S1)"
+            }
+          ]
         }
       }
     },
@@ -7505,8 +7512,8 @@
           "note": "new in 2026.9.5 — the refusal shape the gateway attaches to an agent whose database it will not admit (ownership mismatch / inspection pending / inspection failed). Atrium shows no agent-admission state, so a refused agent still reads as available in the picker. Not yet instructed (frame-discovery queue)"
         },
         "reason": {
-          "status": "gap",
-          "note": "new in 2026.9.5 — the refusal shape the gateway attaches to an agent whose database it will not admit (ownership mismatch / inspection pending / inspection failed). Atrium shows no agent-admission state, so a refused agent still reads as available in the picker. Not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "failure-classifier gatewayOwnRefusal: a refusal whose reason names a full disk is classed gateway_storage_unavailable, any other gateway_agent_db_closed. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed» while the code field's own entry already said so"
         },
         "repairHint": {
           "status": "gap",
@@ -8305,8 +8312,24 @@
     "QuestionResolveResult": {
       "fields": {
         "status": {
-          "status": "ignored",
-          "why": "success is the absence of an error; the settled state reaches the card through question.resolved, which the observer reads"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionResolveStatus -> agent-request-respond.ts respondOpenClaw: an answer is confirmed only by the verdict it asked for (`answered`, or `cancelled` for a skip); any other reply confirms nothing (gateway_error). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («success is the absence of an error; the settled state reaches the card through question.resolved, which the observer reads») while the answer path checks it.",
+          "anchor": {
+            "file": "src/agent-request-respond.ts",
+            "token": "verdict !== (body.skip ? \"cancelled\" : \"answered\")"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-respond.test.ts",
+            "note": "question.resolve goes on a short operator connection that ingests nothing (agent-request-respond.ts): its reply is never in a capture — the golden corpus shows the question.resolved broadcast that follows it (golden/2026.9.36/agent-request-question.jsonl). The test pins that a reply without the verdict asked for is refused, and that the verdict confirms the answer. The live proof stays owed."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/server-methods/question.ts question.resolve (:494): the reply is the manager's settle — manager.cancel (:517, `cancelled`) or manager.resolve (:534-540, a store-bound secret :569-586 then :618, `answered` with the answers): packages/gateway-protocol/src/schema/questions.ts QuestionResolveResultSchema (:139-142).",
+            "resets": "None: a question is settled once.",
+            "upstreamUse": "Control UI: a submission is confirmed only when the reply's status is the one asked for — `answered`, or `cancelled` for a skip — else «invalid question.resolve response» (ui/src/app/question-prompt.ts:629-630).",
+            "wire": "Gateway -> client, the question.resolve reply.",
+            "value": "The confirmation that the answer given from Atrium is the one recorded."
+          }
         },
         "answers": {
           "status": "ignored",
@@ -8642,7 +8665,7 @@
         },
         "agentId": {
           "status": "ignored",
-          "why": "the card is shown in the conversation of the agent that asked; the observer takes the agent from the broadcast request"
+          "why": "not read: the answer path reads the agent of an exec or plugin presentation only (core/agent-requests.ts readOpenClawApprovalCheck) — a system-agent approval is raised by the gateway's own system agent, whatever the chat, so its agent is never compared; an exec or plugin card the gateway records as a system-agent approval is refused (session_mismatch). The card is shown in the conversation of the session that asked; the observer takes the agent from the broadcast request"
         },
         "allowedDecisions": {
           "status": "handled",
@@ -8749,8 +8772,24 @@
           "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "sourceSessionKey": {
-          "status": "ignored",
-          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's own session only — a sub-agent's request, which upstream also addresses to its parent through that projection, is not shown; the answer path re-checks the presentation's agentId instead"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a pending approval.get snapshot whose sourceSessionKey names another session than this conversation's is not used — no card, no wait (reason `session`). It is read when present only: approval.get never carries it at v2026.9.36 (see the dossier). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not …») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "str(snapshot.sourceSessionKey)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "The field cannot be elicited live: approval.get's pending snapshot never carries it at v2026.9.36 — it is absent from every approval.get captured (golden/2026.9.36/agent-request-exec-approval.jsonl, the 2026.9.5 bench) — and the session-scoped projection that carries it is a stream Atrium does not open. The test serves a pending snapshot projected for another session and pins that it produces no card and no wait. The live proof stays owed."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/operator-approval-session-events.ts sets it on the session-scoped projection only — the `session.approval` events (publish, :155-164) and the replay of a subscription with includeApprovals (prepareReplay, :220-224) — as the canonical raising session (resolveApprovalSourceStreamKeyForRecord, :49). approval.get serves the pending snapshot as projectOperatorApprovalSnapshot builds it (operator-approval-snapshot.ts:5-19; server-methods/approval.ts buildApprovalSnapshot :61-63), without it.",
+            "resets": "None.",
+            "upstreamUse": "Control UI: the inline approval card says which session requested it (ui/src/components/exec-approval-card.ts:401-405), from the session-scoped replay (ui/src/pages/chat/session-approval-projection.ts:85-93).",
+            "wire": "Gateway -> client, `session.approval` events and the SessionApprovalReplay of sessions.messages.subscribe (includeApprovals): a stream Atrium does not open (SessionApprovalEvent, SessionApprovalReplay: ignored).",
+            "value": "Read defensively: a pending snapshot that names another session than this conversation's is refused."
+          }
         }
       }
     },
@@ -8785,8 +8824,24 @@
           "why": "Convex records its own resolvedAt when the settle arrives"
         },
         "source": {
-          "status": "ignored",
-          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a terminal approval.get snapshot whose source.sessionKey names another session than this conversation's is not used — no card, no settle, no wait (reason `session`). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («origin attribution of the ledger; the row already belongs to its conversation») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "obj(snapshot.source)?.sessionKey"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that a terminal snapshot naming another session produces no card, no settle and no wait, and that one naming this conversation's session settles its card."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/server-methods/approval.ts buildApprovalSnapshot (:56-81) adds `source` — the durable record's raising agent and session (operator-approval-store.rows.ts:327-334) — to every TERMINAL snapshot served to an RPC reader («Terminal attribution belongs to RPC readers; session events omit it»): approval.history (:183, :240), approval.get (:250-293), approval.resolve (:296, :468). projectOperatorApprovalSnapshot (operator-approval-snapshot.ts:5-38) never sets it, nor does the session-scoped projection.",
+            "resets": "None: it is the record's own attribution, fixed when the request is registered.",
+            "upstreamUse": "Control UI approval history: sourceLabel shows `source.agentId · source.sessionKey` (ui/src/pages/approvals/approvals-page.ts:104-109).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies (ApprovalGetResult.approval, ApprovalResolveResult.approval), terminal snapshots only.",
+            "value": "The raising session of a decided request: Atrium uses an approval.get snapshot only when it is this conversation's own session's request."
+          }
         },
         "resolver": {
           "status": "ignored",
@@ -8794,7 +8849,23 @@
         },
         "decision": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "snapshot?.decision"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that an allow settles with its own decision (allow-once, allow-always) and a deny with `deny`, once."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/operator-approval-snapshot.ts projectOperatorApprovalSnapshot (:28-37): an allowed snapshot carries the record's `allow-once` | `allow-always`, a denied one `deny`; an expired or cancelled one none (packages/gateway-protocol/src/schema/approvals.ts:240-271).",
+            "resets": "None: a record's first decision is final (first answer wins, approval.resolve `applied`).",
+            "upstreamUse": "Control UI approval history shows each decided request's decision (ui/src/pages/approvals/approvals-page.ts:83-85, :495).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies, terminal snapshots only.",
+            "value": "The verdict of a request decided while this socket missed its resolution broadcast: the card is settled with it."
+          }
         },
         "reason": {
           "status": "ignored",
@@ -8833,8 +8904,24 @@
           "why": "Convex records its own resolvedAt when the settle arrives"
         },
         "source": {
-          "status": "ignored",
-          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a terminal approval.get snapshot whose source.sessionKey names another session than this conversation's is not used — no card, no settle, no wait (reason `session`). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («origin attribution of the ledger; the row already belongs to its conversation») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "obj(snapshot.source)?.sessionKey"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that a terminal snapshot naming another session produces no card, no settle and no wait, and that one naming this conversation's session settles its card."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/server-methods/approval.ts buildApprovalSnapshot (:56-81) adds `source` — the durable record's raising agent and session (operator-approval-store.rows.ts:327-334) — to every TERMINAL snapshot served to an RPC reader («Terminal attribution belongs to RPC readers; session events omit it»): approval.history (:183, :240), approval.get (:250-293), approval.resolve (:296, :468). projectOperatorApprovalSnapshot (operator-approval-snapshot.ts:5-38) never sets it, nor does the session-scoped projection.",
+            "resets": "None: it is the record's own attribution, fixed when the request is registered.",
+            "upstreamUse": "Control UI approval history: sourceLabel shows `source.agentId · source.sessionKey` (ui/src/pages/approvals/approvals-page.ts:104-109).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies (ApprovalGetResult.approval, ApprovalResolveResult.approval), terminal snapshots only.",
+            "value": "The raising session of a decided request: Atrium uses an approval.get snapshot only when it is this conversation's own session's request."
+          }
         },
         "resolver": {
           "status": "ignored",
@@ -8842,7 +8929,23 @@
         },
         "decision": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "snapshot?.decision"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that an allow settles with its own decision (allow-once, allow-always) and a deny with `deny`, once."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/operator-approval-snapshot.ts projectOperatorApprovalSnapshot (:28-37): an allowed snapshot carries the record's `allow-once` | `allow-always`, a denied one `deny`; an expired or cancelled one none (packages/gateway-protocol/src/schema/approvals.ts:240-271).",
+            "resets": "None: a record's first decision is final (first answer wins, approval.resolve `applied`).",
+            "upstreamUse": "Control UI approval history shows each decided request's decision (ui/src/pages/approvals/approvals-page.ts:83-85, :495).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies, terminal snapshots only.",
+            "value": "The verdict of a request decided while this socket missed its resolution broadcast: the card is settled with it."
+          }
         },
         "reason": {
           "status": "ignored",
@@ -8881,8 +8984,24 @@
           "why": "Convex records its own resolvedAt when the settle arrives"
         },
         "source": {
-          "status": "ignored",
-          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a terminal approval.get snapshot whose source.sessionKey names another session than this conversation's is not used — no card, no settle, no wait (reason `session`). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («origin attribution of the ledger; the row already belongs to its conversation») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "obj(snapshot.source)?.sessionKey"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that a terminal snapshot naming another session produces no card, no settle and no wait, and that one naming this conversation's session settles its card."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/server-methods/approval.ts buildApprovalSnapshot (:56-81) adds `source` — the durable record's raising agent and session (operator-approval-store.rows.ts:327-334) — to every TERMINAL snapshot served to an RPC reader («Terminal attribution belongs to RPC readers; session events omit it»): approval.history (:183, :240), approval.get (:250-293), approval.resolve (:296, :468). projectOperatorApprovalSnapshot (operator-approval-snapshot.ts:5-38) never sets it, nor does the session-scoped projection.",
+            "resets": "None: it is the record's own attribution, fixed when the request is registered.",
+            "upstreamUse": "Control UI approval history: sourceLabel shows `source.agentId · source.sessionKey` (ui/src/pages/approvals/approvals-page.ts:104-109).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies (ApprovalGetResult.approval, ApprovalResolveResult.approval), terminal snapshots only.",
+            "value": "The raising session of a decided request: Atrium uses an approval.get snapshot only when it is this conversation's own session's request."
+          }
         },
         "resolver": {
           "status": "ignored",
@@ -8925,8 +9044,24 @@
           "why": "Convex records its own resolvedAt when the settle arrives"
         },
         "source": {
-          "status": "ignored",
-          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a terminal approval.get snapshot whose source.sessionKey names another session than this conversation's is not used — no card, no settle, no wait (reason `session`). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («origin attribution of the ledger; the row already belongs to its conversation») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "obj(snapshot.source)?.sessionKey"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that a terminal snapshot naming another session produces no card, no settle and no wait, and that one naming this conversation's session settles its card."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/server-methods/approval.ts buildApprovalSnapshot (:56-81) adds `source` — the durable record's raising agent and session (operator-approval-store.rows.ts:327-334) — to every TERMINAL snapshot served to an RPC reader («Terminal attribution belongs to RPC readers; session events omit it»): approval.history (:183, :240), approval.get (:250-293), approval.resolve (:296, :468). projectOperatorApprovalSnapshot (operator-approval-snapshot.ts:5-38) never sets it, nor does the session-scoped projection.",
+            "resets": "None: it is the record's own attribution, fixed when the request is registered.",
+            "upstreamUse": "Control UI approval history: sourceLabel shows `source.agentId · source.sessionKey` (ui/src/pages/approvals/approvals-page.ts:104-109).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies (ApprovalGetResult.approval, ApprovalResolveResult.approval), terminal snapshots only.",
+            "value": "The raising session of a decided request: Atrium uses an approval.get snapshot only when it is this conversation's own session's request."
+          }
         },
         "resolver": {
           "status": "ignored",
@@ -8965,16 +9100,48 @@
           "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`), and recordApproval settles a card from a TERMINAL snapshot (readOpenClawApprovalTerminal) when its approval.get finds the request already decided"
         },
         "sourceSessionKey": {
-          "status": "ignored",
-          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's own session only — a sub-agent's request, which upstream also addresses to its parent through that projection, is not shown; the answer path re-checks the presentation's agentId instead"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a pending approval.get snapshot whose sourceSessionKey names another session than this conversation's is not used — no card, no wait (reason `session`). It is read when present only: approval.get never carries it at v2026.9.36 (see the dossier). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not …») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "str(snapshot.sourceSessionKey)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "The field cannot be elicited live: approval.get's pending snapshot never carries it at v2026.9.36 — it is absent from every approval.get captured (golden/2026.9.36/agent-request-exec-approval.jsonl, the 2026.9.5 bench) — and the session-scoped projection that carries it is a stream Atrium does not open. The test serves a pending snapshot projected for another session and pins that it produces no card and no wait. The live proof stays owed."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/operator-approval-session-events.ts sets it on the session-scoped projection only — the `session.approval` events (publish, :155-164) and the replay of a subscription with includeApprovals (prepareReplay, :220-224) — as the canonical raising session (resolveApprovalSourceStreamKeyForRecord, :49). approval.get serves the pending snapshot as projectOperatorApprovalSnapshot builds it (operator-approval-snapshot.ts:5-19; server-methods/approval.ts buildApprovalSnapshot :61-63), without it.",
+            "resets": "None.",
+            "upstreamUse": "Control UI: the inline approval card says which session requested it (ui/src/components/exec-approval-card.ts:401-405), from the session-scoped replay (ui/src/pages/chat/session-approval-projection.ts:85-93).",
+            "wire": "Gateway -> client, `session.approval` events and the SessionApprovalReplay of sessions.messages.subscribe (includeApprovals): a stream Atrium does not open (SessionApprovalEvent, SessionApprovalReplay: ignored).",
+            "value": "Read defensively: a pending snapshot that names another session than this conversation's is refused."
+          }
         },
         "resolvedAtMs": {
           "status": "ignored",
           "why": "Convex records its own resolvedAt when the settle arrives"
         },
         "source": {
-          "status": "ignored",
-          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a terminal approval.get snapshot whose source.sessionKey names another session than this conversation's is not used — no card, no settle, no wait (reason `session`). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («origin attribution of the ledger; the row already belongs to its conversation») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "obj(snapshot.source)?.sessionKey"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that a terminal snapshot naming another session produces no card, no settle and no wait, and that one naming this conversation's session settles its card."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/server-methods/approval.ts buildApprovalSnapshot (:56-81) adds `source` — the durable record's raising agent and session (operator-approval-store.rows.ts:327-334) — to every TERMINAL snapshot served to an RPC reader («Terminal attribution belongs to RPC readers; session events omit it»): approval.history (:183, :240), approval.get (:250-293), approval.resolve (:296, :468). projectOperatorApprovalSnapshot (operator-approval-snapshot.ts:5-38) never sets it, nor does the session-scoped projection.",
+            "resets": "None: it is the record's own attribution, fixed when the request is registered.",
+            "upstreamUse": "Control UI approval history: sourceLabel shows `source.agentId · source.sessionKey` (ui/src/pages/approvals/approvals-page.ts:104-109).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies (ApprovalGetResult.approval, ApprovalResolveResult.approval), terminal snapshots only.",
+            "value": "The raising session of a decided request: Atrium uses an approval.get snapshot only when it is this conversation's own session's request."
+          }
         },
         "resolver": {
           "status": "ignored",
@@ -8982,7 +9149,23 @@
         },
         "decision": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "snapshot?.decision"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that an allow settles with its own decision (allow-once, allow-always) and a deny with `deny`, once."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/operator-approval-snapshot.ts projectOperatorApprovalSnapshot (:28-37): an allowed snapshot carries the record's `allow-once` | `allow-always`, a denied one `deny`; an expired or cancelled one none (packages/gateway-protocol/src/schema/approvals.ts:240-271).",
+            "resets": "None: a record's first decision is final (first answer wins, approval.resolve `applied`).",
+            "upstreamUse": "Control UI approval history shows each decided request's decision (ui/src/pages/approvals/approvals-page.ts:83-85, :495).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies, terminal snapshots only.",
+            "value": "The verdict of a request decided while this socket missed its resolution broadcast: the card is settled with it."
+          }
         },
         "reason": {
           "status": "ignored",
@@ -9021,8 +9204,24 @@
           "why": "Convex records its own resolvedAt when the settle arrives"
         },
         "source": {
-          "status": "ignored",
-          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalSnapshotOrigin -> agent-request-observer.ts snapshotRefusal: a terminal approval.get snapshot whose source.sessionKey names another session than this conversation's is not used — no card, no settle, no wait (reason `session`). CORRECTED 2026-11-08 (coverage-truth V3, 0.103.6 integration): it was declared ignored («origin attribution of the ledger; the row already belongs to its conversation») while 0.103.5 reads it.",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "obj(snapshot.source)?.sessionKey"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that a terminal snapshot naming another session produces no card, no settle and no wait, and that one naming this conversation's session settles its card."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/server-methods/approval.ts buildApprovalSnapshot (:56-81) adds `source` — the durable record's raising agent and session (operator-approval-store.rows.ts:327-334) — to every TERMINAL snapshot served to an RPC reader («Terminal attribution belongs to RPC readers; session events omit it»): approval.history (:183, :240), approval.get (:250-293), approval.resolve (:296, :468). projectOperatorApprovalSnapshot (operator-approval-snapshot.ts:5-38) never sets it, nor does the session-scoped projection.",
+            "resets": "None: it is the record's own attribution, fixed when the request is registered.",
+            "upstreamUse": "Control UI approval history: sourceLabel shows `source.agentId · source.sessionKey` (ui/src/pages/approvals/approvals-page.ts:104-109).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies (ApprovalGetResult.approval, ApprovalResolveResult.approval), terminal snapshots only.",
+            "value": "The raising session of a decided request: Atrium uses an approval.get snapshot only when it is this conversation's own session's request."
+          }
         },
         "resolver": {
           "status": "ignored",
@@ -9030,7 +9229,23 @@
         },
         "decision": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+          "by": "core/agent-requests.ts readOpenClawApprovalTerminal -> the settle of a card whose approval.get finds the request already decided (agent-request-observer.ts recordApproval: its one resolution broadcast never reached this socket); otherwise the decision recorded on the row comes from the `*.approval.resolved` broadcast",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "snapshot?.decision"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/agent-request-own-session-approvals.test.ts",
+            "note": "A terminal approval.get is read only when a card's request was decided while its one resolution broadcast never reached this socket (a reconnection's pending list): no bench scenario elicits it, and the golden corpus holds only the PENDING snapshot (golden/2026.9.36/agent-request-exec-approval.jsonl). The test closes that captured pending snapshot the way upstream closes it (operator-approval-snapshot.ts:23-37, server-methods/approval.ts:56-81) and checks it against TerminalApprovalSnapshotSchema. The live proof stays owed. It pins that an allow settles with its own decision (allow-once, allow-always) and a deny with `deny`, once."
+          },
+          "dossier": {
+            "writers": "Read at v2026.9.36 (70c40e4b). src/gateway/operator-approval-snapshot.ts projectOperatorApprovalSnapshot (:28-37): an allowed snapshot carries the record's `allow-once` | `allow-always`, a denied one `deny`; an expired or cancelled one none (packages/gateway-protocol/src/schema/approvals.ts:240-271).",
+            "resets": "None: a record's first decision is final (first answer wins, approval.resolve `applied`).",
+            "upstreamUse": "Control UI approval history shows each decided request's decision (ui/src/pages/approvals/approvals-page.ts:83-85, :495).",
+            "wire": "Gateway -> client, the approval.get and approval.resolve replies, terminal snapshots only.",
+            "value": "The verdict of a request decided while this socket missed its resolution broadcast: the card is settled with it."
+          }
         },
         "reason": {
           "status": "ignored",
@@ -9353,8 +9568,8 @@
     "AgentActivityItem": {
       "fields": {
         "itemId": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer claimDeliveryItemEnd: a delivery item's end writes its card once; completedPreamble keys a preamble's note. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.itemId handled with its anchor and proof"
         },
         "phase": {
           "status": "handled",
@@ -9379,32 +9594,32 @@
           }
         },
         "kind": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer item branch: preamble / tool / command decide the item's reading. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.kind handled with its anchor and proof"
         },
         "title": {
           "status": "gap",
           "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
         },
         "status": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer item branch: a delivery card's outcome (completed or error). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.status handled with its anchor and proof"
         },
         "name": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer item branch: the tool name of a delivery card; the message tool's item. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.name handled with its anchor and proof"
         },
         "meta": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "sub-agent-observer: a child harness item's description, the closest args-equivalent the harness exposes. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.meta handled with its anchor and proof"
         },
         "commandBearing": {
           "status": "gap",
           "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
         },
         "toolCallId": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer item branch: the call's identity on a delivery card, so the transcript's call folds into it. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.toolCallId handled with its anchor and proof"
         },
         "startedAt": {
           "status": "gap",
@@ -9415,16 +9630,16 @@
           "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
         },
         "error": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer item branch: the reason a delivery tool failed, carried on its card. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.error handled with its anchor and proof"
         },
         "summary": {
           "status": "gap",
           "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
         },
         "progressText": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer completedPreamble: a preamble's text, shown as a work note once complete. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»; the emission registry classifies item.progressText handled with its anchor and proof"
         },
         "suppressChannelProgress": {
           "status": "gap",

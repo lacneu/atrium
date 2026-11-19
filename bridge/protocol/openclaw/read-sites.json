@@ -1,0 +1,270 @@
+{
+  "$comment": "WHERE the bridge reads each protocol schema's payload (or builds it, for a *Params schema): named functions of bridge/src, or a whole file when the file reads nothing else. Consumed by the coverage truth guard (test/coverage-truth.test.ts, V3): inside these sites a field name is THAT schema's field, so a field the PROMISED version's coverage manifest declares gap or ignored and that a site touches is a false declaration — unless the access is ADMITTED (a gap whose knownReaders token is exactly `<receiver>.<field>` in that file) or EXCEPTED here. An exception names ONE concrete access: the field, the site (file + function) and the receivers it is read through (the text before `.field`, without casts or `?.`). Without `branch` it says those receivers are another object (a homonym): refused when one of them carries a HANDLED field of the schema anywhere in the group (that receiver is the payload, aliases included). With `branch` ({receiver, field}) it says the field is read only on branches of that discriminant the schema never takes: the schema's own literal for it is read from the VENDORED schema (never declared here), and every access must be provably unreachable when the discriminant equals it (under a test that excludes it, or after `if (…R.field === own…) return`). The guard also refuses a schema the bridge reads (a handled field) that is neither scoped here nor listed in `unscoped` with why; `unscoped` can only shrink (FROZEN_UNSCOPED in the test). `emissionStreams` ties a coverage schema that describes agent `data` to its stream in the emission registry (protocol/openclaw/emissions/<version>.json), whose classification it must not contradict.",
+  "groups": [
+    {
+      "name": "chat events",
+      "schemas": ["ChatDeltaEvent", "ChatFinalEvent", "ChatAbortedEvent", "ChatErrorEvent", "ChatStatusEvent"],
+      "sites": [
+        { "file": "src/providers/openclaw/normalizer.ts", "fn": "handleChat" },
+        { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }
+      ],
+      "exceptions": [
+        { "field": "ChatFinalEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); a final returns before it" },
+        { "field": "ChatAbortedEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); an aborted frame returns before it" },
+        { "field": "ChatErrorEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); an error frame returns before it" },
+        { "field": "ChatStatusEvent.agentId", "site": { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectChat" }, "receivers": ["payload", "previous"], "branch": { "receiver": "payload", "field": "state" }, "why": "projectChat reads agentId on its DELTA branch only (the base a delta appends to); a status frame returns before it" },
+        { "field": "ChatAbortedEvent.errorMessage", "site": { "file": "src/providers/openclaw/normalizer.ts", "fn": "handleChat" }, "receivers": ["payload"], "branch": { "receiver": "payload", "field": "state" }, "why": "handleChat reads errorMessage for state error only: the aborted branch finalizes and returns before the read (the gap: an abort's cancellation reason is dropped)" }
+      ]
+    },
+    {
+      "name": "agent event envelope",
+      "schemas": ["AgentEvent"],
+      "sites": [
+        { "file": "src/providers/openclaw/normalizer.ts", "fn": "feedFrame" },
+        { "file": "src/providers/openclaw/normalizer.ts", "fn": "handleAgent" },
+        { "file": "src/providers/openclaw/live-text-baseline.ts", "fn": "projectAgent" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "handshake",
+      "schemas": ["HelloOk", "ConnectParams"],
+      "sites": [{ "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connect" }],
+      "exceptions": [
+        { "field": "HelloOk.type", "site": { "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connect" }, "receivers": ["frame"], "why": "`frame.type` at this site is the response ENVELOPE's discriminant (res / event), read before the hello-ok payload; the payload's own `type` is not read" }
+      ]
+    },
+    {
+      "name": "shutdown notice",
+      "schemas": ["ShutdownEvent"],
+      "sites": [{ "file": "src/providers/openclaw/connection-end.ts", "fn": "readShutdownNotice" }],
+      "exceptions": []
+    },
+    {
+      "name": "chat history",
+      "schemas": ["ChatHistoryCursorResult", "ChatHistoryDeltaResult", "ChatPendingInputsPage"],
+      "sites": [
+        { "file": "src/providers/openclaw/transcript-rows.ts", "fn": "parseHistoryReply" },
+        { "file": "src/providers/openclaw/transcript-rows.ts", "fn": "readSessionInfo" },
+        { "file": "src/providers/openclaw/transcript-rows.ts", "fn": "readPendingInputs" },
+        { "file": "src/providers/openclaw/transcript-rows.ts", "fn": "readInputReceipts" },
+        { "file": "src/providers/openclaw/follow-up-mode.ts", "fn": "readSessionRunFacts" },
+        { "file": "src/providers/openclaw/openclaw-client.ts", "fn": "onLiveTextGap" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "session row",
+      "schemas": ["SessionRow"],
+      "sites": [
+        { "file": "src/providers/openclaw/session-access.ts", "fn": "readSessionAccess" },
+        { "file": "src/providers/openclaw/models-roster.ts", "fn": "parseSessionMeta" },
+        { "file": "src/server.ts", "fn": "createdByProfile" }
+      ],
+      "exceptions": [
+        { "field": "SessionRow.label", "site": { "file": "src/providers/openclaw/models-roster.ts", "fn": "parseSessionMeta" }, "receivers": ["o"], "why": "`label` at this site is a thinking level's label (`o.label` of thinkingLevels), not the session's own label" }
+      ]
+    },
+    {
+      "name": "agents roster",
+      "schemas": ["AgentSummary", "AgentsListResult"],
+      "sites": [
+        { "file": "src/server.ts", "fn": "normalizeOpenClawAgent" },
+        { "file": "src/server.ts", "fn": "discoverAgents" }
+      ],
+      "exceptions": [
+        { "field": "AgentSummary.kind", "site": { "file": "src/server.ts", "fn": "discoverAgents" }, "receivers": ["config"], "why": "`config.kind` at this site is the bridge's own instance configuration (openclaw / hermes), not an agent row's kind" }
+      ]
+    },
+    {
+      "name": "models roster",
+      "schemas": ["ModelChoice", "ModelsListResult"],
+      "sites": [
+        { "file": "src/providers/openclaw/models-roster.ts", "fn": "dedupeModels" },
+        { "file": "src/providers/openclaw/models-roster.ts", "fn": "askModels" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "agent files",
+      "schemas": ["AgentsFileEntry", "AgentsFilesGetResult", "AgentsFilesListResult"],
+      "sites": [
+        { "file": "src/conf.ts", "fn": "fileMeta" },
+        { "file": "src/conf.ts", "fn": "fileGet" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "cron jobs",
+      "schemas": ["CronJob", "CronJobState", "CronDelivery"],
+      "sites": [
+        { "file": "src/core/cron-manage.ts", "fn": "normalizeCronJobDetail" },
+        { "file": "src/server.ts", "fn": "fetchCronJobs" }
+      ],
+      "exceptions": [
+        { "field": "CronJob.sessionKey", "site": { "file": "src/core/cron-manage.ts", "fn": "normalizeCronJobDetail" }, "receivers": ["owner"], "why": "`.sessionKey` at this site is the job OWNER's (owner.sessionKey, kept as ownerSessionKey), not the job's own sessionKey" }
+      ]
+    },
+    {
+      "name": "cron runs",
+      "schemas": ["CronRunLogEntry"],
+      "sites": [{ "file": "src/core/cron-manage.ts", "fn": "normalizeCronRunEntries" }],
+      "exceptions": []
+    },
+    {
+      "name": "question requests",
+      "schemas": [
+        "Question", "QuestionOption", "QuestionRecord", "QuestionRequestedEvent",
+        "QuestionSecretStoreBinding", "QuestionSecretStoreExisting", "QuestionListResult", "QuestionGetResult"
+      ],
+      "sites": [
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionRequested" },
+        { "file": "src/core/agent-requests.ts", "fn": "readSecretStore" },
+        { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "replayQuestions" },
+        { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "onQuestion" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionCheck" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "question resolutions",
+      "schemas": ["QuestionResolvedEvent"],
+      "sites": [
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionResolved" },
+        { "file": "src/providers/openclaw/agent-request-observer.ts", "fn": "onQuestionResolved" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "approval presentations",
+      "schemas": [
+        "ApprovalGetResult", "ApprovalPresentation", "ExecApprovalPresentation", "PluginApprovalPresentation",
+        "SystemAgentApprovalPresentation", "ApprovalScope", "MessageSendApprovalScope", "PaymentApprovalScope",
+        "ExternalPostApprovalScope", "StandingGrantApprovalScope"
+      ],
+      "sites": [
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalPresentation" },
+        { "file": "src/core/agent-requests.ts", "fn": "scopeSummary" },
+        { "file": "src/core/agent-requests.ts", "fn": "readDecisions" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalCheck" }
+      ],
+      "exceptions": [
+        { "field": "SystemAgentApprovalPresentation.agentId", "site": { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalCheck" }, "receivers": ["presentation"], "branch": { "receiver": "presentation", "field": "kind" }, "why": "readOpenClawApprovalCheck reads an exec or plugin presentation's agent only: a system-agent approval is raised by the gateway's own system agent, whatever the chat, and its agent is never compared" }
+      ]
+    },
+    {
+      "name": "approval snapshots",
+      "schemas": [
+        "ApprovalSnapshot", "PendingApprovalSnapshot", "AllowedApprovalSnapshot", "DeniedApprovalSnapshot",
+        "ExpiredApprovalSnapshot", "CancelledApprovalSnapshot", "TerminalApprovalSnapshot"
+      ],
+      "sites": [
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalTerminalStatus" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalTerminal" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalSnapshotOrigin" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalCheck" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalResolveOutcome" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "knowledge session actions",
+      "schemas": ["PluginsSessionActionResult", "PluginsSessionActionSuccessResult", "PluginsSessionActionFailureResult"],
+      "sites": [{ "file": "src/providers/openclaw/knowledge-policy.ts", "fn": null }],
+      "exceptions": []
+    },
+    {
+      "name": "widget documents",
+      "schemas": ["CanvasDocumentViewResult", "CanvasDocumentViewParams"],
+      "sites": [{ "file": "src/providers/openclaw/canvas-view.ts", "fn": null }],
+      "exceptions": []
+    },
+    {
+      "name": "chat abort params",
+      "schemas": ["ChatAbortParams"],
+      "sites": [{ "file": "src/core/rpc-params.ts", "fn": "chatAbortParams" }],
+      "exceptions": []
+    },
+    {
+      "name": "chat history params",
+      "schemas": ["ChatHistoryParams"],
+      "sites": [{ "file": "src/core/rpc-params.ts", "fn": "chatHistoryParams" }],
+      "exceptions": []
+    },
+    {
+      "name": "session key params",
+      "schemas": ["SessionsDescribeParams", "SessionsResetParams", "SessionsCompactParams"],
+      "sites": [{ "file": "src/core/rpc-params.ts", "fn": "sessionsGetParams" }],
+      "exceptions": []
+    },
+    {
+      "name": "talk create params",
+      "schemas": ["TalkClientCreateParams"],
+      "sites": [{ "file": "src/core/rpc-params.ts", "fn": "talkClientCreateParams" }],
+      "exceptions": []
+    },
+    {
+      "name": "talk tool-call params",
+      "schemas": ["TalkClientToolCallParams"],
+      "sites": [{ "file": "src/core/rpc-params.ts", "fn": "talkToolCallParams" }],
+      "exceptions": []
+    },
+    {
+      "name": "capped message read params",
+      "schemas": ["ChatMessageGetParams"],
+      "sites": [{ "file": "src/session.ts", "fn": "readMessage" }],
+      "exceptions": []
+    },
+    {
+      "name": "agent request answers",
+      "schemas": ["QuestionResolveParams", "ApprovalResolveParams"],
+      "sites": [{ "file": "src/agent-request-respond.ts", "fn": "respondOpenClaw" }],
+      "exceptions": []
+    },
+    {
+      "name": "agent request answer replies",
+      "schemas": ["QuestionResolveResult", "ApprovalResolveResult"],
+      "sites": [
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawQuestionResolveStatus" },
+        { "file": "src/core/agent-requests.ts", "fn": "readOpenClawApprovalResolveOutcome" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "agent database refusal",
+      "schemas": ["AgentDatabaseAdmissionRefusal"],
+      "sites": [{ "file": "src/core/failure-classifier.ts", "fn": "gatewayOwnRefusal" }],
+      "exceptions": []
+    },
+    {
+      "name": "config patch params",
+      "schemas": ["ConfigPatchParams"],
+      "sites": [
+        { "file": "src/conf.ts", "fn": "performConfigDefaultsOp" },
+        { "file": "src/providers/openclaw/knowledge-policy.ts", "fn": "performKnowledgeDefaultOp" }
+      ],
+      "exceptions": []
+    },
+    {
+      "name": "session create params",
+      "schemas": ["SessionsCreateParams"],
+      "sites": [{ "file": "src/server.ts", "fn": "createSession" }],
+      "exceptions": []
+    }
+  ],
+  "unscoped": {
+    "ChatSendParams": "built inline in performSendComposed (server.ts), a route function whose object literals carry many payloads at once: no site isolates this schema until its builder is a function of its own",
+    "SessionsPatchParams": "built inline in several server.ts route functions (applySessionSettings, performSendComposed) that write other payloads too: no site isolates this schema until its builder is a function of its own",
+    "CronGetParams": "built inline in performOpenClawCronManage (server.ts), which builds every cron.* request: no site isolates one schema until each builder is a function of its own",
+    "CronListParams": "built inline in fetchCronJobs (server.ts), which also reads the cron.list reply: no site isolates the params until the builder is a function of its own",
+    "CronRemoveParams": "built inline in performOpenClawCronManage (server.ts), which builds every cron.* request: no site isolates one schema until each builder is a function of its own",
+    "CronRunParams": "built inline in performOpenClawCronManage (server.ts), which builds every cron.* request: no site isolates one schema until each builder is a function of its own",
+    "CronRunsParams": "built inline in performOpenClawCronManage (server.ts), which builds every cron.* request: no site isolates one schema until each builder is a function of its own",
+    "CronUpdateParams": "built inline in performOpenClawCronManage (server.ts), which builds every cron.* request: no site isolates one schema until each builder is a function of its own",
+    "ModelsListParams": "built from modelsQuery's decision inside the models cache (models-roster.ts askModels), whose names are the catalogue's too: no site isolates the params until the builder is a function of its own",
+    "TalkClientCreateResult": "read inline in the talk routes of createBridgeServer (server.ts), the bridge's whole HTTP surface: no site isolates this schema until its reader is a function of its own",
+    "TalkClientToolCallResult": "read inline in the talk routes of createBridgeServer (server.ts), the bridge's whole HTTP surface: no site isolates this schema until its reader is a function of its own",
+    "AgentsFilesSetParams": "built inline in performAgentFilesOp (conf.ts), which builds the whole agents.files.* trio and reads their replies: no site isolates this schema until its builder is a function of its own"
+  },
+  "emissionStreams": { "AgentActivityItem": "item" }
+}

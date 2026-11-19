@@ -490,6 +490,73 @@ export function readOpenClawApprovalTerminal(getResult: unknown): {
   };
 }
 
+// The replies the answer path reads before and after resolving (agent-request-respond.ts
+// respondOpenClaw), each read here by a function of its own: inside the route they sit beside
+// the answer's own fields (`answers`, `sessionKey`, `source`), and a read site must name one
+// payload's fields only (protocol/openclaw/read-sites.json). Values come back RAW: the answer
+// path compares them as it receives them.
+
+/**
+ * The record a `question.get` reply carries (QuestionGetResult.question), with what an answer
+ * is checked against before `question.resolve`: the session that asked, the request's
+ * generation (`createdAtMs`) and its status. Null when the reply carries no record.
+ */
+export function readOpenClawQuestionCheck(getResult: unknown): {
+  record: Obj;
+  sessionKey: unknown;
+  createdAtMs: unknown;
+  status: unknown;
+} | null {
+  const question = (getResult as { question?: unknown } | null)?.question;
+  if (typeof question !== "object" || question === null) return null;
+  const record = question as Obj;
+  return { record, sessionKey: record.sessionKey, createdAtMs: record.createdAtMs, status: record.status };
+}
+
+/** The verdict a `question.resolve` reply records (QuestionResolveResult.status). */
+export function readOpenClawQuestionResolveStatus(resolveResult: unknown): unknown {
+  return (resolveResult as { status?: unknown } | null)?.status;
+}
+
+/**
+ * What an approval answer is checked against before `approval.resolve`, from the
+ * `approval.get` snapshot (ApprovalGetResult.approval): its generation (`createdAtMs`), its
+ * status, and the agent an exec or plugin presentation names. A system-agent presentation's
+ * agent is not read — that approval is raised by the gateway's own system agent, whatever the
+ * chat — and `systemAgent` says the snapshot is one.
+ */
+export function readOpenClawApprovalCheck(getResult: unknown): {
+  createdAtMs: unknown;
+  status: unknown;
+  agentId: unknown;
+  systemAgent: boolean;
+} {
+  const approval = (
+    getResult as {
+      approval?: { status?: unknown; createdAtMs?: unknown; presentation?: { kind?: unknown; agentId?: unknown } };
+    } | null
+  )?.approval;
+  const presentation = approval?.presentation;
+  return {
+    createdAtMs: approval?.createdAtMs,
+    status: approval?.status,
+    agentId: presentation?.kind === "system-agent" ? undefined : presentation?.agentId,
+    systemAgent: presentation?.kind === "system-agent",
+  };
+}
+
+/**
+ * What an `approval.resolve` reply says (ApprovalResolveResult): whether OUR decision is the
+ * one recorded (`applied`), and the status of the recorded state (its terminal snapshot).
+ */
+export function readOpenClawApprovalResolveOutcome(resolveResult: unknown): {
+  applied: unknown;
+  status: unknown;
+} {
+  const res = resolveResult as { applied?: unknown; approval?: { status?: unknown } } | null;
+  return { applied: res?.applied, status: res?.approval?.status };
+}
+
 const SCOPE_KINDS = new Set(["message-send", "payment", "external-post", "standing-grant"]);
 
 /** One line naming an owner-declared blast radius, in neutral words the UI localizes
