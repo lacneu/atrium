@@ -101,7 +101,7 @@ type ProbeOut = {
    *  take room: what runs past its width. */
   widths: Array<{ fixture: string; scale: string; font: string; kb: number; overruns: Overrun[] }>;
   /** The names that shrink with their row (lot 33): how many of their characters show. */
-  names: Array<{ fixture: string; scale: string; font: string; item: string; length: number; shown: number; fits: boolean }>;
+  names: Array<{ fixture: string; scale: string; font: string; item: string; width: number; length: number; shown: number; fits: boolean }>;
   errors: string[];
 };
 
@@ -125,13 +125,22 @@ ${PROBE_SCRIPT}
 const PROBE_SCRIPT = String.raw`
 const errors = [];
 const cells = [], floors = [], limit = [], spacings = [], focus = [], requestFloors = [], sweep = [], sweepFocus = [], widths = [], names = [];
-// The names lot 32 let shrink with their row (a flex basis of 0), and what shows of each
-// (lot 33): its characters counted by their own boxes against the name's, the ellipsis's
-// room kept.
-const SHRINKING_NAMES = ".oc-convpanel__who, .oc-access__row > .oc-access__who, .oc-access__row > .oc-access__label, .oc-access__row > .oc-agentpicker__label";
-function nameShown(w, d, item) {
-  const holders = [item, ...item.querySelectorAll("*")].filter((e) => { const cs = w.getComputedStyle(e); return cs.textOverflow === "ellipsis" && cs.overflowX !== "visible"; });
-  const box = holders.length ? holders[holders.length - 1] : item;
+// What shows of every text a layer truncates (lots 33-34): each box that ends its OWN text
+// in an ellipsis — a block container that hides its overflow, holding text of its own —,
+// measured itself: its characters counted by their own boxes against its box, the
+// ellipsis's room kept. Never a box found through another's: a row's column was measured
+// by its last truncating descendant, the subtitle, and a name 0 px wide passed for seven
+// characters shown (lot 34).
+const TRUNCATES = /^(block|inline-block|list-item|flow-root|table-cell|table-caption|-webkit-box)$/;
+function truncatedTexts(w, layer) {
+  return [...layer.querySelectorAll("*")].filter((e) => {
+    if (e.getClientRects().length === 0) return false;
+    if (![...e.childNodes].some((n) => n.nodeType === 3 && n.data.trim() !== "")) return false;
+    const cs = w.getComputedStyle(e);
+    return cs.textOverflow === "ellipsis" && cs.overflowX !== "visible" && TRUNCATES.test(cs.display) && cs.visibility !== "hidden";
+  });
+}
+function nameShown(w, d, box) {
   const cs = w.getComputedStyle(box);
   const right = box.getBoundingClientRect().left + box.clientLeft + box.clientWidth - parseFloat(cs.paddingRight);
   const probe = d.createElement("span");
@@ -153,7 +162,7 @@ function nameShown(w, d, item) {
       if (r.width > 0 && r.right <= (fits ? right : right - ell) + 0.5) count++;
     }
   }
-  return { item: String(item.className).split(/\s+/).find((k) => k.startsWith("oc-")) || item.tagName.toLowerCase(), length, shown: fits ? length : Math.min(count, length), fits };
+  return { item: String(box.className).split(/\s+/).find((k) => k.startsWith("oc-")) || box.tagName.toLowerCase(), width: Math.round(box.clientWidth), length, shown: fits ? length : Math.min(count, length), fits };
 }
 function seen(w, el, shownBottom, inset, card) {
   if (!el) return null;
@@ -443,7 +452,7 @@ for (const fx of [...DATA.fixtures.filter((f) => f.box === "layer"), ...DATA.con
           setKeyboard(w, fx, kb, scale);
           widths.push({ fixture: fx.name, scale, font, kb, overruns: overruns(w, layer) });
         }
-        for (const item of layer.querySelectorAll(SHRINKING_NAMES)) names.push(Object.assign({ fixture: fx.name, scale, font }, nameShown(w, d, item)));
+        for (const box of truncatedTexts(w, layer)) names.push(Object.assign({ fixture: fx.name, scale, font }, nameShown(w, d, box)));
       }
     }
     frame.remove();
@@ -517,6 +526,8 @@ const RELIED: Array<[string, string]> = [
   ["oc-convpanel__member", "chat/ConversationPanel.tsx"],
   ["oc-convpanel__role", "chat/ConversationPanel.tsx"],
   ["oc-convpanel__nametext", "chat/ConversationPanel.tsx"],
+  ["oc-convpanel__subtext", "chat/ConversationPanel.tsx"],
+  ["oc-convpanel__badge", "chat/ConversationPanel.tsx"],
   ["oc-agenttype__label", "chat/admin/InstancesTab.tsx"],
   ["oc-talk__settings", "chat/TalkControl.tsx"],
   ["oc-talk__setting", "chat/TalkControl.tsx"],
@@ -864,7 +875,7 @@ describe.skipIf(chrome === null)("every bounded box keeps its primary controls i
     expect(out.names.length).toBeGreaterThan(0);
     const bad = out.names
       .filter((c) => c.shown < Math.min(3, c.length))
-      .map((c) => `${c.fixture} ${c.scale}, ${c.font}: ${c.item} shows ${c.shown} of its ${c.length} characters`);
+      .map((c) => `${c.fixture} ${c.scale}, ${c.font}: ${c.item} shows ${c.shown} of its ${c.length} characters in ${c.width} px`);
     expect(bad).toEqual([]);
   }, 180_000);
 });

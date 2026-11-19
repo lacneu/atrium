@@ -604,8 +604,11 @@ function AgentsTab({
           ) : null}
         </span>
         <span className="oc-convpanel__sub">
-          <Server size={10} aria-hidden /> {a.instanceName}
-          {a.model ? ` · ${a.model}` : ""}
+          <Server size={10} aria-hidden />{" "}
+          <span className="oc-convpanel__subtext">
+            {a.instanceName}
+            {a.model ? ` · ${a.model}` : ""}
+          </span>
         </span>
       </span>
       {!primary && manages ? (
@@ -732,8 +735,11 @@ function AgentsTab({
                 <span className="oc-convpanel__nametext">{agentName(a)}</span>
               </span>
               <span className="oc-convpanel__sub">
-                <Server size={10} aria-hidden /> {a.instanceName}
-                {a.description ? ` · ${a.description}` : ""}
+                <Server size={10} aria-hidden />{" "}
+                <span className="oc-convpanel__subtext">
+                  {a.instanceName}
+                  {a.description ? ` · ${a.description}` : ""}
+                </span>
               </span>
             </span>
           </>
@@ -765,7 +771,8 @@ function AgentsTab({
                 <span className="oc-convpanel__nametext">{agentName(a)}</span>
               </span>
               <span className="oc-convpanel__sub">
-                <Server size={10} aria-hidden /> {a.instanceName}
+                <Server size={10} aria-hidden />{" "}
+                <span className="oc-convpanel__subtext">{a.instanceName}</span>
               </span>
             </span>
           </>

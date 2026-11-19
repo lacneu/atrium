@@ -529,7 +529,10 @@
 .oc-convpanel__name {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  /* What qualifies the name goes to the next line before the name loses its floor (lot
+     34): on one line, a badge that does not shrink took the name's whole room. */
+  flex-wrap: wrap;
+  gap: 0.1rem 0.35rem;
   font-size: 0.875rem;
   line-height: 1.3;
   overflow: hidden;
@@ -540,12 +543,27 @@
    anonymous item `text-overflow` does not reach —, and a long name was cut off mid-letter
    on a phone. Here it ends in "…", and what follows it ("you", the crown) stays shown. */
 .oc-convpanel__nametext {
+  /* The name keeps its own floor (lot 34): the row's floor (lot 33) is its column's, and
+     inside it a badge beside the name ("deleted from its gateway", 220 px on a phone at
+     the largest text) left the name 0 px — agents of one gateway could not be told apart.
+     Its floor is its flex basis, from which it grows to its text and no further (a name
+     shorter than the floor is as wide as its text): the line breaks only where the floor
+     and what follows no longer fit, and where they fit, nothing moves. */
+  flex: 1 1 3rem;
+  max-width: max-content;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .oc-convpanel__name > :not(.oc-convpanel__nametext) {
   flex: none;
+}
+/* A badge wider than the line it has gone to ends in an ellipsis inside it. */
+.oc-convpanel__name > .oc-convpanel__badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .oc-convpanel__sub {
   display: inline-flex;
@@ -555,6 +573,13 @@
   color: var(--muted-foreground);
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* An agent's gateway and model in a box of their own (lot 34), as the name (lot 32): the
+   line is a flex box, which draws no ellipsis — a long model id was cut off mid-letter. */
+.oc-convpanel__subtext {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 .oc-convpanel__you {
