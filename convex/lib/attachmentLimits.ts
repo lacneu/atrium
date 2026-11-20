@@ -47,28 +47,31 @@ export function base64FitsFrame(base64Bytes: number, maxPayload: number): boolea
 // PER-ATTACHMENT ceilings (the gateway's `hello-ok.policy.attachments`, OpenClaw
 // 2026.8.1+), carried by the bridge beside the frame limit. The frame limit bounds the
 // whole `chat.send`; the gateway ALSO bounds each attachment's decoded size, an image
-// more tightly (6 MiB by default), and refuses the whole send for one file over it.
-// Same rule as `bridge/src/core/attachment-limits.ts` (the bridge's last guard).
+// more tightly (6 MiB), and refuses the whole send for one file over it.
+//
+// THE RULE: an early refusal here is never stricter than the gateway's own decision
+// for that send. A ceiling that is not known — no socket of the bridge vouches for it,
+// the instance is not named, the snapshot is stale — refuses nothing; the gateway's
+// own refusal remains. Same rule as `bridge/src/core/attachment-limits.ts`.
 // ---------------------------------------------------------------------------------
 
-/** The gateway's decoded-size ceilings for ONE attachment. */
+/** The gateway's decoded-size ceilings for ONE attachment; a null member is unknown. */
 export interface AttachmentCeilings {
-  maxBytes: number;
-  maxImageBytes: number;
+  maxBytes: number | null;
+  maxImageBytes: number | null;
 }
 
-/** The two stored numbers as ceilings, or null when either is unknown. */
+const knownCeiling = (n: number | null | undefined): number | null =>
+  typeof n === "number" && n > 0 ? n : null;
+
+/** The two stored numbers as ceilings, or null when neither is known. */
 export function attachmentCeilingsOf(stored: {
   attachmentMaxBytes?: number | null;
   attachmentMaxImageBytes?: number | null;
 }): AttachmentCeilings | null {
-  const { attachmentMaxBytes: maxBytes, attachmentMaxImageBytes: maxImageBytes } = stored;
-  return typeof maxBytes === "number" &&
-    maxBytes > 0 &&
-    typeof maxImageBytes === "number" &&
-    maxImageBytes > 0
-    ? { maxBytes, maxImageBytes: Math.min(maxBytes, maxImageBytes) }
-    : null;
+  const maxBytes = knownCeiling(stored.attachmentMaxBytes);
+  const maxImageBytes = knownCeiling(stored.attachmentMaxImageBytes);
+  return maxBytes === null && maxImageBytes === null ? null : { maxBytes, maxImageBytes };
 }
 
 /** Is this DECLARED type an image to the gateway? Its own clients test
@@ -77,13 +80,27 @@ export function isGatewayImageMime(mimeType: string | null | undefined): boolean
   return typeof mimeType === "string" && mimeType.trim().toLowerCase().startsWith("image/");
 }
 
+/** The ceiling a file of this declared type faces, or null when none is known. An
+ *  image faces the image ceiling and the file one. */
+export function attachmentCeilingFor(
+  mimeType: string | null | undefined,
+  ceilings: AttachmentCeilings | null,
+): number | null {
+  if (ceilings === null) return null;
+  if (!isGatewayImageMime(mimeType)) return ceilings.maxBytes;
+  const known = [ceilings.maxImageBytes, ceilings.maxBytes].filter(
+    (n): n is number => n !== null,
+  );
+  return known.length > 0 ? Math.min(...known) : null;
+}
+
 /** Would the gateway refuse an inline attachment of `size` bytes for its size? Strictly
- *  greater, like the gateway; never when the ceilings are unknown. */
+ *  greater, like the gateway; never when the ceiling is unknown. */
 export function exceedsAttachmentCeiling(
   size: number,
   mimeType: string | null | undefined,
   ceilings: AttachmentCeilings | null,
 ): boolean {
-  if (ceilings === null) return false;
-  return size > (isGatewayImageMime(mimeType) ? ceilings.maxImageBytes : ceilings.maxBytes);
+  const ceiling = attachmentCeilingFor(mimeType, ceilings);
+  return ceiling !== null && size > ceiling;
 }

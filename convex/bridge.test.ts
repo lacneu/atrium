@@ -538,7 +538,7 @@ describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently 
           ],
           status: "pending",
         });
-        // NO bridgeHealth doc -> maxPayloadInternal returns null (old/cold bridge).
+        // NO bridgeHealth doc -> inboundLimitsInternal returns null (old/cold bridge).
         return { outboxId, chatId };
       });
 
@@ -1373,8 +1373,26 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
           reachable: true,
           checkedAt: now,
           maxPayload,
-          ...(ceilings ?? {}),
-          targets: [],
+          targets: ceilings
+            ? [
+                {
+                  key: "primary:alice:u",
+                  instanceName: "primary",
+                  canonical: "u",
+                  agentId: "alice",
+                  gatewayHost: "gw",
+                  state: "connected",
+                  lastOkAt: now,
+                  lastErrorCode: null,
+                  lastErrorAt: null,
+                  attempts: 1,
+                  okCount: 1,
+                  errorCount: 0,
+                  maxPayload,
+                  ...ceilings,
+                },
+              ]
+            : [],
         });
       }
       return await ctx.db.insert("outbox", {
@@ -2006,9 +2024,11 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
   async function dispatchOne(opts: {
     bytes: number;
     mimeType: string;
-    ceilings: { attachmentMaxBytes: number; attachmentMaxImageBytes: number } | null;
-    /** Where the ceilings are stored: the doc, or the routed instance's own target. */
-    onTarget?: boolean;
+    ceilings: { attachmentMaxBytes: number | null; attachmentMaxImageBytes: number | null } | null;
+    /** The instance whose health target carries them (default: the routed one). */
+    onInstance?: string;
+    /** Age of the health snapshot (default: fresh). */
+    snapshotAgeMs?: number;
   }) {
     const t = convexTest(schema, modules);
     const prevUrl = process.env.BRIDGE_URL;
@@ -2050,18 +2070,16 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
           attachments: [{ storageId, filename: "f", mimeType: opts.mimeType }],
           status: "pending",
         });
-        const onDoc = opts.onTarget ? null : opts.ceilings;
         await ctx.db.insert("bridgeHealth", {
           key: "singleton",
           reachable: true,
-          checkedAt: now,
+          checkedAt: now - (opts.snapshotAgeMs ?? 0),
           maxPayload: MAXP,
-          ...(onDoc ?? {}),
-          targets: opts.onTarget
+          targets: opts.ceilings
             ? [
                 {
-                  key: "primary:alice:u",
-                  instanceName: "primary",
+                  key: `${opts.onInstance ?? "primary"}:alice:u`,
+                  instanceName: opts.onInstance ?? "primary",
                   canonical: "u",
                   agentId: "alice",
                   gatewayHost: "gw",
@@ -2073,7 +2091,7 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
                   okCount: 1,
                   errorCount: 0,
                   maxPayload: MAXP,
-                  ...(opts.ceilings ?? {}),
+                  ...opts.ceilings,
                 },
               ]
             : [],
@@ -2116,9 +2134,41 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
     expect(over).toEqual({ status: "failed", posted: 0, tooLarge: true });
   });
 
-  test("the routed instance's OWN ceilings are the ones applied", async () => {
-    const r = await dispatchOne({ bytes: 1001, mimeType: "image/jpeg", ceilings: CEILINGS, onTarget: true });
+  test("THE FIRST SEND of an instance is never refused on ANOTHER instance's ceiling", async () => {
+    // Another instance advertises 1000 bytes; the routed one ("primary") has no target
+    // yet — its ceiling is unknown. The file is POSTed: the send that would create its
+    // target must not be the one a foreign limit prevents.
+    const r = await dispatchOne({ bytes: 2000, mimeType: "application/pdf", ceilings: CEILINGS, onInstance: "other" });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const image = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: CEILINGS, onInstance: "other" });
+    expect(image).toEqual({ status: "sent", posted: 1, tooLarge: false });
+  });
+
+  test("an image also faces a FILE ceiling smaller than the image one (the gateway checks both)", async () => {
+    const r = await dispatchOne({
+      bytes: 2000,
+      mimeType: "image/png",
+      ceilings: { attachmentMaxBytes: 1000, attachmentMaxImageBytes: 5000 },
+    });
     expect(r).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("a stale snapshot vouches for nothing: the file is sent, the gateway decides", async () => {
+    const r = await dispatchOne({
+      bytes: 1001,
+      mimeType: "image/png",
+      ceilings: CEILINGS,
+      snapshotAgeMs: 4 * 60 * 1000,
+    });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
+  });
+
+  test("only the image ceiling known (the default gateway): a file of any size under the frame is sent", async () => {
+    const onlyImage = { attachmentMaxBytes: null, attachmentMaxImageBytes: 1000 };
+    const pdf = await dispatchOne({ bytes: 50_000, mimeType: "application/pdf", ceilings: onlyImage });
+    expect(pdf).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const image = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: onlyImage });
+    expect(image).toEqual({ status: "failed", posted: 0, tooLarge: true });
   });
 
   test("no ceiling known (an older gateway or bridge): nothing is refused on it", async () => {

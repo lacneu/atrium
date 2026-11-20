@@ -419,7 +419,24 @@ export class OpenClawConnection {
   // `payload.policy.attachments` (2026.8.1+; core/attachment-limits.ts). The frame
   // limit above bounds the whole send; these bound each file, and an image more
   // tightly. `null` when the gateway advertises none: nothing is refused on it here.
+  //
+  // A HANDSHAKE FACT THAT CAN GO STALE: `agents.defaults.mediaMaxMb` reloads hot — no
+  // restart, no reconnect (src/gateway/config-reload-plan.ts) — and `chat.send` reads
+  // the limit from the current config on every send (chat-send-attachments.ts), while
+  // the hello-ok is sent once. So the first `config.changed` this socket hears — or a
+  // frame gap that may hide one — makes them UNKNOWN for the rest of its life (null,
+  // `attachmentCeilingsVouched` false): a ceiling raised since must not keep refusing.
+  // A later handshake learns the current ones.
   attachmentCeilings: AttachmentCeilings | null = null;
+  /** True while nothing this socket heard can have changed the ceilings since its
+   *  handshake — what lets `/health` publish them as the instance's current ones. */
+  attachmentCeilingsVouched = false;
+  /** When this socket's hello-ok was read (ms): the newest vouching socket speaks. */
+  handshakeAt = 0;
+  private forgetAttachmentCeilings(): void {
+    this.attachmentCeilings = null;
+    this.attachmentCeilingsVouched = false;
+  }
 
   // Per-connection send-buffer ceiling, from the hello-ok
   // `payload.policy.maxBufferedBytes` (50 MiB upstream). Past it the gateway
@@ -783,6 +800,8 @@ export class OpenClawConnection {
                 ? policy.maxPayload
                 : null;
             connection.attachmentCeilings = readAttachmentCeilings(policy);
+            connection.attachmentCeilingsVouched = true;
+            connection.handshakeAt = Date.now();
             connection.maxBufferedBytes =
               typeof policy.maxBufferedBytes === "number" &&
               policy.maxBufferedBytes > 0
@@ -1026,6 +1045,8 @@ export class OpenClawConnection {
       // lost may have been its `config.changed` (sent `dropIfSlow`): the epoch moves,
       // here where both the sequence tracker and the epoch live. Free — no request.
       this.rosterEpoch += 1;
+      // …and the per-attachment ceilings, for the same reason.
+      this.forgetAttachmentCeilings();
       // The frame lost may have been an APPEND of a live reply (2026.9.7): a hole in the
       // envelope says nothing about which run, so every baseline is retired BEFORE this
       // frame is projected — an append now re-reads rather than skipping the lost text.
@@ -1053,9 +1074,13 @@ export class OpenClawConnection {
     // `chat.metadata.changed` saying the model catalogue may have changed
     // (chat-metadata-changed.ts) invalidates the same projection: it is reported to the
     // same policy as a `config.changed`, under its own name, and queued unchanged too.
+    const configRevision = readConfigChanged(frame);
+    // A persisted config revision may have moved the attachment limit (see the field).
+    if (configRevision !== null) this.forgetAttachmentCeilings();
+    const metadataChanged = configRevision === null ? readChatMetadataChanged(frame) : null;
     const configChanged: ConfigChangedNotice | null =
-      readConfigChanged(frame) ??
-      (readChatMetadataChanged(frame)?.modelCatalogStale === true
+      configRevision ??
+      (metadataChanged?.modelCatalogStale === true
         ? { hash: null, origin: "chat.metadata.changed" }
         : null);
     if (configChanged !== null) {

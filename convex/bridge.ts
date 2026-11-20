@@ -74,7 +74,6 @@ import {
   base64FitsFrame,
   DEFAULT_GATEWAY_MAX_PAYLOAD,
   exceedsAttachmentCeiling,
-  type AttachmentCeilings,
 } from "./lib/attachmentLimits";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { contentLocaleForInstance } from "./lib/serverLocale";
@@ -3044,10 +3043,13 @@ export const dispatch = internalAction({
     // ALL attachments + the message against it — maxPayload bounds the whole
     // chat.send frame, NOT each file, so N files individually under the per-file cap
     // can still overflow it together (matches the bridge guard).
-    const reportedMaxPayload = await ctx.runQuery(
-      internal.bridgeHealth.maxPayloadInternal,
-      // Per routed instance (Model M): the cap is derived from THIS instance's
-      // gateway frame limit, not a global one.
+    // One read for both limits of the routed instance (Model M): its gateway's frame
+    // limit, and its per-attachment ceilings (hello-ok policy.attachments) where the
+    // bridge vouches for them. An inline file over its ceiling is refused by the
+    // gateway AFTER the frame was sent, the whole turn with it: it fails here instead,
+    // with the same clear code as the frame check. Unknown ceilings refuse nothing.
+    const { maxPayload: reportedMaxPayload, attachmentCeilings } = await ctx.runQuery(
+      internal.bridgeHealth.inboundLimitsInternal,
       { instanceName: routing.target.instanceName },
     );
     // CONSERVATIVE fallback when the bridge has NOT reported a maxPayload yet — an
@@ -3090,16 +3092,6 @@ export const dispatch = internalAction({
             storageIds: rowAttachments.map((a) => a.storageId),
           })
         : rowAttachments.map(() => null);
-    // The gateway's own per-attachment ceilings (hello-ok policy.attachments), for the
-    // routed instance — asked only when the row carries a file. An inline file over
-    // its ceiling is refused by the gateway AFTER the frame was sent, the whole turn
-    // with it: it fails here instead, with the same clear code as the frame check.
-    const attachmentCeilings: AttachmentCeilings | null =
-      rowAttachments.length > 0
-        ? await ctx.runQuery(internal.bridgeHealth.attachmentCeilingsInternal, {
-            instanceName: routing.target.instanceName,
-          })
-        : null;
     const transports = planAttachmentTransports({
       inboundMediaMode,
       maxPayload,

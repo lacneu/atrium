@@ -283,6 +283,10 @@ export interface LiveTarget {
   /** The gateway's per-attachment ceilings (policy.attachments) from the same
    *  handshake; null or absent when it advertised none. */
   attachmentCeilings?: AttachmentCeilings | null;
+  /** Whether that socket still vouches for them (it heard no config change since). */
+  attachmentCeilingsVouched?: boolean;
+  /** When that socket's handshake was read (ms). */
+  handshakeAt?: number;
 }
 
 class Session implements BridgeSession {
@@ -1785,6 +1789,8 @@ export class SessionRegistry {
         gatewayVersion: session.connection.gatewayVersion,
         maxPayload: session.connection.maxPayload,
         attachmentCeilings: session.connection.attachmentCeilings ?? null,
+        attachmentCeilingsVouched: session.connection.attachmentCeilingsVouched === true,
+        handshakeAt: session.connection.handshakeAt ?? 0,
       });
     }
     return out;

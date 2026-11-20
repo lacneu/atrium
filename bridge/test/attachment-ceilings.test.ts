@@ -14,6 +14,16 @@
  *    6 MiB whatever `maxBytes` says (src/gateway/chat-attachments.ts).
  *  - The Control UI picks the ceiling by `mimeType.startsWith("image/")`
  *    (ui/src/pages/chat/components/chat-attachment-admission.ts).
+ *  - What the gateway ENFORCES per send is the configured limit, read from the CURRENT
+ *    config (`resolveChatAttachmentMaxBytes(cfg)`, server-methods/
+ *    chat-send-attachments.ts) — not the advertised one, which is that limit capped at
+ *    the gateway's frame budget, `floor((maxPayload - 256 KiB) * 3 / 4)`
+ *    (src/shared/chat-attachment-frame-budget.ts). `agents.defaults.mediaMaxMb` reloads
+ *    hot, with no reconnect (src/gateway/config-reload-plan.ts), and the hello-ok is
+ *    sent once.
+ *
+ * THE RULE: an early refusal by Atrium is never stricter than the gateway's decision
+ * for that send; a ceiling that is not known refuses nothing.
  */
 
 import type { Server } from "node:http";
@@ -45,15 +55,43 @@ import {
   startWsFakeGateway,
 } from "./helpers/ws-fake-gateway.js";
 
-const CAPTURED = { maxBytes: 19464192, maxImageBytes: 6291456 };
+/** The enforced part of the captured policy: the image ceiling. Its file ceiling,
+ *  19 464 192, IS the gateway's frame budget for maxPayload 26 214 400 — the cap of the
+ *  advertisement, not a limit the gateway applies. */
+const CAPTURED = { maxBytes: null, maxImageBytes: 6291456 };
+const policy = (attachments: unknown, maxPayload: unknown = MAX_PAYLOAD) => ({
+  maxPayload,
+  maxBufferedBytes: MAX_BUFFERED,
+  attachments,
+});
+const MiB = 1024 * 1024;
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("readAttachmentCeilings", () => {
-  it("reads the two ceilings the gateway advertises (captured hello-ok)", () => {
+  it("keeps the image ceiling of the captured hello-ok and drops its file ceiling, which is only the frame budget", () => {
     expect(readAttachmentCeilings(CAPTURED_HELLO_POLICY)).toEqual(CAPTURED);
+    // The dropped value is exactly the gateway's own budget for that frame…
+    expect(CAPTURED_HELLO_POLICY.attachments.maxBytes).toBe(
+      Math.floor(((CAPTURED_HELLO_POLICY.maxPayload - 256 * 1024) * 3) / 4),
+    );
+    // …and the gateway (20 MiB configured) accepts files above it that fit the frame:
+    // Atrium's own frame cap is higher, and refusing at 19 464 192 would be stricter.
+    expect(maxRawInboundBytes(MAX_PAYLOAD)).toBeGreaterThan(CAPTURED_HELLO_POLICY.attachments.maxBytes);
+    expect(maxRawInboundBytes(MAX_PAYLOAD)).toBeLessThan(20 * MiB);
+  });
+
+  it("keeps a file ceiling the operator CONFIGURED below the frame budget (mediaMaxMb)", () => {
+    expect(readAttachmentCeilings(policy({ maxBytes: 5 * MiB, maxImageBytes: 5 * MiB }))).toEqual({
+      maxBytes: 5 * MiB,
+      maxImageBytes: 5 * MiB,
+    });
+    expect(readAttachmentCeilings(policy({ maxBytes: 10 * MiB, maxImageBytes: 6 * MiB }))).toEqual({
+      maxBytes: 10 * MiB,
+      maxImageBytes: 6 * MiB,
+    });
   });
 
   it("is null when the gateway advertises none (before 2026.8.1)", () => {
@@ -62,43 +100,48 @@ describe("readAttachmentCeilings", () => {
     expect(readAttachmentCeilings(null)).toBeNull();
   });
 
-  it("is null on a zero, negative or malformed ceiling rather than refusing every file", () => {
+  it("keeps nothing it cannot tell from the frame budget: no maxPayload, no ceiling", () => {
+    expect(readAttachmentCeilings({ attachments: { maxBytes: 5 * MiB, maxImageBytes: 5 * MiB } })).toBeNull();
+    expect(readAttachmentCeilings(policy({ maxBytes: 5 * MiB, maxImageBytes: 5 * MiB }, "big"))).toBeNull();
+  });
+
+  it("drops a zero, negative or malformed value rather than refusing every file", () => {
     for (const attachments of [
-      { maxBytes: 0, maxImageBytes: 6291456 },
-      { maxBytes: 19464192, maxImageBytes: 0 },
+      { maxBytes: 0, maxImageBytes: 0 },
       { maxBytes: -1, maxImageBytes: -1 },
-      { maxBytes: "19464192", maxImageBytes: 6291456 },
-      { maxBytes: Number.NaN, maxImageBytes: 6291456 },
-      { maxBytes: 19464192 },
+      { maxBytes: "5242880", maxImageBytes: Number.NaN },
+      {},
       "20MB",
       [],
       null,
     ]) {
-      expect(readAttachmentCeilings({ attachments }), JSON.stringify(attachments)).toBeNull();
+      expect(readAttachmentCeilings(policy(attachments)), JSON.stringify(attachments)).toBeNull();
     }
-  });
-
-  it("never lets the image ceiling exceed the file ceiling", () => {
-    expect(readAttachmentCeilings({ attachments: { maxBytes: 1000, maxImageBytes: 5000 } })).toEqual({
-      maxBytes: 1000,
-      maxImageBytes: 1000,
+    // One usable value is kept on its own.
+    expect(readAttachmentCeilings(policy({ maxBytes: 0, maxImageBytes: 6 * MiB }))).toEqual({
+      maxBytes: null,
+      maxImageBytes: 6 * MiB,
     });
-  });
-
-  it("covers a real gap: the captured file ceiling is BELOW what the frame alone admits", () => {
-    // Without it, a file between the two was uploaded, then refused by the gateway.
-    expect(CAPTURED.maxBytes).toBeLessThan(maxRawInboundBytes(MAX_PAYLOAD));
   });
 });
 
 describe("the ceiling an attachment faces", () => {
+  const BOTH = { maxBytes: 19_000_000, maxImageBytes: 6291456 };
   it("is the image ceiling for any image/* type, the file ceiling otherwise", () => {
     for (const mime of ["image/png", "image/jpeg", "IMAGE/PNG", "image/svg+xml", "image/heic", " image/webp"]) {
-      expect(attachmentCeilingFor(mime, CAPTURED), mime).toBe(6291456);
+      expect(attachmentCeilingFor(mime, BOTH), mime).toBe(6291456);
     }
     for (const mime of ["application/pdf", "video/mp4", "text/plain", "", undefined, null, 7]) {
-      expect(attachmentCeilingFor(mime, CAPTURED), String(mime)).toBe(19464192);
+      expect(attachmentCeilingFor(mime, BOTH), String(mime)).toBe(19_000_000);
     }
+  });
+
+  it("is unknown (null) where the gateway enforces nothing beyond the frame", () => {
+    expect(attachmentCeilingFor("application/pdf", CAPTURED)).toBeNull();
+    expect(attachmentCeilingFor("image/png", CAPTURED)).toBe(6291456);
+    // An image also faces a file ceiling smaller than the image one.
+    expect(attachmentCeilingFor("image/png", { maxBytes: 1000, maxImageBytes: null })).toBe(1000);
+    expect(attachmentCeilingFor("image/png", { maxBytes: null, maxImageBytes: null })).toBeNull();
   });
 
   it("measures the DECODED size, as the gateway does", () => {
@@ -145,18 +188,25 @@ describe("firstOversizedAttachment", () => {
 
   it("refuses nothing when the ceilings are unknown, or the list is not one", () => {
     expect(firstOversizedAttachment([inline(999_999, "image/png")], null)).toBeNull();
+    // A file ceiling that is only the frame budget is not a ceiling: the 19.5 MB file
+    // the gateway takes is not named here (the frame check owns that bound).
+    expect(firstOversizedAttachment([{ mimeType: "application/pdf", content: "A".repeat(26_000_000) }], CAPTURED)).toBeNull();
     expect(firstOversizedAttachment(undefined, SMALL)).toBeNull();
     expect(firstOversizedAttachment([null, { mimeType: "image/png" }, "x"], SMALL)).toBeNull();
   });
 });
 
-describe("the ceilings travel: handshake → connection → /health", () => {
-  it("the connection keeps what the hello-ok advertised", async () => {
+describe("the ceilings are a handshake fact: kept, vouched for, and forgotten on a config change", () => {
+  const configChanged = { type: "event", event: "config.changed", payload: { path: "/x/openclaw.json", hash: "hmac-sha256:v1:r2", ts: 1 } };
+
+  it("the connection keeps what the hello-ok advertised, and vouches for it", async () => {
     const gateway = startWsFakeGateway({ version: "2026.9.36", policy: { ...CAPTURED_HELLO_POLICY } });
     await gateway.ready;
     const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
     try {
       expect(conn.attachmentCeilings).toEqual(CAPTURED);
+      expect(conn.attachmentCeilingsVouched).toBe(true);
+      expect(conn.handshakeAt).toBeGreaterThan(0);
     } finally {
       conn.close();
       await gateway.stop();
@@ -175,45 +225,142 @@ describe("the ceilings travel: handshake → connection → /health", () => {
     }
   });
 
+  it("a config.changed makes them UNKNOWN on this socket: the limit reloads hot and a raised one must not keep refusing", async () => {
+    // mediaMaxMb 1 MiB at the handshake; the operator raises it to 5 MiB. The gateway
+    // sends `config.changed`, keeps every socket open, and judges the next send on the
+    // new value. The socket's 1 MiB is no longer a fact.
+    const gateway = startWsFakeGateway({
+      version: "2026.9.36",
+      policy: policy({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB }),
+    });
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    try {
+      expect(conn.attachmentCeilings).toEqual({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB });
+      const frames = conn.frames();
+      gateway.push(configChanged);
+      await frames.next();
+      expect(conn.attachmentCeilings).toBeNull();
+      expect(conn.attachmentCeilingsVouched).toBe(false);
+      // The 2 MiB file the gateway now accepts is not refused by the send guard.
+      expect(firstOversizedAttachment([inline(2 * MiB, "application/pdf")], conn.attachmentCeilings)).toBeNull();
+    } finally {
+      conn.close();
+      await gateway.stop();
+    }
+  });
+
+  it("a frame gap does the same: the lost frame may have been the config.changed (sent dropIfSlow)", async () => {
+    const gateway = startWsFakeGateway({
+      version: "2026.9.36",
+      policy: policy({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB }),
+    });
+    await gateway.ready;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    try {
+      const frames = conn.frames();
+      gateway.push({ type: "event", event: "tick", payload: { ts: 1 }, seq: 1 });
+      await frames.next();
+      expect(conn.attachmentCeilingsVouched).toBe(true);
+      gateway.push({ type: "event", event: "tick", payload: { ts: 2 }, seq: 5 });
+      await frames.next();
+      expect(conn.attachmentCeilings).toBeNull();
+      expect(conn.attachmentCeilingsVouched).toBe(false);
+    } finally {
+      conn.close();
+      await gateway.stop();
+    }
+  });
+
+  it("a chat.metadata.changed is not a config revision: the ceilings stand", async () => {
+    const gateway = startWsFakeGateway({ version: "2026.9.36", policy: { ...CAPTURED_HELLO_POLICY } });
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    try {
+      const frames = conn.frames();
+      gateway.push({ type: "event", event: "chat.metadata.changed", payload: { authChanged: false, modelCatalogChanged: true } });
+      await frames.next();
+      expect(conn.attachmentCeilings).toEqual(CAPTURED);
+      expect(conn.attachmentCeilingsVouched).toBe(true);
+    } finally {
+      conn.close();
+      await gateway.stop();
+    }
+  });
+});
+
+describe("/health publishes an instance's ceilings only while a live socket vouches for them", () => {
   const REF = { key: "u", instanceName: "primary", canonical: "u", agentId: "main", gatewayHost: "h" };
-  const liveTarget = (instanceName: string, ceilings: typeof CAPTURED | null) => ({
-    canonical: "u",
+  const A = { maxBytes: 1 * MiB, maxImageBytes: 1 * MiB };
+  const liveTarget = (
+    instanceName: string,
+    ceilings: { maxBytes: number | null; maxImageBytes: number | null } | null,
+    over: Record<string, unknown> = {},
+  ) => ({
+    canonical: "someone-else",
     agentId: "main",
     instanceName,
     gatewayVersion: "2026.9.36",
     maxPayload: MAX_PAYLOAD,
     attachmentCeilings: ceilings,
+    attachmentCeilingsVouched: true,
+    handshakeAt: 100,
+    ...over,
+  });
+  const health = (...instances: string[]) => {
+    const h = new HealthRegistry(0, () => 1);
+    for (const instanceName of instances) h.recordOk({ ...REF, key: `${instanceName}:u`, instanceName });
+    return h.snapshot();
+  };
+  const byInstance = (e: ReturnType<typeof enrichHealthSnapshot>) =>
+    new Map(e.targets.map((t) => [t.instanceName, { maxBytes: t.attachmentMaxBytes, maxImageBytes: t.attachmentMaxImageBytes }]));
+  const UNKNOWN = { maxBytes: null, maxImageBytes: null };
+
+  it("THE FIRST SEND of a second instance: A's 1 MiB is never handed to B, to Hermes, nor to a reader that names no instance", () => {
+    // Instance A (1 MiB) is in use. B (5 MiB configured) and a Hermes instance have a
+    // health row and no socket yet: their ceiling is UNKNOWN, so a 2 MiB PDF for B is
+    // not refused before the send that would open B's socket.
+    const enriched = enrichHealthSnapshot(health("a", "b", "hermes"), [liveTarget("a", A)]);
+    const got = byInstance(enriched);
+    expect(got.get("a")).toEqual(A);
+    expect(got.get("b")).toEqual(UNKNOWN);
+    expect(got.get("hermes")).toEqual(UNKNOWN);
+    // No instance-less value exists at all: nothing to apply to the wrong instance.
+    expect(enriched).not.toHaveProperty("attachmentMaxBytes");
+    expect(enriched).not.toHaveProperty("attachmentMaxImageBytes");
   });
 
-  it("/health publishes them per target, and the smallest of each at the top", () => {
-    const h = new HealthRegistry(0, () => 1);
-    h.recordOk({ ...REF, key: "a:u", instanceName: "a" });
-    h.recordOk({ ...REF, key: "b:u", instanceName: "b" });
-    h.recordOk({ ...REF, key: "old:u", instanceName: "old" });
-    const enriched = enrichHealthSnapshot(h.snapshot(), [
-      liveTarget("a", CAPTURED),
-      liveTarget("b", { maxBytes: 5_000_000, maxImageBytes: 5_000_000 }),
-      liveTarget("old", null),
-    ]);
-    const byInstance = new Map(enriched.targets.map((t) => [t.instanceName, t]));
-    expect(byInstance.get("a")).toMatchObject({ attachmentMaxBytes: 19464192, attachmentMaxImageBytes: 6291456 });
-    expect(byInstance.get("b")).toMatchObject({ attachmentMaxBytes: 5_000_000, attachmentMaxImageBytes: 5_000_000 });
-    // A gateway that advertises none: unknown, never another instance's.
-    expect(byInstance.get("old")).toMatchObject({ attachmentMaxBytes: null, attachmentMaxImageBytes: null });
-    expect(enriched.attachmentMaxBytes).toBe(5_000_000);
-    expect(enriched.attachmentMaxImageBytes).toBe(5_000_000);
+  it("the ceilings are the INSTANCE's: another user's socket on the same gateway vouches for every target of it", () => {
+    const enriched = enrichHealthSnapshot(health("a"), [liveTarget("a", A)]);
+    expect(byInstance(enriched).get("a")).toEqual(A);
   });
 
-  it("/health falls back to an idle instance's last-seen ceilings, and to null when none is known", () => {
-    const h = new HealthRegistry(0, () => 1);
-    h.recordOk({ ...REF, key: "idle:u", instanceName: "idle" });
-    const none = enrichHealthSnapshot(h.snapshot(), []);
-    expect(none.attachmentMaxBytes).toBeNull();
-    expect(none.attachmentMaxImageBytes).toBeNull();
-    expect(none.targets[0]).toMatchObject({ attachmentMaxBytes: null, attachmentMaxImageBytes: null });
-    const seen = enrichHealthSnapshot(h.snapshot(), [], new Map(), null, new Map([["idle", CAPTURED]]));
-    expect(seen.targets[0]).toMatchObject({ attachmentMaxBytes: 19464192, attachmentMaxImageBytes: 6291456 });
-    expect(seen.attachmentMaxImageBytes).toBe(6291456);
+  it("a socket that heard a config change no longer vouches: unknown until a newer handshake", () => {
+    // Even if the stale socket's object still carried its old numbers, it does not speak.
+    const stale = liveTarget("a", A, { attachmentCeilingsVouched: false });
+    expect(byInstance(enrichHealthSnapshot(health("a"), [stale])).get("a")).toEqual(UNKNOWN);
+    // A socket opened AFTER the change read the current value: it speaks, whatever
+    // the order the sessions are listed in.
+    const fresh = liveTarget("a", { maxBytes: 5 * MiB, maxImageBytes: 5 * MiB }, { handshakeAt: 200 });
+    for (const live of [[stale, fresh], [fresh, stale]]) {
+      expect(byInstance(enrichHealthSnapshot(health("a"), live)).get("a")).toEqual({
+        maxBytes: 5 * MiB,
+        maxImageBytes: 5 * MiB,
+      });
+    }
+  });
+
+  it("the NEWEST vouching socket speaks, including when it says the gateway enforces none", () => {
+    const older = liveTarget("a", A, { handshakeAt: 100 });
+    const newer = liveTarget("a", null, { handshakeAt: 300 });
+    for (const live of [[older, newer], [newer, older]]) {
+      expect(byInstance(enrichHealthSnapshot(health("a"), live)).get("a")).toEqual(UNKNOWN);
+    }
+  });
+
+  it("nothing is remembered once no socket is live", () => {
+    expect(byInstance(enrichHealthSnapshot(health("a"), [])).get("a")).toEqual(UNKNOWN);
   });
 });
 
@@ -299,7 +446,7 @@ describe("the send path refuses an attachment the gateway would refuse", () => {
   });
 });
 
-describe("GET /health carries a live session's ceilings, and keeps them once it is idle", () => {
+describe("GET /health follows the live socket: ceilings while it vouches, unknown after a config change or once it is gone", () => {
   const config = {
     openclawGatewayUrl: "ws://127.0.0.1:1",
     openclawToken: "t",
@@ -309,15 +456,21 @@ describe("GET /health carries a live session's ceilings, and keeps them once it 
     maxBodyBytes: 64 * 1024 * 1024,
   } as unknown as BridgeConfig;
   const ROUTING = { chatId: "c1", openclawChatId: "turn:x", agentId: "alice", canonical: "olivier", instanceName: "primary" };
+  const LIMITS = { maxBytes: 1 * MiB, maxImageBytes: 1 * MiB };
   let server: Server | null = null;
   afterEach(async () => {
     if (server) await new Promise<void>((res) => server!.close(() => res()));
     server = null;
   });
 
-  it("per target and at the top, from the handshake of the session that is live", async () => {
+  it("end to end through the registry and the route", async () => {
     const gw = fakeGateway({ describe: [{ sessionId: "s-1", systemSent: true }] });
-    Object.assign(gw, { maxPayload: MAX_PAYLOAD, attachmentCeilings: CAPTURED });
+    Object.assign(gw, {
+      maxPayload: MAX_PAYLOAD,
+      attachmentCeilings: LIMITS,
+      attachmentCeilingsVouched: true,
+      handshakeAt: 10,
+    });
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => gw as never);
     const served = servedMap(config, {} as ConvexWriter);
     const registry = new SessionRegistry(served, () => 1000);
@@ -326,29 +479,29 @@ describe("GET /health carries a live session's ceilings, and keeps them once it 
     server = createBridgeServer({ shared: sharedFromConfig(config), served, registry, health });
     await new Promise<void>((res) => server!.listen(0, res));
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/health`;
-    type Body = {
-      attachmentMaxBytes: number | null;
-      attachmentMaxImageBytes: number | null;
+    type Body = Record<string, unknown> & {
       targets: { attachmentMaxBytes: number | null; attachmentMaxImageBytes: number | null }[];
     };
+    const read = async () => (await (await fetch(url)).json()) as Body;
+    const UNKNOWN = { attachmentMaxBytes: null, attachmentMaxImageBytes: null };
     try {
-      // No session yet, nothing seen: unknown.
-      const cold = (await (await fetch(url)).json()) as Body;
-      expect(cold.attachmentMaxBytes).toBeNull();
-      expect(cold.targets[0]).toMatchObject({ attachmentMaxBytes: null, attachmentMaxImageBytes: null });
+      expect((await read()).targets[0]).toMatchObject(UNKNOWN);
 
       const session = await registry.acquire(ROUTING);
       await sleep(5);
-      const live = (await (await fetch(url)).json()) as Body;
-      expect(live.attachmentMaxBytes).toBe(19464192);
-      expect(live.attachmentMaxImageBytes).toBe(6291456);
-      expect(live.targets[0]).toMatchObject({ attachmentMaxBytes: 19464192, attachmentMaxImageBytes: 6291456 });
+      const live = await read();
+      expect(live.targets[0]).toMatchObject({ attachmentMaxBytes: 1 * MiB, attachmentMaxImageBytes: 1 * MiB });
+      expect(live).not.toHaveProperty("attachmentMaxBytes");
 
-      // The socket closes: the instance's last-seen ceilings keep being published.
+      // The operator raises the limit: the socket heard `config.changed`.
+      Object.assign(gw, { attachmentCeilings: null, attachmentCeilingsVouched: false });
+      expect((await read()).targets[0]).toMatchObject(UNKNOWN);
+
+      // …and a value is not resurrected from memory once the socket is gone either.
+      Object.assign(gw, { attachmentCeilings: LIMITS, attachmentCeilingsVouched: true });
+      expect((await read()).targets[0]).toMatchObject({ attachmentMaxBytes: 1 * MiB });
       session.connection.close();
-      const idle = (await (await fetch(url)).json()) as Body;
-      expect(idle.targets[0]).toMatchObject({ attachmentMaxBytes: 19464192, attachmentMaxImageBytes: 6291456 });
-      expect(idle.attachmentMaxImageBytes).toBe(6291456);
+      expect((await read()).targets[0]).toMatchObject(UNKNOWN);
     } finally {
       registry.closeAll();
     }
