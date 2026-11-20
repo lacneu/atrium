@@ -228,6 +228,15 @@ function boundRisk(v: {
   };
 }
 
+/**
+ * What became of the write of a fact about a run (a fallback marker, a status notice):
+ *  - `written`   — it is on the run's bubble (or the writer keeps no such thing);
+ *  - `no_bubble` — Convex ANSWERED that the run has no bubble: nothing to write on;
+ *  - `failed`    — the write did not get an answer it can be judged by (a timeout, a
+ *                  5xx, a refusal): nothing is known about the bubble, the fact stands.
+ */
+export type RunFactWrite = "written" | "no_bubble" | "failed";
+
 export class TurnSink {
   /** A back-off clear whose POST did not land. The normalizer consumes its own flag on
    *  emit, so without this the clear was never attempted again and the label outlived
@@ -690,15 +699,17 @@ export class TurnSink {
   /**
    * A model fallback the gateway stated for a run -> the marker on that run's bubble:
    * `messageId` when the caller knows it, otherwise Convex finds the run's bubble.
-   * Whether a bubble was marked (false: the run has none yet, or the write failed). It
-   * opens no turn and changes no bubble's state; a marker never fails a turn.
+   * Three outcomes, never two (see RunFactWrite): a write that FAILED says nothing about
+   * whether the bubble exists. It opens no turn and changes no bubble's state; a marker
+   * never fails a turn.
    */
   async writeRunFallback(
     fallback: { runId: string; state: "active" | "cleared"; model: string; selected?: string },
     messageId: string | null,
-  ): Promise<boolean> {
+  ): Promise<RunFactWrite> {
+    if (this.writer.noteModelFallback === undefined) return "written";
     try {
-      const marked = await this.writer.noteModelFallback?.(this.chatId, {
+      const marked = await this.writer.noteModelFallback(this.chatId, {
         runId: fallback.runId,
         messageId,
         sessionKey: this.sessionKey ?? null,
@@ -708,30 +719,32 @@ export class TurnSink {
           ? { selected: fallback.selected }
           : {}),
       });
-      return typeof marked === "string";
+      return typeof marked === "string" ? "written" : "no_bubble";
     } catch (e) {
       console.error("[sink] model fallback not recorded (non-fatal):", errForLog(e));
-      return false;
+      return "failed";
     }
   }
 
   /**
    * A status notice the gateway sent beside a run's answer (see
    * ConvexWriter.noteGatewayNotice) -> a notice line on that run's bubble, addressed
-   * like `writeRunFallback`. Never the answer's text, never a bubble of its own.
+   * like `writeRunFallback`, with the same three outcomes. Never the answer's text,
+   * never a bubble of its own.
    */
-  async writeRunNotice(runId: string, messageId: string | null, text: string): Promise<boolean> {
+  async writeRunNotice(runId: string, messageId: string | null, text: string): Promise<RunFactWrite> {
+    if (this.writer.noteGatewayNotice === undefined) return "written";
     try {
-      const noticed = await this.writer.noteGatewayNotice?.(this.chatId, {
+      const noticed = await this.writer.noteGatewayNotice(this.chatId, {
         runId,
         messageId,
         sessionKey: this.sessionKey ?? null,
         text,
       });
-      return typeof noticed === "string";
+      return typeof noticed === "string" ? "written" : "no_bubble";
     } catch (e) {
       console.error("[sink] gateway notice not recorded (non-fatal):", errForLog(e));
-      return false;
+      return "failed";
     }
   }
 

@@ -16,10 +16,11 @@
  * cleared: {selected}", nothing when the two names are equal, nothing for a step.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HttpConvexWriter, type ConvexWriter, type ToolPart } from "../src/convex-writer.js";
 import { modelFallbackFromFrame } from "../src/providers/openclaw/model-fallback.js";
+import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
 
 const SK = "agent:alice:atrium:chat:u-repro:turn-nx79mkhktt778b53ksc5p0gfqx8hrk98";
@@ -273,6 +274,10 @@ class FallbackWriter implements ConvexWriter {
     data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
   ): Promise<string | null> {
     this.notices.push({ runId: data.runId, messageId: data.messageId, text: data.text });
+    if (this.failWrites > 0) {
+      this.failWrites--;
+      throw new Error("ingest timed out");
+    }
     const bubble = data.messageId ?? this.bubbleOfRun.get(data.runId) ?? null;
     if (bubble !== null) this.effects.push(`notice ${data.text} → ${bubble}`);
     return bubble;
@@ -389,7 +394,8 @@ describe("a fallback that follows its run's terminal (the captured order)", () =
   it("the same frame delivered twice writes the same marker twice — Convex keeps one", async () => {
     const writer = new FallbackWriter();
     const manager = await runThenLateFallback(writer);
-    await manager.feed(FALLBACK, 1_030);
+    // A second delivery is a second frame (its own object), as the socket hands it.
+    await manager.feed(structuredClone(FALLBACK), 1_030);
     expect(writer.noted.map((n) => n.messageId)).toStrictEqual(["msg_1", "msg_1"]);
   });
 });
@@ -999,6 +1005,412 @@ describe("facts about a run: one ordered path, on either side of the ACK", () =>
     } finally {
       console.warn = real;
     }
+  });
+});
+
+/**
+ * EVERY FRAME IS OBSERVED AND CLASSIFIED ONCE, at arrival. A stash hands the same frame
+ * back later — through `feed` for the announce stash and the preemption copy, straight
+ * to the normalizer for the pre-ACK buffer, as parsed parts for provenance, on its lane
+ * for a run the transcript closed. Whatever the path, the frame gives what it would have
+ * given live, and what is counted at observation is counted once.
+ */
+describe("a frame replayed from a stash is the frame that arrived", () => {
+  const SKS = "agent:alice:atrium:chat:u-repro:turn-stash";
+  const A = "webchat-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const B = "announce:v1:agent:alice:subagent:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
+  const text = (runId: string, state: "delta" | "final", t: string) => ({
+    type: "event",
+    event: "chat",
+    payload: { runId, sessionKey: SKS, state, message: { role: "assistant", content: [{ type: "text", text: t }] } },
+  });
+  /** A reply made ONLY of status notices, as a run's first final (a command's answer). */
+  const noticeOnly = (runId: string, t: string) => ({
+    type: "event",
+    event: "chat",
+    payload: {
+      runId,
+      sessionKey: SKS,
+      state: "final",
+      message: { role: "assistant", content: [{ type: "text", text: t, openclawStatusNotice: true }] },
+    },
+  });
+  const observations = (frame: object) => observeSpy.mock.calls.filter((call) => call[0] === frame).length;
+  let observeSpy: { mock: { calls: unknown[][] }; mockRestore(): void };
+  beforeEach(() => {
+    observeSpy = vi.spyOn(protocolDrift, "observe");
+  });
+  afterEach(() => {
+    observeSpy.mockRestore();
+  });
+  async function idle(writer: FallbackWriter, finals: number): Promise<void> {
+    for (let i = 0; i < 60 && writer.finals.length < finals; i++) await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 15));
+  }
+
+  it("announce stash: B's notice-only FIRST final, waiting behind turn A, is still B's reply when A ends", async () => {
+    // The review's sequence. Its first pass recorded "B's final was seen" and stashed
+    // the frame; replayed through `feed` at the end of A, the same final read as a
+    // notice BESIDE an answer: no bubble for B, a notice addressed to nothing.
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-stash", SKS, writer);
+    await manager.beginTurn(1_000, A, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(text(A, "delta", "Bonjour"), 1_010);
+    const waiting = noticeOnly(B, "Model set for this session.");
+    await manager.feed(waiting, 1_020);
+    expect(writer.opened, "B waits: A is still writing").toStrictEqual([A]);
+    await manager.feed(text(A, "final", "Bonjour."), 1_030);
+    await idle(writer, 2);
+    expect(writer.finals).toStrictEqual(["msg_1:complete", "msg_2:complete"]);
+    expect(writer.opened).toStrictEqual([A, B]);
+    expect(writer.notices, "it is a reply, not a notice beside one").toStrictEqual([]);
+    expect(observations(waiting), "observed once, at arrival").toBe(1);
+  });
+
+  it("announce stash: the replayed frame gives what it gives when it arrives with nothing in the way", async () => {
+    const live = new FallbackWriter();
+    const m1 = new RunManager("chat-stash", SKS, live);
+    await m1.feed(noticeOnly(B, "Model set for this session."), 1_000);
+    await idle(live, 1);
+    const stashed = new FallbackWriter();
+    const m2 = new RunManager("chat-stash", SKS, stashed);
+    await m2.beginTurn(1_000, A, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await m2.feed(text(A, "delta", "x"), 1_010);
+    await m2.feed(noticeOnly(B, "Model set for this session."), 1_020);
+    await m2.feed(text(A, "final", "x."), 1_030);
+    await idle(stashed, 2);
+    expect(stashed.finals.slice(1).map((f) => f.split(":")[1])).toStrictEqual(live.finals.map((f) => f.split(":")[1]));
+    expect(stashed.opened.slice(1)).toStrictEqual(live.opened);
+    expect(stashed.notices).toStrictEqual(live.notices);
+    expect(stashed.effects).toStrictEqual(live.effects);
+  });
+
+  it("preemption copy: frames already fed to an unopened announce turn, requeued by a real send, are not observed again", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-stash", SKS, writer);
+    // An announce turn opens (deferred: no bubble yet) on a frame that shows nothing.
+    const first = {
+      type: "event",
+      event: "agent",
+      payload: { runId: B, sessionKey: SKS, stream: "lifecycle", data: { phase: "start", startedAt: 1 } },
+    };
+    await manager.feed(first, 1_000);
+    expect(writer.opened).toStrictEqual([]);
+    // A real send preempts it before it showed anything: its frames go back to the stash.
+    await manager.beginTurn(1_010, A, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(text(A, "final", "Réponse."), 1_020);
+    await idle(writer, 1);
+    const last = text(B, "final", "Rapport du sous-agent.");
+    await manager.feed(last, 1_030);
+    await idle(writer, 2);
+    expect(writer.finals).toHaveLength(2);
+    expect(observations(first), "the requeued frame was observed once").toBe(1);
+    expect(observations(last)).toBe(1);
+  });
+
+  it("pre-ACK buffer: a buffered frame is observed once and replayed to the turn", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-stash", SKS, writer);
+    manager.armReplayBuffer();
+    const early = text(A, "final", "Réponse.");
+    await manager.feed(early, 1_000);
+    await manager.beginTurn(1_010, A, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await idle(writer, 1);
+    expect(writer.finals).toStrictEqual(["msg_1:complete"]);
+    expect(observations(early)).toBe(1);
+  });
+
+  it("provenance stash: a report that precedes its turn is observed once and lands on it once", async () => {
+    const writer = new FallbackWriter();
+    const provenance: unknown[] = [];
+    (writer as unknown as { addProvenancePart: (m: string, part: unknown) => Promise<void> }).addProvenancePart =
+      async (_m, part) => void provenance.push(part);
+    const manager = new RunManager("chat-stash", SKS, writer);
+    const report = {
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: A,
+        sessionKey: SKS,
+        stream: "provenance-probe.provenance",
+        data: {
+          v: 1,
+          source: "memory",
+          kind: "memory",
+          injected: true,
+          retrieval: { mode: "semantic" },
+          items: [],
+          pluginId: "provenance-probe",
+          pluginName: "Probe",
+        },
+      },
+    };
+    await manager.feed(report, 1_000);
+    await manager.beginTurn(1_010, A, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(text(A, "final", "Réponse."), 1_020);
+    await idle(writer, 1);
+    expect(observations(report)).toBe(1);
+    expect(provenance.length).toBeLessThanOrEqual(1);
+  });
+
+  it("lane of a run the transcript closed: a frame that waits for the run's bubble is observed once and applied once", async () => {
+    const writer = new FallbackWriter();
+    const closed: string[] = [];
+    let bubble: string | null = null;
+    const w = writer as unknown as {
+      findProjectedBubble: () => Promise<string | null>;
+      finalizeClosedRun: (messageId: string, runId: string, status: string) => Promise<void>;
+    };
+    w.findProjectedBubble = async () => bubble;
+    w.finalizeClosedRun = async (messageId, runId, status) => void closed.push(`${messageId}:${runId === A}:${status}`);
+    const manager = new RunManager("chat-stash", SKS, writer);
+    // A turn that has shown nothing here when the transcript says its run is over.
+    await manager.beginTurn(1_000, A, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    expect(await manager.settleFromTranscript([A], 1_010)).toBe(true);
+    // The run's live terminal arrives before the transcript's bubble can be found: it waits.
+    const terminal = text(A, "final", "Réponse.");
+    await manager.feed(terminal, 1_020);
+    await new Promise((r) => setTimeout(r, 15));
+    expect(closed).toStrictEqual([]);
+    // The bubble exists now; the next frame of the run lets what waited through, first.
+    bubble = "msg_transcript";
+    await manager.feed(
+      { type: "event", event: "agent", payload: { runId: A, sessionKey: SKS, stream: "lifecycle", data: { phase: "end" } } },
+      1_030,
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    expect(closed).toStrictEqual(["msg_transcript:true:complete"]);
+    expect(observations(terminal)).toBe(1);
+  });
+
+  it("the same frame OBJECT fed twice is one frame; a second delivery is a second object", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-stash", SKS, writer);
+    await manager.beginTurn(1_000, A, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(text(A, "final", "Réponse."), 1_010);
+    await idle(writer, 1);
+    const fallback = {
+      type: "event",
+      event: "agent",
+      payload: { runId: A, sessionKey: SKS, stream: "fallback", data: { fromModel: "m", toModel: "model-A" } },
+    };
+    await manager.feed(fallback, 1_020);
+    await manager.feed(fallback, 1_030);
+    expect(writer.effects).toStrictEqual(["fallback active model-A → msg_1"]);
+    expect(observations(fallback)).toBe(1);
+  });
+});
+
+/**
+ * A WRITE HAS THREE OUTCOMES. "The run has no bubble" is an answer from Convex; a write
+ * that failed is not one, and says nothing about the bubble.
+ */
+describe("a fact whose write fails keeps its place until it is written", () => {
+  const SKW = "agent:alice:atrium:chat:u-repro:turn-writes";
+  const W = "webchat-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const reroute = (to: string) => ({
+    type: "event",
+    event: "agent",
+    payload: { runId: W, sessionKey: SKW, stream: "fallback", data: { fromModel: "m", toModel: to } },
+  });
+  const answer = {
+    type: "event",
+    event: "chat",
+    payload: { runId: W, sessionKey: SKW, state: "final", message: { role: "assistant", content: [{ type: "text", text: "Réponse." }] } },
+  };
+  const usage = {
+    type: "event",
+    event: "chat",
+    payload: {
+      runId: W,
+      sessionKey: SKW,
+      state: "final",
+      message: { role: "assistant", content: [{ type: "text", text: "Usage: 1 in / 1 out", openclawStatusNotice: true }] },
+    },
+  };
+  /** Any frame of the connection: the gateway's own tick. */
+  const tick = () => ({ type: "event", event: "tick", payload: { ts: Date.now() } });
+  let warned: string[];
+  let realWarn: typeof console.warn;
+  let realError: typeof console.error;
+  beforeEach(() => {
+    warned = [];
+    realWarn = console.warn;
+    realError = console.error;
+    console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(" "));
+    console.error = () => {};
+  });
+  afterEach(() => {
+    console.warn = realWarn;
+    console.error = realError;
+  });
+  async function calm(): Promise<void> {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
+  it("a 503 during the settled drain: the queue is kept, and every fact lands in order after recovery", async () => {
+    // The review's sequence: a fallback before the ACK, a final-only answer replayed and
+    // closed, the first marker write answered 503. The bubble EXISTS — nothing is dropped.
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-writes", SKW, writer);
+    manager.armReplayBuffer();
+    await manager.feed(reroute("model-A"), 1_000);
+    await manager.feed(answer, 1_001);
+    writer.failWrites = 1;
+    await manager.beginTurn(1_010, W, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await calm();
+    expect(writer.finals).toStrictEqual(["msg_1:complete"]);
+    expect(writer.effects, "the write failed: nothing landed yet").toStrictEqual([]);
+    expect(warned.filter((w) => w.includes("[run-facts]")), "and nothing was dropped").toStrictEqual([]);
+    // More facts of the run arrive meanwhile: they wait behind the one that failed.
+    await manager.feed(reroute("model-B"), 1_011);
+    // (Two notices: the first one after a stated fallback is the fallback's own.)
+    await manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: W,
+          sessionKey: SKW,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "↪️ Model Fallback: model-B", openclawStatusNotice: true },
+              { type: "text", text: "Usage: 1 in / 1 out", openclawStatusNotice: true },
+            ],
+          },
+        },
+      },
+      1_012,
+    );
+    await calm();
+    expect(writer.effects).toStrictEqual([]);
+    // Too early: the retry is spaced.
+    await manager.feed(tick(), 1_013);
+    await calm();
+    expect(writer.effects).toStrictEqual([]);
+    // Any later frame of the connection — no fact of this run — retries it.
+    await manager.feed(tick(), 1_020);
+    await calm();
+    expect(writer.effects).toStrictEqual([
+      "fallback active model-A → msg_1",
+      "fallback active model-B → msg_1",
+      "notice Usage: 1 in / 1 out → msg_1",
+    ]);
+    expect(warned.filter((w) => w.includes("[run-facts]"))).toStrictEqual([]);
+  });
+
+  it("a notice whose write fails on a settled run is kept too, and lands at the retry", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-writes", SKW, writer);
+    await manager.beginTurn(1_000, W, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(answer, 1_010);
+    await calm();
+    writer.failWrites = 1;
+    await manager.feed(usage, 1_020);
+    await calm();
+    expect(writer.effects).toStrictEqual([]);
+    expect(warned.filter((w) => w.includes("[run-facts]"))).toStrictEqual([]);
+    await manager.feed(tick(), 1_030);
+    await calm();
+    expect(writer.effects).toStrictEqual(["notice Usage: 1 in / 1 out → msg_1"]);
+  });
+
+  it("a write that never succeeds is tried a bounded number of times, then dropped for what it is", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-writes", SKW, writer);
+    await manager.beginTurn(1_000, W, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(answer, 1_010);
+    await calm();
+    writer.failWrites = 1_000;
+    await manager.feed(reroute("model-A"), 1_020);
+    for (let i = 1; i <= 12; i++) {
+      await manager.feed(tick(), 1_020 + i * 10);
+      await calm();
+    }
+    const attempts = writer.noted.length;
+    expect(attempts).toBe(5);
+    expect(warned.filter((w) => w.includes("their write failed 5 times"))).toHaveLength(1);
+    expect(warned.some((w) => w.includes("left no bubble")), "never blamed on a missing bubble").toBe(false);
+    // Nothing is left to retry: later frames attempt nothing more.
+    await manager.feed(tick(), 2_000);
+    await calm();
+    expect(writer.noted).toHaveLength(attempts);
+    // …and the run is not poisoned: a new fact of it is written.
+    writer.failWrites = 0;
+    await manager.feed(reroute("model-B"), 2_010);
+    await calm();
+    expect(writer.effects).toStrictEqual(["fallback active model-B → msg_1"]);
+  });
+
+  it("`no bubble` is Convex's answer: final for a settled run, said as such; a failure is never read as it", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-writes", SKW, writer);
+    // A turn that shows nothing: no bubble.
+    await manager.beginTurn(1_000, W, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed({ type: "event", event: "chat", payload: { runId: W, sessionKey: SKW, state: "final" } }, 1_010);
+    await calm();
+    await manager.feed(reroute("model-A"), 1_020);
+    await calm();
+    expect(warned.filter((w) => w.includes("left no bubble"))).toHaveLength(1);
+    await manager.feed(tick(), 1_100);
+    await calm();
+    expect(writer.noted, "dropped: not retried").toHaveLength(1);
+  });
+
+  it("two drains of the same run started together write each fact once, in order", async () => {
+    // Writes that take time: the second fact arrives while the first is being written.
+    const writer = new FallbackWriter();
+    let release: (() => void) | null = null;
+    const slow = writer.noteModelFallback.bind(writer);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    writer.noteModelFallback = async (chatId, data) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((r) => {
+        release = r;
+        setTimeout(r, 20);
+      });
+      inFlight--;
+      return slow(chatId, data);
+    };
+    const manager = new RunManager("chat-writes", SKW, writer);
+    await manager.beginTurn(1_000, W, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(answer, 1_010);
+    await calm();
+    const first = manager.feed(reroute("model-A"), 1_020);
+    const second = manager.feed(reroute("model-B"), 1_021);
+    // The first notice after a stated fallback is the fallback's own: the second lands.
+    const third = manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: W,
+          sessionKey: SKW,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "↪️ Model Fallback: model-B", openclawStatusNotice: true },
+              { type: "text", text: "Usage: 1 in / 1 out", openclawStatusNotice: true },
+            ],
+          },
+        },
+      },
+      1_022,
+    );
+    await Promise.all([first, second, third]);
+    void release;
+    await calm();
+    expect(maxInFlight, "one write at a time").toBe(1);
+    expect(writer.effects).toStrictEqual([
+      "fallback active model-A → msg_1",
+      "fallback active model-B → msg_1",
+      "notice Usage: 1 in / 1 out → msg_1",
+    ]);
   });
 });
 

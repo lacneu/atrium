@@ -1504,7 +1504,12 @@ one path: it is read when the frame arrives, queued per run in arrival order, an
 on the run's bubble oldest first, at once when the bubble exists and as soon as it does
 otherwise (the answer and its fallback may both race the `chat.send` ACK). Nothing is
 written ahead of a fact still queued for its run, so the last one received is the one
-that stands. A run that showed nothing gets no marker. The marker
+that stands. A frame is read once, when it arrives: a stash that hands it back later
+does not have it read again. A write has three outcomes — written; Convex answers that
+the run has no bubble, which is final once the run's turn has ended; or the write
+failed, which says nothing about the bubble: the fact keeps its place and is tried
+again on a later frame of the connection, a bounded number of times. A run that showed
+nothing gets no marker. The marker
 is kept on the bubble rather than shown for a few seconds, and prints the Control UI's
 two sentences, localized. Only model names are carried: the reasons and attempts are
 the provider's own text and are neither stored nor shown.
