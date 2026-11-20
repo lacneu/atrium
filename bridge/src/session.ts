@@ -36,6 +36,7 @@ import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import { attachRosterPolicy, attachSharingRefresh } from "./providers/openclaw/models-roster.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
+import type { AttachmentCeilings } from "./core/attachment-limits.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import type { BridgeConfig } from "./config.js";
 import { mediaIdentityHeaders, type MediaFetcherProvider } from "./core/media-fetcher-provider.js";
@@ -279,6 +280,9 @@ export interface LiveTarget {
   /** Gateway WS frame limit (policy.maxPayload) from this session's handshake —
    *  the authoritative inbound-attachment ceiling, surfaced for /health. */
   maxPayload: number | null;
+  /** The gateway's per-attachment ceilings (policy.attachments) from the same
+   *  handshake; null or absent when it advertised none. */
+  attachmentCeilings?: AttachmentCeilings | null;
 }
 
 class Session implements BridgeSession {
@@ -1780,6 +1784,7 @@ export class SessionRegistry {
         instanceName: session.instanceName,
         gatewayVersion: session.connection.gatewayVersion,
         maxPayload: session.connection.maxPayload,
+        attachmentCeilings: session.connection.attachmentCeilings ?? null,
       });
     }
     return out;

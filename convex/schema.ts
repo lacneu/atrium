@@ -308,6 +308,11 @@ export const bridgeHealthTarget = v.object({
   // (maxPayloadInternal). Optional: a pre-this-release bridge / unreached instance
   // omits it (the dispatch falls back to the doc-level value, then the default).
   maxPayload: v.optional(v.union(v.number(), v.null())),
+  // This instance's gateway PER-ATTACHMENT decoded-size ceilings (hello-ok
+  // policy.attachments, OpenClaw 2026.8.1+): any file, and an image. Optional/null: an
+  // older bridge, or a gateway that advertises none — nothing is refused on them then.
+  attachmentMaxBytes: v.optional(v.union(v.number(), v.null())),
+  attachmentMaxImageBytes: v.optional(v.union(v.number(), v.null())),
   // Per-instance gateway VERSION reported by THIS instance's bridge /health, shown
   // on the connection row. Optional: a pre-this-release bridge / unreached instance
   // omits it.
@@ -5286,6 +5291,10 @@ export default defineSchema({
     // source for the inbound-attachment cap (composer + dispatch derive from it,
     // no hardcoded size). Optional: a pre-this-release bridge omits it.
     maxPayload: v.optional(v.union(v.number(), v.null())),
+    // The smallest per-attachment ceilings across the reachable instances (the
+    // conservative pair for a reader that knows no instance); per instance on targets.
+    attachmentMaxBytes: v.optional(v.union(v.number(), v.null())),
+    attachmentMaxImageBytes: v.optional(v.union(v.number(), v.null())),
     targets: v.array(bridgeHealthTarget),
   }).index("by_key", ["key"]),
 

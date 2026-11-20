@@ -190,6 +190,8 @@ import {
 import {
   FRAME_ENVELOPE_OVERHEAD_BYTES,
   base64FitsFrame,
+  firstOversizedAttachment,
+  type AttachmentCeilings,
 } from "./core/attachment-limits.js";
 import {
   parseInboundConfig,
@@ -3075,6 +3077,17 @@ async function performSendComposed(
           `(base64 ${base64Bytes} > maxPayload ${conn.maxPayload})`,
       );
     }
+    // Per-attachment guard: the gateway ALSO bounds each attachment's decoded size
+    // (`policy.attachments`), an image more tightly, and refuses the whole send for
+    // one file over it — after the frame was written. Same classified refusal, before
+    // sending; nothing is refused when the gateway advertised no ceiling.
+    const oversized = firstOversizedAttachment(body.attachments, conn.attachmentCeilings);
+    if (oversized !== null) {
+      throw new Error(
+        `attachment too large for the gateway ` +
+          `(${oversized.image ? "image" : "file"} of ${oversized.decodedBytes} bytes > ${oversized.ceiling})`,
+      );
+    }
     params.attachments = body.attachments;
   }
   // THE FINAL FRAME, measured exactly as the client will write it. The checks above
@@ -5793,7 +5806,15 @@ export interface EnrichedHealthSnapshot extends Omit<
    *  attachment ceiling, so Convex + the composer derive the same cap instead of
    *  hardcoding one. From a live session, else the last-seen fallback, else null. */
   maxPayload: number | null;
+  /** The gateway's per-attachment decoded-size ceilings (policy.attachments): the
+   *  smallest of each across every known instance, null when none advertised any. */
+  attachmentMaxBytes: number | null;
+  attachmentMaxImageBytes: number | null;
   targets: (TargetHealth & {
+    /** This instance's OWN per-attachment ceilings; null when its gateway advertised
+     *  none (never another instance's). */
+    attachmentMaxBytes: number | null;
+    attachmentMaxImageBytes: number | null;
     gatewayVersion: string | null;
     /** This instance's OWN gateway frame limit (capped at the body cap) — so a bridge
      *  serving instances with DIFFERENT maxPayloads publishes each per target, and the
@@ -5810,6 +5831,8 @@ export function enrichHealthSnapshot(
   // (which would publish another instance's limit on a multi-instance bridge).
   fallbackByInstance: Map<string, number> = new Map(),
   httpBodyCap: number | null = null,
+  // PER-INSTANCE last-seen per-attachment ceilings, the same idle fallback as above.
+  ceilingsFallbackByInstance: Map<string, AttachmentCeilings> = new Map(),
 ): EnrichedHealthSnapshot {
   // Key live sessions by instanceName:canonical (two instances may share a canonical,
   // so canonical alone is ambiguous on a multi-instance bridge).
@@ -5817,9 +5840,11 @@ export function enrichHealthSnapshot(
     `${instanceName ?? ""}:${canonical}`;
   const versionByKey = new Map<string, string | null>();
   const payloadByKey = new Map<string, number | null>();
+  const ceilingsByKey = new Map<string, AttachmentCeilings | null>();
   for (const t of live) {
     versionByKey.set(liveKey(t.instanceName, t.canonical), t.gatewayVersion);
     payloadByKey.set(liveKey(t.instanceName, t.canonical), t.maxPayload);
+    ceilingsByKey.set(liveKey(t.instanceName, t.canonical), t.attachmentCeilings ?? null);
   }
   // Cap a gateway frame at the bridge's OWN HTTP body cap (the Convex->bridge /send
   // POST carries the base64-inflated payload): publish the binding MINIMUM so consumers
@@ -5838,11 +5863,20 @@ export function enrichHealthSnapshot(
     ...fallbackByInstance.values(),
   ];
   const maxPayload = capToBody(allCaps.length ? Math.min(...allCaps) : null);
+  // Same conservative rule for the per-attachment ceilings: the smallest known.
+  const allCeilings = [
+    ...live.map((t) => t.attachmentCeilings ?? null).filter((c): c is AttachmentCeilings => c !== null),
+    ...ceilingsFallbackByInstance.values(),
+  ];
+  const smallest = (pick: (c: AttachmentCeilings) => number): number | null =>
+    allCeilings.length ? Math.min(...allCeilings.map(pick)) : null;
   return {
     ...snapshot,
     bridgeVersion: BRIDGE_VERSION,
     protocolVersion: PROTOCOL_VERSION,
     maxPayload,
+    attachmentMaxBytes: smallest((c) => c.maxBytes),
+    attachmentMaxImageBytes: smallest((c) => c.maxImageBytes),
     targets: snapshot.targets.map((t) => {
       const k = liveKey(t.instanceName, t.canonical);
       // This instance's own live frame, else its OWN last-seen cap, else null (capped).
@@ -5851,10 +5885,17 @@ export function enrichHealthSnapshot(
         (t.instanceName !== null
           ? (fallbackByInstance.get(t.instanceName) ?? null)
           : null);
+      const ownCeilings =
+        ceilingsByKey.get(k) ??
+        (t.instanceName !== null
+          ? (ceilingsFallbackByInstance.get(t.instanceName) ?? null)
+          : null);
       return {
         ...t,
         gatewayVersion: versionByKey.get(k) ?? null,
         maxPayload: capToBody(own),
+        attachmentMaxBytes: ownCeilings?.maxBytes ?? null,
+        attachmentMaxImageBytes: ownCeilings?.maxImageBytes ?? null,
       };
     }),
   };
@@ -5935,6 +5976,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
   // strand instance A's version/cap). Per-server (test isolation).
   const lastGatewayVersion = new Map<string, string>();
   const lastMaxPayload = new Map<string, number>();
+  const lastAttachmentCeilings = new Map<string, AttachmentCeilings>();
   // In-flight Hermes turns (per chat) for /abort — Hermes has no persistent
   // session registry, so this tracks the one live SSE turn per chat.
   const hermesTurns = new HermesTurnRegistry();
@@ -5988,6 +6030,16 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
   const noteMaxPayload = (instanceName: string, n: number | null): void => {
     if (typeof n === "number" && n > 0) lastMaxPayload.set(instanceName, n);
   };
+  // Read from the SAME handshake as the frame limit. A handshake that advertises none
+  // forgets the previous ones: the gateway was replaced by one that states no ceiling,
+  // and its old ceilings must not keep refusing files it now accepts.
+  const noteAttachmentCeilings = (
+    instanceName: string,
+    ceilings: AttachmentCeilings | null | undefined,
+  ): void => {
+    if (ceilings) lastAttachmentCeilings.set(instanceName, ceilings);
+    else lastAttachmentCeilings.delete(instanceName);
+  };
   // Capture BOTH from any operator handshake for a SPECIFIC instance (incl. a short
   // /agents or /capabilities discovery), so an idle/just-restarted bridge publishes
   // that instance's version + inbound cap without waiting for a live chat session.
@@ -5996,6 +6048,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
     (conn: OpenClawConnection): void => {
       noteGatewayVersion(instanceName, conn.gatewayVersion);
       noteMaxPayload(instanceName, conn.maxPayload);
+      noteAttachmentCeilings(instanceName, conn.attachmentCeilings);
     };
   const gatewayHostFor = (instanceName: string): string => {
     const bundle = served.get(instanceName);
@@ -6036,7 +6089,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Additive compat fields: bridgeVersion + protocolVersion + maxPayload at
       // the top, gatewayVersion per target (from the live session's handshake).
       const live = registry.listLive();
-      for (const t of live) noteMaxPayload(t.instanceName, t.maxPayload); // keep the idle fallback fresh
+      for (const t of live) {
+        noteMaxPayload(t.instanceName, t.maxPayload); // keep the idle fallback fresh
+        noteAttachmentCeilings(t.instanceName, t.attachmentCeilings);
+      }
       // Pass the PER-INSTANCE last-seen caps so an idle target falls back to its OWN
       // gateway's frame (not a global value). The top-level maxPayload is derived
       // inside (live frame, else the min across instances) for context-free consumers.
@@ -6046,6 +6102,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           live,
           lastMaxPayload,
           shared.maxBodyBytes,
+          lastAttachmentCeilings,
         ),
         // Additive, non-secret: instances configured but not (yet) served + WHY. Lets the
         // admin UI / a curl show "olivier: bad_device" instead of needing docker logs.

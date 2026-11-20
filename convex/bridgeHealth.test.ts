@@ -160,6 +160,32 @@ describe("normalizeTarget (defensive parse of the bridge /health body)", () => {
   });
 });
 
+describe("normalizeTarget — the per-attachment ceilings", () => {
+  const base = {
+    key: "o",
+    canonical: "o",
+    agentId: "main",
+    gatewayHost: "h:1",
+    state: "connected",
+    lastOkAt: 9,
+    attempts: 1,
+    okCount: 1,
+    errorCount: 0,
+  };
+  test("reads them when the bridge reports them", () => {
+    const t = normalizeTarget({ ...base, attachmentMaxBytes: 19464192, attachmentMaxImageBytes: 6291456 });
+    expect(t?.attachmentMaxBytes).toBe(19464192);
+    expect(t?.attachmentMaxImageBytes).toBe(6291456);
+  });
+  test("null when absent (an older bridge) or not a number", () => {
+    expect(normalizeTarget(base)?.attachmentMaxBytes).toBeNull();
+    expect(normalizeTarget(base)?.attachmentMaxImageBytes).toBeNull();
+    const bad = normalizeTarget({ ...base, attachmentMaxBytes: "19464192", attachmentMaxImageBytes: {} });
+    expect(bad?.attachmentMaxBytes).toBeNull();
+    expect(bad?.attachmentMaxImageBytes).toBeNull();
+  });
+});
+
 function doc(p: {
   reachable: boolean;
   checkedAt: number;
@@ -171,7 +197,11 @@ function doc(p: {
     agentId?: string;
     canonical?: string;
     maxPayload?: number;
+    attachmentMaxBytes?: number | null;
+    attachmentMaxImageBytes?: number | null;
   }[];
+  attachmentMaxBytes?: number | null;
+  attachmentMaxImageBytes?: number | null;
 }): Doc<"bridgeHealth"> {
   return {
     _id: "x" as Doc<"bridgeHealth">["_id"],
@@ -181,6 +211,8 @@ function doc(p: {
     checkedAt: p.checkedAt,
     lastError: p.lastError,
     maxPayload: p.maxPayload,
+    attachmentMaxBytes: p.attachmentMaxBytes,
+    attachmentMaxImageBytes: p.attachmentMaxImageBytes,
     targets: (p.targets ?? []) as Doc<"bridgeHealth">["targets"],
   } as Doc<"bridgeHealth">;
 }
@@ -196,7 +228,83 @@ describe("computeAvailability (chat gate decision — fail OPEN)", () => {
       reason: null,
       checkedAt: null,
       maxInboundBytes: null,
+      maxInboundImageBytes: null,
     });
+  });
+
+  // The gateway's PER-ATTACHMENT ceilings (hello-ok policy.attachments, 2026.8.1+),
+  // carried beside the frame limit. The numbers are the ones a bench hello-ok carries.
+  test("the per-attachment ceilings narrow the inbound caps: files and, more tightly, images", () => {
+    const a = computeAvailability(
+      doc({
+        reachable: true,
+        checkedAt: NOW,
+        maxPayload: 26214400,
+        attachmentMaxBytes: 19464192,
+        attachmentMaxImageBytes: 6291456,
+      }),
+      NOW,
+    );
+    // The gateway's own file ceiling is BELOW what the frame alone admits.
+    expect(maxRawInboundBytes(26214400)).toBeGreaterThan(19464192);
+    expect(a.maxInboundBytes).toBe(19464192);
+    expect(a.maxInboundImageBytes).toBe(6291456);
+  });
+
+  test("a frame smaller than the ceilings still wins (the binding minimum)", () => {
+    const a = computeAvailability(
+      doc({
+        reachable: true,
+        checkedAt: NOW,
+        maxPayload: 131072 + 1200, // raw cap 900
+        attachmentMaxBytes: 19464192,
+        attachmentMaxImageBytes: 6291456,
+      }),
+      NOW,
+    );
+    expect(a.maxInboundBytes).toBe(900);
+    expect(a.maxInboundImageBytes).toBe(900);
+  });
+
+  test("no ceilings advertised (an older gateway or bridge) -> the frame cap alone, no image cap", () => {
+    const a = computeAvailability(
+      doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400 }),
+      NOW,
+    );
+    expect(a.maxInboundBytes).toBe(maxRawInboundBytes(26214400));
+    expect(a.maxInboundImageBytes).toBeNull();
+  });
+
+  test("per-instance ceilings: THAT instance's, falling back to the doc's conservative ones", () => {
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 26214400,
+      attachmentMaxBytes: 5_000_000,
+      attachmentMaxImageBytes: 5_000_000,
+      targets: [
+        {
+          state: "connected",
+          instanceName: "olivier",
+          maxPayload: 26214400,
+          attachmentMaxBytes: 19464192,
+          attachmentMaxImageBytes: 6291456,
+        },
+        // An instance whose gateway advertises none (before 2026.8.1).
+        { state: "connected", instanceName: "old", maxPayload: 26214400, attachmentMaxBytes: null, attachmentMaxImageBytes: null },
+      ],
+    });
+    const olivier = computeAvailability(d, NOW, "olivier");
+    expect(olivier.maxInboundBytes).toBe(19464192);
+    expect(olivier.maxInboundImageBytes).toBe(6291456);
+    // Known target, no ceilings: NOT another instance's — the frame cap alone.
+    const old = computeAvailability(d, NOW, "old");
+    expect(old.maxInboundBytes).toBe(maxRawInboundBytes(26214400));
+    expect(old.maxInboundImageBytes).toBeNull();
+    // No target at all yet: the doc-level (smallest known) ceilings.
+    const idle = computeAvailability(d, NOW, "idle");
+    expect(idle.maxInboundBytes).toBe(5_000_000);
+    expect(idle.maxInboundImageBytes).toBe(5_000_000);
   });
 
   test("maxInboundBytes is DERIVED from the gateway maxPayload (not hardcoded)", () => {

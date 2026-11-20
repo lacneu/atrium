@@ -165,3 +165,51 @@ describe("an image the model cannot decode is tool-read, not model-native", () =
     expect(one("image/svg+xml", 100, "inline")).toBe("inline");
   });
 });
+
+describe("planAttachmentTransports — the gateway's per-attachment ceiling (policy.attachments)", () => {
+  // A tool-read file the FRAME could carry but the gateway would refuse as an
+  // attachment (decoded size over `maxBytes`): by reference in shared-fs mode, where a
+  // size is never a refusal — never inline, where the gateway refuses the whole send.
+  const plan = (size: number, attachmentMaxBytes: number | null | undefined, mimeType = "application/pdf") =>
+    planAttachmentTransports({
+      inboundMediaMode: "shared-fs",
+      maxPayload: ROOMY,
+      attachmentMaxBytes,
+      attachments: [{ mimeType, size }],
+    })[0];
+
+  test("over the ceiling → reference; at or under it → inline", () => {
+    expect(plan(5001, 5000)).toBe("reference");
+    expect(plan(5000, 5000)).toBe("inline");
+    expect(plan(4999, 5000)).toBe("inline");
+  });
+  test("no ceiling known → the frame alone decides, as before", () => {
+    expect(plan(5001, null)).toBe("inline");
+    expect(plan(5001, undefined)).toBe("inline");
+  });
+  test("a file sent by reference does not consume the frame budget of the next one", () => {
+    const transports = planAttachmentTransports({
+      inboundMediaMode: "shared-fs",
+      maxPayload: FRAME_ENVELOPE_OVERHEAD_BYTES + 1200, // 900 raw bytes of room
+      attachmentMaxBytes: 500,
+      attachments: [
+        { mimeType: "application/pdf", size: 800 }, // over the ceiling → reference
+        { mimeType: "text/plain", size: 400 }, // fits the frame untouched by the first
+      ],
+    });
+    expect(transports).toEqual(["reference", "inline"]);
+  });
+  test("a model-native image stays inline whatever the ceiling (the dispatch judges it)", () => {
+    expect(plan(9000, 5000, "image/png")).toBe("inline");
+  });
+  test("inline mode is untouched: everything inline", () => {
+    expect(
+      planAttachmentTransports({
+        inboundMediaMode: "inline",
+        maxPayload: ROOMY,
+        attachmentMaxBytes: 5000,
+        attachments: [{ mimeType: "application/pdf", size: 9000 }],
+      }),
+    ).toEqual(["inline"]);
+  });
+});

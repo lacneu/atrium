@@ -1,6 +1,7 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
   "attach_too_large": "Fichier trop volumineux ({size} Mo, max {max} Mo). Réduisez-le (p. ex. compressez les images) et réessayez.",
+  "attach_image_too_large": "Image trop volumineuse ({size}) : la passerelle accepte au plus {max} par image. Réduisez-la ou compressez-la, puis réessayez.",
   "common_loading": "Chargement…",
   "usermenu_theme_label": "Thème",
   "usermenu_theme_light": "Clair",

@@ -42,3 +42,48 @@ export function maxRawInboundBytes(maxPayload: number): number {
 export function base64FitsFrame(base64Bytes: number, maxPayload: number): boolean {
   return base64Bytes + FRAME_ENVELOPE_OVERHEAD_BYTES <= maxPayload;
 }
+
+// ---------------------------------------------------------------------------------
+// PER-ATTACHMENT ceilings (the gateway's `hello-ok.policy.attachments`, OpenClaw
+// 2026.8.1+), carried by the bridge beside the frame limit. The frame limit bounds the
+// whole `chat.send`; the gateway ALSO bounds each attachment's decoded size, an image
+// more tightly (6 MiB by default), and refuses the whole send for one file over it.
+// Same rule as `bridge/src/core/attachment-limits.ts` (the bridge's last guard).
+// ---------------------------------------------------------------------------------
+
+/** The gateway's decoded-size ceilings for ONE attachment. */
+export interface AttachmentCeilings {
+  maxBytes: number;
+  maxImageBytes: number;
+}
+
+/** The two stored numbers as ceilings, or null when either is unknown. */
+export function attachmentCeilingsOf(stored: {
+  attachmentMaxBytes?: number | null;
+  attachmentMaxImageBytes?: number | null;
+}): AttachmentCeilings | null {
+  const { attachmentMaxBytes: maxBytes, attachmentMaxImageBytes: maxImageBytes } = stored;
+  return typeof maxBytes === "number" &&
+    maxBytes > 0 &&
+    typeof maxImageBytes === "number" &&
+    maxImageBytes > 0
+    ? { maxBytes, maxImageBytes: Math.min(maxBytes, maxImageBytes) }
+    : null;
+}
+
+/** Is this DECLARED type an image to the gateway? Its own clients test
+ *  `mimeType.startsWith("image/")` — every `image/*`, decodable by a model or not. */
+export function isGatewayImageMime(mimeType: string | null | undefined): boolean {
+  return typeof mimeType === "string" && mimeType.trim().toLowerCase().startsWith("image/");
+}
+
+/** Would the gateway refuse an inline attachment of `size` bytes for its size? Strictly
+ *  greater, like the gateway; never when the ceilings are unknown. */
+export function exceedsAttachmentCeiling(
+  size: number,
+  mimeType: string | null | undefined,
+  ceilings: AttachmentCeilings | null,
+): boolean {
+  if (ceilings === null) return false;
+  return size > (isGatewayImageMime(mimeType) ? ceilings.maxImageBytes : ceilings.maxBytes);
+}

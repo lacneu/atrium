@@ -12,6 +12,9 @@ import { describe, expect, test, vi } from "vitest";
 import { getFunctionName } from "convex/server";
 import { createConvexAttachmentAdapter } from "./attachmentAdapter";
 import { api } from "./convexApi";
+import { formatFileSize } from "./fileMetaView";
+import { m } from "@/paraglide/messages.js";
+import { getLocale } from "@/paraglide/runtime.js";
 import {
   DEFAULT_GATEWAY_MAX_PAYLOAD,
   maxRawInboundBytes,
@@ -33,6 +36,8 @@ const POLICY = getFunctionName(api.bridge.getChatInboundPolicy);
 function mockConvex(opts: {
   // undefined -> the availability query THROWS; null/number -> maxInboundBytes value.
   maxInboundBytes?: number | null;
+  // The gateway's per-attachment IMAGE ceiling (policy.attachments.maxImageBytes).
+  maxInboundImageBytes?: number | null;
   inboundPolicy?: { inboundMediaMode: string; sharedFsMaxBytes: number } | null;
 }): Parameters<typeof createConvexAttachmentAdapter>[0] {
   return {
@@ -47,6 +52,7 @@ function mockConvex(opts: {
           reason: null,
           checkedAt: 1,
           maxInboundBytes: opts.maxInboundBytes,
+          maxInboundImageBytes: opts.maxInboundImageBytes ?? null,
         };
       }
       if (name === POLICY) return opts.inboundPolicy ?? null;
@@ -151,6 +157,108 @@ describe("attachmentAdapter.add — upfront over-size gate", () => {
     );
     await expect(
       adapter.add({ file: fakeFile(10 * MiB, "image/png", "pic.png") }),
+    ).rejects.toThrow();
+    expect(onReject).toHaveBeenCalledOnce();
+  });
+});
+
+describe("attachmentAdapter.add — the gateway's per-image ceiling", () => {
+  // OpenClaw bounds each attachment's decoded size and an IMAGE more tightly (6 MiB by
+  // default — hello-ok policy.attachments.maxImageBytes). An image under the file cap
+  // and over that ceiling used to be uploaded, sent, then refused by the gateway.
+  const CAPS = { maxInboundBytes: 19464192, maxInboundImageBytes: 6291456 };
+
+  test("rejects an image over the image ceiling though it is under the file cap, saying it is the IMAGE limit", async () => {
+    const onReject = vi.fn();
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS), onReject);
+    await expect(
+      adapter.add({ file: fakeFile(8 * MiB, "image/png", "photo.png") }),
+    ).rejects.toThrow();
+    expect(onReject).toHaveBeenCalledOnce();
+    const msg = onReject.mock.calls[0][0] as string;
+    expect(msg).toBe(
+      m.attach_image_too_large({
+        size: formatFileSize(8 * MiB, getLocale()),
+        max: formatFileSize(6291456, getLocale()),
+      }),
+    );
+    // Not the generic "file too large" sentence: the limit named is the image one.
+    expect(msg).not.toBe(m.attach_too_large({ size: 8, max: 6 }));
+  });
+
+  test("the message exists in every locale and names the image limit", () => {
+    for (const locale of ["en", "fr"] as const) {
+      const text = m.attach_image_too_large({ size: "8.4 MB", max: "6.3 MB" }, { locale });
+      expect(text, locale).toContain("8.4 MB");
+      expect(text, locale).toContain("6.3 MB");
+      expect(text, locale).toMatch(/image/i);
+    }
+  });
+
+  test("accepts an image AT the ceiling (the gateway refuses only above it)", async () => {
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS));
+    const pending = (await adapter.add({
+      file: fakeFile(6291456, "image/jpeg", "p.jpg"),
+    })) as PendingAttachment;
+    expect(pending.name).toBe("p.jpg");
+  });
+
+  test("a non-image of the same size is accepted: the image ceiling is for images", async () => {
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS));
+    const pending = (await adapter.add({ file: fakeFile(8 * MiB) })) as PendingAttachment;
+    expect(pending.name).toBe("f.pdf");
+  });
+
+  test("no image ceiling known (an older gateway): an image faces the file cap alone", async () => {
+    const adapter = createConvexAttachmentAdapter(
+      mockConvex({ maxInboundBytes: 19464192, maxInboundImageBytes: null }),
+    );
+    const pending = (await adapter.add({
+      file: fakeFile(8 * MiB, "image/png", "photo.png"),
+    })) as PendingAttachment;
+    expect(pending.name).toBe("photo.png");
+  });
+
+  test("an image that rides BY REFERENCE (shared-fs, not model-native) is not held to the gateway's image ceiling", async () => {
+    // An SVG/HEIC on a shared-fs instance is streamed to the shared volume: it never
+    // becomes a gateway attachment, so the gateway's per-attachment ceiling is moot.
+    const adapter = createConvexAttachmentAdapter(
+      mockConvex({
+        ...CAPS,
+        inboundPolicy: { inboundMediaMode: "shared-fs", sharedFsMaxBytes: 500 * MiB },
+      }),
+      undefined,
+      "chat123",
+    );
+    const pending = (await adapter.add({
+      file: fakeFile(8 * MiB, "image/heic", "p.heic"),
+    })) as PendingAttachment;
+    expect(pending.name).toBe("p.heic");
+  });
+
+  test("a model-native image on a shared-fs instance still rides inline: the image ceiling holds", async () => {
+    const onReject = vi.fn();
+    const adapter = createConvexAttachmentAdapter(
+      mockConvex({
+        ...CAPS,
+        inboundPolicy: { inboundMediaMode: "shared-fs", sharedFsMaxBytes: 500 * MiB },
+      }),
+      onReject,
+      "chat123",
+    );
+    await expect(
+      adapter.add({ file: fakeFile(8 * MiB, "image/png", "p.png") }),
+    ).rejects.toThrow();
+    expect(onReject).toHaveBeenCalledOnce();
+  });
+
+  test("an inline-mode non-raster image (SVG) is a gateway image too: the ceiling holds", async () => {
+    // Inline mode sends everything as a gateway attachment, and the gateway tests
+    // `image/` on the type — an SVG included.
+    const onReject = vi.fn();
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS), onReject, "chat123");
+    await expect(
+      adapter.add({ file: fakeFile(8 * MiB, "image/svg+xml", "logo.svg") }),
     ).rejects.toThrow();
     expect(onReject).toHaveBeenCalledOnce();
   });

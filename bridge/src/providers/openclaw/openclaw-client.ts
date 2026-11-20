@@ -29,6 +29,7 @@ import { URL } from "node:url";
 import WebSocket, { type RawData } from "ws";
 
 import type { DeviceIdentity } from "../../config.js";
+import { readAttachmentCeilings, type AttachmentCeilings } from "../../core/attachment-limits.js";
 import { createSeqTracker, type SeqGap } from "./frame-seq.js";
 import {
   eventPayload,
@@ -414,6 +415,12 @@ export class OpenClawConnection {
   // first connect (the server enforces regardless).
   maxPayload: number | null = null;
 
+  // The gateway's PER-ATTACHMENT decoded-size ceilings, from the hello-ok
+  // `payload.policy.attachments` (2026.8.1+; core/attachment-limits.ts). The frame
+  // limit above bounds the whole send; these bound each file, and an image more
+  // tightly. `null` when the gateway advertises none: nothing is refused on it here.
+  attachmentCeilings: AttachmentCeilings | null = null;
+
   // Per-connection send-buffer ceiling, from the hello-ok
   // `payload.policy.maxBufferedBytes` (50 MiB upstream). Past it the gateway
   // either DROPS our frames or closes us with `1008 "slow consumer"` — so this
@@ -775,6 +782,7 @@ export class OpenClawConnection {
               typeof policy.maxPayload === "number" && policy.maxPayload > 0
                 ? policy.maxPayload
                 : null;
+            connection.attachmentCeilings = readAttachmentCeilings(policy);
             connection.maxBufferedBytes =
               typeof policy.maxBufferedBytes === "number" &&
               policy.maxBufferedBytes > 0

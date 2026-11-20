@@ -20,7 +20,11 @@ import { internal } from "./_generated/api";
 import { requireActive, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { bridgeHealthTarget } from "./schema";
-import { maxRawInboundBytes } from "./lib/attachmentLimits";
+import {
+  attachmentCeilingsOf,
+  maxRawInboundBytes,
+  type AttachmentCeilings,
+} from "./lib/attachmentLimits";
 import {
   resolveBridgeUrlForDispatch,
   resolveHealthPollTargets,
@@ -71,6 +75,8 @@ export function normalizeTarget(raw: unknown): {
   localRefusalCount: number;
   gatewayVersion: string | null;
   maxPayload: number | null;
+  attachmentMaxBytes: number | null;
+  attachmentMaxImageBytes: number | null;
 } | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
@@ -125,7 +131,33 @@ export function normalizeTarget(raw: unknown): {
     // reports each target's own cap, so the poller keeps them distinct (not one
     // URL-level value copied onto every target). null on a pre-this-release bridge.
     maxPayload: num(o.maxPayload),
+    // This instance's per-attachment ceilings; null on an older bridge, or when the
+    // gateway advertises none.
+    attachmentMaxBytes: num(o.attachmentMaxBytes),
+    attachmentMaxImageBytes: num(o.attachmentMaxImageBytes),
   };
+}
+
+/**
+ * The gateway's per-attachment ceilings for an instance: its OWN target's when it has
+ * one — null included, a gateway that advertises none is not given another's — else the
+ * doc-level pair (the smallest known), else null.
+ */
+export function resolveAttachmentCeilings(
+  doc: Doc<"bridgeHealth">,
+  instanceName: string | null | undefined,
+): AttachmentCeilings | null {
+  if (instanceName != null) {
+    const own = doc.targets.filter((t) => t.instanceName === instanceName);
+    if (own.length > 0) {
+      for (const t of own) {
+        const ceilings = attachmentCeilingsOf(t);
+        if (ceilings !== null) return ceilings;
+      }
+      return null;
+    }
+  }
+  return attachmentCeilingsOf(doc);
 }
 
 export interface Availability {
@@ -146,6 +178,9 @@ export interface Availability {
    *  composer rejects bigger files upfront). null when maxPayload is not yet known
    *  -> the composer fails OPEN (the bridge frame guard is the backstop). */
   maxInboundBytes: number | null;
+  /** Max RAW bytes of an inline IMAGE: the gateway's per-attachment image ceiling
+   *  (never above `maxInboundBytes`). null when the gateway advertises none. */
+  maxInboundImageBytes: number | null;
   /** GLOBAL view only (no chatId): how many configured instances currently fail
    *  their discovery poll on a transport error — the settings-tab badge shows
    *  amber ("bridge up, gateways unreachable") instead of a green dot during a
@@ -217,6 +252,7 @@ export function computeAvailability(
       reason: null,
       checkedAt: null,
       maxInboundBytes: null,
+      maxInboundImageBytes: null,
     };
   const stale = now - doc.checkedAt > STALE_MS;
   const scoped =
@@ -257,15 +293,26 @@ export function computeAvailability(
       ? (scoped.find((t) => typeof t.maxPayload === "number")?.maxPayload ??
         docMaxPayload)
       : docMaxPayload;
+  const ceilings = resolveAttachmentCeilings(doc, instanceName);
+  const frameCap =
+    scopedMaxPayload !== null ? maxRawInboundBytes(scopedMaxPayload) : null;
+  const maxInboundBytes =
+    frameCap === null || ceilings === null
+      ? frameCap
+      : Math.min(frameCap, ceilings.maxBytes);
   return {
     known: true,
     available,
     degraded: anyTargetError,
     reason,
     checkedAt: doc.checkedAt,
-    // Derived from the gateway-announced maxPayload — never a hardcoded size.
-    maxInboundBytes:
-      scopedMaxPayload !== null ? maxRawInboundBytes(scopedMaxPayload) : null,
+    // Derived from the gateway-announced maxPayload — never a hardcoded size — and
+    // narrowed by the gateway's own per-attachment ceilings when it advertises them.
+    maxInboundBytes,
+    maxInboundImageBytes:
+      ceilings === null
+        ? null
+        : Math.min(ceilings.maxImageBytes, maxInboundBytes ?? ceilings.maxImageBytes),
   };
 }
 
@@ -309,6 +356,7 @@ export const pollBridgeHealth = internalAction({
 
     const allTargets: Doc<"bridgeHealth">["targets"] = [];
     const maxPayloads: number[] = [];
+    const ceilings: AttachmentCeilings[] = [];
     let anyReachable = false;
     let status: string | undefined;
     let startedAt: number | undefined;
@@ -335,6 +383,11 @@ export const pollBridgeHealth = internalAction({
         }
         const mp = typeof body.maxPayload === "number" ? body.maxPayload : null;
         if (mp !== null) maxPayloads.push(mp);
+        const bodyCeilings = attachmentCeilingsOf({
+          attachmentMaxBytes: num(body.attachmentMaxBytes),
+          attachmentMaxImageBytes: num(body.attachmentMaxImageBytes),
+        });
+        if (bodyCeilings !== null) ceilings.push(bodyCeilings);
         const its = (Array.isArray(body.targets) ? body.targets : [])
           .map(normalizeTarget)
           .filter((t): t is NonNullable<typeof t> => t !== null)
@@ -366,6 +419,11 @@ export const pollBridgeHealth = internalAction({
       // GLOBAL composer gate, which doesn't know the chat's instance). The precise
       // per-instance value lives on each target for maxPayloadInternal.
       maxPayload: maxPayloads.length > 0 ? Math.min(...maxPayloads) : null,
+      // Same conservative rule for the per-attachment ceilings.
+      attachmentMaxBytes:
+        ceilings.length > 0 ? Math.min(...ceilings.map((c) => c.maxBytes)) : null,
+      attachmentMaxImageBytes:
+        ceilings.length > 0 ? Math.min(...ceilings.map((c) => c.maxImageBytes)) : null,
       targets: allTargets,
     });
   },
@@ -378,6 +436,8 @@ export const upsertBridgeHealth = internalMutation({
     startedAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
     maxPayload: v.optional(v.union(v.number(), v.null())),
+    attachmentMaxBytes: v.optional(v.union(v.number(), v.null())),
+    attachmentMaxImageBytes: v.optional(v.union(v.number(), v.null())),
     targets: v.array(bridgeHealthTarget),
   },
   handler: async (ctx, args) => {
@@ -391,6 +451,8 @@ export const upsertBridgeHealth = internalMutation({
       startedAt: args.startedAt,
       lastError: args.lastError,
       maxPayload: args.maxPayload,
+      attachmentMaxBytes: args.attachmentMaxBytes,
+      attachmentMaxImageBytes: args.attachmentMaxImageBytes,
       targets: args.targets,
       checkedAt: now,
     };
@@ -593,6 +655,17 @@ export const maxPayloadInternal = internalQuery({
       }
     }
     return doc.maxPayload ?? null;
+  },
+});
+
+/** Internal (no auth): the gateway's per-attachment decoded-size ceilings for the routed
+ *  instance, or null when unknown. The dispatch fails an attachment over its ceiling
+ *  with a clear error instead of sending a frame the gateway then refuses whole. */
+export const attachmentCeilingsInternal = internalQuery({
+  args: { instanceName: v.optional(v.union(v.string(), v.null())) },
+  handler: async (ctx, { instanceName }): Promise<AttachmentCeilings | null> => {
+    const doc = await readDoc(ctx);
+    return doc === null ? null : resolveAttachmentCeilings(doc, instanceName);
   },
 });
 

@@ -73,6 +73,8 @@ import {
   base64ByteLength,
   base64FitsFrame,
   DEFAULT_GATEWAY_MAX_PAYLOAD,
+  exceedsAttachmentCeiling,
+  type AttachmentCeilings,
 } from "./lib/attachmentLimits";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { contentLocaleForInstance } from "./lib/serverLocale";
@@ -3088,9 +3090,20 @@ export const dispatch = internalAction({
             storageIds: rowAttachments.map((a) => a.storageId),
           })
         : rowAttachments.map(() => null);
+    // The gateway's own per-attachment ceilings (hello-ok policy.attachments), for the
+    // routed instance — asked only when the row carries a file. An inline file over
+    // its ceiling is refused by the gateway AFTER the frame was sent, the whole turn
+    // with it: it fails here instead, with the same clear code as the frame check.
+    const attachmentCeilings: AttachmentCeilings | null =
+      rowAttachments.length > 0
+        ? await ctx.runQuery(internal.bridgeHealth.attachmentCeilingsInternal, {
+            instanceName: routing.target.instanceName,
+          })
+        : null;
     const transports = planAttachmentTransports({
       inboundMediaMode,
       maxPayload,
+      attachmentMaxBytes: attachmentCeilings?.maxBytes ?? null,
       attachments: rowAttachments.map((a, i) => ({
         mimeType: a.mimeType,
         size: sizes[i] ?? null,
@@ -3122,6 +3135,13 @@ export const dispatch = internalAction({
         }
         const blob = await ctx.storage.get(a.storageId);
         if (blob === null) continue;
+        if (exceedsAttachmentCeiling(blob.size, a.mimeType || blob.type, attachmentCeilings)) {
+          console.error(
+            `bridge.dispatch: inbound attachment over the gateway's per-attachment ceiling (${blob.size} bytes) — failing send (not dropping)`,
+          );
+          attachmentTooLarge = true;
+          break;
+        }
         const next = base64Total + base64ByteLength(blob.size);
         if (!base64FitsFrame(next, maxPayload)) {
           console.error(
