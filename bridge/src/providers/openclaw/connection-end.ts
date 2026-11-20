@@ -49,6 +49,10 @@ export type ConnectionEndKind =
    *  the gateway sent, so we closed rather than grow without bound. Named on our
    *  side (the gateway's own version of this is `slow_consumer`). */
   | "inbound_overflow"
+  /** WE closed a socket that carried nothing for more than twice the gateway's tick
+   *  interval (inbound-silence.ts): half-open, or a gateway that hangs. The gateway
+   *  said nothing — this name is ours, like `inbound_overflow`. */
+  | "inbound_silence"
   /** Anything else — an ordinary drop with no explanation. */
   | "connection_closed";
 

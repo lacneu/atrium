@@ -9,7 +9,9 @@
 //     gateway issued it (fabricating ts yields an unverifiable signature).
 //   - signature is base64url, '=' padding stripped.
 //   - WS ping disabled (the gateway drives keepalive; a client ping it never
-//     answers tears the socket down).
+//     answers tears the socket down). The keepalive the gateway does drive is its
+//     `tick` event: a socket silent for twice the advertised interval is closed
+//     (inbound-silence.ts), as the gateway's own Control UI does.
 //   - request/response correlation by `id`; res frames are {type:res,id,ok,
 //     payload|error}. Non-res frames are pushed to an inbound queue.
 //   - clean close on gateway close/error/timeout: reject all pending requests,
@@ -36,6 +38,12 @@ import {
   type ShutdownNotice,
 } from "./connection-end.js";
 import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js";
+import {
+  SILENCE_CONFIRM_MS,
+  createSilenceWatch,
+  readTickIntervalMs,
+  type SilenceWatch,
+} from "./inbound-silence.js";
 import { redactToolPayloadText } from "../../vendor/upstream-redact/ui/src/lib/browser-redact.js";
 import { buildIdentityHeaders, type GatewayIdentity } from "./gateway-identity.js";
 import type { RosterEntry } from "./models-roster.js";
@@ -418,6 +426,61 @@ export class OpenClawConnection {
   private shutdownNotice: ShutdownNotice | null = null;
   /** Set when WE closed for inbound overflow — the close that follows is ours. */
   private overflowClosing = false;
+  /** Set when WE closed a silent socket (the watch below) — likewise ours. */
+  private silenceClosing = false;
+
+  // CONNECTION-SILENCE WATCH (inbound-silence.ts). The interval the gateway
+  // advertised in `hello-ok.policy.tickIntervalMs`, clamped; null when it advertised
+  // none, and then nothing watches this socket. Every inbound frame resets the watch,
+  // so only a socket that carries NOTHING — not even the gateway's `tick` — for twice
+  // the interval is closed, through the same end as any other close.
+  tickIntervalMs: number | null = null;
+  private silenceWatch: SilenceWatch | null = null;
+  private silenceTimer: NodeJS.Timeout | null = null;
+  private silenceConfirmTimer: NodeJS.Timeout | null = null;
+
+  private startSilenceWatch(policy: unknown): void {
+    this.tickIntervalMs = readTickIntervalMs(policy);
+    if (this.tickIntervalMs === null) return;
+    const intervalMs = this.tickIntervalMs;
+    const watch = createSilenceWatch(intervalMs, () => performance.now());
+    this.silenceWatch = watch;
+    this.silenceTimer = setInterval(() => {
+      if (this.closed || this.silenceConfirmTimer !== null || watch.check() === "alive") return;
+      // CONFIRMED before it is acted on: a timer runs before the I/O queued behind it,
+      // so after a pause of this process the verdict is reached while the gateway's
+      // frames are still unread in the socket. They are read before this fires.
+      this.silenceConfirmTimer = setTimeout(
+        () => {
+          this.silenceConfirmTimer = null;
+          if (this.closed || watch.check() === "alive") return;
+          console.warn(
+            `[openclaw] no inbound frame for more than ${watch.maxSilenceMs} ms (tick interval ${intervalMs} ms) — closing the silent connection`,
+          );
+          this.silenceClosing = true;
+          try {
+            // The code and reason the gateway's own clients close a silent socket with.
+            this.ws.close(4000, "tick timeout");
+          } catch {
+            /* the socket may already be gone; onClose still runs below */
+          }
+          this.onClose(new OpenClawError("OpenClaw Gateway connection closed"));
+        },
+        Math.min(intervalMs, SILENCE_CONFIRM_MS),
+      );
+      this.silenceConfirmTimer.unref?.();
+    }, intervalMs);
+    // Never the reason the process stays alive.
+    this.silenceTimer.unref?.();
+  }
+
+  private stopSilenceWatch(): void {
+    if (this.silenceTimer !== null) clearInterval(this.silenceTimer);
+    if (this.silenceConfirmTimer !== null) clearTimeout(this.silenceConfirmTimer);
+    this.silenceTimer = null;
+    this.silenceConfirmTimer = null;
+    this.silenceWatch = null;
+  }
   connectionEnd: ConnectionEnd | null = null;
   /**
    * Carry over a `shutdown` notice seen DURING the handshake.
@@ -722,6 +785,8 @@ export class OpenClawConnection {
             const features = (payload.features ?? {}) as Record<string, unknown>;
             protocolDrift.observeAnnouncedEvents(features.events);
             connection.attachReader();
+            // After the reader: the watch counts from the moment frames can be read.
+            connection.startSilenceWatch(policy);
             resolve(connection);
           };
 
@@ -892,6 +957,9 @@ export class OpenClawConnection {
       return;
     }
     frame = decoded;
+    // Proof of life for the silence watch: any event or response frame, the gateway's
+    // `tick` included — what its own clients count (protocol-client.ts handleMessage).
+    if (frame.type === "event" || frame.type === "res") this.silenceWatch?.noteInbound();
     // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
     // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).
@@ -1179,6 +1247,8 @@ export class OpenClawConnection {
       return;
     }
     this.closed = true;
+    // The one exit of every close: the watch never outlives its socket.
+    this.stopSilenceWatch();
     const closedListeners = [...this.closedListeners];
     this.closedListeners.clear();
     this.configChangedListeners.clear();
@@ -1199,11 +1269,19 @@ export class OpenClawConnection {
           restartExpectedMs: null,
           reasonPresent: true,
         }
-      : classifyConnectionEnd({
-          code: socket?.code ?? null,
-          reasonText: socket?.reasonText ?? null,
-          shutdown: this.shutdownNotice,
-        });
+      : // An ANNOUNCED end keeps its name even when the socket then went quiet instead
+        // of closing: the gateway said what it was doing.
+        this.silenceClosing && this.shutdownNotice === null
+        ? {
+            kind: "inbound_silence" as const,
+            restartExpectedMs: null,
+            reasonPresent: false,
+          }
+        : classifyConnectionEnd({
+            code: socket?.code ?? null,
+            reasonText: socket?.reasonText ?? null,
+            shutdown: this.shutdownNotice,
+          });
     // The name must survive EVERY exit, not just a turn already streaming: a close
     // landing while we await the `chat.send` ack rejects the pending request, and
     // that rejection is what the dispatch path classifies. Appending the kind to
