@@ -139,6 +139,37 @@ export function normalizeTarget(raw: unknown): {
   };
 }
 
+/** What an instance is RIGHT NOW, from its own row: its provider and its gateway URL
+ *  (null when it has no row — a single env-served OpenClaw deployment). */
+export interface CurrentGateway {
+  provider: string;
+  gatewayUrl: string | null;
+}
+
+/** The non-secret host[:port] of a gateway URL — the bridge's own `gatewayHostOf`
+ *  (bridge/src/core/health.ts), which is what a health target's `gatewayHost` holds. */
+export function gatewayHostOf(gatewayUrl: string): string {
+  try {
+    return new URL(gatewayUrl).host || gatewayUrl;
+  } catch {
+    return gatewayUrl;
+  }
+}
+
+/** Read what `instanceName` currently is. No row is an OpenClaw gateway, the convention
+ *  the dispatch itself uses (`instance?.kind ?? "openclaw"`). */
+async function currentGatewayOf(
+  ctx: QueryCtx,
+  instanceName: string | null | undefined,
+): Promise<CurrentGateway | null> {
+  if (instanceName == null) return null;
+  const row = await ctx.db
+    .query("instances")
+    .withIndex("by_name", (q) => q.eq("name", instanceName))
+    .first();
+  return { provider: row?.kind ?? "openclaw", gatewayUrl: row?.gatewayUrl ?? null };
+}
+
 /**
  * The gateway's per-attachment ceilings for ONE named instance, or null when they are
  * not known — and an unknown ceiling refuses nothing (lib/attachmentLimits.ts).
@@ -148,16 +179,30 @@ export function normalizeTarget(raw: unknown): {
  * never a minimum across instances — instance B's first send must not be refused on
  * instance A's limit, which would also prevent the send that makes B's known — and
  * nothing at all for a reader that names no instance.
+ *
+ * And never across a RECONFIGURATION: the snapshot is keyed by the instance's name,
+ * which survives the instance being pointed at another gateway or another provider. A
+ * stored ceiling applies only to what the instance IS NOW (`current`, read from its row
+ * by the caller): an OpenClaw gateway, at the host the ceiling was read from. A name
+ * that now designates a Hermes gateway, or another OpenClaw gateway, has no ceiling
+ * until its own is read.
  */
 export function resolveAttachmentCeilings(
   doc: Doc<"bridgeHealth">,
   instanceName: string | null | undefined,
   now: number,
+  current: CurrentGateway | null | undefined,
 ): AttachmentCeilings | null {
   if (instanceName == null || !doc.reachable || now - doc.checkedAt > STALE_MS) return null;
-  const own = doc.targets
-    .filter((t) => t.instanceName === instanceName)
-    .map((t) => attachmentCeilingsOf(t));
+  if (current == null || current.provider !== "openclaw") return null;
+  const mine = doc.targets.filter((t) => t.instanceName === instanceName);
+  if (
+    current.gatewayUrl !== null &&
+    mine.some((t) => t.gatewayHost !== gatewayHostOf(current.gatewayUrl as string))
+  ) {
+    return null;
+  }
+  const own = mine.map((t) => attachmentCeilingsOf(t));
   const first = own[0];
   if (first === undefined || first === null) return null;
   const agree = own.every(
@@ -173,6 +218,7 @@ export function resolveInboundLimits(
   doc: Doc<"bridgeHealth"> | null,
   instanceName: string | null | undefined,
   now: number,
+  current: CurrentGateway | null | undefined,
 ): { maxPayload: number | null; attachmentCeilings: AttachmentCeilings | null } {
   if (doc === null) return { maxPayload: null, attachmentCeilings: null };
   const own =
@@ -183,7 +229,7 @@ export function resolveInboundLimits(
       : undefined;
   return {
     maxPayload: own ?? doc.maxPayload ?? null,
-    attachmentCeilings: resolveAttachmentCeilings(doc, instanceName, now),
+    attachmentCeilings: resolveAttachmentCeilings(doc, instanceName, now, current),
   };
 }
 
@@ -270,6 +316,10 @@ export function computeAvailability(
   // it cannot deadlock — a legit per-instance lockout. null/undefined = unknown
   // (no discovery row yet) → fail OPEN.
   instanceReachable?: boolean | null,
+  // What the instance IS NOW (its row): the per-attachment ceilings of the snapshot are
+  // applied only to an OpenClaw gateway at the host they were read from. Absent ⇒ no
+  // ceiling (the frame cap alone).
+  currentGateway?: CurrentGateway | null,
 ): Availability {
   if (doc === null)
     return {
@@ -320,7 +370,7 @@ export function computeAvailability(
       ? (scoped.find((t) => typeof t.maxPayload === "number")?.maxPayload ??
         docMaxPayload)
       : docMaxPayload;
-  const ceilings = resolveAttachmentCeilings(doc, instanceName, now);
+  const ceilings = resolveAttachmentCeilings(doc, instanceName, now, currentGateway);
   const frameCap =
     scopedMaxPayload !== null ? maxRawInboundBytes(scopedMaxPayload) : null;
   const fileCeiling = ceilings?.maxBytes ?? null;
@@ -626,6 +676,7 @@ export const getBridgeAvailability = query({
       agentId,
       canonical,
       instanceReachable,
+      await currentGatewayOf(ctx, instanceName),
     );
     if (chatId) return availability;
     // GLOBAL view (the settings-tab badge): surface how many polled instances
@@ -654,7 +705,12 @@ export const inboundLimitsInternal = internalQuery({
     ctx,
     { instanceName },
   ): Promise<{ maxPayload: number | null; attachmentCeilings: AttachmentCeilings | null }> =>
-    resolveInboundLimits(await readDoc(ctx), instanceName, Date.now()),
+    resolveInboundLimits(
+      await readDoc(ctx),
+      instanceName,
+      Date.now(),
+      await currentGatewayOf(ctx, instanceName),
+    ),
 });
 
 /**
@@ -674,7 +730,10 @@ export const bridgeStatusInternal = internalQuery({
     const isSole = instances.length === 1;
     const rows = [];
     for (const inst of instances) {
-      const avail = computeAvailability(doc, now, inst.name);
+      const avail = computeAvailability(doc, now, inst.name, undefined, undefined, undefined, {
+        provider: inst.kind ?? "openclaw",
+        gatewayUrl: inst.gatewayUrl,
+      });
       // A bridge is reachable for this instance iff it has its own bridgeUrl, or is the
       // env-served / sole instance — the same scoped routing dispatch + sync use.
       const bridgeUrlConfigured =

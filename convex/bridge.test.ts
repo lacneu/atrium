@@ -1339,6 +1339,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     files: Array<{ bytes: number[]; filename: string; mimeType: string }>,
     maxPayload?: number,
     ceilings?: { attachmentMaxBytes: number; attachmentMaxImageBytes: number },
+    kind?: "openclaw" | "hermes",
   ) {
     return await t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
@@ -1355,6 +1356,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
         name: "primary",
         gatewayUrl: "ws://gw:18790",
         bridgeUrl: "http://b:9",
+        ...(kind ? { kind } : {}),
         config: { inboundMediaMode: "shared-fs" },
       });
       const chatId = await ctx.db.insert("chats", {
@@ -1380,7 +1382,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
                   instanceName: "primary",
                   canonical: "u",
                   agentId: "alice",
-                  gatewayHost: "gw",
+                  gatewayHost: "gw:18790", // the instance row's gateway
                   state: "connected",
                   lastOkAt: now,
                   lastErrorCode: null,
@@ -1411,6 +1413,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     files: Array<{ bytes: number[]; filename: string; mimeType: string }>,
     maxPayload?: number,
     ceilings?: { attachmentMaxBytes: number; attachmentMaxImageBytes: number },
+    kind?: "openclaw" | "hermes",
   ) {
     const t = convexTest(schema, modules);
     const prevSecret = process.env.BRIDGE_SHARED_SECRET;
@@ -1419,7 +1422,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     const origFetch = globalThis.fetch;
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     try {
-      const outboxId = await seedSharedFsAttachments(t, files, maxPayload, ceilings);
+      const outboxId = await seedSharedFsAttachments(t, files, maxPayload, ceilings, kind);
       await t.action(internal.bridge.dispatch, { outboxId });
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
@@ -1479,6 +1482,19 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     );
     expect(body.referenceAttachments.map((a) => a.fileName)).toEqual(["big.pdf"]);
     expect(body.attachments?.map((a) => a.fileName)).toEqual(["small.txt"]);
+  });
+
+  test("shared-fs: that by-reference decision is NOT taken on a ceiling the instance has outlived (now Hermes, same name)", async () => {
+    // The snapshot still holds the OpenClaw gateway's 8-byte ceiling under the name;
+    // the instance is Hermes now. The 9-byte file rides as the frame alone decides.
+    const body = await dispatchSharedFs(
+      [{ bytes: [1, 2, 3, 4, 5, 6, 7, 8, 9], filename: "big.pdf", mimeType: "application/pdf" }],
+      26214400,
+      { attachmentMaxBytes: 8, attachmentMaxImageBytes: 8 },
+      "hermes",
+    );
+    expect(body.referenceAttachments).toEqual([]);
+    expect(body.attachments?.map((a) => a.fileName)).toEqual(["big.pdf"]);
   });
 
   test("shared-fs: an undecodable image (svg) stays a REFERENCE however small — the gateway would hand it to the model as an image", async () => {
@@ -2038,6 +2054,8 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
     onInstance?: string;
     /** Age of the health snapshot (default: fresh). */
     snapshotAgeMs?: number;
+    /** The routed instance's own row, as it is NOW (default: none — env-served OpenClaw). */
+    instanceRow?: { kind?: "openclaw" | "hermes"; gatewayUrl: string };
   }) {
     const t = convexTest(schema, modules);
     const prevUrl = process.env.BRIDGE_URL;
@@ -2059,6 +2077,7 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
           source: "manual",
           createdAt: now,
         });
+        if (opts.instanceRow) await ctx.db.insert("instances", { name: "primary", ...opts.instanceRow });
         const chatId = await ctx.db.insert("chats", { userId, archived: false, updatedAt: now });
         const messageId = await ctx.db.insert("messages", {
           chatId,
@@ -2176,6 +2195,34 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
       ceilings: { attachmentMaxBytes: 1000, attachmentMaxImageBytes: 5000 },
     });
     expect(r).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("RECONFIGURED under the same name, OpenClaw → Hermes: the stored ceiling is not applied to the Hermes send", async () => {
+    // The snapshot still carries the OpenClaw gateway's ceilings under "primary" (host
+    // "gw"); the instance row now says Hermes. A file over that ceiling is POSTed.
+    const hermes = { kind: "hermes" as const, gatewayUrl: "http://gw" };
+    const pdf = await dispatchOne({ bytes: 5001, mimeType: "application/pdf", ceilings: CEILINGS, instanceRow: hermes });
+    expect(pdf).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const image = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: CEILINGS, instanceRow: hermes });
+    expect(image).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    // Control: the same row as OpenClaw, same host — the ceiling applies.
+    const openclaw = await dispatchOne({
+      bytes: 5001,
+      mimeType: "application/pdf",
+      ceilings: CEILINGS,
+      instanceRow: { kind: "openclaw", gatewayUrl: "ws://gw" },
+    });
+    expect(openclaw).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("RE-POINTED at another OpenClaw gateway under the same name: the old host's ceiling is not applied", async () => {
+    const r = await dispatchOne({
+      bytes: 5001,
+      mimeType: "application/pdf",
+      ceilings: CEILINGS,
+      instanceRow: { kind: "openclaw", gatewayUrl: "ws://another-gw:18789" },
+    });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
   });
 
   test("a stale snapshot vouches for nothing: the file is sent, the gateway decides", async () => {

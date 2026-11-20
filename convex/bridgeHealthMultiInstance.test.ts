@@ -139,7 +139,7 @@ describe("pollBridgeHealth — multi-instance aggregation (Model M)", () => {
       for (const name of ["olivier", "jerome", "hermes"]) {
         await ctx.db.insert("instances", {
           name,
-          gatewayUrl: `ws://g-${name}`,
+          gatewayUrl: `ws://gw-${name}`, // the host each bridge reports for its target
           bridgeUrl: `http://b-${name}:8787`,
         });
       }
