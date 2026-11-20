@@ -23,7 +23,6 @@
 import type { SessionFillSource } from "./context-budget.js";
 import {
   EVENT_GATEWAY_SEQ_REPORT,
-  EVENT_MODEL_FALLBACK,
   EVENT_REASONING,
   EVENT_WIDGET,
   type NormalizedEvent,
@@ -689,61 +688,50 @@ export class TurnSink {
   }
 
   /**
-   * A model fallback the gateway stated for a run that is not the live turn's (see
-   * core/events EVENT_MODEL_FALLBACK) — typically a run that just ended: the frame
-   * follows its terminal. Written on the bubble of THAT run: `messageId` when this
-   * bridge knows it, otherwise Convex finds the run's bubble, and writes nothing when
-   * the run left none. It opens no turn and changes no bubble's state.
+   * A model fallback the gateway stated for a run -> the marker on that run's bubble:
+   * `messageId` when the caller knows it, otherwise Convex finds the run's bubble.
+   * Whether a bubble was marked (false: the run has none yet, or the write failed). It
+   * opens no turn and changes no bubble's state; a marker never fails a turn.
    */
-  async noteSettledRunFallback(
-    fallback: { runId: string; state: string; model: string; selected?: string },
+  async writeRunFallback(
+    fallback: { runId: string; state: "active" | "cleared"; model: string; selected?: string },
     messageId: string | null,
   ): Promise<boolean> {
-    return await this.writeModelFallback(fallback, messageId);
-  }
-
-  /** Whether a bubble was marked (false: the run has none yet, or the write failed). */
-  private async writeModelFallback(
-    fallback: { runId?: unknown; state?: unknown; model?: unknown; selected?: unknown },
-    messageId: string | null,
-  ): Promise<boolean> {
-    const runId = asString(fallback.runId);
-    const model = asString(fallback.model);
-    const state = fallback.state === "cleared" ? "cleared" : fallback.state === "active" ? "active" : null;
-    if (runId === "" || model === "" || state === null) return false;
-    const selected = asString(fallback.selected);
     try {
       const marked = await this.writer.noteModelFallback?.(this.chatId, {
-        runId,
+        runId: fallback.runId,
         messageId,
         sessionKey: this.sessionKey ?? null,
-        state,
-        model,
-        ...(state === "active" && selected !== "" ? { selected } : {}),
+        state: fallback.state,
+        model: fallback.model,
+        ...(fallback.state === "active" && fallback.selected !== undefined && fallback.selected !== ""
+          ? { selected: fallback.selected }
+          : {}),
       });
       return typeof marked === "string";
     } catch (e) {
-      // A marker never fails the turn it describes.
       console.error("[sink] model fallback not recorded (non-fatal):", errForLog(e));
       return false;
     }
   }
 
   /**
-   * A status notice the gateway sent after a settled run's answer (see
-   * ConvexWriter.noteGatewayNotice): a notice line on that run's bubble. Never the
-   * answer's text, never a bubble of its own; a run with no bubble shows none.
+   * A status notice the gateway sent beside a run's answer (see
+   * ConvexWriter.noteGatewayNotice) -> a notice line on that run's bubble, addressed
+   * like `writeRunFallback`. Never the answer's text, never a bubble of its own.
    */
-  async noteSettledRunNotice(runId: string, messageId: string | null, text: string): Promise<void> {
+  async writeRunNotice(runId: string, messageId: string | null, text: string): Promise<boolean> {
     try {
-      await this.writer.noteGatewayNotice?.(this.chatId, {
+      const noticed = await this.writer.noteGatewayNotice?.(this.chatId, {
         runId,
         messageId,
         sessionKey: this.sessionKey ?? null,
         text,
       });
+      return typeof noticed === "string";
     } catch (e) {
       console.error("[sink] gateway notice not recorded (non-fatal):", errForLog(e));
+      return false;
     }
   }
 
@@ -1846,11 +1834,6 @@ export class TurnSink {
           // turn delivered none -> record a SOC2-safe diagnostic so the gap (missing
           // MEDIA:/mediaUrls delivery directive) is visible. No content, no part.
           await this.writer.noteMediaUndelivered(messageId, this.chatId);
-          break;
-        }
-        case EVENT_MODEL_FALLBACK: {
-          // Stated for a run of THIS turn while its bubble is open: on that bubble.
-          await this.writeModelFallback(event as Record<string, unknown>, messageId);
           break;
         }
         case EVENT_GATEWAY_SEQ_REPORT: {

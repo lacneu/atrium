@@ -748,7 +748,7 @@ export interface ConvexWriter {
     },
   ): Promise<void>;
   /** A run was answered by another model than the one selected, or the session is back
-   *  on its selected one (see core/events EVENT_MODEL_FALLBACK) -> a marker on that
+   *  on its selected one (see providers/openclaw/model-fallback.ts) -> a marker on that
    *  run's bubble. `messageId` is the bubble when the bridge knows it; null lets Convex
    *  find the run's bubble (it never creates one). Model names only, never the
    *  provider's reasons. Resolves to the bubble that was marked, or null when the run

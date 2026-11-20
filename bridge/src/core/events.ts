@@ -112,13 +112,6 @@ export const EVENT_CONTEXT_COMPACTION = "context.compaction";
 //     runId: string|null }
 export const EVENT_GATEWAY_SEQ_REPORT = "gateway.seq_report";
 
-// {state, model, selected?, runId} — the run was answered by another model than the one
-// selected, or the session is back on its selected one (see
-// providers/openclaw/model-fallback.ts). A fact about a RUN: the gateway states it after
-// the run's work, so it may follow the turn's terminal. The sink writes it on the bubble
-// of that run and changes nothing else — it is never a reason to open or close a turn.
-export const EVENT_MODEL_FALLBACK = "model.fallback";
-
 /**
  * A normalized event. Intentionally permissive ({ type } + arbitrary fields):
  * the producer (a provider normalizer) builds well-formed literals and the

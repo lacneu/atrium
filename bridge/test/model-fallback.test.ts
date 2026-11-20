@@ -228,6 +228,8 @@ type Noted = {
 class FallbackWriter implements ConvexWriter {
   readonly noted: Noted[] = [];
   readonly marked: (string | null)[] = [];
+  /** What actually landed on a bubble, in order (an attempt that found none is absent). */
+  readonly effects: string[] = [];
   readonly notices: { runId: string; messageId: string | null; text: string }[] = [];
   readonly opened: (string | null)[] = [];
   readonly finals: string[] = [];
@@ -253,10 +255,17 @@ class FallbackWriter implements ConvexWriter {
   }
   async noteMediaUndelivered(): Promise<void> {}
   async noteFrameGap(): Promise<void> {}
+  /** Writes that fail before any succeeds (a Convex write that timed out). */
+  failWrites = 0;
   async noteModelFallback(_chatId: string, data: Noted): Promise<string | null> {
     this.noted.push({ ...data });
+    if (this.failWrites > 0) {
+      this.failWrites--;
+      throw new Error("ingest timed out");
+    }
     const bubble = data.messageId ?? this.bubbleOfRun.get(data.runId) ?? null;
     this.marked.push(bubble);
+    if (bubble !== null) this.effects.push(`fallback ${data.state} ${data.model} → ${bubble}`);
     return bubble;
   }
   async noteGatewayNotice(
@@ -264,7 +273,9 @@ class FallbackWriter implements ConvexWriter {
     data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
   ): Promise<string | null> {
     this.notices.push({ runId: data.runId, messageId: data.messageId, text: data.text });
-    return data.messageId ?? this.bubbleOfRun.get(data.runId) ?? null;
+    const bubble = data.messageId ?? this.bubbleOfRun.get(data.runId) ?? null;
+    if (bubble !== null) this.effects.push(`notice ${data.text} → ${bubble}`);
+    return bubble;
   }
   async appendLateFinal(args: { messageId: string | null; text: string }): Promise<string | null> {
     this.lateFinals.push(args.text);
@@ -653,6 +664,341 @@ describe("the gateway's status notice after the answer", () => {
     await manager.feed(noticeFinal([{ text: NOTICE_TEXT, notice: false }]), 1_020);
     expect(writer.notices).toStrictEqual([]);
     expect(writer.lateFinals).toStrictEqual([NOTICE_TEXT]);
+  });
+});
+
+/**
+ * ONE PATH for what the gateway states about a run. The same frames must give the same
+ * writes, in the same order, whether they arrive during the run's turn, before the
+ * `chat.send` ACK (while the answer waits in the pre-ACK buffer), or after the terminal.
+ */
+describe("facts about a run: one ordered path, on either side of the ACK", () => {
+  const SK2 = "agent:alice:atrium:chat:u-repro:turn-nx7cv8n6dvrfzkasc5bebdffnx8jkzn9";
+  const R = "webchat-1f2908ac9be371f1559266ad9d7e757a0086b87cf20f4d91eae7b5201f1e54d4";
+  const NOTICE_TEXT = "↪️ Model Fallback: openai/gpt-6.1-sol (selected openai/gpt-5.5; model not found)";
+  const USAGE = "Usage: 1230 in / 10 out";
+  const on = (sk: string, runId: string) => ({
+    delta: (text: string) => ({
+      type: "event",
+      event: "chat",
+      payload: { runId, sessionKey: sk, state: "delta", message: { role: "assistant", content: [{ type: "text", text }] } },
+    }),
+    answer: (text: string) => ({
+      type: "event",
+      event: "chat",
+      payload: { runId, sessionKey: sk, state: "final", message: { role: "assistant", content: [{ type: "text", text }] } },
+    }),
+    notice: (...texts: string[]) => ({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId,
+        sessionKey: sk,
+        seq: 2,
+        state: "final",
+        message: {
+          role: "assistant",
+          content: texts.map((text) => ({ type: "text", text, openclawStatusNotice: true })),
+          text: texts.join("\n"),
+        },
+      },
+    }),
+    fallback: (selected: string, active: string) => ({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId,
+        sessionKey: sk,
+        stream: "lifecycle",
+        data: {
+          phase: "fallback",
+          selectedProvider: "openai",
+          selectedModel: selected,
+          activeProvider: "openai",
+          activeModel: active,
+          reasonSummary: "<text>",
+        },
+        seq: 1,
+      },
+    }),
+    cleared: (selected: string) => ({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId,
+        sessionKey: sk,
+        stream: "lifecycle",
+        data: {
+          phase: "fallback_cleared",
+          selectedProvider: "openai",
+          selectedModel: selected,
+          activeProvider: "openai",
+          activeModel: selected,
+        },
+        seq: 1,
+      },
+    }),
+    reroute: (from: string, to: string) => ({
+      type: "event",
+      event: "agent",
+      payload: { runId, sessionKey: sk, stream: "fallback", data: { fromModel: from, toModel: to } },
+    }),
+  });
+  const f = on(SK2, R);
+
+  async function quiet(writer: FallbackWriter): Promise<void> {
+    let seen = -1;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      const now = writer.effects.length + writer.finals.length + writer.noted.length + writer.notices.length;
+      if (now === seen && i > 4) return;
+      seen = now;
+    }
+  }
+
+  /** Feed `before` ahead of the ACK and `after` once the turn has begun. */
+  async function play(sk: string, runId: string, before: unknown[], after: unknown[]): Promise<FallbackWriter> {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-facts", sk, writer);
+    let now = 1_000;
+    manager.armReplayBuffer();
+    for (const frame of before) await manager.feed(frame, (now += 10));
+    await manager.beginTurn((now += 10), runId, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    for (const frame of after) await manager.feed(frame, (now += 10));
+    await quiet(writer);
+    return writer;
+  }
+
+  it("a final answer then a notice, both before the ACK: the notice is not lost", async () => {
+    // The review's sequence: both sat in the pre-ACK buffer and the replay read the
+    // notice as a second final of a finished turn.
+    const writer = await play(SK2, R, [f.answer("BENCH_FALLBACK_OK"), f.notice(USAGE)], []);
+    expect(writer.finals).toStrictEqual(["msg_1:complete"]);
+    expect(writer.effects).toStrictEqual([`notice ${USAGE} → msg_1`]);
+    expect(writer.lateFinals).toStrictEqual([]);
+    expect(writer.opened).toStrictEqual([R]);
+  });
+
+  it("two reroutes separated by the ACK: the bubble ends on the LAST one", async () => {
+    // The review's sequence: A waited, B was written at once, and A was written over B
+    // when the turn closed.
+    const writer = await play(
+      SK2,
+      R,
+      [f.reroute("gpt-6.1", "model-A")],
+      [f.delta("Bonjour"), f.reroute("gpt-6.1", "model-B"), f.answer("Bonjour.")],
+    );
+    expect(writer.effects).toStrictEqual(["fallback active model-A → msg_1", "fallback active model-B → msg_1"]);
+  });
+
+  it("a fallback then its clearing across the ACK: cleared is what stands", async () => {
+    const writer = await play(
+      SK2,
+      R,
+      [f.fallback("gpt-5.5", "gpt-6.1-sol")],
+      [f.delta("Bonjour"), f.cleared("gpt-5.5"), f.answer("Bonjour.")],
+    );
+    expect(writer.effects).toStrictEqual([
+      "fallback active openai/gpt-6.1-sol → msg_1",
+      "fallback cleared openai/gpt-5.5 → msg_1",
+    ]);
+  });
+
+  it("answer, fallback, notice before the ACK: the fallback's own notice is left to the marker", async () => {
+    const writer = await play(
+      SK2,
+      R,
+      [f.answer("BENCH_FALLBACK_OK"), f.fallback("gpt-5.5", "gpt-6.1-sol"), f.notice(NOTICE_TEXT, USAGE)],
+      [],
+    );
+    expect(writer.effects).toStrictEqual([
+      "fallback active openai/gpt-6.1-sol → msg_1",
+      `notice ${USAGE} → msg_1`,
+    ]);
+  });
+
+  it("answer, notice, fallback before the ACK: a notice that came first is not the fallback's", async () => {
+    const writer = await play(
+      SK2,
+      R,
+      [f.answer("BENCH_FALLBACK_OK"), f.notice(USAGE), f.fallback("gpt-5.5", "gpt-6.1-sol")],
+      [],
+    );
+    expect(writer.effects).toStrictEqual([
+      `notice ${USAGE} → msg_1`,
+      "fallback active openai/gpt-6.1-sol → msg_1",
+    ]);
+  });
+
+  it("a write that fails keeps its place: the next fact of the run is not written ahead of it", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-facts", SK2, writer);
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      await manager.beginTurn(1_000, R, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+      // Both wait for the bubble; the first write, once it opens, fails.
+      await manager.feed(f.reroute("m", "model-A"), 1_010);
+      await manager.feed(f.reroute("m", "model-B"), 1_020);
+      writer.failWrites = 1;
+      await manager.feed(f.delta("Bonjour"), 1_030);
+      expect(writer.effects, "B is not written while A still waits").toStrictEqual([]);
+      await manager.feed(f.delta("Bonjour à tous"), 1_040);
+      await quiet(writer);
+      expect(writer.effects).toStrictEqual(["fallback active model-A → msg_1", "fallback active model-B → msg_1"]);
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  it("a fact that waited for the bubble lands as soon as the bubble opens, without another frame", async () => {
+    // The turn is still running in both cases: nothing later would carry the fact.
+    const openedByReplay = await play(SK2, R, [f.reroute("m", "model-A"), f.delta("Bonjour")], []);
+    expect(openedByReplay.effects).toStrictEqual(["fallback active model-A → msg_1"]);
+    expect(openedByReplay.finals).toStrictEqual([]);
+    const openedLive = await play(SK2, R, [f.reroute("m", "model-A")], [f.delta("Bonjour")]);
+    expect(openedLive.effects).toStrictEqual(["fallback active model-A → msg_1"]);
+  });
+
+  it("a notice after a turn that ended WITHOUT a final (aborted) is still beside it, not a late answer", async () => {
+    const aborted = { type: "event", event: "chat", payload: { runId: R, sessionKey: SK2, state: "aborted" } };
+    const again = new FallbackWriter();
+    const m2 = new RunManager("chat-facts", SK2, again);
+    await m2.beginTurn(1_000, R, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await m2.feed(f.delta("Bonjour"), 1_010);
+    await m2.feed(aborted, 1_020);
+    await quiet(again);
+    await m2.feed(f.notice(USAGE), 1_030);
+    await quiet(again);
+    expect(again.effects).toStrictEqual([`notice ${USAGE} → msg_1`]);
+    expect(again.lateFinals).toStrictEqual([]);
+  });
+
+  it("a notice-only final that is the run's FIRST final is its reply, on either side", async () => {
+    // A command's answer: the notice IS the terminal reply (upstream leaves a message
+    // made only of notices unchanged).
+    for (const [before, after] of [
+      [[f.notice("Model set for this session.")], []],
+      [[], [f.notice("Model set for this session.")]],
+    ]) {
+      const writer = await play(SK2, R, before!, after!);
+      expect(writer.effects).toStrictEqual([]);
+      expect(writer.finals).toStrictEqual(["msg_1:complete"]);
+    }
+  });
+
+  // The same frames, cut at every point between "before the ACK" and "after it", must
+  // write the same things in the same order as when all of them arrive during the turn.
+  const captured0711 = on(SK, RUN);
+  const SEQUENCES: { name: string; sk: string; runId: string; frames: unknown[] }[] = [
+    {
+      name: "captured 2026-11-20 (seq 137-139): answer, fallback, its notice",
+      sk: SK2,
+      runId: R,
+      frames: [f.answer("BENCH_FALLBACK_OK"), f.fallback("gpt-5.5", "gpt-6.1-sol"), f.notice(NOTICE_TEXT)],
+    },
+    {
+      name: "captured 2026-11-07 (seq 154-155): answer, fallback",
+      sk: SK,
+      runId: RUN,
+      frames: [captured0711.answer("BENCH_FALLBACK_OK"), FALLBACK],
+    },
+    {
+      name: "captured 2026-11-07, next run (seq 20-21): answer, fallback cleared",
+      sk: SK,
+      runId: NEXT_RUN,
+      frames: [on(SK, NEXT_RUN).answer("REPLAY_OK"), CLEARED],
+    },
+    { name: "answer, usage notice", sk: SK2, runId: R, frames: [f.answer("Bonjour."), f.notice(USAGE)] },
+    {
+      name: "text, reroute A, reroute B, answer",
+      sk: SK2,
+      runId: R,
+      frames: [f.delta("Bon"), f.reroute("m", "model-A"), f.reroute("m", "model-B"), f.answer("Bonjour.")],
+    },
+    {
+      name: "fallback, text, cleared, answer, notice",
+      sk: SK2,
+      runId: R,
+      frames: [
+        f.fallback("gpt-5.5", "gpt-6.1-sol"),
+        f.delta("Bon"),
+        f.cleared("gpt-5.5"),
+        f.answer("Bonjour."),
+        f.notice("Diagnostics: ok", USAGE),
+      ],
+    },
+    {
+      name: "answer, notice, fallback, second notice",
+      sk: SK2,
+      runId: R,
+      frames: [f.answer("Bonjour."), f.notice(USAGE), f.fallback("gpt-5.5", "gpt-6.1-sol"), f.notice(NOTICE_TEXT, "Diagnostics: ok")],
+    },
+  ];
+  it.each(SEQUENCES)("replay equivalence — $name", async ({ sk, runId, frames }) => {
+    const live = await play(sk, runId, [], frames);
+    expect(live.effects.length, "the sequence writes something").toBeGreaterThan(0);
+    for (let cut = 1; cut <= frames.length; cut++) {
+      const split = await play(sk, runId, frames.slice(0, cut), frames.slice(cut));
+      expect(split.effects, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.effects);
+      expect(split.finals, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.finals);
+      expect(split.lateFinals).toStrictEqual([]);
+      expect(split.opened).toStrictEqual(live.opened);
+    }
+  });
+
+  it("the queue is bounded per run, oldest first, and says what it drops", async () => {
+    const warned: string[] = [];
+    const real = console.warn;
+    console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(" "));
+    try {
+      const before: unknown[] = [];
+      for (let i = 0; i < 20; i++) before.push(f.reroute("m", `model-${i}`));
+      const writer = await play(SK2, R, before, [f.answer("Bonjour.")]);
+      // 16 kept: the four oldest are gone, the order of the rest is theirs.
+      expect(writer.effects).toHaveLength(16);
+      expect(writer.effects[0]).toBe("fallback active model-4 → msg_1");
+      expect(writer.effects.at(-1)).toBe("fallback active model-19 → msg_1");
+      expect(warned.some((w) => w.includes("[run-facts]") && w.includes("dropped, oldest first"))).toBe(true);
+    } finally {
+      console.warn = real;
+    }
+  });
+
+  it("runs waiting for a bubble are bounded too: the oldest run's facts are dropped, and said", async () => {
+    const warned: string[] = [];
+    const real = console.warn;
+    console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(" "));
+    try {
+      const writer = new FallbackWriter();
+      const manager = new RunManager("chat-facts", SK2, writer);
+      for (let i = 0; i < 40; i++) {
+        await manager.feed(on(SK2, `webchat-orphan-${i}`).reroute("m", `model-${i}`), 1_000 + i);
+      }
+      expect(warned.filter((w) => w.includes("dropped with their run"))).toHaveLength(8);
+      // A kept run still gets its fact when its turn comes; a dropped one does not.
+      await manager.beginTurn(2_000, "webchat-orphan-39", { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+      await manager.feed(on(SK2, "webchat-orphan-39").answer("ok"), 2_010);
+      await quiet(writer);
+      expect(writer.effects).toStrictEqual(["fallback active model-39 → msg_1"]);
+    } finally {
+      console.warn = real;
+    }
+  });
+
+  it("a run that settles without a bubble drops its facts, and says so", async () => {
+    const warned: string[] = [];
+    const real = console.warn;
+    console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(" "));
+    try {
+      const writer = await play(SK2, R, [f.reroute("m", "model-A")], [
+        { type: "event", event: "chat", payload: { runId: R, sessionKey: SK2, state: "final" } },
+      ]);
+      expect(writer.effects).toStrictEqual([]);
+      expect(warned.some((w) => w.includes("the run left no bubble"))).toBe(true);
+    } finally {
+      console.warn = real;
+    }
   });
 });
 

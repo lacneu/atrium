@@ -25,12 +25,7 @@ import {
   isTalkConsultRunId,
 } from "../../core/talk-consult.js";
 import type { ConvexWriter } from "../../convex-writer.js";
-import {
-  EVENT_MODEL_FALLBACK,
-  EVENT_SESSION_OVERFULL,
-  stampReceived,
-  type BridgeEvent,
-} from "../../core/events.js";
+import { EVENT_SESSION_OVERFULL, type BridgeEvent } from "../../core/events.js";
 import { modelFallbackFromFrame, type ModelFallback } from "./model-fallback.js";
 import { sanitizeText } from "./sanitize.js";
 import {
@@ -54,6 +49,9 @@ import { errForLog } from "../../core/log-safe-error.js";
 const MAX_PENDING_FRAMES = 1000;
 /** A status notice is one line of the gateway's own text; anything longer is cut. */
 const MAX_GATEWAY_NOTICE_CHARS = 2000;
+
+/** Something the gateway states about a run that is not the run's content. */
+type RunFact = { kind: "fallback"; fallback: ModelFallback } | { kind: "notice"; text: string };
 // Cap on the ANNOUNCE stash: it can hold a WHOLE late report streamed during a
 // long user turn (deltas + tools), so it is much larger than the pre-ack cap.
 // Overflow is logged loudly (a truncated report must never be silent) — the
@@ -478,7 +476,11 @@ export class RunManager {
         this.settledRuns.delete(id);
         this.settledRuns.set(id, record);
       }
-      this.flushHeldFallbacks(this.normalizer.ownRunIds, record.messageId);
+      // The turn is over: what its runs still have queued goes on the bubble it left
+      // (or on the one Convex finds for the run) — never awaited by the turn.
+      for (const id of this.normalizer.ownRunIds) {
+        if (this.runFacts.has(id)) void this.drainRunFacts(id, true);
+      }
       while (this.settledRuns.size > RunManager.MAX_SETTLED_RUNS) {
         this.settledRuns.delete(this.settledRuns.keys().next().value as string);
       }
@@ -921,6 +923,9 @@ export class RunManager {
     // Disarm: between turns (sink inactive, NOT armed) feed() drops non-provenance
     // frames, so a late/background frame can't accumulate and replay later.
     this.replayArmed = false;
+    // Facts about this run that arrived before the ACK waited for its bubble: the
+    // replay may just have opened it (a turn it also finished drains at its settle).
+    await this.drainLiveRunFacts();
     // The replay itself can FINALIZE the turn (a whole response raced the ack):
     // deliver any announce stashed during the send window now — no later
     // feed/tick is guaranteed once the loop goes idle (codex P2). No-op while
@@ -1173,56 +1178,43 @@ export class RunManager {
     // A frame of a run with a lane (closing or closed by the transcript): onto its lane,
     // decided SYNCHRONOUSLY and never awaited here — a frame of any other run takes no
     // extra await, so the feed's single ordered application path (G-29) is untouched.
-    // A model fallback is a fact about a RUN, stated after its work (see
-    // model-fallback.ts): read here, before the lanes and the turn's pipeline, so it
-    // can neither be adopted as a turn's content nor open or close one.
-    const fallback = modelFallbackFromFrame(frame, this.sessionKey);
-    if (fallback !== null) {
-      await this.noteModelFallback(fallback, now);
+    // FACTS ABOUT A RUN that are not a turn's content (a model fallback, the gateway's
+    // status notices) are taken HERE, at arrival — before the lanes, the pre-ACK buffer
+    // and the turn's pipeline — so the same frame is read the same way whether it comes
+    // during its turn, before the ACK or after the terminal, and can neither become a
+    // turn's content nor open or close one.
+    const facts = this.runFactsFor(frame);
+    if (facts !== null) {
+      await this.noteRunFacts(facts.runId, facts.facts);
       return;
     }
     if (this.enqueueOnLane(frame, now)) return;
     await this.feedPipeline(frame, now);
   }
 
-  /**
-   * Put a run's model fallback on that run's bubble.
-   *
-   * While the run is the live turn's, through the sink: the bubble may not be open yet,
-   * and the sink holds the marker until it is. Otherwise — the usual case, the frame
-   * follows the run's terminal — on the bubble this bridge remembers for the run (its
-   * lane's, or the one its turn settled), and when it remembers none Convex looks the
-   * run's bubble up. A run that left no bubble gets no marker.
-   */
-  private async noteModelFallback(fallback: ModelFallback, now: number): Promise<void> {
-    RunManager.remember(this.fallbackStatedRuns, fallback.runId, RunManager.MAX_HELD_FALLBACKS);
-    const live = (): boolean => this.sink.active && this.normalizer.ownRunIds.has(fallback.runId);
-    if (live()) {
-      let applied = false;
-      await this.runOrdered(async () => {
-        if (!live()) return;
-        applied = true;
-        await this.sink.apply(stampReceived([{ type: EVENT_MODEL_FALLBACK, ...fallback }], now));
-      });
-      if (applied) return;
-    }
-    const marked = await this.sink.noteSettledRunFallback(
-      fallback,
-      this.lanes.get(fallback.runId)?.messageId ?? this.settledRuns.get(fallback.runId)?.messageId ?? null,
-    );
-    // No bubble to mark YET: the frame can precede its run's bubble — a whole answer
-    // and its fallback racing the `chat.send` ACK sit in the pre-ACK buffer while this
-    // frame is read. Kept by run until a turn that owns the run settles.
-    if (!marked) this.holdFallback(fallback);
-  }
+  // --- FACTS ABOUT A RUN ------------------------------------------------------------
+  //
+  // A model fallback, its clearing, and the gateway's status notices say something about
+  // a RUN after (or beside) its work. They have ONE path: `runFactsFor` reads the frame
+  // at arrival, `noteRunFacts` appends what it states to the run's ordered queue, and
+  // `drainRunFacts` writes the queue, oldest first, on the run's bubble — at once when
+  // the bubble exists, later when it does not yet (the frame raced the `chat.send` ACK,
+  // or the turn has shown nothing so far). A fact is never written ahead of one still
+  // queued for its run, so the last one received is the last one written.
 
-  /** Fallbacks whose run had no bubble to mark when they were read, by run (bounded,
-   *  insertion-ordered). Written when a turn owning the run settles (noteIfSettled). */
-  private readonly heldFallbacks = new Map<string, ModelFallback>();
+  /** Per-run queues, by run (insertion-ordered: the oldest run is dropped first). */
+  private readonly runFacts = new Map<string, RunFact[]>();
   /** Runs the gateway stated a fallback for and whose notice final is still expected
-   *  (bounded): the first status-notice block that follows is that fallback's own text. */
+   *  (bounded): the first status notice that follows is that fallback in words. */
   private readonly fallbackStatedRuns = new Set<string>();
-  private static readonly MAX_HELD_FALLBACKS = 32;
+  /** Runs whose `chat` final has been seen (bounded): a notice-only final after it is
+   *  beside the answer, not the answer. */
+  private readonly finalSeenRuns = new Set<string>();
+  /** Serializes the writes: one fact at a time, in the order they were queued. */
+  private factsTail: Promise<void> = Promise.resolve();
+  private static readonly MAX_RUN_FACT_RUNS = 32;
+  private static readonly MAX_RUN_FACTS_PER_RUN = 16;
+  private static readonly MAX_REMEMBERED_RUNS = 200;
 
   private static remember(set: Set<string>, key: string, cap: number): void {
     set.delete(key);
@@ -1230,84 +1222,146 @@ export class RunManager {
     while (set.size > cap) set.delete(set.values().next().value as string);
   }
 
-  private holdFallback(fallback: ModelFallback): void {
-    this.heldFallbacks.delete(fallback.runId);
-    this.heldFallbacks.set(fallback.runId, fallback);
-    while (this.heldFallbacks.size > RunManager.MAX_HELD_FALLBACKS) {
-      this.heldFallbacks.delete(this.heldFallbacks.keys().next().value as string);
-    }
-  }
-
-  /** The runs of a turn just settled: their held fallbacks go on the bubble it left
-   *  (or on the one Convex finds for the run). Never awaited by the turn. */
-  private flushHeldFallbacks(runIds: Iterable<string>, messageId: string | null): void {
-    for (const id of runIds) {
-      const held = this.heldFallbacks.get(id);
-      if (held === undefined) continue;
-      this.heldFallbacks.delete(id);
-      void this.sink.noteSettledRunFallback(held, messageId);
-    }
-  }
-
   /**
-   * A `chat` final of a SETTLED run that carries nothing but status notices: blocks the
-   * gateway marks `openclawStatusNotice` (2026.9.6+,
-   * src/gateway/server-methods/chat-assistant-content.ts) — the fallback notice, a usage
-   * line, a diagnostic. Upstream: "status notices remain visible but do not define the
-   * terminal reply they accompany". It is neither a late piece of the answer nor an
-   * answer of its own; null for any other frame.
+   * What a frame states about a run of this session, or null when it is the turn's own
+   * material.
+   *
+   * A model fallback (model-fallback.ts) always is. A `chat` final is when it carries
+   * nothing but status notices — blocks the gateway marks `openclawStatusNotice`
+   * (2026.9.6+, src/gateway/server-methods/chat-assistant-content.ts) — AND the run's
+   * final has already been seen, or the run is settled: upstream sends such notices in a
+   * final of their own after the answer's ("status notices remain visible but do not
+   * define the terminal reply they accompany"). A notice-only final that is the run's
+   * FIRST final is its reply (a command's answer) and stays the turn's.
+   *
+   * Decided from the order of arrival, not from the turn's state at that instant: the
+   * answer and its notice may both precede the ACK.
    */
-  private lateStatusNoticesFor(
-    frame: unknown,
-  ): { runId: string; texts: string[]; messageId: string | null } | null {
+  private runFactsFor(frame: unknown): { runId: string; facts: RunFact[] } | null {
+    const fallback = modelFallbackFromFrame(frame, this.sessionKey);
+    if (fallback !== null) return { runId: fallback.runId, facts: [{ kind: "fallback", fallback }] };
     if (typeof frame !== "object" || frame === null) return null;
     const f = frame as { event?: unknown; payload?: Record<string, unknown> };
     if (f.event !== "chat" || f.payload?.state !== "final") return null;
     const rid = sessionRunIdFor(frame, this.sessionKey);
-    const record = rid === null ? undefined : this.settledRuns.get(rid);
-    if (rid === null || record === undefined) return null;
-    if ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)) {
-      return null;
-    }
+    if (rid === null) return null;
+    const answered =
+      this.finalSeenRuns.has(rid) ||
+      (this.settledRuns.has(rid) &&
+        !((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)));
+    RunManager.remember(this.finalSeenRuns, rid, RunManager.MAX_REMEMBERED_RUNS);
+    if (!answered) return null;
     const content = (f.payload.message as { content?: unknown } | undefined)?.content;
     if (!Array.isArray(content) || content.length === 0) return null;
-    const texts: string[] = [];
+    const facts: RunFact[] = [];
     for (const block of content) {
       if (typeof block !== "object" || block === null) return null;
       const b = block as { type?: unknown; text?: unknown; openclawStatusNotice?: unknown };
       if (b.type !== "text" || typeof b.text !== "string" || b.openclawStatusNotice !== true) {
         return null;
       }
-      texts.push(b.text);
+      facts.push({ kind: "notice", text: b.text });
     }
-    return { runId: rid, texts, messageId: record.messageId };
+    return { runId: rid, facts };
   }
 
-  private async noteLateStatusNotices(notice: {
-    runId: string;
-    texts: string[];
-    messageId: string | null;
-  }): Promise<void> {
-    let texts = notice.texts;
-    // The fallback notice is built first and PREPENDED to the run's reply payloads
-    // (src/auto-reply/reply/agent-runner-result-payloads.ts): after a fallback the
-    // gateway stated for this run, the first notice is that fallback in words — which
-    // the bubble's fallback marker already says.
-    if (this.fallbackStatedRuns.delete(notice.runId)) texts = texts.slice(1);
-    for (const raw of texts) {
-      const text = sanitizeText(raw).trim().slice(0, MAX_GATEWAY_NOTICE_CHARS);
-      if (text === "") continue;
-      await this.sink.noteSettledRunNotice(notice.runId, notice.messageId, text);
+  /** Queue what a frame states about `runId`, then write what can be written. */
+  private async noteRunFacts(runId: string, stated: RunFact[]): Promise<void> {
+    let facts = stated;
+    if (facts.some((fact) => fact.kind === "fallback")) {
+      RunManager.remember(this.fallbackStatedRuns, runId, RunManager.MAX_REMEMBERED_RUNS);
+    } else if (this.fallbackStatedRuns.delete(runId)) {
+      // The fallback notice is built first and PREPENDED to the run's reply payloads
+      // (src/auto-reply/reply/agent-runner-result-payloads.ts): after a fallback the
+      // gateway stated for this run, the first notice is that fallback in words —
+      // which the bubble's fallback marker already says. Decided in arrival order,
+      // whether or not either of them has been written yet.
+      facts = facts.slice(1);
+    }
+    const queue = this.runFacts.get(runId) ?? [];
+    for (const fact of facts) {
+      if (fact.kind === "notice") {
+        const text = sanitizeText(fact.text).trim().slice(0, MAX_GATEWAY_NOTICE_CHARS);
+        if (text === "") continue;
+        queue.push({ kind: "notice", text });
+      } else {
+        queue.push(fact);
+      }
+    }
+    if (queue.length === 0) return;
+    // Bounded, oldest first — and said, because a dropped fact is a marker or a notice
+    // the reader will not see.
+    if (queue.length > RunManager.MAX_RUN_FACTS_PER_RUN) {
+      const dropped = queue.splice(0, queue.length - RunManager.MAX_RUN_FACTS_PER_RUN);
+      console.warn(
+        `[run-facts] ${dropped.length} fact(s) dropped, oldest first (per-run bound ${RunManager.MAX_RUN_FACTS_PER_RUN}) run=${runId.slice(0, 60)}`,
+      );
+    }
+    this.runFacts.delete(runId);
+    this.runFacts.set(runId, queue);
+    while (this.runFacts.size > RunManager.MAX_RUN_FACT_RUNS) {
+      const oldest = this.runFacts.keys().next().value as string;
+      const lost = this.runFacts.get(oldest)?.length ?? 0;
+      this.runFacts.delete(oldest);
+      console.warn(
+        `[run-facts] ${lost} fact(s) dropped with their run, the oldest waiting (bound ${RunManager.MAX_RUN_FACT_RUNS} runs) run=${oldest.slice(0, 60)}`,
+      );
+    }
+    await this.drainRunFacts(runId, false);
+  }
+
+  /**
+   * Write `runId`'s queued facts on its bubble, oldest first, stopping at the first one
+   * that cannot be written yet. `settled`: a turn owning the run just ended — a run that
+   * still has no bubble then never will, and its facts are dropped (and said).
+   */
+  private drainRunFacts(runId: string, settled: boolean): Promise<void> {
+    const run = this.factsTail.then(async () => {
+      const queue = this.runFacts.get(runId);
+      if (queue === undefined) return;
+      while (queue.length > 0) {
+        const live = this.sink.active && this.normalizer.ownRunIds.has(runId);
+        // While the run is the live turn's, its bubble is the turn's — once it is open.
+        const known = live
+          ? this.sink.currentMessageId
+          : (this.lanes.get(runId)?.messageId ?? this.settledRuns.get(runId)?.messageId ?? null);
+        if (live && known === null) return;
+        const fact = queue[0]!;
+        // `known` null: a run this bridge holds no bubble for (the transcript made it,
+        // or the frame preceded the turn) — Convex looks the run's bubble up.
+        const written =
+          fact.kind === "fallback"
+            ? await this.sink.writeRunFallback(fact.fallback, known)
+            : await this.sink.writeRunNotice(runId, known, fact.text);
+        if (!written) {
+          if (settled) {
+            console.warn(
+              `[run-facts] ${queue.length} fact(s) dropped: the run left no bubble to carry them run=${runId.slice(0, 60)}`,
+            );
+            this.runFacts.delete(runId);
+          }
+          return;
+        }
+        queue.shift();
+      }
+      if (this.runFacts.get(runId) === queue) this.runFacts.delete(runId);
+    });
+    this.factsTail = run.catch((err: unknown) => {
+      console.error("[run-facts] a write failed (non-fatal):", errForLog(err));
+    });
+    return this.factsTail;
+  }
+
+  /** The live turn's bubble may just have opened: write what waited for it. */
+  private async drainLiveRunFacts(): Promise<void> {
+    if (this.runFacts.size === 0 || !this.sink.active || this.sink.currentMessageId === null) return;
+    for (const runId of [...this.runFacts.keys()]) {
+      if (this.normalizer.ownRunIds.has(runId)) await this.drainRunFacts(runId, false);
     }
   }
 
   /** The turn's own pipeline for a frame (a lane hands back what it held here). */
   private async feedPipeline(frame: unknown, now: number): Promise<void> {
-    const notice = this.lateStatusNoticesFor(frame);
-    if (notice !== null) {
-      await this.noteLateStatusNotices(notice);
-      return;
-    }
     const late = this.lateFinalFor(frame);
     if (late !== null) {
       const settled = late.settled;
@@ -1331,6 +1385,7 @@ export class RunManager {
     } finally {
       this.noteIfSettled();
     }
+    await this.drainLiveRunFacts();
   }
 
   /** A run of the session that opens a spontaneous (deferred) turn of its own: the

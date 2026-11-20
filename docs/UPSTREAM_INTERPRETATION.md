@@ -1499,9 +1499,12 @@ also adds its own notice text to the reply, as a status notice.
 (`model-fallback.ts`): it is never content of a turn and never opens, reopens or ends
 one. It becomes a marker on the bubble of the run it names — the live turn's bubble
 when the run is still that turn's, otherwise the bubble the run left, found by its run
-when the bridge does not hold it. A fallback read before its run has a bubble — the answer and its fallback racing the
-`chat.send` ACK — is kept by run and written when a turn owning that run settles. A run
-that showed nothing gets no marker. The marker
+when the bridge does not hold it. What the gateway states about a run — a fallback, its clearing, a status notice — has
+one path: it is read when the frame arrives, queued per run in arrival order, and written
+on the run's bubble oldest first, at once when the bubble exists and as soon as it does
+otherwise (the answer and its fallback may both race the `chat.send` ACK). Nothing is
+written ahead of a fact still queued for its run, so the last one received is the one
+that stands. A run that showed nothing gets no marker. The marker
 is kept on the bubble rather than shown for a few seconds, and prints the Control UI's
 two sentences, localized. Only model names are carried: the reasons and attempts are
 the provider's own text and are neither stored nor shown.
@@ -1519,9 +1522,10 @@ written to the transcript. The Control UI shows it as an assistant message of it
 keeps it out of what identifies the run's terminal reply
 (`$UP/packages/gateway-client/src/session-projection-message-content.ts:38-50`).
 
-**Atrium.** A final of a settled run that carries nothing but marked notices is neither a
-late piece of the answer nor an answer: it never joins the bubble's text and never opens
-a bubble. Each notice becomes a notice line under the reply of its run, as plain text —
+**Atrium.** A final that carries nothing but marked notices, once its run's final has
+been seen or its run is settled, is neither a late piece of the answer nor an answer: it
+never joins the bubble's text and never opens a bubble. It takes the same path as a
+fallback, in arrival order with it. Each notice becomes a notice line under the reply of its run, as plain text —
 except the first one after a fallback the gateway stated for that run, which the
 fallback marker already says. A run that left no bubble shows none. A final that mixes
 answer text and a notice, a notice that is a turn's only reply (a command's answer), and
