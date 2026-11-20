@@ -1862,14 +1862,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1960",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1961",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1960,
-          1960
+          1961,
+          1961
         ]
       ],
       "literals": [
@@ -3519,6 +3519,43 @@
       ],
       "literals": [
         "startupPhase !== lastRunStartupPhase"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/bash-tools.exec-host-gateway.ts:1315-1337",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/bash-tools.exec-host-gateway.ts",
+      "lines": [
+        [
+          1315,
+          1337
+        ]
+      ],
+      "literals": [
+        "phase: \"waiting-approval\", approvalId, toolCallId: params.toolCallId"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.tools.completion.ts:483-513,546-563",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/embedded-agent-subscribe.handlers.tools.completion.ts",
+      "lines": [
+        [
+          483,
+          513
+        ],
+        [
+          546,
+          563
+        ]
+      ],
+      "literals": [
+        "status: approvalStatus,",
+        "phase: \"resolved\","
       ]
     }
   ]

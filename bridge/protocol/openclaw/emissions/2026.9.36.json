@@ -166,28 +166,28 @@
       "phases": {
         "requested": {
           "status": "handled",
-          "by": "normalizer approval branch: holds the turn for a human decision (holdForApproval), keyed by toolCallId then approvalId",
+          "by": "the exec RETURNED instead of waiting: status pending holds the turn for a human decision (holdForApproval), keyed by toolCallId then approvalId; status unavailable asks nobody and holds nothing",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "const aliases = [data.toolCallId, data.approvalId].filter(isString);"
           },
           "proof": {
             "kind": "deterministic-test",
-            "ref": "bridge/test/agent-request-hold.test.ts",
-            "note": "stream:\"approval\" is never captured from 7.1 to 9.36 — the run that waits in place says so on its lifecycle; this path is the detached exec that RETURNS approval-pending"
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "`requested` was never captured in either status (the bench's execs wait in place); frames built from handleToolExecutionEnd"
           }
         },
         "resolved": {
           "status": "handled",
-          "by": "normalizer approval branch: releases THIS request's hold (releaseApproval), not every request",
+          "by": "the exec's result was an approval refusal: releases THIS request's hold when it is still held (releaseApproval) — after an in-place wait it follows the run's approval-resolved and finds nothing left",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "} else if (phase === \"resolved\") {"
           },
           "proof": {
             "kind": "deterministic-test",
-            "ref": "bridge/test/agent-request-hold.test.ts",
-            "note": "never captured (see requested)"
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "captured on the bench (run 2026-11-08T00-15-04-531Z, phase resolved, status failed, after the run's approval-resolved) but in no scenario of the promoted corpus; the test replays that sequence"
           }
         }
       },
@@ -201,8 +201,8 @@
           },
           "proof": {
             "kind": "deterministic-test",
-            "ref": "bridge/test/agent-request-hold.test.ts",
-            "note": "never captured (see the requested phase)"
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "`requested` was never captured in either status (the bench's execs wait in place); frames built from handleToolExecutionEnd"
           }
         },
         "approvalSlug": {
@@ -238,8 +238,8 @@
           },
           "proof": {
             "kind": "deterministic-test",
-            "ref": "bridge/test/agent-request-hold.test.ts",
-            "note": "never captured (see the requested phase)"
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "captured on the bench (run 2026-11-08T00-15-04-531Z, phase resolved, status failed, after the run's approval-resolved) but in no scenario of the promoted corpus; the test replays that sequence"
           }
         },
         "reason": {
@@ -247,8 +247,17 @@
           "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
         },
         "status": {
-          "status": "ignored",
-          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+          "status": "handled",
+          "by": "on a `requested`: `unavailable` means nobody can be asked, so the turn is not held; on a `resolved` (denied / failed) it is not read",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.status === \"unavailable\") return;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "`requested` was never captured in either status (the bench's execs wait in place); frames built from handleToolExecutionEnd"
+          }
         },
         "title": {
           "status": "ignored",
@@ -263,8 +272,8 @@
           },
           "proof": {
             "kind": "deterministic-test",
-            "ref": "bridge/test/agent-request-hold.test.ts",
-            "note": "never captured (see the requested phase)"
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "captured on the bench (run 2026-11-08T00-15-04-531Z, phase resolved, status failed, after the run's approval-resolved) but in no scenario of the promoted corpus; the test replays that sequence"
           }
         }
       }

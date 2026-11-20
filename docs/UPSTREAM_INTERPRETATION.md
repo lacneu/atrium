@@ -258,7 +258,7 @@ identical. The two broken anchors are real and are each recorded:
 **The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
 `delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
 The append path still drops any delta whose text is empty
-(`bridge/src/providers/openclaw/normalizer.ts:1960`, the `&& deltaText` guard), so
+(`bridge/src/providers/openclaw/normalizer.ts:1961`, the `&& deltaText` guard), so
 the retraction has its own branch in `handleChat`: the bubble is cleared through a
 declared empty snapshot, as the Control UI clears its stream. It is covered by a
 deterministic test in the captured shape, not measured on the bench: the catalogue
@@ -1409,6 +1409,20 @@ but no client-side rule reproduces it exactly — a later read proves the sub-ag
 owner, not the audience the gateway fixed — and an inexact rule lets one conversation see
 or answer another's request. Showing those approvals in the parent means consuming
 `session.approval` itself.
+
+**Three frames can describe one wait.** A run that waits in place says so on its own
+lifecycle, `waiting-approval` then `approval-resolved`, around the wait
+(`$UP/src/agents/bash-tools.exec-host-gateway.ts:1315-1337`). `stream:"approval"` is a
+different statement, written when the exec tool completes
+(`$UP/src/agents/embedded-agent-subscribe.handlers.tools.completion.ts:483-513,546-563`):
+`requested` when the exec returned instead of waiting — `status:"pending"` with the
+approval's id, or `status:"unavailable"` when nobody can be asked — and `resolved`
+(`denied` / `failed`) when the exec's result is an approval refusal, which is also how an
+in-place wait that ends refused finishes. The Control UI reads the lifecycle pair only.
+Atrium holds a turn on `waiting-approval` and on a `pending` `requested`, as one request
+under both of its names (the approval id, the tool call); an `unavailable` `requested`
+holds nothing; a `resolved` releases the request it names when it is still held, and after
+an in-place wait it arrives once the run's `approval-resolved` has already released it.
 
 **An approval is keyed by its id and its creation time**, everywhere: the bridge's memories
 of a decided approval (the observer, the turn's hold), the Convex card and the verdict Convex

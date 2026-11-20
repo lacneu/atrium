@@ -180,7 +180,8 @@ const RETRY_MAX_ATTEMPTS = 10;
 
 // A tool asked for HUMAN approval — on 2026.9.36 the run that waits says so on its own
 // lifecycle (`waiting-approval` / `approval-resolved`, src/agents/bash-tools.exec-host-
-// gateway.ts:1313-1337), older and detached paths on `stream:"approval"`. The run is alive
+// gateway.ts:1313-1337); an exec that RETURNS instead of waiting, and the refusal that
+// ends any wait, are said on `stream:"approval"` when the tool completes. The run is alive
 // and deliberately waiting, so the 240 s silence budget is the wrong clock; the wait follows
 // the REQUEST'S OWN deadline instead (`expiresAtMs` of the broadcast and of `approval.get`,
 // read by the agent-request observer and handed to `noteApprovalDeadline`), because the
@@ -2241,11 +2242,19 @@ export class Normalizer {
       // surface to answer, so the turn used to sit silent until the 240 s recv
       // timeout and settle as an unexplained empty response. Say what it is
       // waiting for, suspend the silence clock, and BOUND the wait.
-      // Kept beside the lifecycle phases 2026.9.36 uses (handleLifecycle): upstream
-      // still emits this stream when an exec RETURNS `approval-pending` instead of
-      // waiting in place (embedded-agent-subscribe.handlers.tools.completion.ts:483-513).
+      // Kept beside the lifecycle phases a run that waits IN PLACE uses
+      // (handleLifecycle). This stream is written when the exec tool COMPLETES
+      // (embedded-agent-subscribe.handlers.tools.completion.ts `handleToolExecutionEnd`,
+      // every supported version): `requested` when the exec returned instead of
+      // waiting, `resolved` when its result is an approval refusal — which is also how
+      // an in-place wait that ends refused finishes, so a `resolved` here commonly
+      // FOLLOWS the run's own `approval-resolved` and then finds nothing left to release.
       const phase = data.phase;
       if (phase === "requested") {
+        // `status:"unavailable"`: the exec returned because NOBODY can be asked (it
+        // carries no `approvalId`). No request is waiting on a person — holding the turn
+        // for it stopped the silence clock and counted a request nothing would answer.
+        if (data.status === "unavailable") return;
         // `toolCallId` first: it is the one id the resolution is guaranteed to carry.
         const aliases = [data.toolCallId, data.approvalId].filter(isString);
         this.holdForApproval(aliases, now, events, this.frameGeneration(aliases));
@@ -3344,8 +3353,10 @@ export class Normalizer {
     // toolCallId?}` then `{phase:"approval-resolved", approvalId, toolCallId?}` around the
     // wait (src/agents/bash-tools.exec-host-gateway.ts:1313-1337). The Control UI keys its
     // "waiting for approval" state on exactly these (ui/src/pages/chat/tool-stream-status.ts:
-    // 357-380). `stream:"approval"`, which Atrium listened to alone, did not appear in any
-    // capture from 7.1 to 9.36 — the turn was never labelled and kept its silence clock.
+    // 357-380). `stream:"approval"`, which Atrium listened to alone, says something else
+    // (the exec tool's completion, see the approval branch of handleAgent): a run waiting
+    // in place emits nothing on it until the wait is over — the turn was never labelled
+    // and kept its silence clock.
     if (phase === "waiting-approval" || phase === "approval-resolved") {
       // Keyed on `approvalId`, as the Control UI keys it (a frame without one is read and
       // ignored there too); the tool call is an alias, for a release that names only it.
