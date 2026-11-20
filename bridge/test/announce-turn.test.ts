@@ -596,7 +596,7 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     let now = 1000;
     // Announce arrives; its first visible frame requests the open (hangs).
     await manager.feed(ANNOUNCE_FRAMES[0], (now += 1));
-    const opening = manager.feed(ANNOUNCE_FRAMES[1], (now += 1));
+    const opening = manager.feed(ANNOUNCE_FRAMES[2], (now += 1));
     await new Promise((r) => setTimeout(r, 0));
     // A real user dispatch preempts while startAssistant is still in flight.
     await manager.beginTurn((now += 1), "webchat-preempt-midopen");

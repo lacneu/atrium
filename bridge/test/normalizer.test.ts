@@ -16,6 +16,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
+import { assistantAsChat } from "./helpers/chat-stream.js";
 
 import {
   APPROVAL_WAIT_DEFAULT,
@@ -43,6 +44,12 @@ const FIXTURES = JSON.parse(readFileSync(FIXTURES_PATH, "utf-8")) as {
 const SESSION_KEY = FIXTURES.session_key;
 const OWN_RUN = FIXTURES.run_id;
 
+const CHAT_STREAM_SCENARIOS = new Set([
+  "compaction-abandoned-replay",
+  "normal-end-working-replayinvalid",
+  "lifecycle-error",
+]);
+
 function newNormalizer(providerSessionId: string | null = null): Normalizer {
   return new Normalizer(SESSION_KEY, providerSessionId);
 }
@@ -52,7 +59,9 @@ function frames(scenario: string): unknown[] {
   if (!s) {
     throw new Error(`unknown scenario: ${scenario}`);
   }
-  return s.frames;
+  // These scenarios carry their text on the `assistant` stream only (frames of gateways
+  // long retired): it is replayed as the `chat` delta the gateway publishes beside it.
+  return CHAT_STREAM_SCENARIOS.has(scenario) ? assistantAsChat(s.frames) : s.frames;
 }
 
 class Clock {
@@ -144,12 +153,15 @@ describe("core text scenarios", () => {
     expect(visibleText(events)).toBe("Voici l'image générée !");
   });
 
-  it("agent assistant delta legacy accumulates", () => {
+  it("the assistant stream is not the bubble's text: a turn that only carries it shows none", () => {
     const { events, normalizer } = drive("agent-assistant-delta-legacy", {
       advanceToFinalize: true,
     });
     expect(normalizer.finalized).toBe(true);
-    expect(finalText(events)).toBe("Hello world");
+    expect(
+      events.filter((e) => e.type === "message.delta" || e.type === "message.snapshot"),
+    ).toEqual([]);
+    expect(finalText(events)).toBe("");
   });
 
   it("duplicate empty final finalizes gracefully", () => {
@@ -2538,51 +2550,20 @@ describe("G-17: assistant-stream phase and replace", () => {
       .filter((e) => e.type === "message.delta" || e.type === "message.snapshot")
       .map((e) => e.text);
 
-  it("a commentary preamble stays OUT of the reply, and the real answer still streams", () => {
+  it("neither a commentary preamble nor an answer on the assistant stream writes the reply", () => {
     const { n, clock } = startTurn();
     const ev: BridgeEvent[] = [];
-    ev.push(
-      ...n.feed(
-        assistant({
-          text: "Let me look that up for you…",
-          delta: "",
-          replace: true,
-          phase: "commentary",
-          itemId: "commentary-1",
-        }),
-        clock.tick(),
-      ),
-    );
-    ev.push(...n.feed(assistant({ delta: "The answer ", phase: "final_answer" }), clock.tick()));
-    ev.push(...n.feed(assistant({ delta: "is 42." }), clock.tick()));
-    // The preamble never entered the buffer, and the deltas were NOT swallowed
-    // by a snapshot lock the preamble had no business setting.
-    expect(visible(ev)).toEqual(["The answer ", "is 42."]);
-  });
-
-  it("`replace` on the assistant stream refreshes the text WITHOUT locking out later deltas", () => {
-    const { n, clock } = startTurn();
-    const ev: BridgeEvent[] = [];
-    ev.push(...n.feed(assistant({ delta: "draft text" }), clock.tick()));
-    ev.push(
-      ...n.feed(
-        assistant({ text: "corrected text", delta: "", replace: true, phase: "final_answer" }),
-        clock.tick(),
-      ),
-    );
-    ev.push(...n.feed(assistant({ delta: " and more" }), clock.tick()));
-    expect(visible(ev)).toEqual(["draft text", "corrected text", " and more"]);
-    // The refresh is a DECLARED shrink: Convex must be allowed to apply it.
-    const snap = ev.find((e) => e.type === "message.snapshot");
-    expect(snap?.replace).toBe(true);
-  });
-
-  it("an untagged assistant snapshot keeps its historical authority (no behaviour change)", () => {
-    const { n, clock } = startTurn();
-    const ev: BridgeEvent[] = [];
-    ev.push(...n.feed(assistant({ text: "full answer" }), clock.tick()));
-    ev.push(...n.feed(assistant({ delta: " ignored" }), clock.tick()));
-    expect(visible(ev)).toEqual(["full answer"]);
+    for (const data of [
+      { text: "Let me look that up for you…", delta: "", replace: true, phase: "commentary", itemId: "commentary-1" },
+      { delta: "The answer ", phase: "final_answer" },
+      { text: "The answer is 42.", delta: "is 42.", phase: "final_answer", itemId: "s:1" },
+      { text: "corrected", delta: "", replace: true, phase: "final_answer", itemId: "s:1" },
+      { text: "untagged full answer" },
+    ]) {
+      ev.push(...n.feed(assistant(data), clock.tick()));
+    }
+    expect(visible(ev)).toEqual([]);
+    expect(n.text).toBe("");
   });
 });
 
@@ -3583,12 +3564,13 @@ describe("G-21: `stream:\"approval\"`", () => {
     n.feed(approval({ phase: "requested", kind: "exec", status: "pending" }), clock.tick());
     n.feed(
       {
-        event: "agent",
+        event: "chat",
         payload: {
           runId: OWN_RUN,
           sessionKey: SESSION_KEY,
-          stream: "assistant",
-          data: { delta: "la suite" },
+          state: "delta",
+          deltaText: "la suite",
+          message: { role: "assistant", content: [{ type: "text", text: "la suite" }] },
         },
       },
       clock.tick(),

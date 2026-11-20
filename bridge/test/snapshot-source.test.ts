@@ -87,18 +87,14 @@ describe("OpenClaw normalizer: each snapshot path names itself", () => {
     expect(delta).not.toHaveProperty("snapshotSource");
   });
 
-  it("agent assistant text → agent_assistant_text; its replace refreshes → agent_assistant_replace", () => {
+  it("the agent assistant stream names nothing: it writes no snapshot", () => {
     const { n, at } = turn();
     const ev = [
       ...n.feed(assistant({ text: "Hello" }), at()),
       ...n.feed(assistant({ text: "Hi", replace: true }), at()),
       ...n.feed(assistant({ delta: "Hey", replace: true }), at()),
     ];
-    expect(sources(ev)).toEqual([
-      "agent_assistant_text",
-      "agent_assistant_replace",
-      "agent_assistant_replace",
-    ]);
+    expect(ev.filter((e) => e.type === "message.snapshot" || e.type === "message.delta")).toEqual([]);
   });
 
   it("the message tool's visible reply → message_tool", () => {
@@ -233,16 +229,16 @@ describe("convex-writer: the op names both sides of a refused snapshot", () => {
     expect(await w.setSnapshot("m1", "the head of the turn, grown", undefined, "chat_delta")).toBe(true);
     expect(sent.at(-1)).toMatchObject({ op: "appendDelta", text: ", grown" });
     // Does not extend it → a full setSnapshot, refused by the guard.
-    expect(await w.setSnapshot("m1", "post-tool", undefined, "agent_assistant_text")).toBe(false);
+    expect(await w.setSnapshot("m1", "post-tool", undefined, "message_tool")).toBe(false);
     expect(sent.at(-1)).toEqual({
       op: "setSnapshot",
       messageId: "m1",
       text: "post-tool",
-      snapshotSource: "agent_assistant_text",
+      snapshotSource: "message_tool",
       keptSource: "chat_delta",
     });
     // A refusal does not move the kept producer.
-    await w.setSnapshot("m1", "post-tool", undefined, "agent_assistant_text");
+    await w.setSnapshot("m1", "post-tool", undefined, "message_tool");
     expect(sent.at(-1)).toMatchObject({ keptSource: "chat_delta" });
   });
 

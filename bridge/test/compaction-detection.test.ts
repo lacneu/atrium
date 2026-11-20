@@ -60,13 +60,14 @@ function lifecycleFrame(
 function assistantFrame(sessionId: string, text: string): unknown {
   return {
     type: "event",
-    event: "agent",
+    event: "chat",
     payload: {
       runId: RUN,
       sessionKey: SESSION_KEY,
       sessionId,
-      stream: "assistant",
-      data: { text, delta: text },
+      state: "delta",
+      deltaText: text,
+      message: { role: "assistant", content: [{ type: "text", text }] },
     },
   };
 }

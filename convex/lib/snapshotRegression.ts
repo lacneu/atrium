@@ -39,6 +39,10 @@ export type SnapshotSourceValue = (typeof SNAPSHOT_SOURCES)[number];
 export const RETIRED_SNAPSHOT_SOURCES: readonly SnapshotSourceValue[] = [
   "chat_final_truncated",
   "history_recovery",
+  // The `agent` assistant stream no longer writes a bubble's text: the `chat` stream is
+  // the only live producer, as for the gateway's own UI.
+  "agent_assistant_text",
+  "agent_assistant_replace",
 ];
 
 export const snapshotSourceValidator = v.union(
