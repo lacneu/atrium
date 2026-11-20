@@ -968,7 +968,10 @@ function page(css: string, code: string, scenarios: string[]): string {
 // the scroll height a whole number, as the browser reports it — and, `fractional`, the
 // scroll positions in fractions of a pixel, to the exact end, as a zoomed page lays them
 // out.
-function fakeDom(geometry: { top: number; height: number; client: number }, transition = "0.2s", fractional = false) {
+// `scale`, Blink's own clamp (lot 37): it bounds the scroll with the content's and the
+// box's heights rounded in physical pixels — the page's zoom times the screen's density —,
+// then reports the position in CSS pixels.
+function fakeDom(geometry: { top: number; height: number; client: number }, transition = "0.2s", fractional = false, scale = 0) {
   const listeners = new Map<string, Set<(e: unknown) => void>>();
   const on = (prefix: string) => ({
     addEventListener: (type: string, f: (e: unknown) => void) => {
@@ -983,6 +986,7 @@ function fakeDom(geometry: { top: number; height: number; client: number }, tran
   let now = 0;
   let reserve = 0;
   const win = {
+    devicePixelRatio: scale || 1,
     getComputedStyle: () => ({
       transitionDuration: transition,
       transitionDelay: "0s",
@@ -1023,7 +1027,8 @@ function fakeDom(geometry: { top: number; height: number; client: number }, tran
     },
     // Clamped as the browser clamps it; a change queues the scroll event.
     set scrollTop(v: number) {
-      const next = Math.max(0, Math.min(v, (fractional ? height - box : this.scrollHeight - this.clientHeight)));
+      const end = scale ? (Math.round(height * scale) - Math.round(box * scale)) / scale : fractional ? height - box : this.scrollHeight - this.clientHeight;
+      const next = Math.max(0, Math.min(v, end));
       if (next === top) return;
       top = next;
       queued = true;
@@ -1659,6 +1664,59 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
     expect(aui.store.getState().isAtBottom).toBe(true);
     aui.nextText(30);
     expect(Math.abs(dom.short())).toBeLessThanOrEqual(1);
+  });
+
+  // WHAT BLINK ROUNDS TOO (lot 37): the end of the scroll, bounded with heights rounded in
+  // physical pixels. Codex's case (pass 25), a page at 125 %: the content 0.825 px shorter
+  // and the box 0.4 px taller move the end 2.4 px up, against a loss read as 0.2 px and a
+  // client height unchanged — past lot 36's two pixels, which counted CSS pixels only.
+  test.each([
+    ["within the window", 0],
+    ["past the window", 400],
+  ])("%s, on a page zoomed to 1.25, a pull of 2.4 px against a loss read as 0.2 px — the end of the scroll rounded in physical pixels — is the layout's: taken back, assistant-ui reads the reader at the end, and the next text follows them (lot 37)", (_when, wait) => {
+    const dom = fakeDom({ top: 268.4, height: 568.4125, client: 300.0125 }, "0.2s", true, 1.25);
+    const vp = dom.viewport;
+    const aui = assistantUi(dom);
+    followReserve(vp as unknown as HTMLElement, aui.store);
+    dom.grow(32);
+    dom.frame();
+    dom.frame();
+    expect(vp.scrollTop).toBeCloseTo(300.8, 6);
+    dom.tick(wait);
+    dom.shrinkEnd(0.825);
+    dom.growBoxExact(0.4);
+    expect(vp.scrollTop).toBeCloseTo(298.4, 6);
+    dom.grow(4.2);
+    expect(vp.clientHeight).toBe(300);
+    dom.frame();
+    // At the end as Blink bounds it: a scroll further down moves nothing. (What is read
+    // short of it there — whole heights against a position in physical pixels — can pass
+    // a pixel at the very end.)
+    const atEnd = () => {
+      const top = vp.scrollTop;
+      vp.scrollTop = top + 100;
+      return vp.scrollTop === top;
+    };
+    expect(atEnd()).toBe(true);
+    expect(dom.listening()).toBeGreaterThan(0);
+    aui.nextText(30);
+    expect(atEnd()).toBe(true);
+  });
+
+  test("a move up another makes past what the browser rounds — 4.5 px on a page at its own size, the layout held — is still another's: it stops the follow for good (lot 37)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const vp = dom.viewport;
+    followReserve(vp as unknown as HTMLElement, { getState: () => ({ isAtBottom: true }) });
+    dom.grow(10);
+    dom.frame();
+    dom.frame();
+    vp.scrollTop -= 4.5;
+    dom.frame();
+    const scrolls = dom.scrolls();
+    dom.grow(10);
+    dom.frame();
+    expect(dom.scrolls()).toBe(scrolls);
+    expect(dom.listening()).toBe(0);
   });
 
   // A PULL WITHIN THE TOLERANCE, PAST THE WINDOW (lot 35): the content a pixel shorter
