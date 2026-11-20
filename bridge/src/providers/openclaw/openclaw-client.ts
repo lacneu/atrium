@@ -465,6 +465,23 @@ export class OpenClawConnection {
   private silenceWatch: SilenceWatch | null = null;
   private silenceTimer: NodeJS.Timeout | null = null;
   private silenceConfirmTimer: NodeJS.Timeout | null = null;
+  /** The TCP socket under the WebSocket (from its upgrade), for `bytesRead` only. */
+  private rawSocket: { readonly bytesRead: number } | null = null;
+  private rawBytesSeen = 0;
+
+  /**
+   * A frame still ARRIVING is proof of life too. `message` fires once a frame is
+   * complete, and the gateway's ticks queue behind it: a 25 MiB frame on a link under
+   * about 3 Mbit/s takes longer than the whole silence budget, and a watch that counted
+   * finished frames only would close the socket in the middle of it (the gateway's own
+   * clients do). Bytes that keep coming say the peer is there.
+   */
+  private noteArrivingBytes(watch: SilenceWatch): void {
+    const bytes = this.rawSocket?.bytesRead;
+    if (typeof bytes !== "number" || bytes === this.rawBytesSeen) return;
+    this.rawBytesSeen = bytes;
+    watch.noteInbound();
+  }
 
   private startSilenceWatch(policy: unknown): void {
     this.tickIntervalMs = readTickIntervalMs(policy);
@@ -472,15 +489,20 @@ export class OpenClawConnection {
     const intervalMs = this.tickIntervalMs;
     const watch = createSilenceWatch(intervalMs, () => performance.now());
     this.silenceWatch = watch;
+    this.rawBytesSeen = this.rawSocket?.bytesRead ?? 0;
     this.silenceTimer = setInterval(() => {
-      if (this.closed || this.silenceConfirmTimer !== null || watch.check() === "alive") return;
+      if (this.closed || this.silenceConfirmTimer !== null) return;
+      this.noteArrivingBytes(watch);
+      if (watch.check() === "alive") return;
       // CONFIRMED before it is acted on: a timer runs before the I/O queued behind it,
       // so after a pause of this process the verdict is reached while the gateway's
       // frames are still unread in the socket. They are read before this fires.
       this.silenceConfirmTimer = setTimeout(
         () => {
           this.silenceConfirmTimer = null;
-          if (this.closed || watch.check() === "alive") return;
+          if (this.closed) return;
+          this.noteArrivingBytes(watch);
+          if (watch.check() === "alive") return;
           console.warn(
             `[openclaw] no inbound frame for more than ${watch.maxSilenceMs} ms (tick interval ${intervalMs} ms) — closing the silent connection`,
           );
@@ -610,6 +632,13 @@ export class OpenClawConnection {
         normalizeWsUrl(gatewayUrl),
         identity === undefined ? undefined : { headers: identityHeaders },
       );
+
+      // The socket the upgrade ran on — `ws`'s public way to it. Read for `bytesRead`
+      // alone (the silence watch), never written to.
+      let upgradedSocket: { readonly bytesRead: number } | null = null;
+      ws.once("upgrade", (response) => {
+        upgradedSocket = response.socket;
+      });
 
       const fail = (err: Error) => {
         if (settled) return;
@@ -783,6 +812,7 @@ export class OpenClawConnection {
             settled = true;
             clearTimeout(connectTimer);
             connection = new OpenClawConnection(ws);
+            connection.rawSocket = upgradedSocket;
             if (handshakeShutdown !== null) {
               connection.adoptShutdownNotice(handshakeShutdown);
             }
@@ -989,7 +1019,11 @@ export class OpenClawConnection {
     frame = decoded;
     // Proof of life for the silence watch: any event or response frame, the gateway's
     // `tick` included — what its own clients count (protocol-client.ts handleMessage).
-    if (frame.type === "event" || frame.type === "res") this.silenceWatch?.noteInbound();
+    if (frame.type === "event" || frame.type === "res") {
+      this.silenceWatch?.noteInbound();
+      // Its bytes are accounted for: only bytes read AFTER it are a frame in flight.
+      this.rawBytesSeen = this.rawSocket?.bytesRead ?? this.rawBytesSeen;
+    }
     // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
     // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).

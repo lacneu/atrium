@@ -162,6 +162,34 @@ describe("connection silence over a real socket", () => {
     expect(c.connectionEnd).toBeNull();
   });
 
+  it("keeps a socket on which one large frame is still ARRIVING, though no frame completes within the budget", async () => {
+    // A frame of tens of megabytes on a slow link: `message` fires once it is whole,
+    // and the gateway's ticks queue behind it. The peer is plainly alive — its bytes
+    // keep coming — so the watch must not close the socket in the middle of it.
+    const c = await connect({ ...CAPTURED_HELLO_POLICY });
+    const frames = c.frames();
+    const whole = JSON.stringify({ type: "event", event: "health", payload: { pad: "x".repeat(4_000) } });
+    const pieces = [whole.slice(0, 1_000), whole.slice(1_000, 2_000), whole.slice(2_000, 3_000), whole.slice(3_000)];
+    // Six intervals — three budgets — during which only fragments arrive.
+    for (let i = 0; i < 3; i++) {
+      gateway!.socket!.send(pieces[i]!, { fin: false });
+      await sleep(30); // the bytes reach this side; no frame is complete
+      interval();
+      interval();
+      confirm();
+      expect(c.isClosed, `fragment ${i}`).toBe(false);
+    }
+    gateway!.socket!.send(pieces[3]!, { fin: true });
+    expect(((await frames.next()).value as { event?: string }).event).toBe("health");
+    // Once the bytes stop too, the socket is silent like any other.
+    interval();
+    interval();
+    interval();
+    confirm();
+    expect(c.isClosed).toBe(true);
+    expect(c.connectionEnd?.kind).toBe("inbound_silence");
+  });
+
   it("counts a response frame as activity too", async () => {
     const c = await connect({ ...CAPTURED_HELLO_POLICY });
     for (let i = 0; i < 6; i++) {
