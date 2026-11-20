@@ -622,7 +622,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
           runId: "bg-run",
           sessionKey: SESSION_KEY,
           stream: "compaction",
-          data: { phase: "end", completed: false, willRetry: false },
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
         },
       },
       clock.tick(),
@@ -643,7 +643,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
         runId: OWN_RUN,
         sessionKey: SESSION_KEY,
         stream: "compaction",
-        data: { phase: "end", completed: false, willRetry: false },
+        data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
       },
     };
     await manager.feed(compactionEnd, clock.tick());
@@ -672,7 +672,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
           runId: "bg-run",
           sessionKey: SESSION_KEY,
           stream: "compaction",
-          data: { phase: "end", completed: false, willRetry: false },
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
         },
       },
       clock.tick(),
@@ -706,7 +706,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
     });
     await manager.feed(compaction({ phase: "start" }), clock.tick());
     await manager.feed(
-      compaction({ phase: "end", completed: false, willRetry: false }),
+      compaction({ phase: "end", completed: false, willRetry: false, outcome: "failed" }),
       clock.tick(),
     );
     await manager.beginTurn(clock.tick(), OWN_RUN);

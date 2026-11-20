@@ -258,7 +258,7 @@ identical. The two broken anchors are real and are each recorded:
 **The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
 `delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
 The append path still drops any delta whose text is empty
-(`bridge/src/providers/openclaw/normalizer.ts:1935`, the `&& deltaText` guard), so
+(`bridge/src/providers/openclaw/normalizer.ts:1938`, the `&& deltaText` guard), so
 the retraction has its own branch in `handleChat`: the bubble is cleared through a
 declared empty snapshot, as the Control UI clears its stream. It is covered by a
 deterministic test in the captured shape, not measured on the bench: the catalogue
@@ -964,6 +964,19 @@ interpretation:
   content resumes, which restores the normal budget (`applyVisible` — there
   is no lifecycle `start` to key on).
 - `phase:"end", willRetry:false` restores the normal budget immediately.
+- A non-completed `end` marks the session saturated only when upstream itself
+  calls it a failure. `handleCompactionEnd` carries `outcome` and classifies
+  it (`$UP/src/agents/embedded-agent-subscribe.handlers.compaction.ts:209-214`):
+  benign when `aborted`, or `skipped` for a reason in the classes
+  `no_compactable_entries`, `below_threshold`, `already_compacted`
+  (`$UP/src/agents/embedded-agent-runner/compact-reasons.ts:57-67`). Atrium
+  transcribes that rule (`compactionFailedForGood`): `failed`, and a skip for
+  any other reason, raise the verdict and the failed marker; `aborted` raises
+  nothing and clears nothing. The Codex harness's end has no `outcome`
+  (`$UP/extensions/codex/src/app-server/event-projector-events.ts:180-192`)
+  and its `completed:false` only says the projection closed with the item
+  open: no verdict either. The Control UI reads neither key — a non-completed
+  end just removes its indicator.
 - Total silence after a `start` still settles the actionable
   `compaction_timeout` error (deadlock parity with the heuristic path).
 - A `chat:aborted` on the explicit path (active window or overflow replay)

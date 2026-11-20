@@ -849,9 +849,17 @@
           "why": "the verdict is per session, not per compaction item"
         },
         "outcome": {
-          "status": "gap",
-          "gap": "F8",
-          "note": "outcome: a benign end (outcome skipped below threshold / already compacted / nothing to compact, or aborted) arrives as completed:false with willRetry:false, and compactionFailedForGood reads it as a failure for good — the session is flagged overfull; upstream logs these ends as benign (src/agents/embedded-agent-subscribe.handlers.compaction.ts:191-228)"
+          "status": "handled",
+          "by": "how the compaction ended, read as upstream classifies it: `failed` is a failure for good, `aborted` and an end without `outcome` (the Codex harness) give no verdict, `skipped` depends on its reason",
+          "anchor": {
+            "file": "src/core/compaction-verdict.ts",
+            "token": "if (d.outcome === \"skipped\") return !isBenignSkipReason(d.reason);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-outcome.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus (no promoted run filled a context window); frames built from handleCompactionEnd and the Codex emitCompactionEnd"
+          }
         },
         "phase": {
           "status": "handled",
@@ -867,9 +875,17 @@
           }
         },
         "reason": {
-          "status": "gap",
-          "gap": "F8",
-          "note": "reason (the skip reason that tells a benign skip from a failure): a benign end (outcome skipped below threshold / already compacted / nothing to compact, or aborted) arrives as completed:false with willRetry:false, and compactionFailedForGood reads it as a failure for good — the session is flagged overfull; upstream logs these ends as benign (src/agents/embedded-agent-subscribe.handlers.compaction.ts:191-228)"
+          "status": "handled",
+          "by": "the skip reason, compared against the three families upstream calls benign (nothing to compact, below threshold, already compacted); never stored or shown",
+          "anchor": {
+            "file": "src/core/compaction-verdict.ts",
+            "token": "function isBenignSkipReason(reason: unknown): boolean {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-outcome.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus; reason strings taken from agent-session-compaction.ts and classifyCompactionReason"
+          }
         },
         "threadId": {
           "status": "ignored",

@@ -20,8 +20,7 @@
  *  Atrium believe a session had shrunk, and the next turn paid for it with a context
  *  overflow it had been warned about. `messages` is the discriminant because it exists
  *  ONLY on the hook path — the real end's payload has no such field at any supported
- *  version, while `outcome`/`willRetry` could not be shown to be present on the oldest
- *  ones. */
+ *  version. */
 export function isCompactionHookRelay(data: unknown): boolean {
   if (typeof data !== "object" || data === null) return false;
   return Array.isArray((data as Record<string, unknown>).messages);
@@ -31,14 +30,64 @@ function isHookRelay(d: Record<string, unknown>): boolean {
   return isCompactionHookRelay(d);
 }
 
-/** True when this `stream:"compaction"` data says the compaction failed for good. */
+/**
+ * A skip upstream itself calls harmless, by the reason it carries.
+ *
+ * Transcribed from `classifyCompactionReason`
+ * (src/agents/embedded-agent-runner/compact-reasons.ts, unchanged from v2026.8.2 to
+ * v2026.9.36) for the three classes `handleCompactionEnd` treats as benign —
+ * `no_compactable_entries`, `below_threshold`, `already_compacted` — in the classifier's
+ * own order: an authentication failure is tested first and wins.
+ *
+ * The reason is gateway-authored text, and a failure's reason can embed provider prose.
+ * It is only ever compared here, never stored or shown, and every text that is not one of
+ * these three families stays a failure.
+ */
+function isBenignSkipReason(reason: unknown): boolean {
+  if (typeof reason !== "string") return false;
+  const text = reason.trim().toLowerCase();
+  if (text === "") return false;
+  if (
+    text.startsWith("no api key found") ||
+    (text.startsWith("authentication failed for ") &&
+      text.includes("credentials may have expired"))
+  ) {
+    return false;
+  }
+  return (
+    text.includes("nothing to compact") ||
+    text.includes("no real conversation messages") ||
+    text.includes("below threshold") ||
+    text.includes("already under target") ||
+    text.includes("already compacted") ||
+    text.includes("already_compacted")
+  );
+}
+
+/**
+ * True when this `stream:"compaction"` data says the compaction failed for good.
+ *
+ * `outcome` is upstream's own word for how the compaction ended
+ * (`handleCompactionEnd`, src/agents/embedded-agent-subscribe.handlers.compaction.ts,
+ * present on every supported version), and its rule is followed as written: an `aborted`
+ * end, and a `skipped` one for a benign reason, are not failures — the session was
+ * cancelled, too small, or already compacted. Everything else that did not complete is.
+ *
+ * An end WITHOUT `outcome` gives no verdict. Its only writer is the Codex harness
+ * (extensions/codex/src/app-server/event-projector-events.ts `emitCompactionEnd`), where
+ * `completed:false` means the projection closed while the compaction item was still
+ * open: an observation that was interrupted, not a failure that was stated.
+ */
 export function compactionFailedForGood(data: unknown): boolean {
   if (typeof data !== "object" || data === null) return false;
   const d = data as Record<string, unknown>;
   if (isHookRelay(d)) return false;
-  return (
-    d.phase === "end" && d.completed === false && d.willRetry !== true
-  );
+  if (!(d.phase === "end" && d.completed === false && d.willRetry !== true)) {
+    return false;
+  }
+  if (typeof d.outcome !== "string" || d.outcome === "aborted") return false;
+  if (d.outcome === "skipped") return !isBenignSkipReason(d.reason);
+  return true;
 }
 
 /** True when it says the compaction COMPLETED (which clears a standing verdict). */

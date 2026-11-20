@@ -1863,7 +1863,7 @@ describe("agent.data vocabulary: tool progress vs completion, compaction verdict
     normalizer.noteRunStarted(OWN_RUN, clock.now);
     normalizer.feed(compactionFrame({ phase: "start" }), clock.tick());
     const events = normalizer.feed(
-      compactionFrame({ phase: "end", willRetry: false, completed: false }),
+      compactionFrame({ phase: "end", willRetry: false, completed: false, outcome: "failed" }),
       clock.tick(),
     );
     const marks = events.filter((e) => e.type === "context.compaction");

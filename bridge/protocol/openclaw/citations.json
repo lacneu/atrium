@@ -1862,14 +1862,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1935",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1938",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1935,
-          1935
+          1938,
+          1938
         ]
       ],
       "literals": [
@@ -3194,6 +3194,54 @@
       ],
       "literals": [
         "request: TPayload;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.compaction.ts:209-214",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/embedded-agent-subscribe.handlers.compaction.ts",
+      "lines": [
+        [
+          209,
+          214
+        ]
+      ],
+      "literals": [
+        "reasonClass === \"already_compacted\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/compact-reasons.ts:57-67",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/embedded-agent-runner/compact-reasons.ts",
+      "lines": [
+        [
+          57,
+          67
+        ]
+      ],
+      "literals": [
+        "return \"no_compactable_entries\";"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:180-192",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "extensions/codex/src/app-server/event-projector-events.ts",
+      "lines": [
+        [
+          180,
+          192
+        ]
+      ],
+      "literals": [
+        "backend: \"codex-app-server\","
       ]
     }
   ]

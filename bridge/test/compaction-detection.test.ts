@@ -852,6 +852,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1,
     );
@@ -874,6 +875,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1,
     );
@@ -903,6 +905,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
         messages: ["a hook printed this"],
       }),
       1,
@@ -922,6 +925,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1,
     );
@@ -959,6 +963,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       2,
     );
@@ -975,6 +980,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1_700_000_000,
     );
