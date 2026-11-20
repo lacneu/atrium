@@ -133,6 +133,12 @@ export function focusScrollsTranscript(target: EventTarget | null, viewport: HTM
   return r.top < v.top - 0.5 || r.bottom > v.bottom + 0.5;
 }
 
+// How far a pull of the layout can pass the loss the follow reads (lot 36), the scroll
+// position being exact and what it is compared with whole numbers: under a pixel for the
+// loss, read off two rounded scroll heights, and under a pixel for a growth of the box
+// that its client height, rounded too, does not show.
+const ROUNDED_PX = 2;
+
 // The follow under way on each transcript, so that the app can end it before scrolling
 // the transcript itself.
 const running = new WeakMap<HTMLElement, () => void>();
@@ -181,18 +187,17 @@ export function followReserve(viewport: HTMLElement, store: ViewportFollowStore)
   // The layout as the follow left it: its content within a pixel (the scroll height is a
   // whole number, the reserve's height is not), and its box.
   const layoutHeld = () => Math.abs(content() - contentThen) <= 1 && viewport.clientHeight === boxThen;
-  // Another's move up (lots 32-33): short of the end, the layout as the follow left it,
-  // and further up than what the content lost at the end pulled the scroll, by more than a
-  // pixel — the pull and the loss as it is read, each off a whole scroll height, differ by
-  // less than one. From where it ends, a pull of the layout followed by content that grows
-  // cannot be told from another's move — the same position, the same height: once the
-  // layout has moved, the move is the layout's, and taken back.
+  // Another's move up (lots 32-36): short of the end, the layout as the follow left it,
+  // and further up than what the content lost at the end pulled the scroll, by more than
+  // what the browser rounds (ROUNDED_PX). From where it ends, a pull of the layout followed
+  // by content that grows cannot be told from another's move — the same position, the same
+  // height: once the layout has moved, the move is the layout's, and taken back.
   const movedUpByOther = () => {
     if (short() <= 1) {
       mark();
       return false;
     }
-    return layoutHeld() && left - viewport.scrollTop > Math.max(0, contentThen - content()) + 1;
+    return layoutHeld() && left - viewport.scrollTop > Math.max(0, contentThen - content()) + ROUNDED_PX;
   };
   const toEnd = () => {
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "instant" });

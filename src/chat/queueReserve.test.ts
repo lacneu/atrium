@@ -1005,9 +1005,16 @@ function fakeDom(geometry: { top: number; height: number; client: number }, tran
   let height = geometry.height;
   let top = geometry.top;
   let queued = false;
+  // The box's exact height; its client height is a whole number, as the browser reports it.
+  let box = geometry.client;
   const viewport = {
     ownerDocument: doc,
-    clientHeight: geometry.client,
+    get clientHeight() {
+      return Math.round(box);
+    },
+    set clientHeight(v: number) {
+      box = v;
+    },
     get scrollHeight() {
       return Math.round(height);
     },
@@ -1016,7 +1023,7 @@ function fakeDom(geometry: { top: number; height: number; client: number }, tran
     },
     // Clamped as the browser clamps it; a change queues the scroll event.
     set scrollTop(v: number) {
-      const next = Math.max(0, Math.min(v, (fractional ? height : this.scrollHeight) - this.clientHeight));
+      const next = Math.max(0, Math.min(v, (fractional ? height - box : this.scrollHeight - this.clientHeight)));
       if (next === top) return;
       top = next;
       queued = true;
@@ -1064,6 +1071,12 @@ function fakeDom(geometry: { top: number; height: number; client: number }, tran
     },
     // Content growing at the end (another widget, a block that unfolds), and the box
     // shrinking (the keyboard opening, the composer growing): the scroll stays.
+    // The box growing by a fraction of a pixel (a zoomed page, the composer's line): its
+    // client height may read the same; the scroll is pulled up all the same.
+    growBoxExact: (px: number) => {
+      box += px;
+      viewport.scrollTop = top;
+    },
     growContent: (px: number) => {
       height += px;
     },
@@ -1613,6 +1626,39 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
     expect(aui.store.getState().isAtBottom).toBe(true);
     aui.nextText(30);
     expect(dom.short()).toBe(0);
+  });
+
+  // WHAT THE BROWSER ROUNDS (lot 36): the scroll height and the box's client height are
+  // whole numbers, the scroll position is not. A pull of the layout can pass what the
+  // content is read to have lost by up to two pixels — one for the loss, read off two
+  // rounded scroll heights, one for a growth of the box its client height does not show.
+  // Codex's case (pass 24): the content 1.6 px shorter and the box 0.8 px taller pull the
+  // scroll 2.4 px up, against a loss read as 1 px and a client height unchanged — lot 35
+  // read another's move up, and stopped with assistant-ui reading the reader away.
+  test.each([
+    ["within the window", 0],
+    ["past the window", 400],
+  ])("%s, a pull of 2.4 px — the content 1.6 px shorter, the box 0.8 px taller, its client height the same — is the layout's: taken back, assistant-ui reads the reader at the end, and the next text follows them (lot 36)", (_when, wait) => {
+    const dom = fakeDom({ top: 468.8, height: 968.4, client: 499.6 }, "0.2s", true);
+    const vp = dom.viewport;
+    const aui = assistantUi(dom);
+    followReserve(vp as unknown as HTMLElement, aui.store);
+    dom.grow(32);
+    dom.frame();
+    dom.frame();
+    expect(vp.scrollTop).toBeCloseTo(500.8, 6);
+    expect(vp.clientHeight).toBe(500);
+    dom.tick(wait);
+    dom.shrinkEnd(1.6);
+    dom.growBoxExact(0.8);
+    dom.grow(4);
+    expect(vp.clientHeight).toBe(500);
+    expect(vp.scrollTop).toBeCloseTo(498.4, 6);
+    dom.frame();
+    expect(Math.abs(dom.short())).toBeLessThanOrEqual(1);
+    expect(aui.store.getState().isAtBottom).toBe(true);
+    aui.nextText(30);
+    expect(Math.abs(dom.short())).toBeLessThanOrEqual(1);
   });
 
   // A PULL WITHIN THE TOLERANCE, PAST THE WINDOW (lot 35): the content a pixel shorter
