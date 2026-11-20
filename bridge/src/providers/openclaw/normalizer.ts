@@ -33,6 +33,7 @@ import { createHash } from "node:crypto";
 
 import {
   liveStableLength,
+  settledStableLength,
   MediaConfigurationError,
   sanitizeFrame,
   sanitizeText,
@@ -583,6 +584,25 @@ function extractLifecycleError(error: Json): string {
 const MEDIA_TASK_DELIVERY_RUN_RE =
   /^(?:image_generate|music_generate|video_generate):[^:]+:ok(?::|$)/;
 
+/** See `Normalizer.settledCompletion`. */
+interface SettledTail {
+  runId: string;
+  text: string;
+  held: string | null;
+  heldTries: number;
+  deltas: boolean;
+}
+
+/** A text offered to a settled bubble: `text` is what is written, `raw` what it was read
+ *  from; `terminal`: it came with the run's chat terminal. */
+export interface SettledCompletion {
+  runId: string;
+  text: string;
+  raw: string;
+  terminal: boolean;
+  tail: SettledTail;
+}
+
 export class Normalizer {
   readonly sessionKey: string;
 
@@ -620,8 +640,14 @@ export class Normalizer {
   /** The run whose bubble this turn settled BEFORE that run's `chat` terminal, and the
    *  text it settled with (see `settledCompletion`). `deltas`: the close was the run's own
    *  definitive `lifecycle` error, which the gateway follows with the flush of its chat
-   *  buffer. Set by every close; null once the run's chat terminal was read. */
-  private settledTail: { runId: string; text: string; deltas: boolean } | null = null;
+   *  buffer. `text` is the raw text the bubble is KNOWN to hold: it advances only when
+   *  Convex accepted a completion. `held`: the whole raw text at the close, when the
+   *  bubble settled on less (see `finalize`). Set by every close; null once the run's
+   *  chat terminal was read. */
+  private settledTail: SettledTail | null = null;
+  /** The window the last close opened (kept after its terminal closed it, to reopen it
+   *  when that terminal's own write failed). */
+  private lastTail: SettledTail | null = null;
   /** The frame being read is a `chat` terminal (`final`, `error`, `aborted`). */
   private frameChatTerminal = false;
   hasSnapshot: boolean;
@@ -2117,31 +2143,89 @@ export class Normalizer {
    * there (`chatRunState.clearRun`). A terminal that does not extend the bubble is left
    * to the caller — a DISTINCT late final is the run manager's (`lateFinalFor`).
    */
-  settledCompletion(frame: Json): { runId: string; text: string } | null {
+  settledCompletion(frame: Json): SettledCompletion | null {
     const tail = this.settledTail;
     if (tail === null || !this.finalized) return null;
     if (!isObject(frame) || frame.event !== "chat" || !isObject(frame.payload)) return null;
     const payload = frame.payload;
     if (payload.sessionKey !== this.sessionKey || payload.runId !== tail.runId) return null;
     const state = payload.state;
-    let text: string;
-    if (state === "final" || state === "error" || state === "aborted") {
+    const terminal = state === "final" || state === "error" || state === "aborted";
+    let text = "";
+    if (terminal) {
       this.settledTail = null;
       // An error terminal with no `errorMessage` uses `message` for the reason itself.
-      if (state === "error" && !isString(payload.errorMessage)) return null;
-      text = this.terminalMessageText(
-        payload.message,
-        state === "error" ? (payload.errorMessage as string) : null,
-      );
+      if (state !== "error" || isString(payload.errorMessage)) {
+        text = this.terminalMessageText(
+          payload.message,
+          state === "error" ? (payload.errorMessage as string) : null,
+        );
+      }
     } else if (state === "delta" && tail.deltas) {
       text = textFromMessage(payload.message);
     } else {
       return null;
     }
     if (this.segmentPrefix !== null) text = this.stripSegmentPrefix(text);
-    if (text.length <= tail.text.length || !text.startsWith(tail.text)) return null;
-    tail.text = text;
-    return { runId: tail.runId, text: this.safeSanitizeText(text) };
+    if (this.extendsSettled(tail, text)) return this.completionOf(tail, text, terminal);
+    // The terminal brought nothing more: the bubble still owes the text held back.
+    return terminal && tail.held !== null ? this.completionOf(tail, tail.held, true) : null;
+  }
+
+  /**
+   * The text the settled bubble was closed WITHOUT, once a frame shows the gateway has
+   * moved on: any frame but one of the settled run (its flush and its terminal leave in
+   * the same synchronous call as the lifecycle frame, so nothing else comes between).
+   * `frame` omitted: a turn is about to begin. Null when nothing is held.
+   */
+  settledRemainder(frame?: Json): SettledCompletion | null {
+    const tail = this.settledTail;
+    if (tail === null || tail.held === null || !this.finalized) return null;
+    if (frame !== undefined) {
+      if (!isObject(frame) || !isObject(frame.payload)) return null;
+      const p = frame.payload;
+      if ((frame.event === "chat" || frame.event === "agent") && p.runId === tail.runId) return null;
+    }
+    if (tail.heldTries >= Normalizer.MAX_HELD_TRIES) return null;
+    tail.heldTries++;
+    return this.completionOf(tail, tail.held, false);
+  }
+
+  /** What became of a completion: Convex took it (`true`), refused it (`false`), or the
+   *  write failed (`null`). Only an ACCEPTED text moves the window's reference, so a
+   *  later frame can offer again what a failed write did not land; a refused remainder
+   *  is not offered twice; a terminal whose write failed leaves its window open. */
+  noteCompletion(offer: SettledCompletion, applied: boolean | null): void {
+    const tail = offer.tail;
+    if (applied === true) {
+      if (offer.raw.length > tail.text.length) tail.text = offer.raw;
+      if (tail.held !== null && tail.text.length >= tail.held.length) tail.held = null;
+      return;
+    }
+    if (applied === false) {
+      if (offer.raw === tail.held) tail.held = null;
+      return;
+    }
+    if (offer.terminal && this.finalized && this.settledTail === null && this.lastTail === tail) {
+      this.settledTail = tail;
+    }
+  }
+
+  private static readonly MAX_HELD_TRIES = 3;
+
+  /** A text the settled bubble can take: strictly longer than what it holds, starting
+   *  with it, never short of the text held back, never the silence sentinel. */
+  private extendsSettled(tail: SettledTail, text: string): boolean {
+    return (
+      text.length > tail.text.length &&
+      text.startsWith(tail.text) &&
+      (tail.held === null || (text.length >= tail.held.length && text.startsWith(tail.held))) &&
+      !/^\s*(?:NO_REPLY|HEARTBEAT_OK)\s*$/.test(text)
+    );
+  }
+
+  private completionOf(tail: SettledTail, raw: string, terminal: boolean): SettledCompletion {
+    return { runId: tail.runId, text: this.safeSanitizeText(raw).trimEnd(), raw, terminal, tail };
   }
 
   private clearRetryingPhase(events: BridgeEvent[]): void {
@@ -3814,16 +3898,28 @@ export class Normalizer {
     // Closed before the run's `chat` terminal: that run's later chat text may still
     // complete the bubble. A run the transcript closed keeps its lane instead.
     const run = this.currentRunId;
-    this.settledTail =
+    const early =
       run !== null &&
       !this.frameChatTerminal &&
       cause !== "transcript_settled" &&
-      !this.adoptedRunIds.has(run)
-        ? { runId: run, text, deltas: false }
-        : null;
+      !this.adoptedRunIds.has(run);
+    // A FAILED early close settles on the STABLE part of the text only
+    // (`settledStableLength`), without its trailing blank: the sanitiser
+    // may still rewrite the tail once more text arrives (a path becomes its file name, a
+    // `MEDIA:` line disappears with its line break), and a completion must stay a strict
+    // extension of what was persisted. The whole text is kept (`held`) and written when
+    // the window ends without a completion (`settledRemainder`).
+    const settled =
+      early && (error !== null || status === "aborted")
+        ? text.slice(0, settledStableLength(text)).trimEnd()
+        : text;
+    this.settledTail = early
+      ? { runId: run, text: settled, held: settled === text ? null : text, heldTries: 0, deltas: false }
+      : null;
+    this.lastTail = this.settledTail;
     const finalEvent: BridgeEvent = {
       type: EVENT_MESSAGE_FINAL,
-      text: this.safeSanitizeText(text),
+      text: this.safeSanitizeText(settled),
       diagnosticStopReason: this.diagStopReason,
       diagnosticTimeoutPhase: this.diagTimeoutPhase,
       diagnosticProviderStarted: this.diagProviderStarted,

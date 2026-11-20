@@ -42,6 +42,8 @@ class Writer extends RecordingWriter {
   /** Live writes made to a bubble AFTER it settled (there must be none). */
   writesAfterSettle = 0;
   failCompletions = false;
+  /** Completion writes that fail before anything is committed, then the backend is back. */
+  transientFailures = 0;
 
   override async startAssistant(chatId: string, runId: string | null): Promise<string> {
     const id = await super.startAssistant(chatId, runId);
@@ -75,6 +77,10 @@ class Writer extends RecordingWriter {
   }
   async completeSettledText(a: { messageId: string; runId: string; text: string }): Promise<boolean> {
     if (this.failCompletions) throw new Error("convex down");
+    if (this.transientFailures > 0) {
+      this.transientFailures--;
+      throw new Error("convex down");
+    }
     const s = this.settled.get(a.messageId);
     const applied =
       s !== undefined &&
@@ -88,6 +94,8 @@ class Writer extends RecordingWriter {
   readonly late: string[] = [];
   async appendLateFinal(a: { messageId: string | null; text: string }): Promise<string | null> {
     this.late.push(a.text);
+    const s = a.messageId === null ? undefined : this.settled.get(a.messageId);
+    if (s !== undefined && !s.text.includes(a.text)) s.text = s.text.trim() === "" ? a.text : `${s.text}\n\n${a.text}`;
     return a.messageId;
   }
   /** A steer cut: the segment settles with its text, the run goes on in a new bubble. */
@@ -327,7 +335,7 @@ describe("the bounds of a completion", () => {
     n.feed(chatDelta("runB", 1, "Hi"), 2);
     n.feed(lifecycleError("runB", 2), 2);
     expect(n.settledCompletion(chatDelta("runA", 3, "Hello world"))).toBeNull();
-    expect(n.settledCompletion(chatDelta("runB", 2, "Hi there"))).toEqual({ runId: "runB", text: "Hi there" });
+    expect(n.settledCompletion(chatDelta("runB", 2, "Hi there"))).toMatchObject({ runId: "runB", text: "Hi there" });
   });
 
   it("an error terminal with no `errorMessage` uses `message` for the reason: never read as text", async () => {
@@ -394,7 +402,8 @@ describe("the bounds of a completion", () => {
     const old = await closedOnLifecycleError();
     (old.writer as { completeSettledText?: unknown }).completeSettledText = undefined;
     await old.feed(chatDelta("runA", 3, "Hello world"), chatError("runA", 3, "x", "Hello world"));
-    expect(only(old.writer).text).toBe("Hello");
+    // No completion to write with: the terminal's text still lands, joined as a late final.
+    expect(old.writer.late).toEqual(["world"]);
   });
 
   it("after a steer split, the terminal's whole-run text completes the LAST segment only", async () => {
@@ -410,6 +419,203 @@ describe("the bounds of a completion", () => {
     );
     expect([...h.writer.settled.values()].map((b) => b.text)).toEqual(["First part.", "Second part."]);
     expect(h.writer.offered.map((o) => [o.messageId, o.applied])).toEqual([["msg2", true]]);
+  });
+});
+
+describe("part seven — a write that fails does not consume the completion", () => {
+  it.each([
+    ["aborted", (text: string) => chatAborted("runA", 3, text)],
+    ["error", (text: string) => chatError("runA", 3, "provider failed", text)],
+  ])("the flush fails once, the identical `%s` terminal lands the text", async (_n, terminal) => {
+    const h = await closedOnLifecycleError();
+    h.writer.transientFailures = 1;
+    await h.feed(chatDelta("runA", 3, "Hello world"));
+    expect(only(h.writer).text).toBe("Hello");
+    await h.feed(terminal("Hello world"));
+    expect(only(h.writer).text).toBe("Hello world");
+    expect(h.writer.late).toEqual([]);
+  });
+
+  it("the terminal's own write fails: its window stays open, a re-broadcast lands the text", async () => {
+    const h = await closedOnLifecycleError();
+    h.writer.transientFailures = 1;
+    await h.feed(chatAborted("runA", 3, "Hello world"));
+    expect(only(h.writer).text).toBe("Hello");
+    expect(h.writer.late).toEqual([]);
+    await h.feed({ ...chatAborted("runA", 3, "Hello world") });
+    expect(only(h.writer).text).toBe("Hello world");
+  });
+
+  it("delta and terminal in flight together: one text, whichever write lands, and no trace", async () => {
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a);
+    try {
+      for (const failures of [0, 1]) {
+        const h = await closedOnLifecycleError();
+        h.writer.transientFailures = failures;
+        // Not awaited one by one: both offers are decided before either write resolves.
+        await Promise.all([
+          h.rm.feed(chatDelta("runA", 3, "Hello world"), h.tick()),
+          h.rm.feed(chatAborted("runA", 3, "Hello world"), h.tick()),
+        ]);
+        expect(only(h.writer).text).toBe("Hello world");
+        expect(h.writer.offered.filter((o) => o.applied)).toHaveLength(1);
+        expect(h.writer.late).toEqual([]);
+        expect(h.writer.finalizes).toHaveLength(1);
+        if (failures === 0) expect(errors).toEqual([]);
+      }
+    } finally {
+      console.error = original;
+    }
+  });
+
+  it("the normalizer's reference moves only on an accepted write, in either order of answers", () => {
+    const closed = () => {
+      const n = new Normalizer(KEY);
+      n.beginTurn(1);
+      n.noteRunStarted("runA", 1);
+      n.feed(chatDelta("runA", 1, "Hello"), 1);
+      n.feed(lifecycleError("runA", 2), 1);
+      return n;
+    };
+    for (const order of [[0, 1], [1, 0]] as const) {
+      const n = closed();
+      const offers = [
+        n.settledCompletion(chatDelta("runA", 3, "Hello world"))!,
+        n.settledCompletion(chatAborted("runA", 3, "Hello world"))!,
+      ];
+      expect(offers.map((o) => o?.text)).toEqual(["Hello world", "Hello world"]);
+      // The first answer accepts, the second is refused as a repeat: same end state.
+      n.noteCompletion(offers[order[0]]!, true);
+      n.noteCompletion(offers[order[1]]!, false);
+      expect(n.settledCompletion(chatAborted("runA", 4, "Hello world"))).toBeNull();
+    }
+    // Refused or failed: nothing moved, the same text is offered again.
+    const n = closed();
+    const first = n.settledCompletion(chatDelta("runA", 3, "Hello world"))!;
+    n.noteCompletion(first, null);
+    expect(n.settledCompletion(chatDelta("runA", 4, "Hello world"))).toMatchObject({ text: "Hello world" });
+  });
+});
+
+describe("part seven — an unstable tail at the close", () => {
+  const OUT = "/home/node/.openclaw/media/outbound";
+  async function closedWith(text: string) {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(
+      agent("runA", 0, "lifecycle", { phase: "start" }),
+      chatDelta("runA", 1, text),
+      lifecycleError("runA", 2),
+    );
+    return h;
+  }
+  const tickFrame = { type: "event", event: "tick", payload: { ts: 1 } };
+
+  it("a path in progress: the close keeps the stable text, and the sanitised completion extends it", async () => {
+    const h = await closedWith("Report at /home/node/.openclaw/media/out");
+    expect(only(h.writer).text).toBe("Report at");
+    const full = `Report at ${OUT}/report.pdf. The answer is 42.`;
+    await h.feed(chatDelta("runA", 2, full), chatAborted("runA", 2, full));
+    expect(only(h.writer).text).toBe("Report at report.pdf. The answer is 42.");
+    expect(h.writer.offered.map((o) => o.applied)).toEqual([true]);
+    expect(h.writer.late).toEqual([]);
+  });
+
+  it.each([
+    ["a `MEDIA:` directive in progress", "Here.\nMEDIA:/home/no", `Here.\nMEDIA:${OUT}/a.png\nDone.`, "Here.", "Here.\nDone."],
+    ["a `path:` label in progress", "Intro\npath: /home/node/.openclaw/med", `Intro\npath: ${OUT}/a.txt\nDone.`, "Intro", "Intro\nDone."],
+    ["a path behind a prefix", "See file=/home/node/.openclaw/media/out", `See file=${OUT}/a.txt now.`, "See", "See file=a.txt now."],
+    ["a trailing line break the sanitiser drops", "Here.\n", `Here.\nMEDIA:${OUT}/a.png\nDone.`, "Here.", "Here.\nDone."],
+  ])("%s: closed on the stable text, completed exactly", async (_n, atClose, full, settled, completed) => {
+    const h = await closedWith(atClose);
+    expect(only(h.writer).text).toBe(settled);
+    await h.feed(chatError("runA", 2, "provider failed", full));
+    expect(only(h.writer).text).toBe(completed);
+    expect(h.writer.late).toEqual([]);
+  });
+
+  it("no completion ever comes: the first frame that is not the run's gives the bubble its whole text", async () => {
+    const h = await closedWith("The log is in /tmp/x");
+    expect(only(h.writer).text).toBe("The log is in");
+    // The run's own frames do not end the wait: its flush may still be on its way.
+    await h.feed(agent("runA", 3, "lifecycle", { phase: "end" }));
+    expect(only(h.writer).text).toBe("The log is in");
+    await h.feed(tickFrame);
+    expect(only(h.writer).text).toBe("The log is in /tmp/x");
+    await h.feed(tickFrame, tickFrame);
+    expect(h.writer.offered).toHaveLength(1);
+  });
+
+  it("no completion ever comes: the run's bare terminal gives the bubble its whole text", async () => {
+    const h = await closedWith("The log is in /tmp/x");
+    await h.feed(chatError("runA", 2, "provider failed"));
+    expect(only(h.writer).text).toBe("The log is in /tmp/x");
+  });
+
+  it("no completion ever comes: the next turn gives the bubble its whole text before it begins", async () => {
+    const h = await closedWith("The log is in /tmp/x");
+    await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+    expect(h.writer.settled.get("msg1")!.text).toBe("The log is in /tmp/x");
+  });
+
+  it("the whole text's write fails: it is offered again, a bounded number of times", async () => {
+    const h = await closedWith("The log is in /tmp/x");
+    h.writer.transientFailures = 1;
+    await h.feed(tickFrame);
+    expect(only(h.writer).text).toBe("The log is in");
+    await h.feed(tickFrame);
+    expect(only(h.writer).text).toBe("The log is in /tmp/x");
+
+    const down = await closedWith("The log is in /tmp/x");
+    down.writer.failCompletions = true;
+    let attempts = 0;
+    const real = down.writer.completeSettledText.bind(down.writer);
+    down.writer.completeSettledText = async (a) => {
+      attempts++;
+      return real(a);
+    };
+    for (let i = 0; i < 8; i++) await down.feed(tickFrame);
+    expect(attempts).toBe(3);
+  });
+
+  it("the whole text Convex refuses is offered once, not at every frame", async () => {
+    const h = await closedWith("The log is in /tmp/x");
+    only(h.writer).text = "something else";
+    await h.feed(tickFrame, tickFrame, tickFrame);
+    expect(h.writer.offered.map((o) => o.applied)).toEqual([false]);
+  });
+
+  it("a stale view shorter than the text held back is never written", async () => {
+    const h = await closedWith("The log is in /tmp/x");
+    await h.feed(chatDelta("runA", 2, "The log is in /tm"));
+    expect(h.writer.offered).toEqual([]);
+  });
+
+  it("an early close that did not fail keeps its whole text: nothing is held back", async () => {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(chatDelta("runA", 1, "The log is in /tmp/x"));
+    await h.rm.endTurn(h.tick(), "final", null, "recv_timeout");
+    expect(only(h.writer).text).toBe("The log is in /tmp/x");
+  });
+
+  it("DECLARED — a rewrite of text already persisted (line ends normalised): the terminal's text joins, never lost", async () => {
+    const h = await closedWith("One\r\nTwo");
+    expect(only(h.writer).text).toBe("One\r\nTwo");
+    await h.feed(chatAborted("runA", 2, `One\r\nTwo ${OUT}/a.txt ok`));
+    // The sanitised text ("One\nTwo a.txt ok") does not extend "One\r\nTwo": refused, joined.
+    expect(h.writer.offered.map((o) => o.applied)).toEqual([false]);
+    expect(h.writer.late).toEqual(["a.txt ok"]);
+    expect(only(h.writer).text).toBe("One\r\nTwo\n\na.txt ok");
+  });
+
+  it("the silence sentinel is never a completion", async () => {
+    const h = await closedWith("");
+    await h.feed(chatAborted("runA", 2, "NO_REPLY"));
+    expect(h.writer.offered).toEqual([]);
+    expect(h.writer.late).toEqual([]);
   });
 });
 

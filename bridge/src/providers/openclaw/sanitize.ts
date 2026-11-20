@@ -360,6 +360,25 @@ export function liveStableLength(text: string): number {
  *
  * `mediaSessionKey` is accepted for signature parity but unused.
  */
+/**
+ * How much of a text may be PERSISTED when its turn closes before the run's chat
+ * terminal: more text can still arrive and complete the bubble, and the completion must
+ * extend what was written. Stricter than `liveStableLength`, because what it leaves out
+ * is written back when no completion comes: the last word is held as soon as it contains
+ * a `/` (a server path can sit behind a prefix, `file=/home/…`), and so is a last line
+ * that is only a `path:` / `chemin:` label — the label line disappears whole once its
+ * path is complete.
+ */
+export function settledStableLength(text: string): number {
+  let end = liveStableLength(text);
+  let wordStart = end;
+  while (wordStart > 0 && !/\s/.test(text[wordStart - 1]!)) wordStart--;
+  if (text.slice(wordStart, end).includes("/")) end = wordStart;
+  let lineStart = end;
+  while (lineStart > 0 && !LIVE_LINE_BREAK_RE.test(text[lineStart - 1]!)) lineStart--;
+  return /^\s*(?:path|chemin)\s*:\s*`?\s*$/i.test(text.slice(lineStart, end)) ? lineStart : end;
+}
+
 export function sanitizeFrame(value: unknown, _opts?: { mediaSessionKey?: string }): unknown {
   if (typeof value === "string") {
     return sanitizeText(value);
