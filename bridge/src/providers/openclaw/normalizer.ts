@@ -1787,6 +1787,8 @@ export class Normalizer {
         // to "provider access removed" (ui/src/pages/chat/chat-gateway.ts:150-153). Shown as
         // "Interrompu" it read as if the reader had pressed Stop. A labelled error instead,
         // never retried: the provider stays logged out until an operator reconnects it.
+        // The abort carries the buffered answer (the logout cancels the pending flush).
+        this.applyTerminalMessage(message, null, now, events);
         events.push(
           ...this.finalize(
             now,

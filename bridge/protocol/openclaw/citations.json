@@ -1862,14 +1862,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1947",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1949",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1947,
-          1947
+          1949,
+          1949
         ]
       ],
       "literals": [

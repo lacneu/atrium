@@ -803,6 +803,16 @@ describe("the terminal's own text", () => {
     expect(finalOf(feed(terminal("aborted", "Half of the answer", 2)))).toBe("Half of the answer");
   });
 
+  it("a provider-logout abort (`stopReason: auth-revoked`) carries the buffered answer: it is read", () => {
+    // `abortChatRunsForProvider` cancels the pending chat flush and puts the buffer on the
+    // abort. Hand-built in that shape.
+    const { feed } = turn();
+    feed(delta("Half", 1));
+    const abort = terminal("aborted", "Half of the answer", 3);
+    const events = feed({ ...abort, payload: { ...abort.payload, stopReason: "auth-revoked" } });
+    expect(finalOf(events)).toBe("Half of the answer");
+  });
+
   it("after a steer split, the terminal's text completes the CURRENT segment", () => {
     // The reviewer's sequence: "First." settled at a cut, the delta for the rest is lost.
     const { n, feed } = turn();
