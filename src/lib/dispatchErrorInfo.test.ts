@@ -28,6 +28,18 @@ describe("dispatchErrorInfo", () => {
     expect(info.hint).toBe(m.error_gateway_media_unavailable_hint());
   });
 
+  test("an announced gateway STOP has its own label, never the restart's", () => {
+    const stop = dispatchErrorInfo("GATEWAY_STOPPING");
+    const restart = dispatchErrorInfo("GATEWAY_RESTARTING");
+    expect(stop.label).toBe(m.error_gateway_stopping_label());
+    expect(stop.label).not.toBe("GATEWAY_STOPPING");
+    expect(stop.label).not.toBe(restart.label);
+    expect(stop.hint).toBe(m.error_gateway_stopping_hint());
+    for (const locale of ["en", "fr"] as const) {
+      expect(m.error_gateway_stopping_label({}, { locale }), locale).not.toMatch(/restart|redémarr/i);
+    }
+  });
+
   test("null/undefined -> the UNKNOWN entry, not a crash", () => {
     expect(dispatchErrorInfo(undefined).label).toBe("Cause inconnue");
     expect(dispatchErrorInfo(null).label).toBe("Cause inconnue");

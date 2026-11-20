@@ -232,6 +232,12 @@ export function actionForErrorCode(code: string | null): string {
       return "The gateway ANNOUNCED a shutdown and closed the connection before acknowledging this send. Delivery is UNPROVEN, not refused: a response can race ahead of the ack, so the agent may have taken the turn. Nothing to fix if the restart was intended — check the session transcript for a reply before re-running the work; if the gateway does not come back, check the OpenClaw service.";
     case "gateway_restarting":
       return "The gateway ANNOUNCED a shutdown and closed the connection while this turn was RUNNING: the agent had accepted it and may resume it after the restart. The bridge polls the session transcript to recover the reply — EXCEPT when the announced absence exceeded the recovery budget (9 min), where the turn is closed immediately and no poll remains. Check the transcript before re-running the work.";
+    // An announced STOP (`shutdown` with no `restartExpectedMs`): the gateway did not
+    // say it was coming back, so neither text may tell anyone to wait for a restart.
+    case "GATEWAY_STOPPING":
+      return "The gateway ANNOUNCED that it was STOPPING (a shutdown notice with no restart delay) and closed the connection before acknowledging this send. Delivery is UNPROVEN, not refused: a response can race ahead of the ack, so the agent may have taken the turn. The gateway did not say it would come back: start the OpenClaw service if the stop was not intended, then check the session transcript for a reply before re-running the work.";
+    case "gateway_stopping":
+      return "The gateway ANNOUNCED that it was STOPPING (a shutdown notice with no restart delay) and closed the connection while this turn was RUNNING: the agent had accepted it. The gateway did not say it would come back. Start the OpenClaw service if the stop was not intended; what the agent wrote before the stop is in the session transcript — check it before re-running the work.";
     case "CONNECTION_SATURATED":
       return "The gateway closed the connection for slow consumption (its 50 MiB send buffer filled) before acknowledging this send; delivery is UNPROVEN rather than refused. Look at bridge CPU/event-loop pressure and at turns producing very large outputs; this is not a gateway fault.";
     case "connection_saturated":

@@ -72,6 +72,9 @@ const CONNECTION_LOST_CODE: FinalizeCause = "connection_lost";
 // connection_lost because the honest message differs ("it is coming back", and
 // often when) and because a restart RESUMES the run gateway-side.
 const GATEWAY_RESTARTING_CODE: FinalizeCause = "gateway_restarting";
+// …or a plain STOP (`shutdown` with no `restartExpectedMs`): the gateway did not
+// say it was coming back, so the reader must not be told to wait for its return.
+const GATEWAY_STOPPING_CODE: FinalizeCause = "gateway_stopping";
 // The gateway hung up with `1008 "slow consumer"`: our receive buffer passed its
 // ceiling, so it had already been DROPPING frames before cutting us off. Distinct
 // from a network blip — the reply was provably incomplete, and the remedy is on
@@ -1050,6 +1053,7 @@ class Session implements BridgeSession {
    */
   private static namedKind(cause: string): string | null {
     return cause === GATEWAY_RESTARTING_CODE ||
+      cause === GATEWAY_STOPPING_CODE ||
       cause === CONNECTION_SATURATED_CODE
       ? cause
       : null;
@@ -1059,6 +1063,8 @@ class Session implements BridgeSession {
     switch (this.connection.connectionEnd?.kind) {
       case "gateway_restarting":
         return GATEWAY_RESTARTING_CODE;
+      case "gateway_stopping":
+        return GATEWAY_STOPPING_CODE;
       case "slow_consumer":
       // OUR side of the same fact: frames were dropped because one end could not
       // keep up. The reader's message is identical, so the cause is too.

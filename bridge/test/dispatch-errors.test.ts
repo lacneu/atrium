@@ -68,6 +68,14 @@ describe("classifyGatewayError", () => {
         new Error("OpenClaw Gateway connection closed [gateway_restarting]"),
       ),
     ).toBe("GATEWAY_RESTARTING");
+    // A STOP the gateway announced is not a restart: it did not say it would be back.
+    expect(
+      classifyGatewayError(
+        new Error("OpenClaw Gateway connection closed [gateway_stopping]"),
+      ),
+    ).toBe("GATEWAY_STOPPING");
+    expect(faultDomain("GATEWAY_STOPPING")).toBe("bridge");
+    expect(LOST_RESPONSE_CODES.has("GATEWAY_STOPPING")).toBe(true);
     expect(
       classifyGatewayError(
         new Error("OpenClaw Gateway connection closed [slow_consumer]"),

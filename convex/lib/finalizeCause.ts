@@ -54,6 +54,7 @@ export const FINALIZE_CAUSES: ReadonlySet<string> = new Set([
   // — The session closed the turn from outside the frame stream —
   "connection_lost",
   "gateway_restarting",
+  "gateway_stopping",
   "connection_saturated",
   "external",
   // — …and the ones CONVEX mints itself (see CONVEX_MINTED_CAUSES) —

@@ -56,6 +56,12 @@ const INFO: Record<string, (ctx: DispatchErrorContext) => DispatchErrorInfo> = {
     label: m.error_gateway_restarting_label(),
     hint: m.error_gateway_restarting_hint(),
   }),
+  // A plain STOP: the gateway's notice carried no restart delay, so nothing says it
+  // is coming back — "restarting" would send the operator waiting for a return.
+  GATEWAY_STOPPING: () => ({
+    label: m.error_gateway_stopping_label(),
+    hint: m.error_gateway_stopping_hint(),
+  }),
   CONNECTION_SATURATED: () => ({
     label: m.error_connection_saturated_label(),
     hint: m.error_connection_saturated_hint(),

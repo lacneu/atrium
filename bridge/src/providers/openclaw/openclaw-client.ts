@@ -590,8 +590,8 @@ export class OpenClawConnection {
         if (handshakeNotice) {
           handshakeShutdown = handshakeNotice;
           console.log(
-            `[openclaw] gateway announced a shutdown DURING connect (restartExpectedMs=${
-              handshakeNotice.restartExpectedMs ?? "unknown"
+            `[openclaw] gateway announced a ${handshakeNotice.restartAnnounced ? "restart" : "stop"} DURING connect (restartExpectedMs=${
+              handshakeNotice.restartExpectedMs ?? "none"
             })`,
           );
           return; // not the challenge nor our connect ack; keep waiting (or the close wins)
@@ -905,8 +905,8 @@ export class OpenClawConnection {
     if (notice) {
       this.shutdownNotice = notice;
       console.log(
-        `[openclaw] gateway announced a shutdown (restartExpectedMs=${
-          notice.restartExpectedMs ?? "unknown"
+        `[openclaw] gateway announced a ${notice.restartAnnounced ? "restart" : "stop"} (restartExpectedMs=${
+          notice.restartExpectedMs ?? "none"
         })`,
       );
     }

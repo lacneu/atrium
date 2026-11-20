@@ -202,6 +202,27 @@ describe("errorDetailView (actionable error classification)", () => {
     }
   });
 
+  it("an announced gateway STOP is not worded as a restart", () => {
+    // `shutdown` without `restartExpectedMs` is a stop (upstream run-loop.ts): the
+    // reader must not be told the gateway is restarting or to wait for its return.
+    const restart = errorDetailView("gateway_restarting", null).headline;
+    const generic = errorDetailView("connection_lost", null).headline;
+    const viaString = errorDetailView("gateway_stopping", null);
+    expect(viaString.headline).toBeTruthy();
+    expect(viaString.headline).not.toBe("gateway_stopping");
+    expect(viaString.headline).not.toBe(restart);
+    expect(viaString.headline).not.toBe(generic);
+    expect(viaString.detail).toBeNull();
+    const preAck = errorDetailView("", "GATEWAY_STOPPING");
+    expect(preAck.headline).toBe(viaString.headline);
+    expect(preAck.headline ?? "").not.toMatch(/nothing ran|never reached/i);
+    for (const locale of ["en", "fr"] as const) {
+      const text = m.runstatus_error_gateway_stopping({}, { locale });
+      expect(text, locale).toMatch(locale === "en" ? /stop/i : /arrêt/i);
+      expect(text, locale).not.toMatch(/restart|redémarr/i);
+    }
+  });
+
   it("stream_orphaned via error string (legacy path, no errorCode) keeps its headline", () => {
     const v = errorDetailView("stream_orphaned", null);
     expect(v.headline).toBeTruthy();

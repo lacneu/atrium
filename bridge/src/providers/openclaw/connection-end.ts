@@ -10,6 +10,10 @@
  *     the cron/heartbeat/watcher steps stop). It is scope-free upstream
  *     (`EVENT_SCOPE_GUARDS.shutdown = []`), so every operator connection gets
  *     it: an announced restart is never a mystery, unless we drop the frame.
+ *     `restartExpectedMs` is what separates a RESTART from a plain STOP: the
+ *     gateway sets it for a restart only (`src/cli/gateway-cli/run-loop.ts`,
+ *     `restartExpectedMs: isRestart ? 1500 : null`), and its own Control UI arms
+ *     its "restarting" state on that field alone (`ui/src/app/gateway-store.ts`).
  *  2. The WebSocket close code + reason. `1008` is the interesting one, and it
  *     is AMBIGUOUS on the code alone: the gateway sends `1008 "slow consumer"`
  *     when our receive buffer passed `MAX_BUFFERED_BYTES` (50 MiB —
@@ -29,8 +33,12 @@
 
 /** What ended the connection, as a stable code (never free text). */
 export type ConnectionEndKind =
-  /** The gateway ANNOUNCED a shutdown/restart before closing (`event:"shutdown"`). */
+  /** The gateway ANNOUNCED a RESTART before closing (`event:"shutdown"` carrying
+   *  `restartExpectedMs`): it said it is coming back. */
   | "gateway_restarting"
+  /** The gateway ANNOUNCED a plain STOP (`event:"shutdown"` with no
+   *  `restartExpectedMs`): it said it is going away, not that it will be back. */
+  | "gateway_stopping"
   /** `1008 "slow consumer"`: our receive buffer passed the gateway's ceiling. */
   | "slow_consumer"
   /** `1008 "unauthorized: …"`: credentials/device refused. */
@@ -49,6 +57,9 @@ export interface ShutdownNotice {
   reasonPresent: boolean;
   /** The gateway's own estimate of how long it will be gone, when it gave one. */
   restartExpectedMs: number | null;
+  /** Whether the notice announces a RESTART: `restartExpectedMs` was a number at all
+   *  (the Control UI's test). True with a null delay when the number was unusable. */
+  restartAnnounced: boolean;
 }
 
 export interface ConnectionEnd {
@@ -94,6 +105,7 @@ export function readShutdownNotice(frame: unknown): ShutdownNotice | null {
       typeof ms === "number" && Number.isFinite(ms) && ms >= 0
         ? Math.floor(ms)
         : null,
+    restartAnnounced: typeof ms === "number",
   };
 }
 
@@ -103,7 +115,8 @@ export function readShutdownNotice(frame: unknown): ShutdownNotice | null {
  * An ANNOUNCED shutdown outranks the close code: the gateway told us its
  * intention explicitly, and the code that follows is just how the socket went
  * away (often a plain 1000/1006). Reading the code first would demote a known
- * restart to a generic drop.
+ * restart to a generic drop. Which of the two it announced — a restart or a
+ * stop — is the notice's own `restartAnnounced`.
  */
 export function classifyConnectionEnd(input: {
   code?: number | null;
@@ -117,7 +130,7 @@ export function classifyConnectionEnd(input: {
   const reasonPresent = reasonText.trim().length > 0;
   if (input.shutdown) {
     return {
-      kind: "gateway_restarting",
+      kind: input.shutdown.restartAnnounced ? "gateway_restarting" : "gateway_stopping",
       restartExpectedMs: input.shutdown.restartExpectedMs,
       reasonPresent: input.shutdown.reasonPresent || reasonPresent,
     };
