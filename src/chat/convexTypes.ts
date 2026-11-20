@@ -108,6 +108,9 @@ export type ConvexMessagePartView =
       selected?: string;
       at: number;
     }
+  // A status notice the gateway sent beside the answer (a usage line, a diagnostic): its
+  // own sentence, shown as a notice line under the reply — never part of the answer.
+  | { kind: "gateway_notice"; text: string; at: number }
   // Gateway context-compaction marker: the gateway summarized this session's
   // older context during the turn (content-free — phase + timestamp only).
   // Rendered as the always-visible "context optimized" note on the message.
@@ -389,6 +392,12 @@ export function isModelFallbackPart(
   p: ConvexMessagePartView,
 ): p is Extract<ConvexMessagePartView, { kind: "model_fallback" }> {
   return p.kind === "model_fallback";
+}
+
+export function isGatewayNoticePart(
+  p: ConvexMessagePartView,
+): p is Extract<ConvexMessagePartView, { kind: "gateway_notice" }> {
+  return p.kind === "gateway_notice";
 }
 
 export function isCompactionPart(

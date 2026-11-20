@@ -604,3 +604,25 @@ describe("the model-fallback marker rides the bubble's metadata", () => {
     expect("modelFallback" in customMeta(makeMessage({ text: "hello" }))).toBe(false);
   });
 });
+
+describe("the gateway's status notices ride the bubble's metadata, never its content", () => {
+  it("are listed in order, apart from the reply", () => {
+    const message = makeMessage({
+      text: "BENCH_FALLBACK_OK",
+      parts: [
+        { kind: "gateway_notice", text: "Usage: 1230 in / 10 out", at: 1 },
+        { kind: "gateway_notice", text: "Diagnostics: ok", at: 2 },
+      ],
+    });
+    expect(customMeta(message).gatewayNotices).toStrictEqual(["Usage: 1230 in / 10 out", "Diagnostics: ok"]);
+    expect(contentTypes(message)).toStrictEqual(["text"]);
+    const text = (convertConvexMessage(message).content as ReadonlyArray<{ type: string; text?: string }>)
+      .map((p) => p.text ?? "")
+      .join("");
+    expect(text).not.toContain("Usage:");
+  });
+
+  it("a bubble without one carries none", () => {
+    expect("gatewayNotices" in customMeta(makeMessage({ text: "hello" }))).toBe(false);
+  });
+});

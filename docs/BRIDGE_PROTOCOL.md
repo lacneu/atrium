@@ -144,6 +144,7 @@ reactively. The op union (the canonical shape lives in
 | `upsertSubAgent` / `upsertSubAgentToolPart` | Observe a spawned sub-agent's lifecycle, result and tool activity (the sub-agent monitor). |
 | `recordSubAgentInteractionReply` | Attach a sub-agent's reply to a user's follow-up interaction with it. |
 | `modelFallback` | Mark the bubble of a run that was answered by another model than the one selected, or after which the session is back on its selected model. Addressed by the bubble's id when the bridge knows it, by the run otherwise; never creates a bubble. Model names only. |
+| `gatewayNotice` | Add a status notice of the gateway (a usage line, a diagnostic) as a notice line on the bubble of its run, addressed like `modelFallback`; never part of the answer's text, never a bubble of its own. |
 | `gatewayPressure` / `mediaTrace` / `rehydrateTrace` / `calibrate` | Content-free observability writes (context pressure, media delivery decisions, rehydration decisions, clock calibration). |
 | `frameGapTrace` / `gatewaySeqReportTrace` | Content-free observability writes, two different facts: a hole in the envelope sequence of one of the bridge's sockets (frames the gateway dropped for it), and the gateway's own report about a run's internal numbering (`seq gap`), which is not a lost frame. |
 

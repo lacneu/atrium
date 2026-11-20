@@ -69,6 +69,7 @@ import { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
 import { isExplicitTerminal, utf8Bytes } from "./lib/bubbleProjection";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
+import { GATEWAY_NOTICES_PER_BUBBLE } from "./lib/modelFallback";
 import { currentPlanIndex, usablePlanStamp } from "./lib/planOrder";
 
 // ── ATOMIC ingest authorization (cross-gateway barrier) ──────────────────────
@@ -6427,16 +6428,55 @@ export const splitSegment = internalMutation({
  * terminal had nothing to show), a bubble is created for it.
  */
 /**
- * A MODEL FALLBACK the gateway stated for a run -> a marker on that run's bubble.
+ * The bubble a RUN-KEYED fact goes on (a model fallback, a gateway status notice): the
+ * gateway states these after the run's work, so the bubble is usually settled already.
  *
- * The gateway says it after the run's work (captured after the run's terminal), so the
- * bubble is usually settled already: this writes ONE part and touches nothing else —
- * not the text, not the status, not the finalize stamps. It never creates a bubble: a
- * run that showed nothing has nothing to mark.
- *
- * The bubble is the one the bridge names, when that is an answer of this chat carrying
- * this run; otherwise the run's own answer in this chat (and session, when given). In
- * both cases a bubble bound to another instance is not this bridge's to mark.
+ * The bubble the bridge names, when that is an answer of this chat — the bridge keeps,
+ * for every run a turn owned (the run it was sent as, a run it adopted on the gateway's
+ * word), the bubble that turn wrote, so the named bubble may carry another run's id.
+ * Without a name, the run's own answer in this chat (and session, when given). In both
+ * cases a bubble bound to another instance is not this bridge's to touch. Null when the
+ * run left no bubble: the caller writes nothing, and never creates one.
+ */
+async function runBubbleFor(
+  ctx: MutationCtx,
+  a: {
+    chatId: Id<"chats">;
+    runId: string;
+    messageId?: Id<"messages">;
+    turnSessionKey?: string;
+    boundInstanceName?: string;
+  },
+): Promise<Doc<"messages"> | null> {
+  await assertChatBound(ctx, a.chatId, a.boundInstanceName);
+  const answerHere = (m: Doc<"messages"> | null): m is Doc<"messages"> =>
+    m !== null &&
+    m.chatId === a.chatId &&
+    m.role === "assistant" &&
+    (a.boundInstanceName === undefined ||
+      m.boundInstance === undefined ||
+      m.boundInstance === a.boundInstanceName);
+  const named = a.messageId === undefined ? null : await ctx.db.get(a.messageId);
+  if (answerHere(named)) return named;
+  // The run's answer: its last segment when the run was cut at steered inputs.
+  const ofRun = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", a.chatId).eq("runId", a.runId))
+    .order("desc")
+    .take(8);
+  return (
+    ofRun.find(
+      (m) =>
+        answerHere(m) &&
+        (a.turnSessionKey === undefined || m.turnSessionKey === undefined || m.turnSessionKey === a.turnSessionKey),
+    ) ?? null
+  );
+}
+
+/**
+ * A MODEL FALLBACK the gateway stated for a run -> a marker on that run's bubble
+ * (`runBubbleFor`). It writes ONE part and touches nothing else — not the text, not the
+ * status, not the finalize stamps — and never creates a bubble.
  */
 export const noteModelFallback = internalMutation({
   args: {
@@ -6451,29 +6491,7 @@ export const noteModelFallback = internalMutation({
   },
   returns: v.union(v.id("messages"), v.null()),
   handler: async (ctx, a) => {
-    await assertChatBound(ctx, a.chatId, a.boundInstanceName);
-    const mine = (m: Doc<"messages"> | null): m is Doc<"messages"> =>
-      m !== null &&
-      m.chatId === a.chatId &&
-      m.role === "assistant" &&
-      m.runId === a.runId &&
-      (a.boundInstanceName === undefined ||
-        m.boundInstance === undefined ||
-        m.boundInstance === a.boundInstanceName);
-    const named = a.messageId === undefined ? null : await ctx.db.get(a.messageId);
-    let target: Doc<"messages"> | null = mine(named) ? named : null;
-    if (target === null) {
-      // The run's answer: its last segment when the run was cut at steered inputs.
-      const ofRun = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_run", (q) => q.eq("chatId", a.chatId).eq("runId", a.runId))
-        .order("desc")
-        .take(8);
-      target =
-        ofRun.find(
-          (m) => mine(m) && (a.turnSessionKey === undefined || m.turnSessionKey === undefined || m.turnSessionKey === a.turnSessionKey),
-        ) ?? null;
-    }
+    const target = await runBubbleFor(ctx, a);
     if (target === null) return null;
     const now = Date.now();
     const part = {
@@ -6504,6 +6522,44 @@ export const noteModelFallback = internalMutation({
         part,
       });
     }
+    await ctx.db.patch(target._id, { updatedAt: now });
+    return target._id;
+  },
+});
+
+/**
+ * A STATUS NOTICE of the gateway for a run -> a notice line on that run's bubble
+ * (`runBubbleFor`). The answer's text is never touched and no bubble is created: the
+ * gateway sends these beside the answer ("status notices … do not define the terminal
+ * reply they accompany", upstream). A notice already on the bubble is not written twice;
+ * past the per-bubble bound, further ones are dropped.
+ */
+export const noteGatewayNotice = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    runId: v.string(),
+    messageId: v.optional(v.id("messages")),
+    turnSessionKey: v.optional(v.string()),
+    text: v.string(),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, a) => {
+    const target = await runBubbleFor(ctx, a);
+    if (target === null) return null;
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", target._id))
+      .collect();
+    const notices = parts.filter((p) => p.part.kind === "gateway_notice");
+    if (notices.some((p) => p.part.kind === "gateway_notice" && p.part.text === a.text)) return target._id;
+    if (notices.length >= GATEWAY_NOTICES_PER_BUBBLE) return target._id;
+    const now = Date.now();
+    await ctx.db.insert("messageParts", {
+      messageId: target._id,
+      order: parts.reduce((m, e) => Math.max(m, e.order + 1), 0),
+      part: { kind: "gateway_notice" as const, text: a.text, at: now },
+    });
     await ctx.db.patch(target._id, { updatedAt: now });
     return target._id;
   },

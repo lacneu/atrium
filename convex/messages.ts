@@ -171,6 +171,8 @@ type ClientPart =
   // The run was answered by another model than the one selected, or the session is back
   // on its selected one. Model names only, bounded at write.
   | { kind: "model_fallback"; state: "active" | "cleared"; model: string; selected?: string; at: number }
+  // A status notice the gateway sent beside the answer (its own sentence, bounded).
+  | { kind: "gateway_notice"; text: string; at: number }
   // A work-plan update (update_plan): ordered steps + status. Bounded at
   // write time. WHICH part is current is decided by `stamp` — when the bridge
   // received the frame behind it — not by its position (lib/planOrder.ts), so
@@ -707,6 +709,10 @@ async function loadChatView(
               break;
             case "model_fallback":
               // Model names only, bounded at write (stream.noteModelFallback): as-is.
+              parts.push(part);
+              break;
+            case "gateway_notice":
+              // The gateway's own sentence, bounded at write (stream.noteGatewayNotice).
               parts.push(part);
               break;
           }
@@ -1711,6 +1717,10 @@ export const chatStateInternal = internalQuery({
             // Structure only: that a fallback was stated, and which way — never a
             // model name (gateway text) on the diagnostic surface.
             return { kind: "model_fallback" as const, state: p.state };
+          case "gateway_notice":
+            // Structure only: that the gateway sent a notice, and its size — never its
+            // text on the diagnostic surface.
+            return { kind: "gateway_notice" as const, textChars: p.text.length };
           case "widget":
             // Structure only: an inline widget is present — never its title (user
             // content) nor its view id (a document address).

@@ -3557,6 +3557,54 @@
         "status: approvalStatus,",
         "phase: \"resolved\","
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-assistant-content.ts:218-226",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-methods/chat-assistant-content.ts",
+      "lines": [
+        [
+          218,
+          226
+        ]
+      ],
+      "literals": [
+        "content.push({ type: \"text\", text, openclawStatusNotice: true });"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:421-444",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/auto-reply/reply/agent-runner-result-payloads.ts",
+      "lines": [
+        [
+          421,
+          444
+        ]
+      ],
+      "literals": [
+        "[...fallbackNoticePayloads, ...payloadArray]"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-client/src/session-projection-message-content.ts:38-50",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "packages/gateway-client/src/session-projection-message-content.ts",
+      "lines": [
+        [
+          38,
+          50
+        ]
+      ],
+      "literals": [
+        "openclawStatusNotice !== true"
+      ]
     }
   ]
 }

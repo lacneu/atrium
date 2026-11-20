@@ -8478,6 +8478,21 @@ button.oc-perm__opt:disabled {
 .oc-model-fallback:not([data-state]) {
   cursor: default;
 }
+/* The gateway's status notices (GatewayNotices): muted lines under the reply — its
+   own words, visibly not the agent's. */
+.oc-gateway-notices {
+  margin: 0.35rem 0 0.15rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+.oc-gateway-notices__line {
+  margin: 0.1rem 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 
 /* Bridge tab — protocol-contract section: compact mono lists for drift/gaps. */

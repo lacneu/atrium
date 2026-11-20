@@ -1499,10 +1499,33 @@ also adds its own notice text to the reply, as a status notice.
 (`model-fallback.ts`): it is never content of a turn and never opens, reopens or ends
 one. It becomes a marker on the bubble of the run it names — the live turn's bubble
 when the run is still that turn's, otherwise the bubble the run left, found by its run
-when the bridge does not hold it. A run that showed nothing gets no marker. The marker
+when the bridge does not hold it. A fallback read before its run has a bubble — the answer and its fallback racing the
+`chat.send` ACK — is kept by run and written when a turn owning that run settles. A run
+that showed nothing gets no marker. The marker
 is kept on the bubble rather than shown for a few seconds, and prints the Control UI's
 two sentences, localized. Only model names are carried: the reasons and attempts are
 the provider's own text and are neither stored nor shown.
+
+### Status notices beside the answer
+
+**Upstream.** A reply payload can be a status notice rather than answer content — the
+fallback notice, a compaction notice, a usage line, a diagnostic, a command's reply. From
+2026.9.6 the gateway marks its text block `openclawStatusNotice`
+(`$UP/src/gateway/server-methods/chat-assistant-content.ts:218-226`). Notices produced
+with a run's reply are sent in a `chat` final of their own, after the answer's final; the
+fallback notice is the first of them, being prepended to the run's payloads
+(`$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:421-444`). It is broadcast, not
+written to the transcript. The Control UI shows it as an assistant message of its own and
+keeps it out of what identifies the run's terminal reply
+(`$UP/packages/gateway-client/src/session-projection-message-content.ts:38-50`).
+
+**Atrium.** A final of a settled run that carries nothing but marked notices is neither a
+late piece of the answer nor an answer: it never joins the bubble's text and never opens
+a bubble. Each notice becomes a notice line under the reply of its run, as plain text —
+except the first one after a fallback the gateway stated for that run, which the
+fallback marker already says. A run that left no bubble shows none. A final that mixes
+answer text and a notice, a notice that is a turn's only reply (a command's answer), and
+any final of a gateway that does not mark notices are read as before.
 
 ### Provider retries
 
@@ -1541,6 +1564,7 @@ The startup phases of the stream are not shown.
 | Tool phases `input_delta` / `review` | **Conformant on the card's state** — neither closes a card, counts a tool or drops its arguments; the live diff stat and the reviewer's line are not shown (§11) |
 | `seq gap` report | **Conformant** — the gateway's own numbering, observed under its own name and never counted as a lost frame; only a hole in the envelope seq is a loss (§11) |
 | Model fallback | **Conformant on what is said, kept longer** — the Control UI's two sentences as a marker on the run's bubble, also when the frame follows the run's terminal; the reasons, the attempts and the previous model are not shown (§11) |
+| Status notices | **Shown apart from the answer** — a notice-only final after the answer is a notice line on the run's bubble, never the answer's text nor a bubble; the fallback's own notice is the fallback marker (§11) |
 | Provider retries | **Conformant** for the retry itself — read from the agent stream whatever the reason, with Atrium's own wording; the run's startup phases and the provider notices are not shown (§11) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 

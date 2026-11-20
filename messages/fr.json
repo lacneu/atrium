@@ -2110,6 +2110,7 @@
   "model_fallback_active": "Modèle de repli actif : {model}",
   "model_fallback_cleared": "Fin du repli : {model}",
   "model_fallback_selected": "Modèle sélectionné : {model}",
+  "gateway_notice_label": "Avis de la passerelle",
   "lightbox_fit": "Ajuster à l'écran",
   "lightbox_actual_size": "Taille réelle",
   "lightbox_fullscreen": "Plein écran",

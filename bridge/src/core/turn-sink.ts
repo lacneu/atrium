@@ -698,21 +698,22 @@ export class TurnSink {
   async noteSettledRunFallback(
     fallback: { runId: string; state: string; model: string; selected?: string },
     messageId: string | null,
-  ): Promise<void> {
-    await this.writeModelFallback(fallback, messageId);
+  ): Promise<boolean> {
+    return await this.writeModelFallback(fallback, messageId);
   }
 
+  /** Whether a bubble was marked (false: the run has none yet, or the write failed). */
   private async writeModelFallback(
     fallback: { runId?: unknown; state?: unknown; model?: unknown; selected?: unknown },
     messageId: string | null,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const runId = asString(fallback.runId);
     const model = asString(fallback.model);
     const state = fallback.state === "cleared" ? "cleared" : fallback.state === "active" ? "active" : null;
-    if (runId === "" || model === "" || state === null) return;
+    if (runId === "" || model === "" || state === null) return false;
     const selected = asString(fallback.selected);
     try {
-      await this.writer.noteModelFallback?.(this.chatId, {
+      const marked = await this.writer.noteModelFallback?.(this.chatId, {
         runId,
         messageId,
         sessionKey: this.sessionKey ?? null,
@@ -720,9 +721,29 @@ export class TurnSink {
         model,
         ...(state === "active" && selected !== "" ? { selected } : {}),
       });
+      return typeof marked === "string";
     } catch (e) {
       // A marker never fails the turn it describes.
       console.error("[sink] model fallback not recorded (non-fatal):", errForLog(e));
+      return false;
+    }
+  }
+
+  /**
+   * A status notice the gateway sent after a settled run's answer (see
+   * ConvexWriter.noteGatewayNotice): a notice line on that run's bubble. Never the
+   * answer's text, never a bubble of its own; a run with no bubble shows none.
+   */
+  async noteSettledRunNotice(runId: string, messageId: string | null, text: string): Promise<void> {
+    try {
+      await this.writer.noteGatewayNotice?.(this.chatId, {
+        runId,
+        messageId,
+        sessionKey: this.sessionKey ?? null,
+        text,
+      });
+    } catch (e) {
+      console.error("[sink] gateway notice not recorded (non-fatal):", errForLog(e));
     }
   }
 

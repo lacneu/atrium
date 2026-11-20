@@ -221,6 +221,15 @@ export const messagePart = v.union(
     selected: v.optional(v.string()),
     at: v.number(),
   }),
+  // A STATUS NOTICE the gateway sent beside this bubble's answer (a `chat` final whose
+  // blocks are all marked `openclawStatusNotice`: a usage line, a diagnostic). The
+  // gateway's own sentence, shown as a notice line — never part of the answer's text.
+  // Sanitized and bounded by the bridge, bounded again at write; a few per bubble.
+  v.object({
+    kind: v.literal("gateway_notice"),
+    text: v.string(),
+    at: v.number(),
+  }),
   // Provenance report (provenance/v1, docs/PROVENANCE_CONTRACT.md): what a
   // gateway context-injecting plugin (conversational memory / document RAG)
   // fed the LLM for THIS turn. Emitted by the plugin on its gateway-scoped

@@ -4,6 +4,7 @@ import {
   ConvexMessageView,
   isCompactionPart,
   isModelFallbackPart,
+  isGatewayNoticePart,
   isFilePart,
   isMediaPart,
   isWidgetPart,
@@ -369,6 +370,8 @@ export function convertConvexMessage(
   // Model fallback marker (at most one per bubble, kept by Convex). Rendered by
   // ModelFallbackNotice, always visible like the compaction marker.
   let modelFallback: ModelFallbackMeta | null = null;
+  // The gateway's status notices for this bubble, in arrival order (GatewayNotices).
+  const gatewayNotices: string[] = [];
   // PROJECTION `on` (final design step 3): a bubble the transcript rows composed is shown
   // row by row — text, the row's files, its tool cards (rowLayoutView.ts). Null for every
   // other bubble, which keeps the rendering below unchanged.
@@ -451,6 +454,8 @@ export function convertConvexMessage(
         at: p.at,
         ...(typeof p.reason === "string" && p.reason ? { reason: p.reason } : {}),
       };
+    } else if (isGatewayNoticePart(p)) {
+      if (typeof p.text === "string" && p.text.trim() !== "") gatewayNotices.push(p.text);
     } else if (isModelFallbackPart(p)) {
       modelFallback = {
         state: p.state,
@@ -777,6 +782,9 @@ export function convertConvexMessage(
         // ModelFallbackNotice above the reply body. Absent on a bubble without one, so
         // what such a bubble converts to is unchanged.
         ...(modelFallback !== null ? { modelFallback } : {}),
+        // The gateway's status notices — rendered by GatewayNotices under the reply,
+        // never inside it. Absent on a bubble without one, for the same reason.
+        ...(gatewayNotices.length > 0 ? { gatewayNotices } : {}),
         // L2: count of READY downloadable document attachments for this turn —
         // drives the subtle "joints" badge on the Sources chip.
         attachedDocCount: message.attachedDocCount ?? 0,

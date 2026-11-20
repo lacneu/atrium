@@ -2538,7 +2538,7 @@ describe("bridge_ingest httpAction: a model fallback marks the bubble of its run
     expect("selected" in parts[0]).toBe(false);
   });
 
-  test("a bubble of another chat, a user message, or another run's bubble is never marked", async () => {
+  test("a bubble of another chat or a user message is never marked; the run's own is found instead", async () => {
     const t = convexTest(schema, modules);
     const { chatId, userId, messageId } = await settledAnswer(t);
     const elsewhere = await t.run(async (ctx) => {
@@ -2575,7 +2575,7 @@ describe("bridge_ingest httpAction: a model fallback marks the bubble of its run
       });
       return { foreign, question, otherRun };
     });
-    for (const target of [elsewhere.foreign, elsewhere.question, elsewhere.otherRun]) {
+    for (const target of [elsewhere.foreign, elsewhere.question]) {
       const res = await post(t, {
         op: "modelFallback",
         chatId,
@@ -2590,6 +2590,19 @@ describe("bridge_ingest httpAction: a model fallback marks the bubble of its run
       expect(await fallbackParts(t, target)).toHaveLength(0);
     }
     expect(await fallbackParts(t, messageId)).toHaveLength(1);
+    // A named answer of this chat carrying ANOTHER run's id is the bridge's to name: it
+    // is the bubble of a turn that adopted the run (the bubble keeps its first run's id).
+    const adopted = await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: "a-run-the-turn-adopted",
+      messageId: elsewhere.otherRun,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    expect(await adopted.json()).toEqual({ ok: true, messageId: elsewhere.otherRun });
+    expect(await fallbackParts(t, elsewhere.otherRun)).toHaveLength(1);
   });
 
   test("a bubble bound to another instance is not this bridge's to mark", async () => {
@@ -2650,6 +2663,73 @@ describe("bridge_ingest httpAction: a model fallback marks the bubble of its run
     expect(structural).toContain('"state":"active"');
     expect(structural).not.toContain("gpt-6.1-sol");
     expect(structural).not.toContain("gpt-5.5");
+  });
+
+  test("a status notice is a notice line on the run's bubble: the answer's text is untouched", async () => {
+    // The text is the captured one (bench run 2026-11-20T22-44-24-741Z, seq 139).
+    const NOTICE = "↪️ Model Fallback: openai/gpt-6.1-sol (selected openai/gpt-5.5; model not found)";
+    const t = convexTest(schema, modules);
+    const { chatId, userId, messageId } = await settledAnswer(t);
+    const res = await post(t, { op: "gatewayNotice", chatId, runId: RUN, sessionKey: SK, text: NOTICE });
+    expect(await res.json()).toEqual({ ok: true, messageId });
+    const after = await t.run((ctx) => ctx.db.get(messageId));
+    expect(after?.text).toBe("BENCH_FALLBACK_OK");
+    expect(after?.status).toBe("complete");
+    expect(after?.finalizedAt).toBe(5);
+    const notices = (await partsOf(t, messageId)).map((p) => p.part).filter((p) => p.kind === "gateway_notice");
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ kind: "gateway_notice", text: NOTICE });
+    // The same notice again (a second socket, a retransmit) is not a second line.
+    await post(t, { op: "gatewayNotice", chatId, runId: RUN, messageId, text: NOTICE });
+    await post(t, { op: "gatewayNotice", chatId, runId: RUN, messageId, text: "Usage: 1230 in / 10 out" });
+    expect(
+      (await partsOf(t, messageId)).map((p) => p.part).filter((p) => p.kind === "gateway_notice"),
+    ).toHaveLength(2);
+    // The reader gets the text; the metadata-only chat state gets its size, never the text.
+    const view = await t.withIdentity({ subject: `${userId}|session` }).query(api.messages.listByChat, { chatId });
+    expect(
+      view
+        .flatMap((m) => m.parts)
+        .filter((p) => p.kind === "gateway_notice")
+        .map((p) => (p as { text: string }).text),
+    ).toEqual([NOTICE, "Usage: 1230 in / 10 out"]);
+    const structural = JSON.stringify(await t.query(internal.messages.chatStateInternal, { chatId }));
+    expect(structural).toContain('"kind":"gateway_notice"');
+    expect(structural).not.toContain("Model Fallback");
+    expect(structural).not.toContain("1230");
+  });
+
+  test("a notice for a run that left no bubble writes nothing and makes no bubble", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    const before = await t.run((ctx) => ctx.db.query("messages").collect());
+    const res = await post(t, { op: "gatewayNotice", chatId, runId: "webchat-nobody", text: "Usage: 1 in / 1 out" });
+    expect(await res.json()).toEqual({ ok: true, messageId: null });
+    expect(await t.run((ctx) => ctx.db.query("messages").collect())).toHaveLength(before.length);
+    expect(await t.run((ctx) => ctx.db.query("messageParts").collect())).toHaveLength(0);
+  });
+
+  test("notices are bounded: in size, in number, and refused when not text", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await settledAnswer(t);
+    for (const bad of ["", "   ", "x".repeat(2001), "bell\u0007", 42]) {
+      const res = await post(t, { op: "gatewayNotice", chatId, runId: RUN, messageId, text: bad });
+      expect(res.status, JSON.stringify(bad).slice(0, 20)).toBe(400);
+    }
+    for (let i = 0; i < 12; i++) {
+      await post(t, { op: "gatewayNotice", chatId, runId: RUN, messageId, text: `notice ${i}\nsecond line` });
+    }
+    expect(
+      (await partsOf(t, messageId)).map((p) => p.part).filter((p) => p.kind === "gateway_notice"),
+    ).toHaveLength(8);
+  });
+
+  test("a notice never lands on a bubble bound to another instance", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await settledAnswer(t, { boundInstance: "another-bridge" });
+    const res = await post(t, { op: "gatewayNotice", chatId, runId: RUN, messageId, text: "Usage: 1 in / 1 out" });
+    expect(await res.json()).toEqual({ ok: true, messageId: null });
+    expect(await partsOf(t, messageId)).toHaveLength(0);
   });
 
   test("a bubble of the run in ANOTHER session of the chat is not the one to mark", async () => {

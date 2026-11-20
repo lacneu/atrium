@@ -262,6 +262,7 @@ import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
 import { ModelFallbackNotice } from "./ModelFallbackNotice";
+import { GatewayNotices } from "./GatewayNotices";
 import { usageBadgeView, type ProviderUsageView } from "./usageView";
 import {
   assistantEmptyState,
@@ -4141,6 +4142,9 @@ function AssistantMessage() {
           ) : (
             <MessagePrimitive.Parts components={assistantComponents} />
           )}
+          {/* The gateway's own status notices for this reply (a usage line, a
+              diagnostic): under the answer, never inside it. Null on almost every turn. */}
+          <GatewayNotices />
           {/* Empty-bubble guard: a settled turn that delegated to a sub-agent and
               returned no text renders a clear waiting/generic note here (where the
               answer would be) instead of a blank bubble. The FAILED case is owned

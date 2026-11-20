@@ -32,7 +32,7 @@ import { hashKey } from "./lib/apikeys";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { compactionReasonClass } from "./lib/compactionReasons";
 import { finalizeCauseClass } from "./lib/finalizeCause";
-import { isModelFallbackLabel } from "./lib/modelFallback";
+import { isGatewayNoticeText, isModelFallbackLabel } from "./lib/modelFallback";
 import {
   gatewayVersionLabel,
   pressureVerdict,
@@ -414,6 +414,16 @@ type IngestOp =
       state: string;
       model: string;
       selected?: string;
+    }
+  // A status notice the gateway sent beside a run's answer: a notice part on that run's
+  // bubble, addressed like `modelFallback`. Never the answer's text, never a new bubble.
+  | {
+      op: "gatewayNotice";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      text: string;
     }
   // The gateway's report about its own per-run numbering (`reason:"seq gap"`): two
   // counters inside the gateway, not a frame lost on the way to the bridge. Records an
@@ -1394,6 +1404,42 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true, messageId: marked });
+    }
+    case "gatewayNotice": {
+      if (
+        typeof body.chatId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        !isGatewayNoticeText(body.text)
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const noticed = await ctx.runMutation(internal.stream.noteGatewayNotice, {
+        chatId: body.chatId as Id<"chats">,
+        runId: body.runId,
+        ...(typeof body.messageId === "string" && body.messageId !== ""
+          ? { messageId: body.messageId as Id<"messages"> }
+          : {}),
+        ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
+          ? { turnSessionKey: body.sessionKey }
+          : {}),
+        text: body.text,
+        boundInstanceName,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        correlationId: noticed ?? body.chatId,
+        meta: {
+          op: body.op,
+          ...(noticed !== null ? { messageId: noticed } : {}),
+          // Its size only: the text is the gateway's, kept out of traces.
+          textChars: body.text.length,
+          ok: noticed !== null,
+          ...(noticed === null ? { reason: "no_bubble_for_run" } : {}),
+        },
+      });
+      return json({ ok: true, messageId: noticed });
     }
     case "gatewaySeqReportTrace": {
       await traceGatewaySeqReport(ctx, body);

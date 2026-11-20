@@ -223,15 +223,22 @@ type Noted = {
   selected?: string;
 };
 
+/** Records the writes and answers like Convex: the bubble named, else the run's own
+ *  bubble, else null — it never makes one. */
 class FallbackWriter implements ConvexWriter {
   readonly noted: Noted[] = [];
+  readonly marked: (string | null)[] = [];
+  readonly notices: { runId: string; messageId: string | null; text: string }[] = [];
   readonly opened: (string | null)[] = [];
   readonly finals: string[] = [];
   readonly lateFinals: string[] = [];
+  private readonly bubbleOfRun = new Map<string, string>();
   private n = 0;
   async startAssistant(_chatId: string, runId: string | null): Promise<string> {
     this.opened.push(runId);
-    return `msg_${++this.n}`;
+    const id = `msg_${++this.n}`;
+    if (runId !== null) this.bubbleOfRun.set(runId, id);
+    return id;
   }
   async appendDelta(): Promise<void> {}
   async setSnapshot(): Promise<boolean> {
@@ -246,8 +253,18 @@ class FallbackWriter implements ConvexWriter {
   }
   async noteMediaUndelivered(): Promise<void> {}
   async noteFrameGap(): Promise<void> {}
-  async noteModelFallback(_chatId: string, data: Noted): Promise<void> {
+  async noteModelFallback(_chatId: string, data: Noted): Promise<string | null> {
     this.noted.push({ ...data });
+    const bubble = data.messageId ?? this.bubbleOfRun.get(data.runId) ?? null;
+    this.marked.push(bubble);
+    return bubble;
+  }
+  async noteGatewayNotice(
+    _chatId: string,
+    data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
+  ): Promise<string | null> {
+    this.notices.push({ runId: data.runId, messageId: data.messageId, text: data.text });
+    return data.messageId ?? this.bubbleOfRun.get(data.runId) ?? null;
   }
   async appendLateFinal(args: { messageId: string | null; text: string }): Promise<string | null> {
     this.lateFinals.push(args.text);
@@ -398,20 +415,244 @@ describe("a fallback stated while its run is the live turn's", () => {
   });
 });
 
-describe("the gateway's own notice text is a separate fact", () => {
-  it("the late notice final still reaches the late-final path, untouched by this change", async () => {
-    // Captured right after the fallback frame (envelope seq 156): a second `chat final`
-    // whose only block is marked `openclawStatusNotice`.
+describe("a fallback that PRECEDES its run's bubble", () => {
+  it("the answer and its fallback race the chat.send ACK: the marker lands once the bubble exists", async () => {
+    // Reproduced by the review: both frames arrive between `chat.send` and its ACK. The
+    // answer waits in the pre-ACK buffer; the fallback was read at once, found no bubble,
+    // and was gone when the replay created the answer.
     const writer = new FallbackWriter();
-    const manager = await runThenLateFallback(writer);
+    const manager = new RunManager("chat-f7", SK, writer);
+    manager.armReplayBuffer();
+    await manager.feed(chat(RUN, "final", "BENCH_FALLBACK_OK"), 1_000);
+    await manager.feed(FALLBACK, 1_001);
+    expect(writer.marked.filter((m) => m !== null), "no bubble yet").toStrictEqual([]);
+    await manager.beginTurn(1_010, RUN, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await settle(writer, 1);
+    for (let i = 0; i < 40 && !writer.marked.includes("msg_1"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(writer.finals).toStrictEqual(["msg_1:complete"]);
+    expect(writer.opened).toStrictEqual([RUN]);
+    expect(writer.noted.at(-1)).toStrictEqual({
+      runId: RUN,
+      messageId: "msg_1",
+      sessionKey: SK,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    expect(writer.marked.at(-1)).toBe("msg_1");
+  });
+
+  it("a fallback read before any turn of its run is kept for that run only", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-f7", SK, writer);
+    await manager.feed(FALLBACK, 1_000);
+    // Another run's turn settles: the held fallback is not its to carry.
+    await manager.beginTurn(1_010, NEXT_RUN, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(chat(NEXT_RUN, "final", "REPLAY_OK"), 1_020);
+    await settle(writer, 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(writer.marked.filter((m) => m !== null)).toStrictEqual([]);
+    // Its own run's turn settles: now it lands.
+    await manager.beginTurn(2_000, RUN, { expectedSessionId: null, dispatchOutboxId: "ob-2" });
+    await manager.feed(chat(RUN, "final", "BENCH_FALLBACK_OK"), 2_010);
+    await settle(writer, 2);
+    for (let i = 0; i < 40 && !writer.marked.includes("msg_2"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(writer.noted.at(-1)).toMatchObject({ runId: RUN, messageId: "msg_2" });
+  });
+
+  it("a fallback of a run the turn ADOPTED lands on that turn's bubble", async () => {
+    // The turn moved to a second run on the gateway's word (an announced overflow
+    // replay); the bubble still carries the first run's id. The bridge knows which
+    // bubble the adopted run wrote into: the frames say it.
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-f7", SK, writer);
+    const ADOPTED = "8d1f5a60-3a55-4c0c-9d3e-0f6f3a6f8f21";
+    const compaction = (data: Record<string, unknown>) => ({
+      type: "event" as const,
+      event: "agent",
+      payload: { runId: RUN, sessionKey: SK, stream: "compaction", data },
+    });
+    await manager.beginTurn(1_000, RUN, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(chat(RUN, "delta", "Bonjour"), 1_010);
+    await manager.feed(compaction({ phase: "start" }), 1_020);
+    await manager.feed(compaction({ phase: "end", completed: true, willRetry: true, outcome: "completed" }), 1_030);
+    await manager.feed(lifecycle(ADOPTED, { phase: "start", startedAt: 2 }), 1_040);
+    await manager.feed(chat(ADOPTED, "final", "Bonjour, voici la suite."), 1_050);
+    await settle(writer, 1);
+    const late = structuredClone(FALLBACK);
+    late.payload.runId = ADOPTED;
+    await manager.feed(late, 1_060);
+    expect(writer.noted.at(-1)).toMatchObject({ runId: ADOPTED, messageId: "msg_1" });
+  });
+});
+
+/**
+ * The gateway's STATUS NOTICES. After the run's answer the gateway may send a second `chat`
+ * final whose blocks are all marked `openclawStatusNotice` (2026.9.6+,
+ * src/gateway/server-methods/chat-assistant-content.ts): the fallback notice, a usage
+ * line, a diagnostic. It is broadcast, not written to the transcript (no `session.message`
+ * row carries it in either capture). Upstream: "status notices remain visible but do not
+ * define the terminal reply they accompany"
+ * (packages/gateway-client/src/session-projection-message-content.ts).
+ *
+ * Frames verbatim from the bench (run 2026-11-20T22-44-24-741Z, envelope seq 137-139):
+ * the answer's final, the fallback, then the notice final. The usage-line notice is
+ * shape-faithful (src/auto-reply/reply/agent-runner-usage-line.ts), never captured.
+ */
+describe("the gateway's status notice after the answer", () => {
+  const LIVE_SK = "agent:alice:atrium:chat:u-repro:turn-nx7cv8n6dvrfzkasc5bebdffnx8jkzn9";
+  const LIVE_RUN = "webchat-1f2908ac9be371f1559266ad9d7e757a0086b87cf20f4d91eae7b5201f1e54d4";
+  const NOTICE_TEXT = "↪️ Model Fallback: openai/gpt-6.1-sol (selected openai/gpt-5.5; model not found)";
+  /** Verbatim, seq 137. */
+  const ANSWER = {
+    type: "event",
+    event: "chat",
+    payload: {
+      runId: LIVE_RUN,
+      sessionKey: LIVE_SK,
+      agentId: "alice",
+      seq: 29,
+      state: "final",
+      stopReason: "stop",
+      message: { role: "assistant", content: [{ type: "text", text: "BENCH_FALLBACK_OK" }], timestamp: 1795214787000 },
+    },
+    seq: 137,
+  };
+  /** Verbatim keys, seq 138 (reasons masked). */
+  const LIVE_FALLBACK = {
+    type: "event",
+    event: "agent",
+    payload: {
+      runId: LIVE_RUN,
+      sessionKey: LIVE_SK,
+      stream: "lifecycle",
+      data: {
+        phase: "fallback",
+        selectedProvider: "openai",
+        selectedModel: "gpt-5.5",
+        activeProvider: "openai",
+        activeModel: "gpt-6.1-sol",
+        reasonSummary: "<text>",
+        attemptSummaries: ["<text>"],
+        attempts: [],
+      },
+      seq: 1,
+    },
+    seq: 138,
+  };
+  /** Verbatim, seq 139. */
+  const noticeFinal = (blocks: { text: string; notice?: boolean }[]) => ({
+    type: "event",
+    event: "chat",
+    payload: {
+      runId: LIVE_RUN,
+      sessionKey: LIVE_SK,
+      seq: 2,
+      state: "final",
+      message: {
+        role: "assistant",
+        content: blocks.map((b) => ({
+          type: "text",
+          text: b.text,
+          ...(b.notice === false ? {} : { openclawStatusNotice: true }),
+        })),
+        text: blocks.map((b) => b.text).join("\n"),
+        timestamp: 1795214787121,
+        stopReason: "stop",
+        usage: { input: 0, output: 0, totalTokens: 0 },
+      },
+    },
+    seq: 139,
+  });
+  const USAGE_LINE = "Usage: 1230 in / 10 out";
+
+  async function answered(writer: FallbackWriter): Promise<RunManager> {
+    const manager = new RunManager("chat-notice", LIVE_SK, writer);
+    await manager.beginTurn(1_000, LIVE_RUN, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    await manager.feed(ANSWER, 1_010);
+    await settle(writer, 1);
+    return manager;
+  }
+
+  it("the captured order: one marker — the notice is neither glued to the answer nor shown twice", async () => {
+    const writer = new FallbackWriter();
+    const manager = await answered(writer);
+    await manager.feed(LIVE_FALLBACK, 1_020);
+    await manager.feed(noticeFinal([{ text: NOTICE_TEXT }]), 1_030);
+    expect(writer.noted.map((n) => `${n.state}:${n.model}→${n.messageId}`)).toStrictEqual([
+      "active:openai/gpt-6.1-sol→msg_1",
+    ]);
+    expect(writer.lateFinals, "never appended to the answer's text").toStrictEqual([]);
+    expect(writer.notices, "the marker already says it").toStrictEqual([]);
+    expect(writer.opened, "and no bubble of its own").toStrictEqual([LIVE_RUN]);
+  });
+
+  it("a notice with no fallback before it is a notice line on the run's bubble", async () => {
+    const writer = new FallbackWriter();
+    const manager = await answered(writer);
+    await manager.feed(noticeFinal([{ text: USAGE_LINE }]), 1_020);
+    expect(writer.notices).toStrictEqual([{ runId: LIVE_RUN, messageId: "msg_1", text: USAGE_LINE }]);
+    expect(writer.lateFinals).toStrictEqual([]);
+    expect(writer.opened).toStrictEqual([LIVE_RUN]);
+  });
+
+  it("after a fallback, only the FIRST notice is the fallback's own: the others are shown", async () => {
+    // The fallback notice is prepended to the run's reply payloads
+    // (agent-runner-result-payloads.ts), so it is the first block.
+    const writer = new FallbackWriter();
+    const manager = await answered(writer);
+    await manager.feed(LIVE_FALLBACK, 1_020);
+    await manager.feed(noticeFinal([{ text: NOTICE_TEXT }, { text: USAGE_LINE }]), 1_030);
+    expect(writer.notices.map((n) => n.text)).toStrictEqual([USAGE_LINE]);
+    // …and it is consumed once: a later notice of the run is a notice.
+    await manager.feed(noticeFinal([{ text: "Diagnostics: ok" }]), 1_040);
+    expect(writer.notices.map((n) => n.text)).toStrictEqual([USAGE_LINE, "Diagnostics: ok"]);
+    expect(writer.lateFinals).toStrictEqual([]);
+  });
+
+  it("a run that left no bubble gets no bubble made for its notice", async () => {
+    const writer = new FallbackWriter();
+    const manager = new RunManager("chat-notice", LIVE_SK, writer);
+    await manager.beginTurn(1_000, LIVE_RUN, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
+    // A turn that ends having shown nothing: no bubble is born.
     await manager.feed(
-      chat(RUN, "final", "↪️ Model Fallback: openai/gpt-6.1-sol (selected openai/gpt-5.5; <text>)", {
-        openclawStatusNotice: true,
-      }),
-      1_030,
+      { type: "event", event: "chat", payload: { runId: LIVE_RUN, sessionKey: LIVE_SK, state: "final" } },
+      1_010,
     );
+    await new Promise((r) => setTimeout(r, 20));
+    const before = writer.opened.length;
+    await manager.feed(noticeFinal([{ text: USAGE_LINE }]), 1_020);
+    expect(writer.lateFinals).toStrictEqual([]);
+    expect(writer.opened).toHaveLength(before);
+  });
+
+  it("a server path in a notice never reaches the conversation", async () => {
+    const writer = new FallbackWriter();
+    const manager = await answered(writer);
+    await manager.feed(noticeFinal([{ text: "Wrote /home/node/.openclaw/media/outbound/report.pdf" }]), 1_020);
+    expect(writer.notices).toHaveLength(1);
+    expect(writer.notices[0]!.text).not.toContain("/home/node/.openclaw");
+  });
+
+  it("a late final that MIXES answer text and a notice is still a late piece of the answer", async () => {
+    // Not notice-only: the Control UI shows such a message whole, and so does Atrium.
+    const writer = new FallbackWriter();
+    const manager = await answered(writer);
+    await manager.feed(noticeFinal([{ text: "Un complément de réponse.", notice: false }, { text: USAGE_LINE }]), 1_020);
+    expect(writer.notices).toStrictEqual([]);
     expect(writer.lateFinals).toHaveLength(1);
-    expect(writer.noted).toHaveLength(1);
+  });
+
+  it("an unmarked late final (a gateway before 2026.9.6) keeps the late-final path", async () => {
+    const writer = new FallbackWriter();
+    const manager = await answered(writer);
+    await manager.feed(noticeFinal([{ text: NOTICE_TEXT, notice: false }]), 1_020);
+    expect(writer.notices).toStrictEqual([]);
+    expect(writer.lateFinals).toStrictEqual([NOTICE_TEXT]);
   });
 });
 

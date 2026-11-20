@@ -751,7 +751,8 @@ export interface ConvexWriter {
    *  on its selected one (see core/events EVENT_MODEL_FALLBACK) -> a marker on that
    *  run's bubble. `messageId` is the bubble when the bridge knows it; null lets Convex
    *  find the run's bubble (it never creates one). Model names only, never the
-   *  provider's reasons. OPTIONAL so the test fakes stay valid without it. */
+   *  provider's reasons. Resolves to the bubble that was marked, or null when the run
+   *  has none (yet). OPTIONAL so the test fakes stay valid without it. */
   noteModelFallback?(
     chatId: string,
     data: {
@@ -762,7 +763,15 @@ export interface ConvexWriter {
       model: string;
       selected?: string;
     },
-  ): Promise<void>;
+  ): Promise<string | null>;
+  /** A STATUS NOTICE the gateway sent beside a run's answer (a `chat` final whose blocks
+   *  are all marked `openclawStatusNotice`) -> a notice line on that run's bubble, never
+   *  part of the answer's text and never a bubble of its own. Addressed like
+   *  `noteModelFallback`; resolves to the bubble, or null when the run has none. */
+  noteGatewayNotice?(
+    chatId: string,
+    data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
+  ): Promise<string | null>;
   /** The gateway's report about its own per-run numbering (see core/events
    *  EVENT_GATEWAY_SEQ_REPORT) -> an `openclaw.gateway_seq_report` trace. Not a frame
    *  loss. Counters and the run the report names; `messageId` is the turn that saw it.
@@ -1274,6 +1283,16 @@ type IngestOp =
       state: "active" | "cleared";
       model: string;
       selected?: string;
+    }
+  // A status notice of the gateway for a run -> a notice part on that run's bubble
+  // (found like `modelFallback`). Never creates a bubble.
+  | {
+      op: "gatewayNotice";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      text: string;
     }
   // The gateway's report about its own per-run numbering (content-free) -> an
   // `openclaw.gateway_seq_report` trace. Not a frame loss.
@@ -2740,8 +2759,8 @@ export class HttpConvexWriter implements ConvexWriter {
       model: string;
       selected?: string;
     },
-  ): Promise<void> {
-    await this.doPost({
+  ): Promise<string | null> {
+    const ack = await this.doPost<{ messageId?: string | null }>({
       op: "modelFallback",
       chatId,
       runId: data.runId,
@@ -2751,6 +2770,23 @@ export class HttpConvexWriter implements ConvexWriter {
       model: data.model,
       ...(data.selected !== undefined ? { selected: data.selected } : {}),
     });
+    return typeof ack?.messageId === "string" ? ack.messageId : null;
+  }
+
+  /** Same contract as `noteModelFallback`. */
+  async noteGatewayNotice(
+    chatId: string,
+    data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
+  ): Promise<string | null> {
+    const ack = await this.doPost<{ messageId?: string | null }>({
+      op: "gatewayNotice",
+      chatId,
+      runId: data.runId,
+      ...(data.messageId !== null ? { messageId: data.messageId } : {}),
+      ...(data.sessionKey !== null ? { sessionKey: data.sessionKey } : {}),
+      text: data.text,
+    });
+    return typeof ack?.messageId === "string" ? ack.messageId : null;
   }
 
   /** Same contract as `noteFrameGap`: off the per-message chain, errors swallowed. */
