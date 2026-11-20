@@ -377,8 +377,8 @@
           "by": "handleChat terminalizes aborted -> finalize(aborted)"
         },
         "message": {
-          "status": "ignored",
-          "why": "an aborted turn carries no reply to persist"
+          "status": "handled",
+          "by": "handleChat applyTerminalMessage: the buffered answer an aborted terminal carries is the bubble's text (never a shrink); when the turn closed before this terminal it completes the settled bubble as a strict extension (Normalizer.settledCompletion -> Convex completeSettledText)"
         },
         "stopReason": {
           "status": "handled",
@@ -511,7 +511,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat error-reason fallback (textFromMessage)"
+          "by": "handleChat: with `errorMessage`, the buffered answer the terminal carries is the bubble's text unless it only restates the error (applyTerminalMessage; after an early close, Normalizer.settledCompletion); without `errorMessage`, the error-reason fallback (textFromMessage)"
         },
         "errorMessage": {
           "status": "handled",

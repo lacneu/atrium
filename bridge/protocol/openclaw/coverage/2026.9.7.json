@@ -407,7 +407,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat collectCanvasParts: an inline widget the aborted turn had already shown is kept as a `widget` part; the aborted turn's text is still not persisted"
+          "by": "handleChat applyTerminalMessage: the buffered answer an aborted terminal carries is the bubble's text (never a shrink); when the turn closed before this terminal it completes the settled bubble as a strict extension (Normalizer.settledCompletion -> Convex completeSettledText); an inline widget the aborted turn had already shown is kept as a `widget` part (collectCanvasParts)"
         },
         "stopReason": {
           "status": "handled",
@@ -540,7 +540,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat error-reason fallback (textFromMessage); `canvas` content parts -> `widget` events (collectCanvasParts)"
+          "by": "handleChat: with `errorMessage`, the buffered answer the terminal carries is the bubble's text unless it only restates the error (applyTerminalMessage; after an early close, Normalizer.settledCompletion); without `errorMessage`, the error-reason fallback (textFromMessage); `canvas` content parts -> `widget` events (collectCanvasParts)"
         },
         "errorMessage": {
           "status": "handled",
