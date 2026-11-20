@@ -578,6 +578,24 @@ export async function describeSessionAnswer(
  * waited for — the only case where waiting buys the user anything (a first turn's
  * picker), the rule `ensureAvailableModels` applies itself.
  */
+/** What each connection last published for its chat — the owner, the roster and the
+ *  described state, without their stamps. Written by EVERY publish below, so the one
+ *  reader (`refreshAfterConfigChange`) compares against what Convex was last sent,
+ *  whichever path sent it; forgotten with the connection. */
+const lastPublishedMeta = new WeakMap<object, string>();
+/** A write that went around `publishSessionMeta`: what was recorded no longer says what
+ *  Convex holds. */
+export function forgetPublishedMeta(connection: object): void {
+  lastPublishedMeta.delete(connection);
+}
+function publishedContent(
+  owner: string | null,
+  sess: Record<string, unknown>,
+  roster: RosterInHand,
+): string {
+  return JSON.stringify([owner, parseSessionMeta(sess, roster.models)]);
+}
+
 export async function publishSessionMeta(
   /** `sessionKey`: the key `described` answered for, reported as its provenance. */
   session: { chatId: string; connection: ModelsConnection; agentId: string | null; sessionKey?: string },
@@ -602,6 +620,8 @@ export async function publishSessionMeta(
     ...(session.sessionKey !== undefined ? { describedSessionKey: session.sessionKey } : {}),
     observedAt: described.observedAt,
   });
+  if (inHand === null) lastPublishedMeta.delete(conn);
+  else lastPublishedMeta.set(conn, publishedContent(owner, described.sess, inHand));
   if (!reask) return;
   void ensureAvailableModels(conn, owner, "fresh")
     .then((fresh) => {
@@ -609,6 +629,9 @@ export async function publishSessionMeta(
       // roster already published; only a new answer is worth a second write — and none
       // on a connection the chat re-bound away from meanwhile.
       if (conn.isClosed || fresh === null || fresh === inHand) return undefined;
+      // A roster-only write: the record of the last full publish no longer says what
+      // Convex holds.
+      forgetPublishedMeta(conn);
       return writer.reportSessionRoster(session.chatId, fresh);
     })
     .catch((err: unknown) => {
@@ -663,8 +686,19 @@ export async function refreshAfterConfigChange(
     const owner = resolveModelsOwner(described.sess, session.agentId);
     const roster = await ensureAvailableModels(session.connection, owner, "forced");
     if (session.connection.isClosed) return none;
-    await publishSessionMeta(session, writer, described, roster);
     const rosterEpoch = rosterEpochOf(session.connection, owner);
+    // A `chat.metadata.changed` whose refresh finds exactly what this connection last
+    // published writes nothing: before 2026.9.7 the gateway sends the notice empty on
+    // every metadata change, and a write per notice per open chat is contention for no
+    // news. A `config.changed` always publishes.
+    if (
+      notice.origin === "chat.metadata.changed" &&
+      roster !== null &&
+      lastPublishedMeta.get(session.connection) === publishedContent(owner, described.sess, roster)
+    ) {
+      return { published: true, rosterEpoch };
+    }
+    await publishSessionMeta(session, writer, described, roster);
     console.log(`[roster] chat=${session.chatId} refreshed after ${notice.origin ?? "config.changed"} hash=${notice.hash ?? "?"}: ${roster?.models.length ?? "no"} model(s), roster epoch ${rosterEpoch}`);
     return { published: true, rosterEpoch };
   } catch (err) {

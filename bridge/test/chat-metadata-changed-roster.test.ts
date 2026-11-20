@@ -21,7 +21,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { readChatMetadataChanged } from "../src/providers/openclaw/chat-metadata-changed.js";
-import { attachRosterPolicy, ensureAvailableModels } from "../src/providers/openclaw/models-roster.js";
+import {
+  attachRosterPolicy,
+  ensureAvailableModels,
+  publishSessionMeta,
+} from "../src/providers/openclaw/models-roster.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 import { sleep } from "./helpers/sleep.js";
 import { deviceIdentity, startWsFakeGateway, type WsFakeGateway } from "./helpers/ws-fake-gateway.js";
@@ -158,7 +162,7 @@ describe("the policy: the roster a chat shows follows the notice, without a turn
       writer,
       { debounceMs: DEBOUNCE_MS, retryMs: 10_000 },
     );
-    return { conn, policy, published };
+    return { conn, policy, published, writer };
   }
 
   it("publishes the new roster after a catalogue change — one refresh for a burst", async () => {
@@ -176,6 +180,84 @@ describe("the policy: the roster a chat shows follows the notice, without a turn
       expect(published.at(-1)).toEqual(["a", "b"]);
       expect(published.length, "one coalesced refresh").toBe(1);
       expect(listCalls(), "one re-ask for the burst").toBe(2);
+    } finally {
+      policy.dispose();
+      conn.close();
+    }
+  });
+
+  it("writes NOTHING to Convex when the refresh finds what was last published — the cost of an empty notice is two reads", async () => {
+    // 2026.8.1 → 2026.9.6 send `{}` on every metadata change: each one must be read
+    // (the catalogue MAY have changed) but an identical answer is not news.
+    const { gw, setRoster, listCalls } = rosterGateway([{ id: "a" }]);
+    gateway = gw;
+    await gw.ready;
+    const { conn, policy, published } = await connectWithPolicy(gw);
+    const describes = () => gw.requests.filter((r) => r.method === "sessions.describe").length;
+    try {
+      gw.push(metadataChanged(EMPTY, 1));
+      await sleep(SETTLE_MS);
+      expect(published).toEqual([["a"]]); // the first refresh publishes: nothing was on record
+      const before = { list: listCalls(), describe: describes() };
+      for (let round = 0; round < 3; round++) {
+        gw.push(metadataChanged(EMPTY, 2 + round));
+        await sleep(SETTLE_MS);
+      }
+      expect(published, "no write for an unchanged roster").toEqual([["a"]]);
+      // Each notice still cost exactly one describe and one models.list.
+      expect(listCalls() - before.list).toBe(3);
+      expect(describes() - before.describe).toBe(3);
+      // A real change is published.
+      setRoster([{ id: "a" }, { id: "b" }]);
+      gw.push(metadataChanged(EMPTY, 5));
+      await sleep(SETTLE_MS);
+      expect(published).toEqual([["a"], ["a", "b"]]);
+    } finally {
+      policy.dispose();
+      conn.close();
+    }
+  });
+
+  it("compares with what Convex was LAST sent, whichever path sent it", async () => {
+    // A send's own publish in between moved what Convex holds; a refresh that finds the
+    // earlier roster again must publish it, not take it for unchanged.
+    const { gw, setRoster } = rosterGateway([{ id: "a" }]);
+    gateway = gw;
+    await gw.ready;
+    const { conn, policy, published, writer } = await connectWithPolicy(gw);
+    try {
+      gw.push(metadataChanged(EMPTY, 1));
+      await sleep(SETTLE_MS);
+      expect(published).toEqual([["a"]]);
+      // The send path publishes another roster for the same chat.
+      await publishSessionMeta(
+        { chatId: "c1", connection: conn, agentId: "alice", sessionKey: "k" },
+        writer,
+        { sess: { key: "k", agentId: "alice", model: "openai/gpt-5.5" }, observedAt: 1 },
+        { owner: "alice", models: [{ id: "z", label: "z" }], observedAt: 1 } as never,
+      );
+      expect(published.at(-1)).toEqual(["z"]);
+      setRoster([{ id: "a" }]);
+      gw.push(metadataChanged(EMPTY, 2));
+      await sleep(SETTLE_MS);
+      expect(published.at(-1)).toEqual(["a"]);
+    } finally {
+      policy.dispose();
+      conn.close();
+    }
+  });
+
+  it("a config.changed always publishes, even with an identical roster", async () => {
+    const { gw } = rosterGateway([{ id: "a" }]);
+    gateway = gw;
+    await gw.ready;
+    const { conn, policy, published } = await connectWithPolicy(gw);
+    try {
+      gw.push(metadataChanged(EMPTY, 1));
+      await sleep(SETTLE_MS);
+      gw.push({ type: "event", event: "config.changed", payload: { path: "/x", hash: "hmac-sha256:v1:r2", ts: 1 }, seq: 2 });
+      await sleep(SETTLE_MS);
+      expect(published).toEqual([["a"], ["a"]]);
     } finally {
       policy.dispose();
       conn.close();
