@@ -255,13 +255,15 @@ identical. The two broken anchors are real and are each recorded:
   — the session describe is now assembled through a shared row builder. The fields
   Atrium reads are the same ones; the assembly moved.
 
-**DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
-`delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1892`,
-the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
-Written here because it is known and unfixed, not because it was measured on the
-bench: the catalogue never elicits a retraction. It is owed a scenario before it
-can be called handled.
+**The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
+`delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
+The append path still drops any delta whose text is empty
+(`bridge/src/providers/openclaw/normalizer.ts:1935`, the `&& deltaText` guard), so
+the retraction has its own branch in `handleChat`: the bubble is cleared through a
+declared empty snapshot, as the Control UI clears its stream. It is covered by a
+deterministic test in the captured shape, not measured on the bench: the catalogue
+never elicits a retraction, and it is owed a scenario. The `assistant` stream's own
+retraction (`text: ""` with `replace`) is not read: the `chat` delta carries it.
 
 **Revision of 2026-09-12 (v2026.9.2 → v2026.9.4).** Re-verified zone by zone
 against the upstream tag (report:

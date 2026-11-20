@@ -478,7 +478,7 @@
         },
         "seq": {
           "status": "handled",
-          "by": "handleChat dedup key component; NOTE: no ordering/gap detection (ordered WS transport)"
+          "by": "handleChat dedup key component, and the run order of a rewrite: with the envelope seq, it proves a shorter `message` follows the frame that wrote the bubble (normalizer chatRewriteInOrder), which is what lets the bridge declare that shrink to Convex"
         },
         "state": {
           "status": "handled",
@@ -494,7 +494,7 @@
         },
         "replace": {
           "status": "handled",
-          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex (never for a run adopted into the turn); a bare `deltaText` marked replace takes the same path",
+          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex (never for a run adopted into the turn); a rewrite to the empty text clears the bubble; a bare `deltaText` marked replace takes the same path",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "const rewrite = !isFinal && payload.replace === true;"

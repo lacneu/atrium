@@ -345,7 +345,7 @@
         },
         "itemId": {
           "status": "handled",
-          "by": "names the item a `text` is cumulative for: the run's first item (and a frame naming none) holds the run's whole live text and is written; a later item holds its own part and is left to the `chat` delta, which carries the items joined by the gateway. The live-text baseline restarts a delta accumulation on it too",
+          "by": "names the item a `text` is cumulative for: the run's first item (and a frame naming none) holds the run's whole live text and is written, until the run's `chat` stream writes the bubble; a later item holds its own part and is left to the `chat` delta, which carries the items joined by the gateway. The live-text baseline restarts a delta accumulation on it too",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "private assistantTextIsRunText(data: JsonObject): boolean {"
@@ -403,7 +403,7 @@
         },
         "text": {
           "status": "handled",
-          "by": "the answer text, cumulative PER ITEM: written as the bubble's snapshot while its item holds the run's whole live text (the first item, a replaceable replacement, a frame naming no item), not written for a later item",
+          "by": "the answer text, cumulative PER ITEM: written as the bubble's snapshot while its item holds the run's whole live text (the first item, a replaceable replacement, a frame naming no item) AND the run's `chat` stream has not written the bubble yet; from then on the `chat` text is the only authority and this one is an activity signal",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "if (!this.assistantTextIsRunText(data)) return;"

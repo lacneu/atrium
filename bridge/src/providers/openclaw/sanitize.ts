@@ -317,6 +317,40 @@ export function sanitizeText(
   return out.join("\n");
 }
 
+const LIVE_LINE_BREAK_RE = /[\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029]/;
+const LIVE_WORD_STOP_RE = /[\s`)>]/;
+
+/**
+ * How much of a STILL-GROWING text can be shown without being taken back.
+ *
+ * `sanitizeText` rewrites a server path to its basename and drops a `MEDIA:` directive
+ * line, and both only happen once the text is complete enough to match. Shown as it
+ * grew, `/home/node/.openclaw/media/outbound/` was printed and then replaced by the
+ * file's name: a text that got SHORTER, which the reader sees and Convex refuses as a
+ * regression. The tail that may still become one of those is held back — a last line
+ * that is, or begins like, a `MEDIA:` directive; else a last word that opens with `/`
+ * (after an opening quote or parenthesis) — until the character that ends it arrives.
+ * A final text is never cut by the caller.
+ *
+ * STATED LIMIT: a path written INSIDE a longer word, and a `path:` label line (dropped
+ * whole once complete), are not seen here; their rewrite still shortens the text when
+ * it lands. So does the one line break before a directive that gets dropped: it is
+ * shown (a tool card is anchored on the line it opens) and goes with the directive.
+ */
+export function liveStableLength(text: string): number {
+  let lineStart = text.length;
+  while (lineStart > 0 && !LIVE_LINE_BREAK_RE.test(text[lineStart - 1]!)) lineStart--;
+  const line = text.slice(lineStart);
+  if (line !== "" && (line.startsWith("MEDIA:") || "MEDIA:".startsWith(line))) {
+    return lineStart;
+  }
+  let wordStart = text.length;
+  while (wordStart > lineStart && !LIVE_WORD_STOP_RE.test(text[wordStart - 1]!)) wordStart--;
+  let pathStart = wordStart;
+  while (pathStart < text.length && "\"'(".includes(text[pathStart]!)) pathStart++;
+  return text[pathStart] === "/" ? pathStart : text.length;
+}
+
 /**
  * Sanitize a raw OpenClaw frame for the deprecated `openclaw.frame`
  * passthrough: recursively strip server paths from every string. Mirrors the
