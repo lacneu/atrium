@@ -209,12 +209,15 @@ export function followReserve(viewport: HTMLElement, store: ViewportFollowStore)
   };
   // Past the window (lots 32-33), on a frame that comes late — a long task, a hidden tab —,
   // in the scroll event Chrome dispatches first on it or in the frame's step: one landing
-  // at most, then the stop. Only short of the end, and only if no one has moved the
-  // transcript since the follow left it, or if the layout has moved since: its pull, taken
-  // back as within the window — else assistant-ui reads it as the reader's own move up.
-  // Another's move down, the layout held, keeps its position.
+  // at most, then the stop. Only short of the end, and unless another has moved the
+  // transcript down, the layout held: that keeps its position. Anything else is the
+  // layout's — another's move up was told apart before this is called —, and taken back
+  // as within the window, else assistant-ui reads it as the reader's own move up: no one
+  // having moved, the layout having moved, or (lot 35) a pull within what "held" allows,
+  // a pixel of content lost at the end, which leaves the transcript above where the
+  // follow left it with the layout read as held.
   const lastLanding = () => {
-    if (short() > 1 && (viewport.scrollTop === left || !layoutHeld())) toEnd();
+    if (short() > 1 && !(layoutHeld() && viewport.scrollTop > left)) toEnd();
     stop();
   };
   // A scroll of the transcript: another's move up stops the follow; within the window, any

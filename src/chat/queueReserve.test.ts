@@ -1615,6 +1615,30 @@ describe("the reserve's follow, unit by unit (lots 29-30)", () => {
     expect(dom.short()).toBe(0);
   });
 
+  // A PULL WITHIN THE TOLERANCE, PAST THE WINDOW (lot 35): the content a pixel shorter
+  // is the layout "held" as the follow reads it, and the transcript no longer
+  // where the follow left it. Not another's move up — no further than the loss and a pixel
+  // —, so the layout's, and landed as within the window: lot 33 skipped the landing and
+  // stopped, and assistant-ui read the reader away from the end for good.
+  test("the scroll event of a pull of a pixel, past the window, the reserve 4 px taller since, lands the end once and stops: assistant-ui reads the reader at the end, and the next text follows them (lot 35)", () => {
+    const dom = fakeDom({ top: 500, height: 1000, client: 500 });
+    const aui = assistantUi(dom);
+    followReserve(dom.viewport as unknown as HTMLElement, aui.store);
+    dom.grow(10);
+    dom.frame();
+    dom.frame();
+    dom.tick(400);
+    dom.shrinkEnd(1);
+    dom.grow(4);
+    const scrolls = dom.scrolls();
+    dom.frame();
+    expect(dom.short()).toBeLessThanOrEqual(1);
+    expect(dom.scrolls()).toBe(scrolls + 1);
+    expect(aui.store.getState().isAtBottom).toBe(true);
+    aui.nextText(30);
+    expect(dom.short()).toBeLessThanOrEqual(1);
+  });
+
   // THE SEND AND A LONG TASK (lot 33), in Chrome's order: a transition starts on the frame
   // after the change of style, and a frame dispatches the scroll events queued before it
   // ahead of its callbacks. Under reduced motion the reserve has no transition: it is
