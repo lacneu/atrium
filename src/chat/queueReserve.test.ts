@@ -2236,3 +2236,34 @@ describe("every scroll the app makes of the transcript tells the follow first (l
     expect(missing).toEqual([]);
   });
 });
+
+// NO CSS ZOOM IN THE APP (lot 38). The follow's rounding slack takes the page's physical
+// pixels from `devicePixelRatio`. Blink bounds a scroll in the element's own effective
+// zoom, which a CSS `zoom` on it or on an ancestor multiplies without changing the
+// frame's ratio (Codex, pass 27): under one, the slack would be too small. The app sets
+// none; this keeps it so, or brings whoever adds one here.
+describe("the app sets no CSS zoom, which the follow's rounding slack does not count (lot 38)", () => {
+  const all = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir)) {
+      const f = join(dir, e);
+      if (statSync(f).isDirectory()) all(f, out);
+      else if (/\.(css|tsx?)$/.test(e) && !/\.(test|fixtures|testkit)\.tsx?$/.test(e) && !/\.d\.ts$/.test(e)) out.push(f);
+    }
+    return out;
+  };
+  // A declaration in a stylesheet, an inline style's property, a script's assignment.
+  const ZOOM = { css: /(^|[;{\s])zoom\s*:/m, tsx: /\bstyle\.zoom\b|\bzoom\s*:\s*["'`\d]/ };
+  test("no stylesheet, inline style or script of src/ sets it", () => {
+    const hits = [...all(SRC), join(ROOT, "index.html")].filter((f) =>
+      (f.endsWith(".css") ? ZOOM.css : ZOOM.tsx).test(readFileSync(f, "utf8")),
+    );
+    expect(hits.map((f) => relative(ROOT, f))).toEqual([]);
+  });
+  test("the patterns see a declaration, an inline style and an assignment", () => {
+    expect(ZOOM.css.test(".a {\n  zoom: 0.5;\n}")).toBe(true);
+    expect(ZOOM.css.test(".a { cursor: zoom-in; }")).toBe(false);
+    expect(ZOOM.tsx.test("<div style={{ zoom: 0.5 }} />")).toBe(true);
+    expect(ZOOM.tsx.test('el.style.zoom = "2"')).toBe(true);
+    expect(ZOOM.tsx.test("zoom: PdfZoom;")).toBe(false);
+  });
+});

@@ -142,6 +142,8 @@ export function focusScrollsTranscript(target: EventTarget | null, viewport: HTM
 //   bounds the scroll with the content's and the box's heights rounded there.
 // Four CSS pixels on a page at its own size on a plain screen, less on a dense one, more
 // on a page zoomed out.
+// The ratio is the frame's: a CSS `zoom` on the transcript or an ancestor would scale
+// Blink's rounding without it. The app sets none (guarded in queueReserve.test.ts).
 const roundedPx = (win: Window) => 2 + 2 / (win.devicePixelRatio || 1);
 
 // The follow under way on each transcript, so that the app can end it before scrolling
