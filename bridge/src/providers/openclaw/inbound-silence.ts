@@ -31,8 +31,7 @@ export const MAX_TIMER_DELAY_MS = 2_147_483_647;
  * the gateway that is asked may be draining a restart with its event loop busy, and
  * the longest bounded read it grants itself is seven seconds
  * (`HEALTH_COLLECTION_TIMEOUT_MS`, src/gateway/health/collector.ts). Twice that, plus
- * a second for the network. It also covers a pause of THIS process, after which the
- * verdict is reached while the gateway's frames are still unread in the socket.
+ * a second for the network.
  */
 export const SILENCE_PROBE_DEADLINE_MS = 15_000;
 
@@ -58,8 +57,12 @@ export interface SilenceWatch {
   readonly maxSilenceMs: number;
   /** A frame arrived (any event or response frame). */
   noteInbound(): void;
-  /** Has the socket been silent for too long? Called once per interval. */
+  /** Has the socket been silent for too long? Called once per interval. A check that
+   *  runs far later than its interval means THIS process was not running: it starts a
+   *  fresh window and answers "alive". */
   check(): "alive" | "silent";
+  /** Start a fresh observation window: the time before now was not listened to. */
+  restart(): void;
   /** How many times `noteInbound` was called: "did anything arrive since I asked?" */
   readonly inboundCount: number;
 }
@@ -72,6 +75,7 @@ export interface SilenceWatch {
 export function createSilenceWatch(intervalMs: number, now: () => number): SilenceWatch {
   const maxSilenceMs = intervalMs * 2;
   let lastInboundAt = now();
+  let lastCheckAt = lastInboundAt;
   let inboundCount = 0;
   return {
     maxSilenceMs,
@@ -83,8 +87,22 @@ export function createSilenceWatch(intervalMs: number, now: () => number): Silen
       inboundCount += 1;
     },
     check() {
+      const at = now();
+      const sinceLastCheck = at - lastCheckAt;
+      lastCheckAt = at;
+      // "I WAS NOT LISTENING." Checks are a period apart; one that comes more than two
+      // periods after the previous means this process was suspended or its event loop
+      // blocked, and read nothing off the socket meanwhile. That time is not silence of
+      // the gateway's: the window starts again from now.
+      if (sinceLastCheck > intervalMs * 2) {
+        lastInboundAt = at;
+        return "alive";
+      }
       // Strictly more than the budget, like the gateway's own clients.
-      return now() - lastInboundAt > maxSilenceMs ? "silent" : "alive";
+      return at - lastInboundAt > maxSilenceMs ? "silent" : "alive";
+    },
+    restart() {
+      lastInboundAt = lastCheckAt = now();
     },
   };
 }

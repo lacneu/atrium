@@ -76,10 +76,22 @@ const silentFor = async (ms: number, c: OpenClawConnection) => {
   }
 };
 
+/** Let the event loop run a full turn (poll, then check): the watch never judges inside
+ *  a timer callback, so a verdict is only visible after one. `setImmediate` is real. */
+const io = async () => {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+};
 /** One interval of the watch elapses (the timer fires once). */
-const interval = (ms = 30_000) => vi.advanceTimersByTime(ms);
-/** The confirmation delay of a "silent" verdict elapses. */
-const confirm = () => vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS);
+const interval = async (ms = 30_000) => {
+  vi.advanceTimersByTime(ms);
+  await io();
+};
+/** The probe's deadline elapses, and its verdict is taken. */
+const confirm = async () => {
+  vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS);
+  await io();
+};
 /** The watch's own timers still armed (the handshake's and the requests' are not its). */
 const watchTimers = (c: OpenClawConnection) => {
   const w = c as unknown as { silenceTimer: unknown; silenceConfirmTimer: unknown };
@@ -101,17 +113,18 @@ describe("connection silence over a real socket", () => {
       () => null,
       (e: unknown) => e as Error,
     );
-    interval();
-    interval();
+    await interval();
+    await interval();
     expect(c.isClosed).toBe(false); // exactly 2 x the interval: not yet over it
     expect(watchTimers(c)).toBe(1); // …and no verdict awaits confirmation
-    interval();
+    await interval();
     // Over the budget: the verdict is reached, and acted on only once confirmed —
     // the whole confirmation delay, not a moment less.
     expect(c.isClosed).toBe(false);
     vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS - 1);
     expect(c.isClosed).toBe(false);
     vi.advanceTimersByTime(1);
+    await io();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd).toEqual({
       kind: "inbound_silence",
@@ -131,32 +144,78 @@ describe("connection silence over a real socket", () => {
     expect(watchTimers(c)).toBe(0);
   });
 
-  it("does not close a socket whose frames were only waiting to be read (a pause of this process)", async () => {
-    // After a stalled event loop or a suspended host, the watch's timer runs BEFORE the
-    // frames the gateway sent meanwhile are read. The verdict must not be acted on until
-    // the loop has delivered them.
+  it("a pause of THIS process is not charged to the gateway: the late check opens a fresh window, without even a probe", async () => {
+    // After a stalled event loop or a suspended host, the check that finally runs has
+    // read nothing off the socket for ten minutes. That is not the gateway's silence.
     let paused = 0;
     const clock = performance.now.bind(performance);
     vi.spyOn(performance, "now").mockImplementation(() => clock() + paused);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
-    const frames = c.frames();
-    // The process did not run for ten minutes; the one check that then runs sees a
-    // long silence…
     paused = 600_000;
-    interval();
+    await interval();
     expect(c.isClosed).toBe(false);
-    expect(watchTimers(c)).toBe(2);
-    // …and the tick that was waiting in the socket is read before the confirmation.
-    gateway!.push({ ...CAPTURED_TICK });
-    await frames.next();
-    confirm();
+    expect(watchTimers(c)).toBe(1); // no verdict, no probe
+    expect(gateway!.requests.filter((r) => r.method === "last-heartbeat")).toHaveLength(0);
+    // A transport that really is mute is still closed, one full budget later.
+    await interval();
+    await interval();
+    await interval();
+    await confirm();
+    expect(c.isClosed).toBe(true);
+    expect(c.connectionEnd?.kind).toBe("inbound_silence");
+  });
+
+  /** Block this thread — no timer, no I/O, no microtask runs meanwhile. */
+  const blockFor = (ms: number) => {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* busy */
+    }
+  };
+
+  it("THE TIMER NEVER JUDGES: an answer that reached the socket while this process was blocked is read before the verdict", async () => {
+    // The probe is pending; the bridge's loop is blocked; the gateway answers meanwhile.
+    // When the loop resumes, the deadline timer runs BEFORE the socket is read: judged
+    // there, a healthy connection would be closed with its answer unread.
+    const gw = slowToAnswer();
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, gw.onMethod);
+    await interval();
+    await interval();
+    await interval(); // the silent verdict: the probe is sent
+    await sleep(30);
+    expect(gateway!.requests.filter((r) => r.method === "last-heartbeat")).toHaveLength(1);
+    // The gateway answers: the bytes go to this process's socket buffer…
+    gw.answer();
+    for (let i = 0; i < 10; i++) await Promise.resolve(); // microtasks only: no I/O phase runs
+    blockFor(60); // …and are there, unread, while the loop is blocked past the deadline.
+    vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS); // the deadline timer fires first
+    expect(c.isClosed).toBe(false); // …and judges nothing
+    await io(); // the poll phase reads the answer, then the verdict is taken
     expect(c.isClosed).toBe(false);
     expect(c.connectionEnd).toBeNull();
-    // A socket that stays silent after that is still closed, a budget later.
-    interval();
-    interval();
-    interval();
-    confirm();
+    expect(watchTimers(c)).toBe(1); // the probe is over, the watch goes on
+  });
+
+  it("a deadline that itself fires far too late closes nothing: this process was not listening", async () => {
+    let paused = 0;
+    const clock = performance.now.bind(performance);
+    vi.spyOn(performance, "now").mockImplementation(() => clock() + paused);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
+    await interval();
+    await interval();
+    await interval(); // probe sent
+    paused = 120_000; // the process is suspended for two minutes with the probe pending
+    await confirm();
+    expect(c.isClosed).toBe(false);
+    // The transport is really mute: it is asked again, and closed on that probe.
+    paused = 120_000;
+    await interval();
+    await interval();
+    await interval();
+    await interval();
+    await confirm();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd?.kind).toBe("inbound_silence");
   });
@@ -169,8 +228,8 @@ describe("connection silence over a real socket", () => {
       // The tick is delivered to the consumer like any frame (observe-only).
       const got = await frames.next();
       expect((got.value as { event?: string }).event).toBe("tick");
-      interval();
-      confirm();
+      await interval();
+      await confirm();
       expect(c.isClosed, `interval ${i}`).toBe(false);
     }
     expect(c.connectionEnd).toBeNull();
@@ -188,18 +247,18 @@ describe("connection silence over a real socket", () => {
     for (let i = 0; i < 3; i++) {
       gateway!.socket!.send(pieces[i]!, { fin: false });
       await sleep(30); // the bytes reach this side; no frame is complete
-      interval();
-      interval();
-      confirm();
+      await interval();
+      await interval();
+      await confirm();
       expect(c.isClosed, `fragment ${i}`).toBe(false);
     }
     gateway!.socket!.send(pieces[3]!, { fin: true });
     expect(((await frames.next()).value as { event?: string }).event).toBe("health");
     // Once the bytes stop too, the socket is silent like any other.
-    interval();
-    interval();
-    interval();
-    confirm();
+    await interval();
+    await interval();
+    await interval();
+    await confirm();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd?.kind).toBe("inbound_silence");
   });
@@ -243,9 +302,9 @@ describe("connection silence over a real socket", () => {
     // would have cut a live turn one second before it; the probe's deadline is its own.
     const gw = slowToAnswer();
     const c = await connect({ ...CAPTURED_HELLO_POLICY }, gw.onMethod);
-    interval();
-    interval();
-    interval(); // the silent verdict: the probe is sent
+    await interval();
+    await interval();
+    await interval(); // the silent verdict: the probe is sent
     await sleep(30);
     expect(gateway!.requests.filter((r) => r.method === "last-heartbeat")).toHaveLength(1);
     vi.advanceTimersByTime(7_000);
@@ -262,13 +321,14 @@ describe("connection silence over a real socket", () => {
     expect(SILENCE_PROBE_DEADLINE_MS).toBeGreaterThan(2 * 7_000); // the gateway's own worst bounded read, twice
     const gw = slowToAnswer(); // never released
     const c = await connect({ ...CAPTURED_HELLO_POLICY }, gw.onMethod);
-    interval();
-    interval();
-    interval();
+    await interval();
+    await interval();
+    await interval();
     await sleep(30);
     vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS - 1);
     expect(c.isClosed).toBe(false);
     vi.advanceTimersByTime(1);
+    await io();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd?.kind).toBe("inbound_silence");
   });
@@ -307,13 +367,13 @@ describe("connection silence over a real socket", () => {
   it("the same silence on a transport that answers nothing is closed, the probe leaving nothing behind", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
-    interval();
-    interval();
-    interval();
+    await interval();
+    await interval();
+    await interval();
     await sleep(30);
     // The probe was sent and is unanswered.
     expect(gateway!.requests.filter((r) => r.method === "last-heartbeat")).toHaveLength(1);
-    confirm();
+    await confirm();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd?.kind).toBe("inbound_silence");
     // Nothing of the watch or of its probe is left armed.
@@ -326,9 +386,9 @@ describe("connection silence over a real socket", () => {
     const c = await connect({ ...CAPTURED_HELLO_POLICY });
     for (let i = 0; i < 6; i++) {
       await c.request("health", {}, 5_000);
-      interval();
-      interval();
-      confirm();
+      await interval();
+      await interval();
+      await confirm();
       expect(c.isClosed, `round ${i}`).toBe(false);
     }
   });
@@ -356,9 +416,9 @@ describe("connection silence over a real socket", () => {
     const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
     expect(watchTimers(c)).toBe(1);
     // …including while a verdict awaits its confirmation.
-    interval();
-    interval();
-    interval();
+    await interval();
+    await interval();
+    await interval();
     expect(watchTimers(c)).toBe(2);
     // The interval, the confirmation, and the probe's own deadline.
     expect(vi.getTimerCount()).toBe(3);
@@ -393,10 +453,10 @@ describe("connection silence over a real socket", () => {
     });
     await frames.next();
     // The gateway announced its restart, then hung without closing the socket.
-    interval();
-    interval();
-    interval();
-    confirm();
+    await interval();
+    await interval();
+    await interval();
+    await confirm();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd?.kind).toBe("gateway_restarting");
     expect(c.connectionEnd?.restartExpectedMs).toBe(1500);
@@ -447,10 +507,10 @@ describe("a silent conversation socket, through the session", () => {
       const socketsBefore = gateway.upgradeCount;
       expect(s.connection.isClosed).toBe(false);
 
-      interval();
-      interval();
-      interval();
-      confirm();
+      await interval();
+      await interval();
+      await interval();
+      await confirm();
       expect(s.connection.isClosed).toBe(true);
       expect((s.connection as OpenClawConnection).connectionEnd?.kind).toBe("inbound_silence");
       await sleep(20);

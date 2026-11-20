@@ -513,27 +513,47 @@ export class OpenClawConnection {
       // early, so no second verdict can be reached, nor a second probe sent, before
       // this one's deadline.
       const inboundAtProbe = watch.inboundCount;
+      const probedAt = performance.now();
       void this.request("last-heartbeat", {}, SILENCE_PROBE_DEADLINE_MS).catch(() => {
         /* an error answer already counted as a frame; no answer is the verdict below */
       });
       this.silenceConfirmTimer = setTimeout(() => {
-        this.silenceConfirmTimer = null;
-        if (this.closed) return;
-        this.noteArrivingBytes(watch);
-        // Judged on what arrived SINCE THE QUESTION, not on the silence budget: an
-        // answer six seconds in is an answer, however short the tick interval.
-        if (watch.inboundCount !== inboundAtProbe) return;
-        console.warn(
-          `[openclaw] no inbound frame for more than ${watch.maxSilenceMs} ms (tick interval ${intervalMs} ms), and no answer within ${SILENCE_PROBE_DEADLINE_MS} ms — closing the silent connection`,
-        );
-        this.silenceClosing = true;
-        try {
-          // The code and reason the gateway's own clients close a silent socket with.
-          this.ws.close(4000, "tick timeout");
-        } catch {
-          /* the socket may already be gone; onClose still runs below */
-        }
-        this.onClose(new OpenClawError("OpenClaw Gateway connection closed"));
+        // A TIMER NEVER JUDGES. Timers run BEFORE the I/O that queued behind them: if
+        // this process was blocked while the probe was pending, its answer is sitting
+        // unread in the socket when this fires. The verdict is taken in the CHECK phase
+        // (`setImmediate`), which the loop reaches only after a full POLL phase — and
+        // the poll phase reads every socket that has data, so by then `bytesRead` has
+        // moved for a socket that received anything at all, whether or not a whole
+        // frame has been parsed. One phase is enough by construction, not by tuning.
+        // The timer handle stays set until the verdict, so no second probe starts.
+        const lateBy = performance.now() - probedAt - SILENCE_PROBE_DEADLINE_MS;
+        setImmediate(() => {
+          this.silenceConfirmTimer = null;
+          if (this.closed) return;
+          this.noteArrivingBytes(watch);
+          // Judged on what arrived SINCE THE QUESTION, not on the silence budget: an
+          // answer six seconds in is an answer, however short the tick interval.
+          if (watch.inboundCount !== inboundAtProbe) return;
+          // The deadline itself fired far too late: this process was not running, and
+          // the probe never had its fifteen seconds of being listened to. Nothing is
+          // charged to the gateway — the window starts again, and a transport that is
+          // really mute is asked once more.
+          if (lateBy > SILENCE_PROBE_DEADLINE_MS) {
+            watch.restart();
+            return;
+          }
+          console.warn(
+            `[openclaw] no inbound frame for more than ${watch.maxSilenceMs} ms (tick interval ${intervalMs} ms), and no answer within ${SILENCE_PROBE_DEADLINE_MS} ms — closing the silent connection`,
+          );
+          this.silenceClosing = true;
+          try {
+            // The code and reason the gateway's own clients close a silent socket with.
+            this.ws.close(4000, "tick timeout");
+          } catch {
+            /* the socket may already be gone; onClose still runs below */
+          }
+          this.onClose(new OpenClawError("OpenClaw Gateway connection closed"));
+        });
       }, SILENCE_PROBE_DEADLINE_MS);
       this.silenceConfirmTimer.unref?.();
     }, intervalMs);

@@ -98,16 +98,45 @@ describe("createSilenceWatch", () => {
     expect(watch.check()).toBe("silent");
   });
 
-  it("a frame read between a silent verdict and its confirmation revives the socket", () => {
-    // What the connection relies on to confirm a verdict: after a pause of the process
-    // the first check runs before the frames waiting in the socket are read; once they
-    // are, the same watch answers alive.
+  it("does not charge the gateway for a pause of THIS process: a check that comes far too late starts a fresh window", () => {
+    // Checks are an interval apart. One that comes ten minutes after the previous means
+    // the process was suspended or its loop blocked — it read nothing off the socket,
+    // so that time is not silence of the gateway's.
     const c = clock();
     const watch = createSilenceWatch(30_000, c.now);
+    c.advance(30_000);
+    expect(watch.check()).toBe("alive");
     c.advance(600_000);
+    expect(watch.check()).toBe("alive");
+    // A transport that really is mute is still found, one full budget later.
+    c.advance(30_000);
+    expect(watch.check()).toBe("alive");
+    c.advance(30_000);
+    expect(watch.check()).toBe("alive");
+    c.advance(30_000);
     expect(watch.check()).toBe("silent");
-    watch.noteInbound();
-    c.advance(5_000);
+  });
+
+  it("only a check MORE than two intervals late is a pause: an ordinary late timer is not", () => {
+    const c = clock();
+    const watch = createSilenceWatch(30_000, c.now);
+    c.advance(60_000); // exactly two intervals: still a check, not a pause
+    expect(watch.check()).toBe("alive");
+    c.advance(30_000);
+    expect(watch.check()).toBe("silent");
+  });
+
+  it("restart() opens a fresh window on request", () => {
+    const c = clock();
+    const watch = createSilenceWatch(30_000, c.now);
+    for (let i = 0; i < 3; i++) {
+      c.advance(30_000);
+      watch.check();
+    }
+    expect(watch.check()).toBe("silent");
+    watch.restart();
+    expect(watch.check()).toBe("alive");
+    c.advance(30_000);
     expect(watch.check()).toBe("alive");
   });
 
@@ -119,10 +148,9 @@ describe("createSilenceWatch", () => {
     expect(watch.inboundCount).toBe(asked);
     watch.noteInbound();
     expect(watch.inboundCount).toBe(asked + 1);
-    // Far beyond the 2 s budget by the time it is read — and still "something arrived".
-    c.advance(9_000);
-    expect(watch.check()).toBe("silent");
-    expect(watch.inboundCount).not.toBe(asked);
+    // restart() is not an arrival.
+    watch.restart();
+    expect(watch.inboundCount).toBe(asked + 1);
   });
 
   it("stays silent once silent (the close is the caller's, a second check agrees)", () => {
