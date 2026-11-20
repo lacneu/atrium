@@ -258,7 +258,7 @@ identical. The two broken anchors are real and are each recorded:
 **The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
 `delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
 The append path still drops any delta whose text is empty
-(`bridge/src/providers/openclaw/normalizer.ts:1938`, the `&& deltaText` guard), so
+(`bridge/src/providers/openclaw/normalizer.ts:1960`, the `&& deltaText` guard), so
 the retraction has its own branch in `handleChat`: the bubble is cleared through a
 declared empty snapshot, as the Control UI clears its stream. It is covered by a
 deterministic test in the captured shape, not measured on the bench: the catalogue
@@ -1419,6 +1419,29 @@ creation time, and the conversation's own session when the snapshot names one. A
 request already recorded is that card, whatever order the writes arrive in. A resolution is
 attached to the creation time announced for its id.
 
+## 11. What a run reports beside its answer
+
+### Tool phases that end nothing
+
+**Upstream.** `stream:"tool"` carries two phases that are neither a start, nor output,
+nor a result. `input_delta` is written while the model is still streaming the arguments
+of a file-mutation call (`$UP/src/agents/embedded-agent-subscribe.handlers.messages.update.ts:75-84`):
+a diff counter, no `args`, and it precedes the call's `start`. `review` is written when an
+approval reviewer starts on, or rules on, a call — by the gateway's exec host with
+`name:"exec"` (`$UP/src/agents/bash-tools.exec-host-gateway.ts:133-171`) and by the Codex
+harness with no `name` at all
+(`$UP/extensions/codex/src/app-server/event-projector-events.ts:259-271`). The gateway
+counts both as tool progress (`$UP/src/gateway/server-chat-progress-snapshot.ts:152`), and
+the Control UI closes a card on `result` only (`$UP/ui/src/pages/chat/tool-stream.ts:623,659`).
+
+**Atrium.** Both are read as reports on a call (`isToolObservationPhase`): they close no
+card, count no tool, and leave the buffered arguments for the result. They open no card
+either — a call whose arguments are being written may never start, and a card opened
+for it would be closed as completed at the turn's terminal. Any other phase the bridge
+does not know still closes the card, so a renamed terminal cannot leave one spinning.
+Narrower than the Control UI: the live `+added −removed` stat of a running edit and the
+reviewer's line ("Guardian reviewing / approved / denied") are not shown.
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1433,6 +1456,7 @@ attached to the creation time announced for its id.
 | Projection `on` deviations | **Deliberate** (§7) — no visible duplicate, files copied at once with a `gone` state, a waiting line while a child runs, stricter masking, one automatic resend of a send the gateway reports absent |
 | Reasoning and work notes | **Conformant (0.103.0)** — shown after the fact above its row when the conversation shows reasoning (per-conversation choice, per-agent Atrium default); work notes live from completed preambles; Hermes is read, never written (its setter is global) (§9) |
 | Approvals of sub-agents | **Deliberately narrower (0.103.5)** — a conversation shows and answers its own session's approvals only; upstream addresses an approval to the raising session's whole lineage, stores that audience when it registers it, and serves it on `session.approval`, which Atrium does not consume (§10) |
+| Tool phases `input_delta` / `review` | **Conformant on the card's state** — neither closes a card, counts a tool or drops its arguments; the live diff stat and the reviewer's line are not shown (§11) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or

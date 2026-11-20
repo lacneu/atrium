@@ -1862,14 +1862,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1938",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1960",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1938,
-          1938
+          1960,
+          1960
         ]
       ],
       "literals": [
@@ -3242,6 +3242,91 @@
       ],
       "literals": [
         "backend: \"codex-app-server\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.messages.update.ts:75-84",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/embedded-agent-subscribe.handlers.messages.update.ts",
+      "lines": [
+        [
+          75,
+          84
+        ]
+      ],
+      "literals": [
+        "const data = { phase: \"input_delta\", ...liveEditDiff };"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/bash-tools.exec-host-gateway.ts:133-171",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/bash-tools.exec-host-gateway.ts",
+      "lines": [
+        [
+          133,
+          171
+        ]
+      ],
+      "literals": [
+        "phase: \"review\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:259-271",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "extensions/codex/src/app-server/event-projector-events.ts",
+      "lines": [
+        [
+          259,
+          271
+        ]
+      ],
+      "literals": [
+        "toolCallId: targetItemId,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-progress-snapshot.ts:152",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-chat-progress-snapshot.ts",
+      "lines": [
+        [
+          152,
+          152
+        ]
+      ],
+      "literals": [
+        "\"input_delta\", \"update\", \"review\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/tool-stream.ts:623,659",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "ui/src/pages/chat/tool-stream.ts",
+      "lines": [
+        [
+          623,
+          623
+        ],
+        [
+          659,
+          659
+        ]
+      ],
+      "literals": [
+        "resultReceived: true",
+        "entry.resultReceived = true;"
       ]
     }
   ]

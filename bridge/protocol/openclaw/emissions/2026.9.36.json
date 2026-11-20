@@ -1943,9 +1943,17 @@
     "tool": {
       "phases": {
         "input_delta": {
-          "status": "gap",
-          "gap": "F3",
-          "note": "input_delta (a live edit diff): a PROGRESS phase upstream (only `result` ends a tool); Atrium's progress allowlist (TOOL_PROGRESS_PHASES: update, chunk, delta) lacks it, so the frame closes the card as completed and counts a tool"
+          "status": "handled",
+          "by": "a report on a call whose arguments are still being written: nothing is closed, counted or opened, and the buffered args stay for the result",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (isToolObservationPhase(phase)) {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/tool-observation-phases.test.ts",
+            "note": "never captured: 0 occurrence in the bench corpus (no scenario streams a file-mutation call's arguments or runs an auto-reviewed exec); frames built from the upstream writers"
+          }
         },
         "result": {
           "status": "handled",
@@ -1960,9 +1968,17 @@
           }
         },
         "review": {
-          "status": "gap",
-          "gap": "F3",
-          "note": "review (an exec approval review): a PROGRESS phase upstream (only `result` ends a tool); Atrium's progress allowlist (TOOL_PROGRESS_PHASES: update, chunk, delta) lacks it, so the frame closes the card as completed and counts a tool"
+          "status": "handled",
+          "by": "a report on a call a reviewer holds: the card stays running with its args, no tool is counted",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (isToolObservationPhase(phase)) {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/tool-observation-phases.test.ts",
+            "note": "never captured: 0 occurrence in the bench corpus (no scenario streams a file-mutation call's arguments or runs an auto-reviewed exec); frames built from the upstream writers"
+          }
         },
         "start": {
           "status": "handled",
@@ -1993,7 +2009,7 @@
         "approvalReviewOutcome": {
           "status": "gap",
           "gap": "F3",
-          "note": "approvalReviewOutcome, the outcome of a review the Control UI shows on the card: a PROGRESS phase upstream (only `result` ends a tool); Atrium's progress allowlist (TOOL_PROGRESS_PHASES: update, chunk, delta) lacks it, so the frame closes the card as completed and counts a tool"
+          "note": "the reviewer's outcome (reviewing / approved / denied), which the Control UI prints on the card: Atrium keeps the card running through a review but shows nothing of it, so an exec held by a reviewer looks like one that is simply slow"
         },
         "args": {
           "status": "handled",
@@ -2018,7 +2034,7 @@
         "diff": {
           "status": "gap",
           "gap": "F3",
-          "note": "diff, the live edit diff of input_delta: a PROGRESS phase upstream (only `result` ends a tool); Atrium's progress allowlist (TOOL_PROGRESS_PHASES: update, chunk, delta) lacks it, so the frame closes the card as completed and counts a tool"
+          "note": "the live +added / -removed counter of a file-mutation call whose arguments are being written, which the Control UI prints on the running card: Atrium shows no card before the call starts and no counter"
         },
         "durationMs": {
           "status": "ignored",

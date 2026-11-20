@@ -30,7 +30,7 @@
 // from resurrecting a reaped child.
 
 import { sanitizeText } from "./sanitize.js";
-import { isAnswerTextPart } from "./normalizer.js";
+import { isAnswerTextPart, isToolObservationPhase } from "./normalizer.js";
 import {
   SHOW_WIDGET_TOOL,
   extractCanvasShortcodes,
@@ -857,6 +857,10 @@ export class SubAgentObserver {
     const name = readString(data, "name");
     const phase = readString(data, "phase");
     if (name === null || name === "" || phase === null) return null;
+    // A frame that only reports on a call lists nothing: before the `start` the tool may
+    // never run, and a tool listed here would make that `start` a no-change — the
+    // emission its arguments ride.
+    if (isToolObservationPhase(phase)) return null;
     // A child cannot spawn (anti-recursion); ignore a stray sessions_spawn defensively.
     if (name === "sessions_spawn") return null;
     if (name === SHOW_WIDGET_TOOL && obs.interactionId !== undefined) {

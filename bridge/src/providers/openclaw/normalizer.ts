@@ -363,6 +363,28 @@ function isToolProgressPhase(phase: unknown): boolean {
 }
 
 /**
+ * Phases on `stream:"tool"` that REPORT ON a call without being its start, its output or
+ * its result (v2026.9.36, present on every validated tag):
+ *  - `input_delta` — the model is still writing the arguments of a file-mutation call
+ *    (embedded-agent-subscribe.handlers.messages.update.ts `handleMessageUpdate`); it
+ *    carries a diff counter, no `args`, and PRECEDES the call's `start`;
+ *  - `review` — an approval reviewer started on, or ruled on, the call
+ *    (bash-tools.exec-host-gateway.ts `publishGatewayGuardianReview`; the Codex harness's
+ *    `handleGuardianReview`, which names no tool).
+ * Neither ends a tool, and neither says the tool runs: a call whose arguments are being
+ * written may never start. They are kept apart from the progress phases for that reason —
+ * a progress frame restates a running card, these state nothing about the card.
+ */
+const TOOL_OBSERVATION_PHASES: ReadonlySet<string> = new Set([
+  "input_delta",
+  "review",
+]);
+
+export function isToolObservationPhase(phase: unknown): boolean {
+  return isString(phase) && TOOL_OBSERVATION_PHASES.has(phase);
+}
+
+/**
  * WHERE a run's timeout struck, bucketed to the values the gateway actually
  * emits (enumerated from the deployed 2026.7.1 build: `provider`, `queue`,
  * `gateway_draining`).
@@ -2619,6 +2641,12 @@ export class Normalizer {
             runId: this.currentRunId,
           });
         }
+      } else if (isToolObservationPhase(phase)) {
+        // Nothing is closed, counted or opened, and the buffered args stay for the
+        // result. No card is written either: before the `start` there is no call to show
+        // (one opened here would be closed "completed" at the terminal for a tool that
+        // never ran), after it the card is already running.
+        this.armRecv(now);
       } else {
         const input =
           toolCallId && this.toolArgs.has(toolCallId)
