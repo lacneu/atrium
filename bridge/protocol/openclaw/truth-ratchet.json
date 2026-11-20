@@ -257,6 +257,18 @@
     {
       "path": "QuestionResolveResult.status",
       "scan": false
+    },
+    {
+      "path": "HelloOk.policy",
+      "scan": false
+    },
+    {
+      "path": "ShutdownEvent.restartExpectedMs",
+      "scan": true
+    },
+    {
+      "path": "TickEvent.ts",
+      "scan": false
     }
   ]
 }

@@ -2628,7 +2628,16 @@
         },
         "policy": {
           "status": "handled",
-          "by": "openclaw-client connect: policy.maxPayload (the inbound attachment ceiling) and policy.maxBufferedBytes (the send-buffer ceiling); policy.attachments and policy.tickIntervalMs are not read (S3, T1). CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
+          "by": "openclaw-client connect: policy.maxPayload (the frame limit a send's inline attachments must fit) and policy.maxBufferedBytes (the send-buffer ceiling); policy.tickIntervalMs arms the connection-silence watch (inbound-silence.ts readTickIntervalMs: a socket with no inbound frame for twice the interval is closed and named inbound_silence, as the Control UI's startTickWatch does); policy.attachments.maxBytes / maxImageBytes are the per-attachment decoded-size ceilings (core/attachment-limits.ts readAttachmentCeilings), published on /health and applied by the composer, the Convex dispatch and the bridge's send guard. allowedSessionVisibilities and hasMultipleSessionSharingIdentities, where the version carries them, are not read.",
+          "anchor": {
+            "file": "src/providers/openclaw/openclaw-client.ts",
+            "token": "payload.policy"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/inbound-silence-live.test.ts",
+            "note": "The policy object is a bench capture (hello-ok of 2026.9.6 and 2026.9.33: tickIntervalMs 30000, attachments {maxBytes 19464192, maxImageBytes 6291456}), replayed through a real socket by this test and by attachment-ceilings.test.ts, each proven by neutralization. No live run has yet shown a half-open socket closed by the watch, nor an over-ceiling file refused before the send: both live proofs are owed."
+          }
         },
         "protocol": {
           "status": "gap",
@@ -5870,15 +5879,17 @@
           "by": "connection-end readShutdownNotice: its PRESENCE is recorded with the connection end (reasonPresent); the text itself is never propagated. CORRECTED 2026-11-08 (coverage-truth V3): it was declared a gap «not yet instructed»"
         },
         "restartExpectedMs": {
-          "status": "gap",
-          "note": "S1: read and carried by readShutdownNotice, but classifyConnectionEnd names every announced shutdown gateway_restarting — so its ABSENCE, which upstream sends for a plain stop (run-loop.ts restartExpectedMs: isRestart ? 1500 : null), still reads as a restart to the user. CORRECTED 2026-11-08 (coverage-truth V3): it was declared «not yet instructed»",
-          "knownReaders": [
-            {
-              "file": "bridge/src/providers/openclaw/connection-end.ts",
-              "token": "payload.restartExpectedMs",
-              "note": "readShutdownNotice reads it; classifyConnectionEnd ignores its absence and announces a restart for a stop (S1)"
-            }
-          ]
+          "status": "handled",
+          "by": "connection-end readShutdownNotice / classifyConnectionEnd: a number announces a RESTART (gateway_restarting; the delay kept when usable), its absence a plain STOP (gateway_stopping) — the gateway sets it for a restart only (run-loop.ts restartExpectedMs: isRestart ? 1500 : null) and its Control UI arms its restarting state on that field alone (ui/src/app/gateway-store.ts). The distinction reaches the dispatch code (GATEWAY_STOPPING), the finalize cause, the anomaly class and the reader's wording.",
+          "anchor": {
+            "file": "src/providers/openclaw/connection-end.ts",
+            "token": "payload.restartExpectedMs"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/connection-end.test.ts",
+            "note": "The stop frame is a bench capture ({reason: \"gateway stopping\"}, run 2026-10-01, ten occurrences); the restart shape is read in the source (run-loop.ts). Replayed by this test and over a real socket by connection-end-live.test.ts, proven by neutralization. No live run has driven a stop and a restart through the bridge since the two were told apart: owed."
+          }
         }
       }
     },
@@ -6455,8 +6466,8 @@
     "TickEvent": {
       "fields": {
         "ts": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "ignored",
+          "why": "The tick's ARRIVAL is the signal: any inbound frame resets the connection-silence watch (inbound-silence.ts), exactly as in the gateway's own clients (ui/src/api/gateway.ts onActivity; packages/gateway-client client.ts lastTick = Date.now()). `ts` is the gateway's own clock at emission (server-maintenance.ts scheduler.now()): neither client reads it, and Atrium compares no clocks."
         }
       }
     },
