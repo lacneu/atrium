@@ -484,9 +484,11 @@ describe("actionForErrorCode", () => {
     for (const a of [restarting, midStream]) {
       expect(a).not.toMatch(/nothing reached the agent/i);
     }
-    // …and the mid-stream text must not promise a recovery that a long announced
-    // absence skips (the turn is then closed with no poll left).
-    expect(midStream).toMatch(/budget|no poll/i);
+    // …and the mid-stream text describes what happens now: the turn is left to the
+    // transcript (resumed or settled from it), with no poll and no recovery budget —
+    // the wording of the mechanism that was retired must not come back.
+    expect(midStream).toMatch(/transcript/i);
+    expect(midStream).not.toMatch(/9 min|recovery budget|polls the session/i);
     const midStreamSat = actionForErrorCode("connection_saturated");
     expect(midStreamSat).not.toBe(saturated);
     expect(midStreamSat).toMatch(/incomplete|dropped/i);

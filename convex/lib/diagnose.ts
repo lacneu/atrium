@@ -231,7 +231,7 @@ export function actionForErrorCode(code: string | null): string {
     case "GATEWAY_RESTARTING":
       return "The gateway ANNOUNCED a shutdown and closed the connection before acknowledging this send. Delivery is UNPROVEN, not refused: a response can race ahead of the ack, so the agent may have taken the turn. Nothing to fix if the restart was intended — check the session transcript for a reply before re-running the work; if the gateway does not come back, check the OpenClaw service.";
     case "gateway_restarting":
-      return "The gateway ANNOUNCED a shutdown and closed the connection while this turn was RUNNING: the agent had accepted it and may resume it after the restart. The bridge polls the session transcript to recover the reply — EXCEPT when the announced absence exceeded the recovery budget (9 min), where the turn is closed immediately and no poll remains. Check the transcript before re-running the work.";
+      return "The gateway ANNOUNCED a shutdown and closed the connection while this turn was RUNNING: the agent had accepted it and may resume it after the restart. Nothing polls for the reply and no deadline closes the turn: once the gateway answers again, the turn is resumed if the gateway still runs it, or settled from the session transcript — asked by the next send or by the stuck-stream check. Check the transcript before re-running the work.";
     // An announced STOP (`shutdown` with no `restartExpectedMs`): the gateway did not
     // say it was coming back, so neither text may tell anyone to wait for a restart.
     case "GATEWAY_STOPPING":
