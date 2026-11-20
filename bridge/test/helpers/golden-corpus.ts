@@ -198,6 +198,9 @@ export async function replay<W extends RecordingWriter = RecordingWriter>(
   fx: Fixture,
   writer: W = new RecordingWriter() as W,
   afterFrame?: (frame: GatewayFrame, index: number) => void,
+  /** Index of ONE frame the socket never delivered. The connection sees the hole in the
+   *  envelope seq and retires its live-text baselines (openclaw-client.ts), as here. */
+  lost?: number,
 ): Promise<W> {
   const manager = new RunManager(`chat-${fx.header.scenario}`, fx.header.sessionKey, writer);
   const base = fx.entries.find((e) => e.receivedAt !== null)?.receivedAt ?? 0;
@@ -238,6 +241,10 @@ export async function replay<W extends RecordingWriter = RecordingWriter>(
     // The capture is the RAW wire; production restores append-only live text at the
     // connection before the run manager sees a frame (live-text-baseline.ts). Identity on
     // a capture whose deltas all carry their base (every version before 2026.9.7).
+    if (i === lost) {
+      baselines.invalidate();
+      continue;
+    }
     await manager.feed(baselines.project(fx.entries[i]!.frame as GatewayFrame).frame, now);
     afterFrame?.(fx.entries[i]!.frame as GatewayFrame, i);
   }

@@ -14,7 +14,8 @@
 export const SNAPSHOT_SOURCES = [
   /** OpenClaw `chat` delta carrying the message so far (`message` content, not `delta`). */
   "chat_delta",
-  /** OpenClaw `chat` final carrying the message. */
+  /** OpenClaw `chat` final carrying the message (or the error terminal's `message`,
+   *  when it completes the text shown). */
   "chat_final",
   /** OpenClaw `chat` delta with `replace: true` (ChatDeltaEventSchema.replace refresh). */
   "chat_delta_replace",

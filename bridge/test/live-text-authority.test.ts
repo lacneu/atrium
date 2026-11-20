@@ -27,7 +27,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { SnapshotSource } from "../src/core/snapshot-source.js";
-import { mergeChatStreamMessage } from "../src/providers/openclaw/live-text-baseline.js";
+import {
+  LiveTextBaselines,
+  mergeChatStreamMessage,
+} from "../src/providers/openclaw/live-text-baseline.js";
 import { Normalizer, type BridgeEvent } from "../src/providers/openclaw/normalizer.js";
 import { liveStableLength, sanitizeText } from "../src/providers/openclaw/sanitize.js";
 import type { GatewayFrame } from "../src/providers/openclaw/openclaw-client.js";
@@ -571,9 +574,13 @@ describe("an in-order chat rewrite the gateway does not mark", () => {
     expect(shrinkOf(n.feed(answer, at()))).toBe("declared");
   });
 
-  it("an EARLIER place on the socket (envelope seq not above the writer's) proves nothing", () => {
+  it("the envelope seq proves nothing: a run can reach the normalizer from two sockets", () => {
+    // After a hand-back (speaker-pool.ts) the owner's socket delivers its own copies, on
+    // its own envelope counter. A HIGHER envelope seq with an older run seq is such a copy.
     const { n, at } = untilCommandSnapshot();
-    expect(shrinkOf(n.feed({ ...answer, seq: 207 }, at()))).toBe("undeclared");
+    const copy = { ...answer, seq: 100_000, payload: { ...answerPayload, seq: 18 } };
+    expect(shrinkOf(n.feed(copy, at()))).toBe("undeclared");
+    expect(n.text.length).toBe(1008);
   });
 
   it("an EARLIER place in the run (payload seq not above the writer's) proves nothing", () => {
@@ -718,5 +725,302 @@ describe("the bridge's own rewrites never take text back", () => {
     expect(liveStableLength("see https://example.com/a")).toBe("see https://example.com/a".length);
     expect(liveStableLength("see /tmp/a")).toBe(4);
     expect(liveStableLength("line\nMED")).toBe(5);
+  });
+});
+
+describe("freshness: nothing at or below the run's applied chat seq shortens the bubble", () => {
+  // 2026.9.36 capture `chatReplace`: the command snapshots carry run seq 11, 13, 15, 18
+  // (44, 107, 799, 950 characters), all marked `replace`.
+  const turnFrames = CAPTURED.chatReplace;
+  const replaces = turnFrames.frames.filter((f) => {
+    const p = f.payload as Record<string, unknown>;
+    return f.event === "chat" && p.state === "delta" && p.replace === true;
+  });
+  function start(): { n: Normalizer; at: () => number } {
+    const n = new Normalizer(turnFrames.sessionKey, null);
+    let now = 1000;
+    n.beginTurn(now);
+    n.noteRunStarted(turnFrames.runId, now);
+    return { n, at: () => (now += 0.01) };
+  }
+  const snap = (events: BridgeEvent[]) => events.find((e) => e.type === "message.snapshot");
+  const declared = (events: BridgeEvent[]) => snap(events)?.replace === true;
+
+  it("captured, after a hand-back: the EARLIER `replace` copy from the other socket shortens nothing", () => {
+    const { n, at } = start();
+    const [first, , , fourth] = replaces as [GatewayFrame, GatewayFrame, GatewayFrame, GatewayFrame];
+    expect((first.payload as { seq: number }).seq).toBe(11);
+    expect((fourth.payload as { seq: number }).seq).toBe(18);
+    n.feed({ ...fourth, seq: 100 }, at());
+    expect(n.text.length).toBe(950);
+    // Run seq 11, on the other socket's counter (envelope 1001), still marked `replace`.
+    // (It is also the START of the text shown: behind, so not even written.)
+    expect(snap(n.feed({ ...first, seq: 1001 }, at()))).toBeUndefined();
+    expect(n.text.length).toBe(950);
+    const second = { ...replaces[1]!, seq: 1002 } as GatewayFrame;
+    expect((second.payload as { seq: number }).seq).toBe(13);
+    expect(snap(n.feed(second, at()))).toBeDefined();
+    expect(declared(n.feed({ ...replaces[1]!, seq: 1003, payload: { ...(replaces[1]!.payload as object), seq: 14 } }, at()))).toBe(false);
+    expect(n.text.length).toBe(950);
+    // The copy of the frame that wrote the bubble (same run seq) is no fresher.
+    const same = { ...fourth, seq: 1004, payload: { ...(fourth.payload as object), deltaText: "x", message: { role: "assistant", content: [{ type: "text", text: "x" }] } } };
+    expect(declared(n.feed(same, at()))).toBe(false);
+    // …and the next one is: run seq 19.
+    const next = { ...same, payload: { ...(same as { payload: object }).payload, seq: 19 } };
+    expect(declared(n.feed(next, at()))).toBe(true);
+  });
+
+  it("captured: a refused frame moves no reference — seq 18, then 11 (refused), then 13", () => {
+    const { n, at } = start();
+    const [first, second, , fourth] = replaces as [GatewayFrame, GatewayFrame, GatewayFrame, GatewayFrame];
+    const unmarked = (f: GatewayFrame) => {
+      const { replace: _replace, ...payload } = f.payload as Record<string, unknown>;
+      return { ...f, payload };
+    };
+    const third = replaces[2]!;
+    n.feed(fourth, at());
+    // Run seq 13 (107 characters, not the start of the text shown): written, undeclared.
+    expect(snap(n.feed(unmarked(second), at()))).toBeDefined();
+    expect(declared(n.feed(unmarked(second), at()))).toBe(false);
+    // Without the fix that refused frame became the writer, and run seq 15 its sequel.
+    expect(declared(n.feed(unmarked(third), at()))).toBe(false);
+    expect(n.text.length).toBe(950);
+    void first;
+  });
+
+  it("hand-built: a `replace` frame that carries no run seq is never fresh", () => {
+    const { n, at } = start();
+    const SK = turnFrames.sessionKey;
+    n.feed(
+      { event: "agent", payload: { sessionKey: SK, runId: turnFrames.runId, seq: 3, stream: "assistant", data: { text: "A long first answer", itemId: "s:1" } } },
+      at(),
+    );
+    const noSeq = {
+      event: "chat",
+      payload: { sessionKey: SK, runId: turnFrames.runId, state: "delta", deltaText: "x", replace: true, message: { role: "assistant", content: [{ type: "text", text: "x" }] } },
+    };
+    expect(declared(n.feed(noSeq, at()))).toBe(false);
+  });
+
+  it("hand-built: a refused frame is not the writer — the next one is not its sequel", () => {
+    const { n, at } = start();
+    const SK = turnFrames.sessionKey;
+    const chat = (text: string, seq: number, extra: Record<string, unknown> = {}) => ({
+      event: "chat",
+      payload: { sessionKey: SK, runId: turnFrames.runId, seq, state: "delta", deltaText: text, message: { role: "assistant", content: [{ type: "text", text }] }, ...extra },
+    });
+    n.feed(
+      { event: "agent", payload: { sessionKey: SK, runId: turnFrames.runId, seq: 25, stream: "assistant", data: { text: "a".repeat(100), itemId: "s:1" } } },
+      at(),
+    );
+    // Earlier in the run than the writer: undeclared, and Convex will refuse it.
+    expect(declared(n.feed(chat("b".repeat(50), 20), at()))).toBe(false);
+    expect(declared(n.feed(chat("c".repeat(70), 22), at()))).toBe(false);
+    expect(n.text.length).toBe(100);
+  });
+
+  it("hand-built: the gateway's own `replace` mark needs no writer to follow — only freshness", () => {
+    const { n, at } = start();
+    const SK = turnFrames.sessionKey;
+    const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+    // The bubble was written by a frame that carries no order (a re-read).
+    n.feed(
+      { event: "chat", payload: { sessionKey: SK, runId: turnFrames.runId, state: "delta", deltaText: "", message: message("a long text read back") } },
+      at(),
+    );
+    const marked = {
+      event: "chat",
+      payload: { sessionKey: SK, runId: turnFrames.runId, seq: 4, state: "delta", deltaText: "short", replace: true, message: message("short") },
+    };
+    expect(declared(n.feed(marked, at()))).toBe(true);
+  });
+
+  it("hand-built: an empty retraction below the mark clears nothing", () => {
+    const { n, at } = start();
+    n.feed(replaces[3]!, at());
+    const p = replaces[0]!.payload as Record<string, unknown>;
+    const stale = {
+      ...replaces[0]!,
+      payload: { ...p, deltaText: "", message: { role: "assistant", content: [{ type: "text", text: "" }] } },
+    };
+    expect(snap(n.feed(stale, at()))).toBeUndefined();
+    expect(n.text.length).toBe(950);
+  });
+});
+
+describe("a dropped chat delta never stalls the bubble nor loses received text", () => {
+  // `chat` deltas are droppable under back-pressure (`dropIfSlow`), `assistant` frames
+  // are not. 2026.9.36 capture `pathCompletes`: one item, 5 000+ characters.
+  const turnFrames = CAPTURED.pathCompletes;
+  const isChatDelta = (f: GatewayFrame) =>
+    f.event === "chat" && (f.payload as { state?: unknown }).state === "delta";
+  const firstChat = turnFrames.frames.findIndex(isChatDelta);
+  function feedAll(frames: GatewayFrame[]): { n: Normalizer; events: BridgeEvent[]; at: () => number } {
+    const n = new Normalizer(turnFrames.sessionKey, null);
+    const baselines = new LiveTextBaselines();
+    let now = 1000;
+    n.beginTurn(now);
+    n.noteRunStarted(turnFrames.runId, now);
+    const at = () => (now += 0.01);
+    const events: BridgeEvent[] = [];
+    for (const f of frames) events.push(...n.feed(baselines.project(f).frame, at()));
+    return { n, events, at };
+  }
+  // Every chat delta after the first is lost, and so is the final.
+  const starved = turnFrames.frames.filter(
+    (f, i) => !(f.event === "chat" && i > firstChat),
+  );
+  const lastAssistantText = (() => {
+    const b = new LiveTextBaselines();
+    let text = "";
+    for (const f of turnFrames.frames) {
+      const projected = b.project(f).frame.payload as { stream?: unknown; data?: { text?: unknown } };
+      if (projected.stream === "assistant" && typeof projected.data?.text === "string") {
+        text = projected.data.text;
+      }
+    }
+    return text;
+  })();
+
+  it("captured: with the chat stream gone quiet, the assistant text keeps the bubble advancing", () => {
+    const { n, events } = feedAll(starved);
+    expect(lastAssistantText.length).toBeGreaterThan(5000);
+    expect(n.text).toBe(lastAssistantText);
+    const lengths = events
+      .filter((e) => e.type === "message.snapshot")
+      .map((e) => String(e.text).length);
+    expect(lengths.length).toBeGreaterThan(50);
+    expect(lengths.every((len, i) => i === 0 || len >= lengths[i - 1]!)).toBe(true);
+  });
+
+  it("captured: assistant, chat, assistant, a dropped delta, then `chat:error` — the text received is kept", () => {
+    // The reviewer's sequence: the second assistant frame is NOT written (the chat stream
+    // was keeping up), the delta that would have carried it is lost, the run errors.
+    const secondAssistant = turnFrames.frames.findIndex(
+      (f, i) => i > firstChat && (f.payload as { stream?: unknown }).stream === "assistant",
+    );
+    const { n, at } = feedAll(turnFrames.frames.slice(0, secondAssistant + 1));
+    const held = n.text.length;
+    const error = {
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: turnFrames.runId,
+        sessionKey: turnFrames.sessionKey,
+        state: "error",
+        errorMessage: "provider failed",
+      },
+    };
+    const final = n.feed(error, at()).find((e) => e.type === "message.final");
+    expect(final).toBeDefined();
+    expect(String(final!.text).length).toBeGreaterThan(held);
+  });
+
+  it("hand-built: a LATER item advances too, once a chat frame has shown where it starts", () => {
+    const SK = "agent:main:atrium:chat:u-1:c-1";
+    const RUN = "webchat-run-1";
+    const mk = () => {
+      const n = new Normalizer(SK, null);
+      n.beginTurn(1000);
+      n.noteRunStarted(RUN, 1000);
+      return n;
+    };
+    const A = (itemId: string, text: string, seq: number) => ({
+      event: "agent",
+      payload: { sessionKey: SK, runId: RUN, seq, stream: "assistant", data: { phase: "final_answer", text, itemId } },
+    });
+    const C = (text: string, seq: number) => ({
+      event: "chat",
+      payload: { sessionKey: SK, runId: RUN, seq, state: "delta", deltaText: text, message: { role: "assistant", content: [{ type: "text", text }] } },
+    });
+    const run = (chatSeqOfSecondItem: number) => {
+      const n = mk();
+      let now = 1000;
+      const feed = (f: unknown) => n.feed(f, (now += 0.01));
+      feed(A("s:1", "First.", 1));
+      feed(C("First.", 1));
+      feed(A("s:2", "Sec", 5));
+      // The chat frame built from the same event (run seq 5) shows the item's place.
+      feed(C("First.\n\nSec", chatSeqOfSecondItem));
+      feed(A("s:2", "Second part", 6));
+      feed(A("s:2", "Second part, done.", 7)); // …and the chat deltas for 6 and 7 are lost
+      return n.text;
+    };
+    expect(run(5)).toBe("First.\n\nSecond part, done.");
+    // Not the same event: nothing says where the item starts, so nothing is joined.
+    expect(run(4)).toBe("First.\n\nSec");
+  });
+
+  it("hand-built: an error terminal's `message` completes the bubble; it never replaces it", () => {
+    // Shape of `emitChatTerminal` (src/gateway/server-chat.ts): `message` beside
+    // `errorMessage` when the buffer held text. No capture holds a chat error.
+    const SK = "agent:main:atrium:chat:u-1:c-1";
+    const mk = () => {
+      const n = new Normalizer(SK, null);
+      n.beginTurn(1000);
+      n.noteRunStarted("webchat-run-1", 1000);
+      n.feed(
+        { event: "chat", payload: { sessionKey: SK, runId: "webchat-run-1", seq: 1, state: "delta", deltaText: "Half", message: { role: "assistant", content: [{ type: "text", text: "Half" }] } } },
+        1000.01,
+      );
+      return n;
+    };
+    const error = (text: string) => ({
+      event: "chat",
+      payload: {
+        sessionKey: SK,
+        runId: "webchat-run-1",
+        seq: 2,
+        state: "error",
+        errorMessage: "provider failed",
+        message: { role: "assistant", content: [{ type: "text", text }] },
+      },
+    });
+    const finalOf = (events: BridgeEvent[]) => events.find((e) => e.type === "message.final")?.text;
+    expect(finalOf(mk().feed(error("Half of the answer"), 1000.02))).toBe("Half of the answer");
+    expect(finalOf(mk().feed(error("provider failed"), 1000.02))).toBe("Half");
+  });
+
+  it("captured: every turn, intact and with ONE chat delta dropped at each position — no refused write, same final bubble", async () => {
+    const known: Record<string, Refusal[]> = {
+      // The reply ends on a `MEDIA:` directive (see the `replaceable` turn above).
+      replaceableRestart: [{ oldLen: 104, newLen: 103, source: "chat_final" }],
+    };
+    for (const [name, turn] of Object.entries(CAPTURED)) {
+      if (typeof turn !== "object" || !Array.isArray((turn as CapturedTurn).frames)) continue;
+      const fx = asFixture(name, turn as CapturedTurn);
+      const intact = await replay(fx, new GuardedWriter());
+      expect(intact.refused, name).toEqual(known[name] ?? []);
+      const positions = fx.entries
+        .map((e, i) => (isChatDelta(e.frame as GatewayFrame) ? i : -1))
+        .filter((i) => i >= 0);
+      // Every position on a short turn, a spread of them on the long one.
+      const step = Math.max(1, Math.floor(positions.length / 24));
+      for (let k = 0; k < positions.length; k += step) {
+        const w = await replay(fx, new GuardedWriter(), undefined, positions[k]);
+        expect(known[name] ?? [], `${name}, chat delta #${k} dropped`).toEqual(
+          expect.arrayContaining(w.refused),
+        );
+        // (Up to the one line break before a dropped directive: see `known`.)
+        expect(w.shown.trimEnd(), `${name}, chat delta #${k} dropped`).toBe(intact.shown.trimEnd());
+      }
+    }
+  });
+
+  it("captured: the golden corpus at 2026.9.36, intact and with one chat delta dropped — no refused write", async () => {
+    const corpus = loadCorpus().filter((f) => f.version === "2026.9.36");
+    expect(corpus.length).toBeGreaterThan(10);
+    for (const fx of corpus) {
+      const intact = await replay(fx, new GuardedWriter());
+      expect(intact.refused, fx.header.scenario).toEqual([]);
+      const positions = fx.entries
+        .map((e, i) => (isChatDelta(e.frame as GatewayFrame) ? i : -1))
+        .filter((i) => i >= 0);
+      const step = Math.max(1, Math.floor(positions.length / 6));
+      for (let k = 0; k < positions.length; k += step) {
+        const w = await replay(fx, new GuardedWriter(), undefined, positions[k]);
+        expect(w.refused, `${fx.header.scenario}, chat delta #${k} dropped`).toEqual([]);
+      }
+    }
   });
 });

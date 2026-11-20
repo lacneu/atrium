@@ -258,7 +258,7 @@ identical. The two broken anchors are real and are each recorded:
 **The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
 `delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
 The append path still drops any delta whose text is empty
-(`bridge/src/providers/openclaw/normalizer.ts:1935`, the `&& deltaText` guard), so
+(`bridge/src/providers/openclaw/normalizer.ts:1971`, the `&& deltaText` guard), so
 the retraction has its own branch in `handleChat`: the bubble is cleared through a
 declared empty snapshot, as the Control UI clears its stream. It is covered by a
 deterministic test in the captured shape, not measured on the bench: the catalogue

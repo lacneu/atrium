@@ -609,20 +609,28 @@ export class Normalizer {
    *  segment's text (stripped from the segment, kept for the NEXT cut's prefix). */
   private segmentLead = "";
   /** Per run, the `assistant` item whose text IS the run's whole live text (see
-   *  `assistantTextIsRunText`). Emptied with the bubble: a new turn, a compaction reset. */
+   *  `assistantRunText`). Emptied with the bubble: a new turn, a compaction reset. */
   private assistantRunItem = new Map<string, string>();
   /** The runs whose `chat` stream has written the bubble this turn: from then on the
-   *  `chat` text is the bubble's only authority for that run (see `assistantTextIsRunText`).
-   *  Emptied with `assistantRunItem`. */
+   *  `chat` text leads the bubble for that run (see `assistantRunText`). Emptied with
+   *  `assistantRunItem`, like every map below. */
   private chatTextRuns = new Set<string>();
-  /** The frame being read: its position on the socket (envelope `seq`) and in its run
-   *  (payload `seq`). Null when the frame carries none — the in-flight text the bridge
-   *  re-reads after a gap is such a frame. */
-  private frameEnvelopeSeq: number | null = null;
+  /** Per run, the highest run `seq` of a `chat` frame whose text was APPLIED: the
+   *  freshness mark no shrink may be at or below (see `chatFrameIsFresh`). */
+  private chatSeqHigh = new Map<string, number>();
+  /** Per run, the latest `assistant` text frame: its item, text and run `seq`. */
+  private assistantLast = new Map<string, { itemId: string | null; text: string; runSeq: number | null }>();
+  /** Per run, what precedes a LATER item's text in the run's live text, learnt from the
+   *  `chat` frame that carried that item (see `learnItemBase`). */
+  private assistantItemBase = new Map<string, { itemId: string; prefix: string }>();
+  /** A run text received on the `assistant` stream and not written (the `chat` stream
+   *  was keeping up): adopted at the terminal if the bubble is still its prefix. */
+  private assistantPending: string | null = null;
+  /** The frame being read: its position in its run (payload `seq`). Null when the frame
+   *  carries none — the in-flight text the bridge re-reads after a gap is such a frame. */
   private frameRunSeq: number | null = null;
   /** Which frame wrote the text the bubble holds (see `chatRewriteInOrder`). */
-  private textOrigin: { runId: string; envelopeSeq: number; runSeq: number; chat: boolean } | null =
-    null;
+  private textOrigin: { runId: string; runSeq: number; chat: boolean } | null = null;
   hasSnapshot: boolean;
   hasVisibleToolText: boolean;
   // Chat-frame dedup keys ALREADY seen this turn. A single scalar slot only
@@ -962,6 +970,10 @@ export class Normalizer {
     this.text = "";
     this.assistantRunItem.clear();
     this.chatTextRuns.clear();
+    this.chatSeqHigh.clear();
+    this.assistantLast.clear();
+    this.assistantItemBase.clear();
+    this.assistantPending = null;
     this.textOrigin = null;
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
@@ -1386,7 +1398,6 @@ export class Normalizer {
       this.replaySameRun = false;
     }
     this.frameRunId = isString(frameRunId) && frameRunId ? frameRunId : "";
-    this.frameEnvelopeSeq = Number.isSafeInteger(frame.seq) ? (frame.seq as number) : null;
     this.frameRunSeq = Number.isSafeInteger(payload.seq) ? (payload.seq as number) : null;
     this.frameRunAdopted =
       this.frameRunId !== "" && this.adoptedRunIds.has(this.frameRunId);
@@ -1822,6 +1833,13 @@ export class Normalizer {
       const reason = isString(payload.errorMessage)
         ? payload.errorMessage
         : textFromMessage(message);
+      // The error terminal may carry the run's text beside its description
+      // (src/gateway/server-chat.ts `emitChatTerminal`: `message` when the buffer held
+      // text), and the Control UI shows it (ui/src/pages/chat/chat-gateway.ts,
+      // `visiblePayloadMessage`). Read here as a completion of the bubble only.
+      if (isString(payload.errorMessage)) {
+        this.extendVisible(textFromMessage(message), now, events, "chat_final");
+      }
       // A chat:error arriving AFTER the run finished generating is a
       // POST-reply failure (observed live 2026-07-04: 78 tool calls, full
       // answer streamed, run ended, then the gateway's post-turn compaction
@@ -1895,10 +1913,27 @@ export class Normalizer {
     // gateway's own mark, or when the frame is PROVEN to follow the one that wrote the
     // bubble (`chatRewriteInOrder`). Never for an adopted run: what it would shorten may
     // be another run's delivered text.
-    const rewrite = !isFinal && payload.replace === true;
+    const rewrite = payload.replace === true;
     const mayShrink =
-      !isFinal && !this.frameRunAdopted && (rewrite || this.chatRewriteInOrder());
+      !isFinal &&
+      !this.frameRunAdopted &&
+      this.chatFrameIsFresh() &&
+      (rewrite || (snapshotText.length < this.text.length && this.chatRewriteInOrder()));
     if (snapshotText) {
+      // BEHIND, not different: an unmarked text the bubble already starts with is the
+      // chat stream catching up with what the assistant stream wrote. Nothing to write —
+      // sent, it would be a shrink Convex refuses. (The gateway marks a real cut back to
+      // a prefix `replace`: `takeBufferDelta`, `text.startsWith(previous)`.)
+      if (
+        !isFinal &&
+        !mayShrink &&
+        this.segmentPrefix === null &&
+        snapshotText.length < this.text.length &&
+        this.text.startsWith(snapshotText)
+      ) {
+        return;
+      }
+      if (!isFinal) this.learnItemBase(snapshotText);
       this.applyVisible(
         snapshotText,
         true,
@@ -1923,6 +1958,7 @@ export class Normalizer {
     ) {
       this.text = "";
       this.hasSnapshot = false;
+      this.assistantPending = null;
       this.noteTextOrigin(true);
       events.push({
         type: EVENT_MESSAGE_SNAPSHOT,
@@ -1980,50 +2016,73 @@ export class Normalizer {
   }
 
   /**
-   * Is this `chat` delta PROVEN to come after the frame that wrote the bubble?
+   * Is this `chat` frame newer than every `chat` text already applied for its run?
    *
-   * Convex refuses a shorter snapshot because it may be stale or out of order. A `chat`
-   * delta is neither when the text it would shorten was written by a frame of the SAME
-   * run, earlier on the SAME socket (a lower envelope `seq`: the per-connection event
-   * counter, src/gateway/server-broadcast.ts) and not later in the run (the payload
-   * `seq`: one counter per run for its agent events and its chat frames,
-   * `agentRunSeq` in src/gateway/server-chat.ts and `nextChatSeq` in
-   * server-methods/chat-broadcast.ts). The gateway does not always mark such a rewrite
-   * `replace`: the answer that follows a command snapshot is published as the buffer's
-   * first delta (`takeBufferDelta`, `previous === undefined ? text`).
+   * The payload `seq` is one counter per run for its agent events and its chat frames
+   * (`agentRunSeq` in src/gateway/server-chat.ts; `nextChatSeq` in
+   * server-methods/chat-broadcast.ts), whatever socket carries the frame — and the same
+   * run can reach this normalizer from two sockets (speaker-pool.ts hands a run back to
+   * the owner's socket, whose queued copies then follow). A frame AT the mark cannot be
+   * told from such a copy, so only one strictly above it may shorten anything; the
+   * envelope `seq` is per socket and proves nothing here. A frame with no `seq` (the
+   * in-flight text re-read after a gap) is never fresh.
    *
-   * A frame without both counters proves nothing — the in-flight text re-read after a
-   * gap carries neither — and after a reconnect the envelope counter restarts, so the
-   * first frame of the new socket is not declared either.
+   * KNOWN COST: upstream deletes the counter when a run id is reused under a new claim,
+   * and the new frames restart below the mark. They are written without the permission —
+   * what the guard did before — until the turn ends; nothing in a frame tells a reused
+   * id from a late copy.
    */
-  private chatRewriteInOrder(): boolean {
-    const origin = this.textOrigin;
-    if (origin === null || this.frameEnvelopeSeq === null || this.frameRunSeq === null) {
-      return false;
-    }
-    return (
-      origin.runId === this.frameRunId &&
-      this.frameEnvelopeSeq > origin.envelopeSeq &&
-      (origin.chat ? this.frameRunSeq > origin.runSeq : this.frameRunSeq >= origin.runSeq)
-    );
-  }
-
-  /** Remember which frame wrote the bubble's text (null when it carries no order). */
-  private noteTextOrigin(chat: boolean): void {
-    this.textOrigin =
-      this.frameEnvelopeSeq === null || this.frameRunSeq === null
-        ? null
-        : {
-            runId: this.frameRunId,
-            envelopeSeq: this.frameEnvelopeSeq,
-            runSeq: this.frameRunSeq,
-            chat,
-          };
-    if (chat) Normalizer.touch(this.chatTextRuns, this.frameRunId, Normalizer.MAX_HEARTBEAT_RUNS);
+  private chatFrameIsFresh(): boolean {
+    if (this.frameRunSeq === null) return false;
+    const high = this.chatSeqHigh.get(this.frameRunId);
+    return high === undefined || this.frameRunSeq > high;
   }
 
   /**
-   * Is this `assistant` frame's `text` the WHOLE live text of its run?
+   * Does this FRESH `chat` delta follow the frame that wrote the bubble?
+   *
+   * Convex refuses a shorter snapshot because it may be stale or out of order. A `chat`
+   * delta is neither when the text it would shorten was written by a frame of the SAME
+   * run that is not later in the run. The gateway does not always mark such a rewrite
+   * `replace`: the answer that follows a command snapshot is published as the buffer's
+   * first delta (`takeBufferDelta`, `previous === undefined ? text`).
+   */
+  private chatRewriteInOrder(): boolean {
+    const origin = this.textOrigin;
+    return (
+      origin !== null &&
+      this.frameRunSeq !== null &&
+      origin.runId === this.frameRunId &&
+      (origin.chat || this.frameRunSeq >= origin.runSeq)
+    );
+  }
+
+  /** Remember which frame wrote the bubble's text (null when it carries no order), and
+   *  raise the run's freshness mark on a `chat` write. Called for APPLIED writes only: a
+   *  write Convex will refuse moves no reference. */
+  private noteTextOrigin(chat: boolean): void {
+    const run = this.frameRunId;
+    this.textOrigin =
+      this.frameRunSeq === null ? null : { runId: run, runSeq: this.frameRunSeq, chat };
+    if (!chat) return;
+    Normalizer.touch(this.chatTextRuns, run, Normalizer.MAX_HEARTBEAT_RUNS);
+    if (this.frameRunSeq !== null && this.frameRunSeq > (this.chatSeqHigh.get(run) ?? -1)) {
+      Normalizer.remember(this.chatSeqHigh, run, this.frameRunSeq);
+    }
+  }
+
+  /** Bounded insert, most recent last. */
+  private static remember<T>(map: Map<string, T>, key: string, value: T): void {
+    map.delete(key);
+    map.set(key, value);
+    if (map.size > Normalizer.MAX_HEARTBEAT_RUNS) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
+  }
+
+  /**
+   * The WHOLE live text of the run, as far as this `assistant` frame tells it — or null.
    *
    * `data.text` is cumulative per ITEM — one item per assistant message, and a new
    * `itemId` restarts it (src/agents/embedded-agent-subscribe.reply-delivery.ts
@@ -2033,39 +2092,103 @@ export class Normalizer {
    * `replace` of a `replaceable` (provisional) stream, the one case that discards the
    * earlier items (src/gateway/agent-event-assistant-text.ts `mergeAssistantText`).
    * So the run's first item, an item that replaces the provisional ones and a frame
-   * naming no item hold the whole text; any other item holds its own part, and written
-   * as the bubble it erased the items before it until the `chat` delta restored them.
-   *
-   * The join is NOT redone here: its separator changed between validated versions
-   * (none in 2026.9.2, a blank line from 2026.9.4) and the `chat` text is projected
-   * for display on top of it, so a second composition would disagree with the
-   * gateway's own by a few characters on every frame.
-   *
-   * And once the run's `chat` stream has written the bubble, it is the only authority:
-   * the two streams leave the gateway on separate 75 ms timers
-   * (`scheduleLiveTextFlush(run, "agent" | "chat", …)`), so neither is ahead of the
-   * other by rule, and the `chat` one may have rewritten the bubble (a command
-   * snapshot) with a text this stream knows nothing about.
+   * naming no item ARE the run text. A later item is its own part: the join is not
+   * redone here (its separator changed between validated versions — none in 2026.9.2,
+   * a blank line from 2026.9.4 — and the `chat` text is projected for display on top
+   * of it); what precedes it is known only once a `chat` frame has shown it
+   * (`learnItemBase`).
    */
-  private assistantTextIsRunText(data: JsonObject): boolean {
-    if (this.chatTextRuns.has(this.frameRunId)) return false;
+  private assistantRunText(data: JsonObject, text: string): string | null {
+    const run = this.frameRunId;
     const itemId = isString(data.itemId) && data.itemId !== "" ? data.itemId : null;
-    if (itemId === null) return true;
-    const first = this.assistantRunItem.get(this.frameRunId);
+    Normalizer.remember(this.assistantLast, run, { itemId, text, runSeq: this.frameRunSeq });
+    if (itemId === null) return text;
+    const first = this.assistantRunItem.get(run);
     if (
       first === undefined ||
       first === itemId ||
       (data.replace === true && data.replaceable === true)
     ) {
-      this.assistantRunItem.delete(this.frameRunId);
-      this.assistantRunItem.set(this.frameRunId, itemId);
-      if (this.assistantRunItem.size > Normalizer.MAX_HEARTBEAT_RUNS) {
-        const oldest = this.assistantRunItem.keys().next().value;
-        if (oldest !== undefined) this.assistantRunItem.delete(oldest);
-      }
-      return true;
+      Normalizer.remember(this.assistantRunItem, run, itemId);
+      return text;
     }
-    return false;
+    const base = this.assistantItemBase.get(run);
+    return base !== undefined && base.itemId === itemId ? base.prefix + text : null;
+  }
+
+  /**
+   * What precedes a later item in the run's live text: read off the `chat` frame built
+   * from the SAME event as the item's latest `assistant` frame (same run `seq`:
+   * `emitChatDelta(…, evt.seq, …)`), when its text ends with that item's text.
+   */
+  private learnItemBase(chatText: string): void {
+    const run = this.frameRunId;
+    const last = this.assistantLast.get(run);
+    if (
+      last === undefined ||
+      last.itemId === null ||
+      last.runSeq === null ||
+      last.runSeq !== this.frameRunSeq ||
+      last.text === "" ||
+      this.assistantRunItem.get(run) === last.itemId ||
+      !chatText.endsWith(last.text)
+    ) {
+      return;
+    }
+    Normalizer.remember(this.assistantItemBase, run, {
+      itemId: last.itemId,
+      prefix: chatText.slice(0, chatText.length - last.text.length),
+    });
+  }
+
+  /**
+   * Write `text` if — and only if — it COMPLETES the bubble: the text shown is its
+   * strict prefix. Such a write can never take anything back, whatever its order.
+   */
+  private extendVisible(
+    text: string,
+    now: number,
+    events: BridgeEvent[],
+    source: SnapshotSource,
+  ): boolean {
+    if (
+      this.finalized ||
+      this.segmentPrefix !== null ||
+      this.text === "" ||
+      text.length <= this.text.length ||
+      !text.startsWith(this.text)
+    ) {
+      return false;
+    }
+    this.applyVisible(text, true, false, now, events, source);
+    return true;
+  }
+
+  /**
+   * An `assistant` run text, once the run's `chat` stream leads the bubble.
+   *
+   * The two streams leave the gateway on separate 75 ms timers
+   * (`scheduleLiveTextFlush(run, "agent" | "chat", …)`), and the `chat` one may have
+   * rewritten the bubble with a text this stream knows nothing about (a command
+   * snapshot): the `chat` text leads, and this one never replaces it. But `chat` deltas
+   * are droppable (`dropIfSlow`) where `assistant` frames are not. So when the `chat`
+   * stream has not caught up with the PREVIOUS `assistant` frame of the run, this text
+   * is written if it completes the bubble; otherwise it is kept for the terminal
+   * (`finalize`), so that a text received is never lost to a dropped delta.
+   */
+  private assistantTextBehindChat(
+    runText: string,
+    previousSeq: number | null,
+    now: number,
+    events: BridgeEvent[],
+  ): void {
+    const high = this.chatSeqHigh.get(this.frameRunId);
+    const chatLags = previousSeq !== null && (high === undefined || high < previousSeq);
+    if (chatLags && this.extendVisible(runText, now, events, "agent_assistant_text")) {
+      this.assistantPending = null;
+      return;
+    }
+    this.assistantPending = runText;
   }
 
   private clearRetryingPhase(events: BridgeEvent[]): void {
@@ -2150,8 +2273,14 @@ export class Normalizer {
       // rule the chat path already applies to `ChatDeltaEventSchema.replace`.
       const replace = data.replace === true;
       if (isString(text) && text) {
+        const previousSeq = this.assistantLast.get(this.frameRunId)?.runSeq ?? null;
         // A later item's text is that item alone: the `chat` delta carries the bubble.
-        if (!this.assistantTextIsRunText(data)) return;
+        const runText = this.assistantRunText(data, text);
+        if (runText === null) return;
+        if (this.chatTextRuns.has(this.frameRunId)) {
+          this.assistantTextBehindChat(runText, previousSeq, now, events);
+          return;
+        }
         // Full snapshot: replace and lock out later deltas/acks.
         this.collectShortcodeWidgets(text, events);
         this.applyVisible(
@@ -3584,9 +3713,13 @@ export class Normalizer {
         candidate = "\n\n" + candidate;
       }
     }
+    // A shorter snapshot without the permission is one Convex refuses: it moves no
+    // reference (origin, freshness mark) — the text shown is still the previous one.
+    const refusedShrink = isSnapshot && !authorizedShrink && candidate.length < this.text.length;
     if (isSnapshot) {
       this.hasSnapshot = true;
-      this.text = candidate;
+      // …and a live one leaves the text held here as it is, like the text Convex holds.
+      if (!refusedShrink || isFinal) this.text = candidate;
       emitted = candidate;
       eventType = EVENT_MESSAGE_SNAPSHOT;
     } else {
@@ -3652,7 +3785,10 @@ export class Normalizer {
     // `stream:"assistant"` to `{state:"activity"}`); this is the same rule, and it is
     // the one that cannot be lost, because it rides the text itself (raised in review).
     this.clearRetryingPhase(events);
-    this.noteTextOrigin(source !== null && source.startsWith("chat_"));
+    if (!refusedShrink) {
+      this.noteTextOrigin(source !== null && source.startsWith("chat_"));
+      if (source !== null && source.startsWith("chat_")) this.assistantPending = null;
+    }
     events.push({
       type: eventType,
       // A live snapshot stops before a tail the sanitiser may still rewrite.
@@ -3742,6 +3878,18 @@ export class Normalizer {
   ): BridgeEvent[] {
     if (this.finalized) {
       return [];
+    }
+    // A run text the `assistant` stream delivered and the `chat` stream never caught up
+    // with (see `assistantTextBehindChat`): the bubble keeps it if it completes it.
+    const pending = this.assistantPending;
+    if (
+      pending !== null &&
+      this.segmentPrefix === null &&
+      this.text !== "" &&
+      pending.length > this.text.length &&
+      pending.startsWith(this.text)
+    ) {
+      this.text = pending;
     }
     this.finalizeCause = cause;
     this.finalized = true;
@@ -3906,6 +4054,10 @@ export class Normalizer {
     this.text = "";
     this.assistantRunItem.clear();
     this.chatTextRuns.clear();
+    this.chatSeqHigh.clear();
+    this.assistantLast.clear();
+    this.assistantItemBase.clear();
+    this.assistantPending = null;
     this.textOrigin = null;
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;

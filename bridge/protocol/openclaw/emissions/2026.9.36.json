@@ -345,10 +345,10 @@
         },
         "itemId": {
           "status": "handled",
-          "by": "names the item a `text` is cumulative for: the run's first item (and a frame naming none) holds the run's whole live text and is written, until the run's `chat` stream writes the bubble; a later item holds its own part and is left to the `chat` delta, which carries the items joined by the gateway. The live-text baseline restarts a delta accumulation on it too",
+          "by": "names the item a `text` is cumulative for: the run's first item (and a frame naming none) holds the run's whole live text; a later item holds its own part, joined to what precedes it only once a `chat` frame has shown where it starts. The live-text baseline restarts a delta accumulation on it too",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
-            "token": "private assistantTextIsRunText(data: JsonObject): boolean {"
+            "token": "private assistantRunText(data: JsonObject, text: string): string | null {"
           },
           "proof": {
             "kind": "golden-corpus",
@@ -403,10 +403,10 @@
         },
         "text": {
           "status": "handled",
-          "by": "the answer text, cumulative PER ITEM: written as the bubble's snapshot while its item holds the run's whole live text (the first item, a replaceable replacement, a frame naming no item) AND the run's `chat` stream has not written the bubble yet; from then on the `chat` text is the only authority and this one is an activity signal",
+          "by": "the answer text, cumulative PER ITEM, read as the run's live text where the item allows it: written as the bubble's snapshot until the run's `chat` stream writes the bubble; after that the `chat` text leads, and this one is written only when it COMPLETES the bubble while the chat stream lags (or at the terminal), never when it would replace it",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
-            "token": "if (!this.assistantTextIsRunText(data)) return;"
+            "token": "const runText = this.assistantRunText(data, text);"
           },
           "proof": {
             "kind": "golden-corpus",
@@ -2209,7 +2209,7 @@
       "by": "the gateway rebuilds `text` per item when the emitter sent only a delta; read like any other `text`: the bubble's snapshot while its item holds the run's whole live text, not written for a later item",
       "anchor": {
         "file": "src/providers/openclaw/normalizer.ts",
-        "token": "if (!this.assistantTextIsRunText(data)) return;"
+        "token": "const runText = this.assistantRunText(data, text);"
       },
       "proof": {
         "kind": "golden-corpus",
