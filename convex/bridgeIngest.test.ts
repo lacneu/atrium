@@ -2642,5 +2642,29 @@ describe("bridge_ingest httpAction: a model fallback marks the bubble of its run
     const shown = view.flatMap((m) => m.parts).filter((p) => p.kind === "model_fallback");
     expect(shown).toHaveLength(1);
     expect(shown[0]).toMatchObject({ state: "active", model: "openai/gpt-6.1-sol", selected: "openai/gpt-5.5" });
+    // The metadata-only surface (API / MCP chat state) says a fallback was stated and
+    // which way — never a model name, which is gateway text.
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    const structural = JSON.stringify(state);
+    expect(structural).toContain('"kind":"model_fallback"');
+    expect(structural).toContain('"state":"active"');
+    expect(structural).not.toContain("gpt-6.1-sol");
+    expect(structural).not.toContain("gpt-5.5");
+  });
+
+  test("a bubble of the run in ANOTHER session of the chat is not the one to mark", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await settledAnswer(t, { turnSessionKey: "agent:alice:atrium:chat:another-session" });
+    const res = await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: RUN,
+      sessionKey: SK,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    expect(await res.json()).toEqual({ ok: true, messageId: null });
+    expect(await fallbackParts(t, messageId)).toHaveLength(0);
   });
 });
