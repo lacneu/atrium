@@ -69,6 +69,9 @@ export function startWsFakeGateway(opts: {
   /** The `hello-ok.policy` to announce instead of the minimal default — e.g. the
    *  object a real gateway sends (tick interval, attachment ceilings). */
   policy?: Record<string, unknown>;
+  /** The `hello-ok.auth` to announce (e.g. `{ deviceToken }`, which starts a device-token
+   *  promotion on the client). Absent by default. */
+  auth?: Record<string, unknown>;
   onMethod?: (
     method: string,
     params: unknown,
@@ -118,6 +121,7 @@ export function startWsFakeGateway(opts: {
               type: "hello-ok",
               protocol: 4,
               server: { version: opts.version ?? "2026.9.1", connId: "conn-1" },
+              ...(opts.auth ? { auth: opts.auth } : {}),
               policy: opts.policy ?? { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
             },
           }),

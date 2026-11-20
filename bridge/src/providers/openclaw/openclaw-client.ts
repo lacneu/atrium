@@ -707,6 +707,7 @@ export class OpenClawConnection {
       // Phase 1: await connect.challenge. Phase 2: await the connect response.
       // Promotion persists the server-issued device token before reconnecting.
       let phase: "challenge" | "connect" | "promotion" = "challenge";
+      let droppedAfterHello = false;
       let connection: OpenClawConnection | null = null;
       let reqId = "";
 
@@ -715,6 +716,12 @@ export class OpenClawConnection {
         // parses to `null` flowed on to the first property read and threw out of this
         // callback — during the handshake, before any session exists to absorb it.
         const frame = decodeInboundFrame(raw, "openclaw-handshake-parse");
+        // AFTER the hello-ok, BEFORE the reader exists (a device-token promotion is
+        // awaited in between): whatever arrives now is dropped below, unseen by the
+        // sequence tracker — whose first frame will then set its baseline past it. It
+        // may be the `config.changed` that makes the hello-ok's own facts stale, so
+        // the connection must not start by vouching for them.
+        if (phase === "promotion") droppedAfterHello = true;
         if (frame === null) return; // unreadable frame: reported inside, then ignored
         // Read a shutdown notice in EITHER phase, before anything else can reject
         // the frame: the gateway broadcasts it to every connection, including one
@@ -847,6 +854,12 @@ export class OpenClawConnection {
             connection.attachmentCeilings = readAttachmentCeilings(policy);
             connection.attachmentCeilingsVouched = true;
             connection.handshakeAt = Date.now();
+            // A frame was dropped between the hello-ok and here: treated like a frame
+            // gap — the ceilings are unknown, the roster epoch moves.
+            if (droppedAfterHello) {
+              connection.forgetAttachmentCeilings();
+              connection.rosterEpoch += 1;
+            }
             connection.maxBufferedBytes =
               typeof policy.maxBufferedBytes === "number" &&
               policy.maxBufferedBytes > 0
@@ -1029,6 +1042,9 @@ export class OpenClawConnection {
       // live reply, and nothing in it says which run: every baseline of this socket is
       // retired, so the next append re-reads instead of extending a prefix with a hole.
       this.liveText.invalidate();
+      // …and it may as well have been a `config.changed`: what a frame gap forgets.
+      this.rosterEpoch += 1;
+      this.forgetAttachmentCeilings();
       return;
     }
     frame = decoded;

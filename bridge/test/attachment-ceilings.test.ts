@@ -328,6 +328,93 @@ describe("the ceilings are a handshake fact: kept, vouched for, and forgotten on
     }
   });
 
+  it("a config.changed that lands DURING connection setup (a suspended token promotion) is not lost: the socket does not vouch", async () => {
+    // hello-ok says 1 MiB and hands back a device token; while its promotion is awaited
+    // the operator raises the limit. No reader is attached yet, so the notice is
+    // dropped — and the sequence tracker, starting after it, will never see a gap. The
+    // connection must not come out vouching for 1 MiB: a 2 MiB file would be refused
+    // for the life of the socket, and the stale ceiling republished to Convex.
+    const gateway = startWsFakeGateway({
+      version: "2026.9.36",
+      policy: policy({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB }),
+      auth: { deviceToken: "tok" },
+    });
+    await gateway.ready;
+    let finishPromotion: (outcome: "stored") => void = () => {};
+    const promoting = new Promise<void>((entered) => {
+      void OpenClawConnection.connect(gateway.url, "tok", deviceIdentity(), () => {
+        entered();
+        return new Promise<"stored">((resolve) => {
+          finishPromotion = resolve;
+        });
+      }).then((c) => {
+        connected = c;
+      });
+    });
+    let connected: OpenClawConnection | null = null;
+    await promoting;
+    gateway.push({ ...configChanged, seq: 1 });
+    await sleep(30);
+    finishPromotion("stored");
+    await sleep(30);
+    const conn = connected as OpenClawConnection | null;
+    try {
+      expect(conn).not.toBeNull();
+      expect(conn!.attachmentCeilings).toBeNull();
+      expect(conn!.attachmentCeilingsVouched).toBe(false);
+      // The same lost notice staled the roster: its epoch moved too.
+      expect(conn!.rosterEpoch).toBe(1);
+      expect(firstOversizedAttachment([inline(2 * MiB, "application/pdf")], conn!.attachmentCeilings)).toBeNull();
+    } finally {
+      conn?.close();
+      await gateway.stop();
+    }
+  });
+
+  it("a promotion during which NOTHING arrived keeps the hello-ok's ceilings, vouched", async () => {
+    const gateway = startWsFakeGateway({
+      version: "2026.9.36",
+      policy: policy({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB }),
+      auth: { deviceToken: "tok" },
+    });
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity(), async () => {
+      await sleep(30);
+      return "stored" as const;
+    });
+    try {
+      expect(conn.attachmentCeilings).toEqual({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB });
+      expect(conn.attachmentCeilingsVouched).toBe(true);
+      expect(conn.rosterEpoch).toBe(0);
+    } finally {
+      conn.close();
+      await gateway.stop();
+    }
+  });
+
+  it("an UNREADABLE frame forgets them too: it may have been the config.changed", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const gateway = startWsFakeGateway({
+      version: "2026.9.36",
+      policy: policy({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB }),
+    });
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    try {
+      const frames = conn.frames();
+      gateway.socket!.send("{ this is not a frame");
+      gateway.push({ type: "event", event: "tick", payload: { ts: 1 } });
+      await frames.next();
+      expect(conn.attachmentCeilings).toBeNull();
+      expect(conn.attachmentCeilingsVouched).toBe(false);
+      expect(conn.rosterEpoch).toBe(1);
+    } finally {
+      conn.close();
+      await gateway.stop();
+    }
+  });
+
   it("a chat.metadata.changed is not a config revision: the ceilings stand", async () => {
     const gateway = startWsFakeGateway({ version: "2026.9.36", policy: { ...CAPTURED_HELLO_POLICY } });
     await gateway.ready;
