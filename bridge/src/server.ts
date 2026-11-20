@@ -8042,8 +8042,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           );
           const conn = session.connection;
           if (
-            conn.maxPayload !== null &&
-            !base64FitsFrame(base64Bytes, conn.maxPayload)
+            (conn.maxPayload !== null &&
+              !base64FitsFrame(base64Bytes, conn.maxPayload)) ||
+            // …and the gateway's own per-attachment ceiling, like the main path.
+            firstOversizedAttachment(saAtts, conn.attachmentCeilings) !== null
           ) {
             sendJson(res, 502, {
               ok: false,
