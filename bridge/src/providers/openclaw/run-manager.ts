@@ -85,6 +85,12 @@ interface RunLane {
   queued: number;
 }
 
+/** A settled run's bubble (null: none) and whole visible text. */
+type SettledRecord = { messageId: string | null; text: string };
+/** What became of a completion (true: written; false: refused; null: the write failed),
+ *  and the run's record as it was when the completion was decided. */
+type SettledWrite = { applied: boolean | null; record: SettledRecord | undefined };
+
 export class RunManager {
   private readonly normalizer: Normalizer;
   private readonly sink: TurnSink;
@@ -1190,12 +1196,12 @@ export class RunManager {
     // path below (G-29).
     const completion = this.normalizer.settledCompletion(frame as never);
     if (completion !== null) {
-      const applied = await this.completeSettled(completion);
+      const { applied, record } = await this.completeSettled(completion);
       if (applied === true) return;
       // REFUSED (Convex holds a text this one does not extend — the sanitiser rewrote
       // something already persisted): a terminal's text is never dropped, it joins the
       // bubble as a late final does. A `final` goes on to that rule by itself.
-      if (applied === false && (await this.joinRefusedTerminal(frame, completion))) return;
+      if (applied === false && (await this.joinRefusedTerminal(frame, completion, record))) return;
     } else {
       // The gateway moved on: the bubble takes the text it was closed without.
       const rest = this.normalizer.settledRemainder(frame as never);
@@ -1234,29 +1240,50 @@ export class RunManager {
    * write failed. The normalizer is told either way: only an accepted text moves its
    * reference, so two offers in flight settle the same whatever order they land in.
    */
-  private async completeSettled(offer: SettledCompletion): Promise<boolean | null> {
-    let applied: boolean | null = null;
-    try {
-      await this.runOrdered(async () => {
-        applied = await this.sink.completeSettledText(offer.runId, offer.text);
-      });
-      // The run's record follows its bubble (what a later distinct final is compared with).
-      const record = this.settledRuns.get(offer.runId);
-      if (applied === true && record !== undefined) record.text = this.settledRunText();
-    } catch (e) {
-      applied = null;
-      console.error("[final] a settled bubble's completion was not written (non-fatal):", errForLog(e));
+  private async completeSettled(offer: SettledCompletion): Promise<SettledWrite> {
+    // EVERYTHING this write is about is captured NOW, before the first await: the bubble,
+    // the run's record and the run's earlier segments. A turn can begin (or resume) while
+    // the write is in flight, and the sink and the normalizer then describe that turn.
+    const bubble = this.sink.lastSettledBubble;
+    const record = this.settledRuns.get(offer.runId);
+    const earlier = this.normalizer.segmentPrefixText;
+    let applied: boolean | null = bubble === null ? false : null;
+    if (bubble !== null) {
+      try {
+        // On the chain, for order — but NOT bound to the turn that queued it
+        // (`runOrdered` drops a unit whose turn ended): this write is the SETTLED
+        // bubble's, and the next turn beginning is no reason to lose it.
+        const write = this.applyChain.then(() =>
+          this.sink.completeSettledText(bubble.messageId, offer.runId, offer.text),
+        );
+        this.applyChain = write.then(
+          () => undefined,
+          () => undefined,
+        );
+        applied = await write;
+        // The run's record follows its bubble (what a later distinct final is compared with).
+        if (applied && record !== undefined) {
+          record.text = earlier === null ? offer.text : `${earlier}\n\n${offer.text}`;
+        }
+      } catch (e) {
+        applied = null;
+        console.error("[final] a settled bubble's completion was not written (non-fatal):", errForLog(e));
+      }
     }
     this.normalizer.noteCompletion(offer, applied);
-    return applied;
+    return { applied, record };
   }
 
   /** An `error` / `aborted` terminal whose completion Convex refused: what its text adds
-   *  to the run's bubble joins it, by the late-final rule (CU-8). True: handled here. */
-  private async joinRefusedTerminal(frame: unknown, offer: SettledCompletion): Promise<boolean> {
+   *  to the run's bubble joins it, by the late-final rule (CU-8). True: handled here.
+   *  `record`: the run's, as it was when the completion was decided. */
+  private async joinRefusedTerminal(
+    frame: unknown,
+    offer: SettledCompletion,
+    record: SettledRecord | undefined,
+  ): Promise<boolean> {
     const state = (frame as { payload?: { state?: unknown } }).payload?.state;
     if (!offer.terminal || (state !== "error" && state !== "aborted")) return false;
-    const record = this.settledRuns.get(offer.runId);
     if (record === undefined) return true;
     const add = this.lateAddition(offer.text, record);
     if (add === null) return true;

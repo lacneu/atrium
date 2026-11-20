@@ -44,6 +44,8 @@ class Writer extends RecordingWriter {
   failCompletions = false;
   /** Completion writes that fail before anything is committed, then the backend is back. */
   transientFailures = 0;
+  /** While set, a completion write does not answer (its ACK is suspended). */
+  gate: Promise<void> | null = null;
 
   override async startAssistant(chatId: string, runId: string | null): Promise<string> {
     const id = await super.startAssistant(chatId, runId);
@@ -76,6 +78,7 @@ class Writer extends RecordingWriter {
     });
   }
   async completeSettledText(a: { messageId: string; runId: string; text: string }): Promise<boolean> {
+    if (this.gate !== null) await this.gate;
     if (this.failCompletions) throw new Error("convex down");
     if (this.transientFailures > 0) {
       this.transientFailures--;
@@ -496,6 +499,79 @@ describe("part seven — a write that fails does not consume the completion", ()
     const first = n.settledCompletion(chatDelta("runA", 3, "Hello world"))!;
     n.noteCompletion(first, null);
     expect(n.settledCompletion(chatDelta("runA", 4, "Hello world"))).toMatchObject({ text: "Hello world" });
+  });
+});
+
+describe("part eight — a turn boundary while a completion is in flight", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 5));
+  async function suspended() {
+    const h = await closedOnLifecycleError();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    const write = h.rm.feed(chatDelta("runA", 3, "Hello world"), h.tick());
+    await settle();
+    return { h, write, release };
+  }
+
+  it.each([
+    ["beginTurn", (h: ReturnType<typeof harness>) => h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null })],
+    ["resumeTurn", (h: ReturnType<typeof harness>) => h.rm.resumeTurn(h.tick(), "msg9", "runB")],
+  ])("the ACK returns after %s: the run's record is the completed bubble, and a late final adds only its addition", async (_n, open) => {
+    const { h, write, release } = await suspended();
+    const opening = open(h);
+    await settle();
+    release();
+    await Promise.all([write, opening]);
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
+    await h.feed(chatFinal("runA", 4, "Hello world more"));
+    // Compared with "Hello world", not with an emptied record: no duplicate.
+    expect(h.writer.late).toEqual(["more"]);
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world\n\nmore");
+  });
+
+  it("a completion still QUEUED when the next turn begins is written all the same, to its own bubble", async () => {
+    const h = await closedOnLifecycleError();
+    const write = h.rm.feed(chatDelta("runA", 3, "Hello world"), h.tick());
+    const opening = h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+    await Promise.all([write, opening]);
+    expect(h.writer.offered.map((o) => [o.messageId, o.applied])).toEqual([["msg1", true]]);
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
+  });
+
+  it("the next turn runs to its end behind a suspended ACK: each bubble keeps its own text", async () => {
+    const { h, write, release } = await suspended();
+    // The writes of the next turn queue behind the suspended one (one ordered chain):
+    // they are started, not awaited, and land once the ACK returns.
+    const next = (async () => {
+      await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+      await h.feed(chatDelta("runB", 1, "Second answer"), chatFinal("runB", 2, "Second answer"));
+    })();
+    await settle();
+    release();
+    await Promise.all([write, next]);
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
+    expect(h.writer.settled.get("msg2")!.text).toBe("Second answer");
+    // What the sink remembers is still the SECOND turn's bubble.
+    await h.feed(chatFinal("runB", 3, "Second answer"));
+    expect(h.writer.late).toEqual([]);
+  });
+
+  // HANDED OVER to the integration of lot trames-3b (the pre-ACK replay rewrite): frames
+  // buffered before the ACK are replayed by `beginTurn` straight into `normalizer.feed`
+  // and never reach `feedPipeline`, where a completion is decided. Enable when replayed
+  // and live frames go through one unit.
+  it.skip("INTEGRATION trames-3b — a turn replayed from the pre-ACK buffer completes its settled bubble", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    await h.feed(
+      chatDelta("runA", 1, "Hello"),
+      lifecycleError("runA", 2),
+      chatDelta("runA", 2, "Hello world"),
+      chatAborted("runA", 2, "Hello world"),
+    );
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    expect(only(h.writer)).toMatchObject({ status: "error", text: "Hello world" });
+    expect(h.writer.finalizes).toHaveLength(1);
   });
 });
 

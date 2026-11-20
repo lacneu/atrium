@@ -705,15 +705,12 @@ export class TurnSink {
    * takes the text only as a strict extension of what that message of that run holds —
    * and what it accepted is what this sink then remembers. False: nothing was written.
    */
-  async completeSettledText(runId: string, text: string): Promise<boolean> {
-    const settled = this.lastSettled;
-    if (settled === null || this.writer.completeSettledText === undefined) return false;
-    const applied = await this.writer.completeSettledText({
-      messageId: settled.messageId,
-      runId,
-      text,
-    });
-    if (applied) settled.text = text;
+  async completeSettledText(messageId: string, runId: string, text: string): Promise<boolean> {
+    if (this.writer.completeSettledText === undefined) return false;
+    const applied = await this.writer.completeSettledText({ messageId, runId, text });
+    // The bubble is NAMED by the caller, never re-read here: a turn may have begun while
+    // the write was in flight. What this sink remembers follows only if it is still that one.
+    if (applied && this.lastSettled?.messageId === messageId) this.lastSettled.text = text;
     return applied;
   }
 
