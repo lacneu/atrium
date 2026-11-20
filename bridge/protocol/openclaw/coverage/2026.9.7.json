@@ -491,7 +491,20 @@
         },
         "replace": {
           "status": "handled",
-          "by": "normalizer handleChat: replace:true on a bare deltaText takes the snapshot (replace) path"
+          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex (never for a run adopted into the turn); a bare `deltaText` marked replace takes the same path",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const rewrite = !isFinal && payload.replace === true;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/live-text-authority.test.ts",
+            "note": "Read in the v2026.9.36 sources (server-chat-state.ts takeBufferDelta, server-methods/chat-broadcast.ts broadcastChatFrame, server-chat-live-text.ts chatWireProjection: a replacement always keeps `message` on the wire) and captured on the bench (2026.9.36 run 2026-11-08T17-17-24-387Z, settle-chain-no-synthesis: six replace deltas, one 950 -> 8 characters; 2026.9.33 run 2026-10-25T21-54-56-216Z), replayed from test/fixtures/live-text-frames.json against a writer enforcing the anti-regression guard and proven by neutralization. The golden corpus holds no replace frame yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.33",
+            "2026.9.36"
+          ]
         },
         "usage": {
           "status": "ignored",

@@ -319,6 +319,55 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(regressions).toHaveLength(0);
   });
 
+  // The gateway REWRITES its live text with a `chat` delta marked `replace` (bench,
+  // 2026.9.36: a 950-character tool summary, then `⏸️ Yield`). The bridge declares that
+  // shrink; the reader's stream gets it as a `replace` chunk, and the guard stays armed for
+  // the next write that shortens the text without saying so.
+  test("snapshot regression: a `chat_delta_replace` rewrite shortens the live text, reaches the reader as a replace chunk, and leaves the guard armed", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    const summary = "🛠️ `Déléguer la première tâche silencieuse`\n" + "x".repeat(905);
+
+    await post(t, { op: "setSnapshot", messageId, text: summary, replace: true, snapshotSource: "chat_delta_replace" });
+    const res = await post(t, {
+      op: "setSnapshot",
+      messageId,
+      text: "⏸️ Yield",
+      replace: true,
+      snapshotSource: "chat_delta_replace",
+    });
+
+    expect(await res.json()).toMatchObject({ ok: true, applied: true });
+    expect(await liveTextOf(t, messageId)).toBe("⏸️ Yield");
+    const chunks = await t.run(async (ctx) =>
+      (
+        await ctx.db
+          .query("streamChunks")
+          .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+          .collect()
+      ).map((c) => ({ kind: c.kind, text: c.text })),
+    );
+    expect(chunks.at(-1)).toEqual({ kind: "replace", text: "⏸️ Yield" });
+    const regressions = async () =>
+      (await tracesByKind(t, "assistant.stream"))
+        .map((tr) => JSON.parse(tr.meta ?? "{}"))
+        .filter((m) => m.phase === "snapshot_regression");
+    expect(await regressions()).toHaveLength(0);
+
+    const undeclared = await post(t, {
+      op: "setSnapshot",
+      messageId,
+      text: "⏸️",
+      snapshotSource: "chat_delta",
+      keptSource: "chat_delta_replace",
+    });
+    expect(await undeclared.json()).toMatchObject({ ok: true, applied: false });
+    expect(await liveTextOf(t, messageId)).toBe("⏸️ Yield");
+    expect(await regressions()).toEqual([
+      expect.objectContaining({ oldLen: 8, newLen: 2, snapshotSource: "chat_delta", keptSource: "chat_delta_replace" }),
+    ]);
+  });
+
   test("snapshot growth is untouched: a LONGER snapshot replaces the text as before", async () => {
     const t = convexTest(schema, modules);
     const { messageId } = await seedAssistantMessage(t);

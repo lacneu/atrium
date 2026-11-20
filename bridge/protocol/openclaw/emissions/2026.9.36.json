@@ -344,9 +344,16 @@
           }
         },
         "itemId": {
-          "status": "gap",
-          "gap": "F1",
-          "note": "itemId: read by the live-text baseline to restart a delta accumulation per item, not by the snapshot path that applies `text`: the assistant text is cumulative PER ITEM upstream (server-chat-live-text.ts prepareAgentWirePayload: a new itemId restarts it); the normalizer applies each `text` as the whole bubble's snapshot, so a second item shrinks the bubble and Convex refuses it (snapshot_regression) until the chat stream repairs it"
+          "status": "handled",
+          "by": "names the item a `text` is cumulative for: the run's first item (and a frame naming none) holds the run's whole live text and is written; a later item holds its own part and is left to the `chat` delta, which carries the items joined by the gateway. The live-text baseline restarts a delta accumulation on it too",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "private assistantTextIsRunText(data: JsonObject): boolean {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "spawn-chain-merge"
+          }
         },
         "managedMediaUrls": {
           "status": "ignored",
@@ -370,7 +377,7 @@
         },
         "replace": {
           "status": "handled",
-          "by": "a REFRESH of the same answer: applied through the snapshot path with the shrink allowed, without locking snapshot precedence",
+          "by": "a REFRESH of the item's text: when that item holds the run's whole live text, applied through the snapshot path with the shrink allowed, without locking snapshot precedence; on a later item, left to the `chat` delta like its text",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "const replace = data.replace === true;"
@@ -382,13 +389,29 @@
           }
         },
         "replaceable": {
-          "status": "ignored",
-          "why": "a producer-side hint about later replacement; Atrium applies each frame's own `replace`; not read; no reader of it under ui/src either at this tag"
+          "status": "handled",
+          "by": "with `replace`, on a NEW item: the provisional stream is replaced as a whole, so that item's text is the run's whole live text (the one new item that discards the earlier ones upstream)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "(data.replace === true && data.replaceable === true)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/live-text-authority.test.ts",
+            "note": "no replaceable frame in the 2026.9.36 corpus (the embedded runtime the bench runs never marks one); the frames replayed were captured on a 2026.9.33 gateway running the codex harness (test/fixtures/live-text-frames.json, replaceableRestart)"
+          }
         },
         "text": {
-          "status": "gap",
-          "gap": "F1",
-          "note": "text: the assistant text is cumulative PER ITEM upstream (server-chat-live-text.ts prepareAgentWirePayload: a new itemId restarts it); the normalizer applies each `text` as the whole bubble's snapshot, so a second item shrinks the bubble and Convex refuses it (snapshot_regression) until the chat stream repairs it"
+          "status": "handled",
+          "by": "the answer text, cumulative PER ITEM: written as the bubble's snapshot while its item holds the run's whole live text (the first item, a replaceable replacement, a frame naming no item), not written for a later item",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (!this.assistantTextIsRunText(data)) return;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "spawn-chain-merge"
+          }
         }
       }
     },
@@ -2182,9 +2205,16 @@
   },
   "rewrites": {
     "gateway:prepareAgentWirePayload:text": {
-      "status": "gap",
-      "gap": "F1",
-      "note": "the gateway rebuilds `text` per item when the emitter sent only a delta: the assistant text is cumulative PER ITEM upstream (server-chat-live-text.ts prepareAgentWirePayload: a new itemId restarts it); the normalizer applies each `text` as the whole bubble's snapshot, so a second item shrinks the bubble and Convex refuses it (snapshot_regression) until the chat stream repairs it"
+      "status": "handled",
+      "by": "the gateway rebuilds `text` per item when the emitter sent only a delta; read like any other `text`: the bubble's snapshot while its item holds the run's whole live text, not written for a later item",
+      "anchor": {
+        "file": "src/providers/openclaw/normalizer.ts",
+        "token": "if (!this.assistantTextIsRunText(data)) return;"
+      },
+      "proof": {
+        "kind": "golden-corpus",
+        "ref": "spawn-chain-merge"
+      }
     },
     "gateway:mergeAgentTextPayload:delta": {
       "status": "handled",

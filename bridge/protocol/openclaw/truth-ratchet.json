@@ -257,6 +257,10 @@
     {
       "path": "QuestionResolveResult.status",
       "scan": false
+    },
+    {
+      "path": "ChatDeltaEvent.replace",
+      "scan": false
     }
   ]
 }

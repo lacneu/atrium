@@ -607,6 +607,9 @@ export class Normalizer {
   /** The whitespace the gateway's buffer carries between the cut and the current
    *  segment's text (stripped from the segment, kept for the NEXT cut's prefix). */
   private segmentLead = "";
+  /** Per run, the `assistant` item whose text IS the run's whole live text (see
+   *  `assistantTextIsRunText`). Emptied with the bubble: a new turn, a compaction reset. */
+  private assistantRunItem = new Map<string, string>();
   hasSnapshot: boolean;
   hasVisibleToolText: boolean;
   // Chat-frame dedup keys ALREADY seen this turn. A single scalar slot only
@@ -944,6 +947,7 @@ export class Normalizer {
     this.compactionPending = false;
     this.currentRunId = null;
     this.text = "";
+    this.assistantRunItem.clear();
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.widgetViewIds = new Map();
@@ -1865,13 +1869,23 @@ export class Normalizer {
     const snapshotText = textFromMessage(message);
     this.collectShortcodeWidgets(snapshotText, events);
     if (snapshotText) {
+      // `replace` on a delta: the gateway REWROTE the live text instead of extending it
+      // (src/gateway/server-chat-state.ts `takeBufferDelta`; every command snapshot,
+      // src/gateway/server-methods/chat-broadcast.ts `broadcastChatFrame`), and such a
+      // frame always carries `message` — the wire never strips it from a replacement
+      // (src/gateway/server-chat-live-text.ts `chatWireProjection`, `snapshot`). The
+      // Control UI shows the rewrite whatever its length (ui/src/pages/chat/
+      // chat-gateway.ts, `state.chatStream = next`), so the shrink is declared. Not for
+      // an adopted run: what it would shorten may be another run's delivered text.
+      const rewrite = !isFinal && payload.replace === true;
       this.applyVisible(
         snapshotText,
         true,
         isFinal,
         now,
         events,
-        isFinal ? "chat_final" : "chat_delta",
+        isFinal ? "chat_final" : rewrite ? "chat_delta_replace" : "chat_delta",
+        rewrite && !this.frameRunAdopted,
       );
       return;
     }
@@ -1920,6 +1934,45 @@ export class Normalizer {
    */
   private projectedFailureClass(kind: string | null, rawErrorKind: unknown): string | null {
     return rawErrorKind === "state_contention" ? "gateway_state_contention" : kind;
+  }
+
+  /**
+   * Is this `assistant` frame's `text` the WHOLE live text of its run?
+   *
+   * `data.text` is cumulative per ITEM — one item per assistant message, and a new
+   * `itemId` restarts it (src/agents/embedded-agent-subscribe.reply-delivery.ts
+   * `emitAssistantStreamData`; src/gateway/server-chat-live-text.ts
+   * `prepareAgentWirePayload`). The gateway joins the items itself, for the `chat`
+   * stream only: a new item is appended to everything before it, unless it is a
+   * `replace` of a `replaceable` (provisional) stream, the one case that discards the
+   * earlier items (src/gateway/agent-event-assistant-text.ts `mergeAssistantText`).
+   * So the run's first item, an item that replaces the provisional ones and a frame
+   * naming no item hold the whole text; any other item holds its own part, and written
+   * as the bubble it erased the items before it until the `chat` delta restored them.
+   *
+   * The join is NOT redone here: its separator changed between validated versions
+   * (none in 2026.9.2, a blank line from 2026.9.4) and the `chat` text is projected
+   * for display on top of it, so a second composition would disagree with the
+   * gateway's own by a few characters on every frame.
+   */
+  private assistantTextIsRunText(data: JsonObject): boolean {
+    const itemId = isString(data.itemId) && data.itemId !== "" ? data.itemId : null;
+    if (itemId === null) return true;
+    const first = this.assistantRunItem.get(this.frameRunId);
+    if (
+      first === undefined ||
+      first === itemId ||
+      (data.replace === true && data.replaceable === true)
+    ) {
+      this.assistantRunItem.delete(this.frameRunId);
+      this.assistantRunItem.set(this.frameRunId, itemId);
+      if (this.assistantRunItem.size > Normalizer.MAX_HEARTBEAT_RUNS) {
+        const oldest = this.assistantRunItem.keys().next().value;
+        if (oldest !== undefined) this.assistantRunItem.delete(oldest);
+      }
+      return true;
+    }
+    return false;
   }
 
   private clearRetryingPhase(events: BridgeEvent[]): void {
@@ -2004,6 +2057,8 @@ export class Normalizer {
       // rule the chat path already applies to `ChatDeltaEventSchema.replace`.
       const replace = data.replace === true;
       if (isString(text) && text) {
+        // A later item's text is that item alone: the `chat` delta carries the bubble.
+        if (!this.assistantTextIsRunText(data)) return;
         // Full snapshot: replace and lock out later deltas/acks.
         this.collectShortcodeWidgets(text, events);
         this.applyVisible(
@@ -3756,6 +3811,7 @@ export class Normalizer {
     // Everything the abandoned run produced is invalidated by the replay.
     this.compactionPending = true;
     this.text = "";
+    this.assistantRunItem.clear();
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     // The replay re-emits its widgets; Convex keeps one part per view per message.

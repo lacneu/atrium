@@ -1,0 +1,2056 @@
+{
+ "_about": "Captured on the local bench with OPENCLAW_CAPTURE_FRAMES (the raw wire, one conversation socket, frames in arrival order, unmodified). Bench prompts only; no personal data. `chatReplace`: OpenClaw 2026.9.36, run 2026-11-08T17-17-24-387Z, scenario settle-chain-no-synthesis — every frame of the turn: six `chat` deltas with `replace: true` AND `message`, the fifth shorter than the fourth (950 → 8 characters). `commandThenAnswer`: OpenClaw 2026.9.33, run 2026-10-25T21-54-56-216Z, scenario spawn-parallel-merge — every frame of the turn: four `replace: true` deltas, then the answer as a delta that carries a shorter `message` and NO `replace` (943 → 2). `replaceableRestart`: OpenClaw 2026.9.33 on the codex harness, run 2026-10-15T18-30-20-684Z — the assistant, lifecycle and chat frames of a turn whose last assistant frame names a NEW item with `replace` and `replaceable`.",
+ "chatReplace": {
+  "gatewayVersion": "2026.9.36",
+  "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+  "runId": "19882a04-b430-4934-acc2-af002148ec44",
+  "frames": [
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "run_status",
+     "data": {
+      "phase": "preparing_workspace"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 1,
+     "ts": 1794158863954,
+     "isHeartbeat": false
+    },
+    "seq": 555
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "run_status",
+     "data": {
+      "phase": "preparing_context"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 2,
+     "ts": 1794158863970,
+     "isHeartbeat": false
+    },
+    "seq": 556
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "provenance-probe.provenance",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "data": {
+      "v": 1,
+      "source": "hindsight",
+      "kind": "memory",
+      "injected": {
+       "chars": 420,
+       "position": "system_prepend",
+       "truncated": false
+      },
+      "retrieval": {
+       "route": "ALL",
+       "bank": "bench::probe::user"
+      },
+      "items": [
+       {
+        "id": "mem_bench_001",
+        "type": "observation",
+        "date": "2026-06-01",
+        "score": 0.91,
+        "text": "Bench observation: the user prefers concise answers."
+       },
+       {
+        "id": "mem_bench_002",
+        "type": "world",
+        "date": "2026-05-20",
+        "score": 0.84,
+        "text": "Bench fact: the validation bench runs a pinned gateway."
+       }
+      ],
+      "pluginId": "provenance-probe",
+      "pluginName": "Provenance Contract Probe"
+     },
+     "agentId": "alice",
+     "seq": 3,
+     "ts": 1794158864161,
+     "isHeartbeat": false
+    },
+    "seq": 557
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "provenance-probe.provenance",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "data": {
+      "v": 1,
+      "source": "knowledge",
+      "kind": "documents",
+      "injected": {
+       "chars": 1300,
+       "position": "system_append",
+       "truncated": false
+      },
+      "retrieval": {
+       "route": "pgvector",
+       "collections": [
+        "knowledge_bench"
+       ],
+       "lightrag": {
+        "mode": "mix",
+        "contextChars": 0
+       }
+      },
+      "items": [
+       {
+        "file_name": "bench-compliance-report.pdf",
+        "collection": "knowledge_bench",
+        "score": 0.93,
+        "text": "Bench chunk: section 4.2 defines the retention policy."
+       }
+      ],
+      "pluginId": "provenance-probe",
+      "pluginName": "Provenance Contract Probe"
+     },
+     "agentId": "alice",
+     "seq": 4,
+     "ts": 1794158864161,
+     "isHeartbeat": false
+    },
+    "seq": 558
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "start",
+      "startedAt": 1794158864254,
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 5,
+     "ts": 1794158864254,
+     "isHeartbeat": false
+    },
+    "seq": 559
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "run_status",
+     "data": {
+      "phase": "starting_model"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 6,
+     "ts": 1794158864276,
+     "isHeartbeat": false
+    },
+    "seq": 560
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 7,
+     "ts": 1794158864602,
+     "isHeartbeat": false
+    },
+    "seq": 561
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "stream": "usage",
+     "data": {
+      "outputTokens": 121
+     },
+     "agentId": "alice",
+     "seq": 8,
+     "ts": 1794158869181,
+     "isHeartbeat": false
+    },
+    "seq": 564
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "toolCallId": "call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "name": "exec",
+      "kind": "tool",
+      "phase": "start",
+      "title": "Exec Déléguer la première tâche silencieuse",
+      "status": "running",
+      "meta": "Déléguer la première tâche silencieuse",
+      "commandBearing": true,
+      "startedAt": 1794158869194
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 9,
+     "ts": 1794158869194,
+     "isHeartbeat": false
+    },
+    "seq": 565
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "seq": 11,
+     "state": "delta",
+     "deltaText": "🛠️ `Déléguer la première tâche silencieuse`",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🛠️ `Déléguer la première tâche silencieuse`"
+       }
+      ]
+     }
+    },
+    "seq": 566
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "error",
+     "ts": 1794158869228,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 12,
+      "received": 11
+     }
+    },
+    "seq": 567
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:tool_call:call_610fcd8fcc154107801a0cb4f45f0a82_fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961:sessions_spawn:1",
+      "toolCallId": "tool_call:call_610fcd8fcc154107801a0cb4f45f0a82_fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961:sessions_spawn:1",
+      "name": "sessions_spawn",
+      "kind": "tool",
+      "phase": "start",
+      "title": "Sub-agent label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files",
+      "status": "running",
+      "meta": "label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files",
+      "commandBearing": false,
+      "startedAt": 1794158869227
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 11,
+     "ts": 1794158869228,
+     "isHeartbeat": false
+    },
+    "seq": 568
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "seq": 13,
+     "state": "delta",
+     "deltaText": "🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`"
+       }
+      ]
+     }
+    },
+    "seq": 569
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "error",
+     "ts": 1794158869376,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 14,
+      "received": 13
+     }
+    },
+    "seq": 570
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:tool_call:call_610fcd8fcc154107801a0cb4f45f0a82_fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961:sessions_spawn:1",
+      "toolCallId": "tool_call:call_610fcd8fcc154107801a0cb4f45f0a82_fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961:sessions_spawn:1",
+      "name": "sessions_spawn",
+      "kind": "tool",
+      "phase": "end",
+      "title": "Sub-agent label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files",
+      "status": "completed",
+      "meta": "label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files",
+      "commandBearing": false,
+      "startedAt": 1794158869227,
+      "endedAt": 1794158869375
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 14,
+     "ts": 1794158869375,
+     "isHeartbeat": false
+    },
+    "seq": 571
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "seq": 15,
+     "state": "delta",
+     "deltaText": "🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\n  \"runId\": \"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"silent-chain-first\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\n  \"runId\": \"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"silent-chain-first\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```"
+       }
+      ]
+     }
+    },
+    "seq": 572
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "error",
+     "ts": 1794158869400,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 16,
+      "received": 15
+     }
+    },
+    "seq": 573
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "toolCallId": "call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "name": "exec",
+      "kind": "tool",
+      "phase": "end",
+      "title": "Exec Déléguer la première tâche silencieuse",
+      "status": "completed",
+      "meta": "Déléguer la première tâche silencieuse",
+      "commandBearing": true,
+      "startedAt": 1794158869194,
+      "endedAt": 1794158869399
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 16,
+     "ts": 1794158869399,
+     "isHeartbeat": false
+    },
+    "seq": 574
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "command_output",
+     "data": {
+      "itemId": "command:call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "phase": "end",
+      "title": "command Déléguer la première tâche silencieuse",
+      "toolCallId": "call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "name": "exec",
+      "output": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"9adf63a58f2ef482114122c6\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\"runId\":\"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"silent-chain-first\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}",
+      "status": "completed"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 17,
+     "ts": 1794158869400,
+     "isHeartbeat": false
+    },
+    "seq": 575
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "seq": 18,
+     "state": "delta",
+     "deltaText": "🛠️ `Déléguer la première tâche silencieuse`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"9adf63a58f2ef482114122c6\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\"runId\":\"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"silent-chain-first\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🛠️ `Déléguer la première tâche silencieuse`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"9adf63a58f2ef482114122c6\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\"runId\":\"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"silent-chain-first\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```"
+       }
+      ]
+     }
+    },
+    "seq": 576
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "error",
+     "ts": 1794158869894,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 19,
+      "received": 18
+     }
+    },
+    "seq": 580
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 18,
+     "ts": 1794158869893,
+     "isHeartbeat": false
+    },
+    "seq": 581
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "stream": "usage",
+     "data": {
+      "outputTokens": 136
+     },
+     "agentId": "alice",
+     "seq": 19,
+     "ts": 1794158873229,
+     "isHeartbeat": false
+    },
+    "seq": 587
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_b568a559cb8e4cc5a9c8fa88db49c1bf|fc_0f103c255799b538016af0b1192a7887d29b64f700a5fa123c",
+      "toolCallId": "call_b568a559cb8e4cc5a9c8fa88db49c1bf|fc_0f103c255799b538016af0b1192a7887d29b64f700a5fa123c",
+      "name": "sessions_yield",
+      "kind": "tool",
+      "phase": "start",
+      "title": "Yield",
+      "status": "running",
+      "commandBearing": false,
+      "hideFromChannelProgress": true,
+      "startedAt": 1794158873241
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 20,
+     "ts": 1794158873242,
+     "isHeartbeat": false
+    },
+    "seq": 588
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "seq": 22,
+     "state": "delta",
+     "deltaText": "⏸️ Yield",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "⏸️ Yield"
+       }
+      ]
+     }
+    },
+    "seq": 589
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "error",
+     "ts": 1794158873260,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 23,
+      "received": 22
+     }
+    },
+    "seq": 590
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_b568a559cb8e4cc5a9c8fa88db49c1bf|fc_0f103c255799b538016af0b1192a7887d29b64f700a5fa123c",
+      "toolCallId": "call_b568a559cb8e4cc5a9c8fa88db49c1bf|fc_0f103c255799b538016af0b1192a7887d29b64f700a5fa123c",
+      "name": "sessions_yield",
+      "kind": "tool",
+      "phase": "end",
+      "title": "Yield",
+      "status": "completed",
+      "commandBearing": false,
+      "hideFromChannelProgress": true,
+      "startedAt": 1794158873241,
+      "endedAt": 1794158873259
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 23,
+     "ts": 1794158873259,
+     "isHeartbeat": false
+    },
+    "seq": 591
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "seq": 24,
+     "state": "delta",
+     "deltaText": "⏸️ Yield\n```txt\n{\n  \"status\": \"yielded\"\n}\n```",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "⏸️ Yield\n```txt\n{\n  \"status\": \"yielded\"\n}\n```"
+       }
+      ]
+     }
+    },
+    "seq": 592
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "error",
+     "ts": 1794158873286,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 25,
+      "received": 24
+     }
+    },
+    "seq": 593
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 24,
+     "ts": 1794158873285,
+     "isHeartbeat": false
+    },
+    "seq": 594
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "toolCallId": "call_610fcd8fcc154107801a0cb4f45f0a82|fc_0f103c255799b538016af0b112fb8087d2a63ac95bc17f1961",
+      "name": "exec",
+      "kind": "tool",
+      "phase": "end",
+      "title": "Exec Déléguer la première tâche silencieuse",
+      "status": "completed",
+      "meta": "Déléguer la première tâche silencieuse",
+      "commandBearing": true,
+      "startedAt": 1794158869194,
+      "endedAt": 1794158869399,
+      "hideFromChannelProgress": true
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "agentId": "alice",
+     "seq": 25,
+     "ts": 1794158873294,
+     "isHeartbeat": false
+    },
+    "seq": 595
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "finishing",
+      "stopReason": "aborted",
+      "aborted": false,
+      "livenessState": "working",
+      "replayInvalid": true,
+      "endedAt": 1794158873294,
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 26,
+     "ts": 1794158873294,
+     "isHeartbeat": false
+    },
+    "seq": 596
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "agentId": "alice",
+     "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "lane": "main",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": null,
+      "model": null,
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 27,
+     "ts": 1794158873383,
+     "isHeartbeat": false
+    },
+    "seq": 597
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "stream": "lifecycle",
+     "data": {
+      "stopReason": "end_turn",
+      "aborted": false,
+      "livenessState": "paused",
+      "replayInvalid": true,
+      "phase": "end",
+      "endedAt": 1794158873387,
+      "startedAt": 1794158864254,
+      "yielded": true,
+      "terminalReply": {
+       "disposition": "empty"
+      },
+      "terminalReceipt": {
+       "runId": "19882a04-b430-4934-acc2-af002148ec44",
+       "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+       "turnId": "19882a04-b430-4934-acc2-af002148ec44",
+       "requested": {
+        "provider": "openai",
+        "model": "gpt-6.1-sol"
+       },
+       "effective": {
+        "provider": "openai",
+        "model": "gpt-6.1-sol",
+        "responseModel": "gpt-6.1-sol"
+       },
+       "successfulToolNames": [
+        "sessions_spawn",
+        "exec",
+        "sessions_yield"
+       ],
+       "rerouted": false,
+       "terminalDisposition": "not-visible"
+      },
+      "executionSettled": true,
+      "completionSource": "reply-dispatch"
+     },
+     "sessionId": "ccae62b3-3f6d-4b34-8205-31468418e340",
+     "agentId": "alice",
+     "seq": 28,
+     "ts": 1794158873387,
+     "isHeartbeat": false
+    },
+    "seq": 598
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "19882a04-b430-4934-acc2-af002148ec44",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7cex5wra1yec9v1h926pndj98ht523",
+     "seq": 29,
+     "state": "final",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🛠️ `Déléguer la première tâche silencieuse`"
+       },
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`"
+       },
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\n  \"runId\": \"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"silent-chain-first\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```"
+       },
+       {
+        "type": "text",
+        "text": "🛠️ `Déléguer la première tâche silencieuse`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"9adf63a58f2ef482114122c6\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\"runId\":\"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"silent-chain-first\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```"
+       },
+       {
+        "type": "text",
+        "text": "⏸️ Yield"
+       },
+       {
+        "type": "text",
+        "text": "⏸️ Yield\n```txt\n{\n  \"status\": \"yielded\"\n}\n```"
+       },
+       {
+        "type": "text",
+        "text": "I’m continuing this work and will send the result when it is ready."
+       }
+      ],
+      "text": "🛠️ `Déléguer la première tâche silencieuse`\n\n🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`\n\n🧑‍🔧 Sub-agent: `label Première tâche de la chaîne silencieuse, task name silent-chain-first, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\n  \"runId\": \"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"silent-chain-first\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```\n\n🛠️ `Déléguer la première tâche silencieuse`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"9adf63a58f2ef482114122c6\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:8be178c3-fef2-49ce-969c-2ea7ecb28b39\",\"runId\":\"72846765-32c9-4754-9cfa-f9d1c7ce9779\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"silent-chain-first\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```\n\n⏸️ Yield\n\n⏸️ Yield\n```txt\n{\n  \"status\": \"yielded\"\n}\n```\n\nI’m continuing this work and will send the result when it is ready.",
+      "timestamp": 1794158873480,
+      "stopReason": "stop",
+      "usage": {
+       "input": 0,
+       "output": 0,
+       "totalTokens": 0
+      }
+     },
+     "stopReason": "end_turn"
+    },
+    "seq": 603
+   }
+  ]
+ },
+ "commandThenAnswer": {
+  "gatewayVersion": "2026.9.33",
+  "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+  "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+  "frames": [
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "run_status",
+     "data": {
+      "phase": "preparing_workspace"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 1,
+     "ts": 1792965722529,
+     "isHeartbeat": false
+    },
+    "seq": 692
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "run_status",
+     "data": {
+      "phase": "preparing_context"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 2,
+     "ts": 1792965722559,
+     "isHeartbeat": false
+    },
+    "seq": 693
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "provenance-probe.provenance",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "data": {
+      "v": 1,
+      "source": "hindsight",
+      "kind": "memory",
+      "injected": {
+       "chars": 420,
+       "position": "system_prepend",
+       "truncated": false
+      },
+      "retrieval": {
+       "route": "ALL",
+       "bank": "bench::probe::user"
+      },
+      "items": [
+       {
+        "id": "mem_bench_001",
+        "type": "observation",
+        "date": "2026-06-01",
+        "score": 0.91,
+        "text": "Bench observation: the user prefers concise answers."
+       },
+       {
+        "id": "mem_bench_002",
+        "type": "world",
+        "date": "2026-05-20",
+        "score": 0.84,
+        "text": "Bench fact: the validation bench runs a pinned gateway."
+       }
+      ],
+      "pluginId": "provenance-probe",
+      "pluginName": "Provenance Contract Probe"
+     },
+     "agentId": "alice",
+     "seq": 3,
+     "ts": 1792965722708,
+     "isHeartbeat": false
+    },
+    "seq": 694
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "provenance-probe.provenance",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "data": {
+      "v": 1,
+      "source": "knowledge",
+      "kind": "documents",
+      "injected": {
+       "chars": 1300,
+       "position": "system_append",
+       "truncated": false
+      },
+      "retrieval": {
+       "route": "pgvector",
+       "collections": [
+        "knowledge_bench"
+       ],
+       "lightrag": {
+        "mode": "mix",
+        "contextChars": 0
+       }
+      },
+      "items": [
+       {
+        "file_name": "bench-compliance-report.pdf",
+        "collection": "knowledge_bench",
+        "score": 0.93,
+        "text": "Bench chunk: section 4.2 defines the retention policy."
+       }
+      ],
+      "pluginId": "provenance-probe",
+      "pluginName": "Provenance Contract Probe"
+     },
+     "agentId": "alice",
+     "seq": 4,
+     "ts": 1792965722708,
+     "isHeartbeat": false
+    },
+    "seq": 695
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "sessionId": "834536e3-5400-4115-9156-468fcdb6b4ac",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "start",
+      "startedAt": 1792965722795,
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 5,
+     "ts": 1792965722795,
+     "isHeartbeat": false
+    },
+    "seq": 696
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "run_status",
+     "data": {
+      "phase": "starting_model"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 6,
+     "ts": 1792965722821,
+     "isHeartbeat": false
+    },
+    "seq": 697
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "sessionId": "834536e3-5400-4115-9156-468fcdb6b4ac",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 7,
+     "ts": 1792965723188,
+     "isHeartbeat": false
+    },
+    "seq": 698
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "stream": "usage",
+     "data": {
+      "outputTokens": 108
+     },
+     "agentId": "alice",
+     "seq": 8,
+     "ts": 1792965725807,
+     "isHeartbeat": false
+    },
+    "seq": 700
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "toolCallId": "call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "name": "exec",
+      "kind": "tool",
+      "phase": "start",
+      "title": "Exec Spawn initial parallel mission task",
+      "status": "running",
+      "meta": "Spawn initial parallel mission task",
+      "commandBearing": true,
+      "startedAt": 1792965725826
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 9,
+     "ts": 1792965725827,
+     "isHeartbeat": false
+    },
+    "seq": 701
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "seq": 11,
+     "state": "delta",
+     "deltaText": "🛠️ `Spawn initial parallel mission task`",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🛠️ `Spawn initial parallel mission task`"
+       }
+      ]
+     }
+    },
+    "seq": 702
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "error",
+     "ts": 1792965725867,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 12,
+      "received": 11
+     }
+    },
+    "seq": 703
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:tool_call:call_e4c91a89d42d4826aedca5a724c6274d_fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b:sessions_spawn:1",
+      "toolCallId": "tool_call:call_e4c91a89d42d4826aedca5a724c6274d_fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b:sessions_spawn:1",
+      "name": "sessions_spawn",
+      "kind": "tool",
+      "phase": "start",
+      "title": "Sub-agent label Première tâche parallèle, task name parallel-step1, agent files",
+      "status": "running",
+      "meta": "label Première tâche parallèle, task name parallel-step1, agent files",
+      "commandBearing": false,
+      "startedAt": 1792965725866
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 11,
+     "ts": 1792965725866,
+     "isHeartbeat": false
+    },
+    "seq": 704
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "seq": 13,
+     "state": "delta",
+     "deltaText": "🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`"
+       }
+      ]
+     }
+    },
+    "seq": 705
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "error",
+     "ts": 1792965725990,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 14,
+      "received": 13
+     }
+    },
+    "seq": 706
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:tool_call:call_e4c91a89d42d4826aedca5a724c6274d_fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b:sessions_spawn:1",
+      "toolCallId": "tool_call:call_e4c91a89d42d4826aedca5a724c6274d_fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b:sessions_spawn:1",
+      "name": "sessions_spawn",
+      "kind": "tool",
+      "phase": "end",
+      "title": "Sub-agent label Première tâche parallèle, task name parallel-step1, agent files",
+      "status": "completed",
+      "meta": "label Première tâche parallèle, task name parallel-step1, agent files",
+      "commandBearing": false,
+      "startedAt": 1792965725866,
+      "endedAt": 1792965725989
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 14,
+     "ts": 1792965725989,
+     "isHeartbeat": false
+    },
+    "seq": 707
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "seq": 15,
+     "state": "delta",
+     "deltaText": "🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\n  \"runId\": \"72654402-5541-4170-ae7f-33f73dcaae46\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"parallel-step1\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\n  \"runId\": \"72654402-5541-4170-ae7f-33f73dcaae46\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"parallel-step1\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```"
+       }
+      ]
+     }
+    },
+    "seq": 708
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "error",
+     "ts": 1792965726010,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 16,
+      "received": 15
+     }
+    },
+    "seq": 709
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "toolCallId": "call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "name": "exec",
+      "kind": "tool",
+      "phase": "end",
+      "title": "Exec Spawn initial parallel mission task",
+      "status": "completed",
+      "meta": "Spawn initial parallel mission task",
+      "commandBearing": true,
+      "startedAt": 1792965725826,
+      "endedAt": 1792965726009
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 16,
+     "ts": 1792965726009,
+     "isHeartbeat": false
+    },
+    "seq": 710
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "command_output",
+     "data": {
+      "itemId": "command:call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "phase": "end",
+      "title": "command Spawn initial parallel mission task",
+      "toolCallId": "call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "name": "exec",
+      "output": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":56,\"sources\":{\"openclaw\":56,\"mcp\":0,\"client\":0},\"counterScope\":\"508db403421f27036827e60a\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\"runId\":\"72654402-5541-4170-ae7f-33f73dcaae46\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"parallel-step1\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}",
+      "status": "completed"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 17,
+     "ts": 1792965726009,
+     "isHeartbeat": false
+    },
+    "seq": 711
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "seq": 18,
+     "state": "delta",
+     "deltaText": "🛠️ `Spawn initial parallel mission task`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":56,\"sources\":{\"openclaw\":56,\"mcp\":0,\"client\":0},\"counterScope\":\"508db403421f27036827e60a\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\"runId\":\"72654402-5541-4170-ae7f-33f73dcaae46\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"parallel-step1\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```",
+     "replace": true,
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🛠️ `Spawn initial parallel mission task`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":56,\"sources\":{\"openclaw\":56,\"mcp\":0,\"client\":0},\"counterScope\":\"508db403421f27036827e60a\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\"runId\":\"72654402-5541-4170-ae7f-33f73dcaae46\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"parallel-step1\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```"
+       }
+      ]
+     }
+    },
+    "seq": 712
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "error",
+     "ts": 1792965726427,
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "isHeartbeat": false,
+     "data": {
+      "reason": "seq gap",
+      "expected": 19,
+      "received": 18
+     }
+    },
+    "seq": 716
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "sessionId": "834536e3-5400-4115-9156-468fcdb6b4ac",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 18,
+     "ts": 1792965726426,
+     "isHeartbeat": false
+    },
+    "seq": 717
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "assistant",
+     "data": {
+      "text": "La",
+      "delta": "La",
+      "phase": "final_answer",
+      "itemId": "8c0e03cd-cffb-430a-aecf-0418df72cccb:2"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 19,
+     "ts": 1792965727590,
+     "isHeartbeat": false
+    },
+    "seq": 719
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 19,
+     "state": "delta",
+     "deltaText": "La",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "La"
+       }
+      ],
+      "timestamp": 1792965727592
+     }
+    },
+    "seq": 720
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "assistant",
+     "data": {
+      "delta": " première tâche est lancée.",
+      "phase": "final_answer",
+      "itemId": "8c0e03cd-cffb-430a-aecf-0418df72cccb:2"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 25,
+     "ts": 1792965727600,
+     "isHeartbeat": false
+    },
+    "seq": 721
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 25,
+     "state": "delta",
+     "deltaText": " première tâche est lancée."
+    },
+    "seq": 722
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "stream": "usage",
+     "data": {
+      "outputTokens": 119
+     },
+     "agentId": "alice",
+     "seq": 26,
+     "ts": 1792965727743,
+     "isHeartbeat": false
+    },
+    "seq": 723
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "stream": "item",
+     "data": {
+      "itemId": "tool:call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "toolCallId": "call_e4c91a89d42d4826aedca5a724c6274d|fc_0dd54e3bde0ae200016ade7c5c99888190a2b3923020ce251b",
+      "name": "exec",
+      "kind": "tool",
+      "phase": "end",
+      "title": "Exec Spawn initial parallel mission task",
+      "status": "completed",
+      "meta": "Spawn initial parallel mission task",
+      "commandBearing": true,
+      "startedAt": 1792965725826,
+      "endedAt": 1792965726009,
+      "hideFromChannelProgress": true
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "agentId": "alice",
+     "seq": 27,
+     "ts": 1792965727757,
+     "isHeartbeat": false
+    },
+    "seq": 724
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "sessionId": "834536e3-5400-4115-9156-468fcdb6b4ac",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "finishing",
+      "stopReason": "stop",
+      "aborted": false,
+      "livenessState": "working",
+      "replayInvalid": true,
+      "endedAt": 1792965727757,
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 28,
+     "ts": 1792965727757,
+     "isHeartbeat": false
+    },
+    "seq": 725
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "agentId": "alice",
+     "sessionId": "834536e3-5400-4115-9156-468fcdb6b4ac",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "lane": "main",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": null,
+      "model": null,
+      "completionSource": "reply-dispatch"
+     },
+     "seq": 29,
+     "ts": 1792965727803,
+     "isHeartbeat": false
+    },
+    "seq": 726
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "stream": "lifecycle",
+     "data": {
+      "stopReason": "stop",
+      "aborted": false,
+      "livenessState": "working",
+      "replayInvalid": true,
+      "phase": "end",
+      "endedAt": 1792965727806,
+      "startedAt": 1792965722795,
+      "terminalReply": {
+       "disposition": "visible",
+       "text": "La première tâche est lancée."
+      },
+      "terminalReceipt": {
+       "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+       "sessionId": "834536e3-5400-4115-9156-468fcdb6b4ac",
+       "turnId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+       "requested": {
+        "provider": "openai",
+        "model": "gpt-6.1-sol"
+       },
+       "effective": {
+        "provider": "openai",
+        "model": "gpt-6.1-sol",
+        "responseModel": "gpt-6.1-sol"
+       },
+       "successfulToolNames": [
+        "sessions_spawn",
+        "exec"
+       ],
+       "rerouted": false,
+       "terminalDisposition": "visible"
+      },
+      "executionSettled": true,
+      "completionSource": "reply-dispatch"
+     },
+     "sessionId": "834536e3-5400-4115-9156-468fcdb6b4ac",
+     "agentId": "alice",
+     "seq": 30,
+     "ts": 1792965727806,
+     "isHeartbeat": false
+    },
+    "seq": 727
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "5cf86e57-834f-45a9-801d-5bbebcd001b8",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx7d8z3855qcac73qnerfb8kbx8gyh2q",
+     "seq": 31,
+     "state": "final",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "🛠️ `Spawn initial parallel mission task`"
+       },
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`"
+       },
+       {
+        "type": "text",
+        "text": "🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\n  \"runId\": \"72654402-5541-4170-ae7f-33f73dcaae46\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"parallel-step1\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```"
+       },
+       {
+        "type": "text",
+        "text": "🛠️ `Spawn initial parallel mission task`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":56,\"sources\":{\"openclaw\":56,\"mcp\":0,\"client\":0},\"counterScope\":\"508db403421f27036827e60a\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\"runId\":\"72654402-5541-4170-ae7f-33f73dcaae46\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"parallel-step1\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```"
+       },
+       {
+        "type": "text",
+        "text": "La première tâche est lancée."
+       }
+      ],
+      "text": "🛠️ `Spawn initial parallel mission task`\n\n🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`\n\n🧑‍🔧 Sub-agent: `label Première tâche parallèle, task name parallel-step1, agent files`\n```txt\n{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\n  \"runId\": \"72654402-5541-4170-ae7f-33f73dcaae46\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"parallel-step1\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}\n```\n\n🛠️ `Spawn initial parallel mission task`\n```txt\n{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":56,\"sources\":{\"openclaw\":56,\"mcp\":0,\"client\":0},\"counterScope\":\"508db403421f27036827e60a\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:181e6f19-734d-400b-ae65-5b6b41a24c1c\",\"runId\":\"72654402-5541-4170-ae7f-33f73dcaae46\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"parallel-step1\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}\n```\n\nLa première tâche est lancée.",
+      "timestamp": 1792965727841,
+      "stopReason": "stop",
+      "usage": {
+       "input": 0,
+       "output": 0,
+       "totalTokens": 0
+      }
+     },
+     "stopReason": "stop"
+    },
+    "seq": 728
+   }
+  ]
+ },
+ "replaceableRestart": {
+  "gatewayVersion": "2026.9.33",
+  "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+  "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+  "frames": [
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 1,
+     "state": "status",
+     "phase": "preparing_workspace"
+    },
+    "seq": 476
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 2,
+     "state": "status",
+     "phase": "preparing_context"
+    },
+    "seq": 478
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 8,
+     "state": "status",
+     "phase": "starting_model"
+    },
+    "seq": 485
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "start",
+      "startedAt": 1792089267087
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "sessionId": "451b2cc9-7cfb-4cfc-a84a-4822956d6098",
+     "agentId": "alice",
+     "seq": 9,
+     "ts": 1792089267396,
+     "isHeartbeat": false
+    },
+    "seq": 487
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": "openai",
+      "model": "gpt-6.1-sol"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "sessionId": "451b2cc9-7cfb-4cfc-a84a-4822956d6098",
+     "agentId": "alice",
+     "seq": 10,
+     "ts": 1792089267397,
+     "isHeartbeat": false
+    },
+    "seq": 488
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "assistant",
+     "data": {
+      "itemId": "msg_0d654003641d4b52016ad11cb7ef7c8193bbebcc72ae67e3e8",
+      "text": "J",
+      "delta": "J"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 40,
+     "ts": 1792089271751,
+     "isHeartbeat": false
+    },
+    "seq": 509
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 40,
+     "state": "delta",
+     "deltaText": "J",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "J"
+       }
+      ],
+      "timestamp": 1792089271751
+     }
+    },
+    "seq": 510
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "assistant",
+     "data": {
+      "itemId": "msg_0d654003641d4b52016ad11cb7ef7c8193bbebcc72ae67e3e8",
+      "delta": "’ai créé avec le shell"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 50,
+     "ts": 1792089271752,
+     "isHeartbeat": false
+    },
+    "seq": 512
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 50,
+     "state": "delta",
+     "deltaText": "’ai créé avec le shell"
+    },
+    "seq": 513
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "assistant",
+     "data": {
+      "itemId": "msg_0d654003641d4b52016ad11cb7ef7c8193bbebcc72ae67e3e8",
+      "delta": " le fichier texte demandé contenant BENCH_MEDIA_OK dans le"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 72,
+     "ts": 1792089271960,
+     "isHeartbeat": false
+    },
+    "seq": 515
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 72,
+     "state": "delta",
+     "deltaText": " le fichier texte demandé contenant BENCH_MEDIA_OK dans le"
+    },
+    "seq": 516
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "assistant",
+     "data": {
+      "itemId": "msg_0d654003641d4b52016ad11cb7ef7c8193bbebcc72ae67e3e8",
+      "delta": " dossier de livraison.\nMEDIA:/home/node/."
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 90,
+     "ts": 1792089272176,
+     "isHeartbeat": false
+    },
+    "seq": 518
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 90,
+     "state": "delta",
+     "deltaText": " dossier de livraison.\nMEDIA:/home/node/."
+    },
+    "seq": 519
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "assistant",
+     "data": {
+      "itemId": "msg_0d654003641d4b52016ad11cb7ef7c8193bbebcc72ae67e3e8",
+      "delta": "openclaw/media/outbound/"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 104,
+     "ts": 1792089272179,
+     "isHeartbeat": false
+    },
+    "seq": 521
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 104,
+     "state": "delta",
+     "deltaText": "openclaw/media/outbound/"
+    },
+    "seq": 522
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "assistant",
+     "data": {
+      "itemId": "msg_0d654003641d4b52016ad11cb7ef7c8193bbebcc72ae67e3e8",
+      "delta": "bench-media.txt"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 110,
+     "ts": 1792089272261,
+     "isHeartbeat": false
+    },
+    "seq": 524
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 110,
+     "state": "delta",
+     "deltaText": "bench-media.txt"
+    },
+    "seq": 527
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "assistant",
+     "data": {
+      "text": "J’ai créé avec le shell le fichier texte demandé contenant BENCH_MEDIA_OK dans le dossier de livraison.\nMEDIA:/home/node/.openclaw/media/outbound/bench-media.txt",
+      "itemId": "codex-app-server:01a140d6-456d-7471-9b70-9e05953cee71:01a140d8-1cb4-7232-9e71-c1dd474a0dc3:assistant",
+      "replace": true,
+      "replaceable": true
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 115,
+     "ts": 1792089272383,
+     "isHeartbeat": false
+    },
+    "seq": 530
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "stream": "lifecycle",
+     "data": {
+      "startedAt": 1792089267087,
+      "endedAt": 1792089272383,
+      "phase": "finishing",
+      "assistantTranscriptIdempotencyKey": "codex-app-server:01a140d6-456d-7471-9b70-9e05953cee71:01a140d8-1cb4-7232-9e71-c1dd474a0dc3:assistant"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "sessionId": "451b2cc9-7cfb-4cfc-a84a-4822956d6098",
+     "agentId": "alice",
+     "seq": 116,
+     "ts": 1792089272383,
+     "isHeartbeat": false
+    },
+    "seq": 531
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "agentId": "alice",
+     "sessionId": "451b2cc9-7cfb-4cfc-a84a-4822956d6098",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "lane": "main",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": null,
+      "model": null
+     },
+     "seq": 117,
+     "ts": 1792089272434,
+     "isHeartbeat": false
+    },
+    "seq": 532
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "stream": "lifecycle",
+     "data": {
+      "assistantTranscriptIdempotencyKey": "codex-app-server:01a140d6-456d-7471-9b70-9e05953cee71:01a140d8-1cb4-7232-9e71-c1dd474a0dc3:assistant",
+      "phase": "end",
+      "endedAt": 1792089272435,
+      "startedAt": 1792089267087,
+      "stopReason": "stop",
+      "aborted": false,
+      "livenessState": "working",
+      "replayInvalid": true,
+      "terminalReply": {
+       "disposition": "visible",
+       "text": "J’ai créé avec le shell le fichier texte demandé contenant BENCH_MEDIA_OK dans le dossier de livraison.\nMEDIA:/home/node/.openclaw/media/outbound/bench-media.txt"
+      },
+      "terminalReceipt": {
+       "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+       "sessionId": "451b2cc9-7cfb-4cfc-a84a-4822956d6098",
+       "turnId": "01a140d8-1cb4-7232-9e71-c1dd474a0dc3",
+       "requested": {
+        "provider": "openai",
+        "model": "gpt-6.1-sol"
+       },
+       "effective": {
+        "provider": "openai",
+        "model": "gpt-6.1-sol",
+        "responseModel": "gpt-6.1-sol"
+       },
+       "successfulToolNames": [
+        "bash"
+       ],
+       "assistantTranscriptIdempotencyKey": "codex-app-server:01a140d6-456d-7471-9b70-9e05953cee71:01a140d8-1cb4-7232-9e71-c1dd474a0dc3:assistant",
+       "rerouted": false,
+       "terminalDisposition": "visible"
+      },
+      "executionSettled": true
+     },
+     "sessionId": "451b2cc9-7cfb-4cfc-a84a-4822956d6098",
+     "agentId": "alice",
+     "seq": 118,
+     "ts": 1792089272435,
+     "isHeartbeat": false
+    },
+    "seq": 533
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74ezz51r8d5x1z0qg6zjg36n8gaxt4",
+     "agentId": "alice",
+     "seq": 118,
+     "state": "final",
+     "stopReason": "stop",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "J’ai créé avec le shell le fichier texte demandé contenant BENCH_MEDIA_OK dans le dossier de livraison.\nMEDIA:/home/node/.openclaw/media/outbound/bench-media.txt"
+       }
+      ],
+      "timestamp": 1792089272440,
+      "__openclaw": {
+       "runId": "webchat-811e14a4a6b7a773bda172fec924e2f7571bc27b11b431e2f644fd0137eb9254",
+       "idempotencyKey": "codex-app-server:01a140d6-456d-7471-9b70-9e05953cee71:01a140d8-1cb4-7232-9e71-c1dd474a0dc3:assistant"
+      }
+     }
+    },
+    "seq": 534
+   }
+  ]
+ }
+}

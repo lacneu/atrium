@@ -5263,11 +5263,11 @@ exports[`golden replay — the interpretation is pinned > 2026.9.36/spawn-chain-
     "addProvenancePart": 4,
     "addToolPart": 12,
     "finalize": 2,
-    "setSnapshot": 12,
+    "setSnapshot": 11,
     "settleAnnouncedChild": 1,
     "startAssistant": 2,
   },
-  "calls": 36,
+  "calls": 35,
   "engagements": [],
   "finals": [
     "complete",

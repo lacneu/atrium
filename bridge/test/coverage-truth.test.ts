@@ -127,6 +127,7 @@ const FROZEN_TRUTH_FLOOR = [
   "ApprovalSnapshot.decision",
   "TerminalApprovalSnapshot.decision",
   "QuestionResolveResult.status",
+  "ChatDeltaEvent.replace",
 ];
 
 const ratchet = JSON.parse(
