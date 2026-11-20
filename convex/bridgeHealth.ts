@@ -326,7 +326,7 @@ export function computeAvailability(
   const fileCeiling = ceilings?.maxBytes ?? null;
   const maxInboundBytes =
     frameCap === null || fileCeiling === null ? frameCap : Math.min(frameCap, fileCeiling);
-  const imageCeiling = attachmentCeilingFor("image/png", ceilings);
+  const imageCeiling = attachmentCeilingFor(true, ceilings);
   return {
     known: true,
     available,

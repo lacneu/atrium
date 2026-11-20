@@ -23,9 +23,31 @@ import {
 const DEFAULT_CAP = maxRawInboundBytes(DEFAULT_GATEWAY_MAX_PAYLOAD);
 const MiB = 1024 * 1024;
 
-function fakeFile(size: number, type = "application/pdf", name = "f.pdf"): File {
-  // The adapter only reads size/type/name — a real (huge) File buffer is wasteful.
-  return { size, type, name } as unknown as File;
+/** Leading bytes of real files: the gateway sniffs them, and so does the composer. */
+const MAGIC: Record<string, number[]> = {
+  png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d],
+  jpeg: [0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1],
+  caf: [0x63, 0x61, 0x66, 0x66, 0, 1, 0, 0, 0x64, 0x65, 0x73, 0x63],
+};
+
+function fakeFile(
+  size: number,
+  type = "application/pdf",
+  name = "f.pdf",
+  // What the bytes really are; by default what the declared type names.
+  format: string = type.split("/")[1] ?? "",
+): File {
+  // The adapter reads size/type/name and the file's first bytes — a real (huge) File
+  // buffer is wasteful.
+  const head = Uint8Array.from(MAGIC[format] ?? []);
+  return {
+    size,
+    type,
+    name,
+    slice: (start: number, end: number) => ({
+      arrayBuffer: async () => head.slice(start, end).buffer,
+    }),
+  } as unknown as File;
 }
 
 // Mock ConvexReactClient.query for the two queries add() calls. The convex `api`
@@ -252,15 +274,40 @@ describe("attachmentAdapter.add — the gateway's per-image ceiling", () => {
     expect(onReject).toHaveBeenCalledOnce();
   });
 
-  test("an inline-mode non-raster image (SVG) is a gateway image too: the ceiling holds", async () => {
-    // Inline mode sends everything as a gateway attachment, and the gateway tests
-    // `image/` on the type — an SVG included.
+  test("a NON-image declared image/png is not refused on the image ceiling (the gateway sniffs the bytes)", async () => {
+    // A 8 MiB CAF voice memo declared image/png: audio to the gateway, which applies
+    // its FILE ceiling. The composer reads the first bytes and lets it through.
     const onReject = vi.fn();
-    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS), onReject, "chat123");
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS), onReject);
+    const pending = (await adapter.add({
+      file: fakeFile(8 * MiB, "image/png", "memo.png", "caf"),
+    })) as PendingAttachment;
+    expect(pending.name).toBe("memo.png");
+    expect(onReject).not.toHaveBeenCalled();
+  });
+
+  test("a real image declared application/octet-stream is refused on the image ceiling: the bytes decide", async () => {
+    const onReject = vi.fn();
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS), onReject);
     await expect(
-      adapter.add({ file: fakeFile(8 * MiB, "image/svg+xml", "logo.svg") }),
+      adapter.add({ file: fakeFile(8 * MiB, "application/octet-stream", "photo.bin", "png") }),
     ).rejects.toThrow();
     expect(onReject).toHaveBeenCalledOnce();
+  });
+
+  test("an image format outside the known signatures (SVG, HEIC…) is not refused early: the gateway decides", async () => {
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS), undefined, "chat123");
+    const pending = (await adapter.add({
+      file: fakeFile(8 * MiB, "image/svg+xml", "logo.svg"),
+    })) as PendingAttachment;
+    expect(pending.name).toBe("logo.svg");
+  });
+
+  test("a file whose bytes cannot be read is not known to be an image", async () => {
+    const adapter = createConvexAttachmentAdapter(mockConvex(CAPS));
+    const unreadable = { size: 8 * MiB, type: "image/png", name: "p.png" } as unknown as File;
+    const pending = (await adapter.add({ file: unreadable })) as PendingAttachment;
+    expect(pending.name).toBe("p.png");
   });
 });
 

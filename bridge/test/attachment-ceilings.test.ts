@@ -33,6 +33,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachmentCeilingFor,
   decodedBase64Bytes,
+  isKnownImageSignature,
   firstOversizedAttachment,
   maxRawInboundBytes,
   readAttachmentCeilings,
@@ -125,23 +126,51 @@ describe("readAttachmentCeilings", () => {
   });
 });
 
+/** The first bytes of real files, by format. */
+const MAGIC: Record<string, number[]> = {
+  png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d],
+  jpeg: [0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1],
+  gif: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 0, 1, 0, 0, 0],
+  webp: [0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x45, 0x42, 0x50],
+  // Not images to the gateway, whatever they are declared as:
+  caf: [0x63, 0x61, 0x66, 0x66, 0, 1, 0, 0, 0x64, 0x65, 0x73, 0x63], // "caff" — audio/x-caf
+  pdf: [0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x25, 0xe2, 0xe3],
+  wav: [0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x41, 0x56, 0x45], // RIFF….WAVE
+  zeros: [],
+};
+const bytesOf = (format: string) => Uint8Array.from(MAGIC[format] ?? []);
+
+describe("which bytes are an image to the gateway (it sniffs; the declared type is not asked)", () => {
+  it("recognises PNG, JPEG, GIF and WebP by their signature", () => {
+    for (const format of ["png", "jpeg", "gif", "webp"]) {
+      expect(isKnownImageSignature(bytesOf(format)), format).toBe(true);
+    }
+  });
+  it("says NOT KNOWN for everything else: other formats, short or absent heads", () => {
+    for (const format of ["caf", "pdf", "wav", "zeros"]) {
+      expect(isKnownImageSignature(bytesOf(format)), format).toBe(false);
+    }
+    expect(isKnownImageSignature(bytesOf("png").subarray(0, 6))).toBe(false);
+    // Too short to be a file at all: three bytes that happen to open like a JPEG.
+    expect(isKnownImageSignature(bytesOf("jpeg").subarray(0, 3))).toBe(false);
+    expect(isKnownImageSignature(null)).toBe(false);
+    expect(isKnownImageSignature(undefined)).toBe(false);
+  });
+});
+
 describe("the ceiling an attachment faces", () => {
   const BOTH = { maxBytes: 19_000_000, maxImageBytes: 6291456 };
-  it("is the image ceiling for any image/* type, the file ceiling otherwise", () => {
-    for (const mime of ["image/png", "image/jpeg", "IMAGE/PNG", "image/svg+xml", "image/heic", " image/webp"]) {
-      expect(attachmentCeilingFor(mime, BOTH), mime).toBe(6291456);
-    }
-    for (const mime of ["application/pdf", "video/mp4", "text/plain", "", undefined, null, 7]) {
-      expect(attachmentCeilingFor(mime, BOTH), String(mime)).toBe(19_000_000);
-    }
+  it("is the image ceiling for a known image, the file ceiling otherwise", () => {
+    expect(attachmentCeilingFor(true, BOTH)).toBe(6291456);
+    expect(attachmentCeilingFor(false, BOTH)).toBe(19_000_000);
   });
 
   it("is unknown (null) where the gateway enforces nothing beyond the frame", () => {
-    expect(attachmentCeilingFor("application/pdf", CAPTURED)).toBeNull();
-    expect(attachmentCeilingFor("image/png", CAPTURED)).toBe(6291456);
+    expect(attachmentCeilingFor(false, CAPTURED)).toBeNull();
+    expect(attachmentCeilingFor(true, CAPTURED)).toBe(6291456);
     // An image also faces a file ceiling smaller than the image one.
-    expect(attachmentCeilingFor("image/png", { maxBytes: 1000, maxImageBytes: null })).toBe(1000);
-    expect(attachmentCeilingFor("image/png", { maxBytes: null, maxImageBytes: null })).toBeNull();
+    expect(attachmentCeilingFor(true, { maxBytes: 1000, maxImageBytes: null })).toBe(1000);
+    expect(attachmentCeilingFor(true, { maxBytes: null, maxImageBytes: null })).toBeNull();
   });
 
   it("measures the DECODED size, as the gateway does", () => {
@@ -153,13 +182,14 @@ describe("the ceiling an attachment faces", () => {
   });
 });
 
-/** An inline attachment of exactly `bytes` decoded bytes. */
-const inline = (bytes: number, mimeType: string) => ({
-  type: "file",
-  mimeType,
-  fileName: "f",
-  content: Buffer.alloc(bytes).toString("base64"),
-});
+/** An inline attachment of exactly `bytes` decoded bytes, DECLARED as `mimeType`. Its
+ *  content starts like a real file of `format` — by default the format the declared type
+ *  names, so a test that lies about the type says so. */
+const inline = (bytes: number, mimeType: string, format = mimeType.split("/")[1] ?? "zeros") => {
+  const body = Buffer.alloc(bytes);
+  body.set(bytesOf(format).subarray(0, bytes));
+  return { type: "file", mimeType, fileName: "f", content: body.toString("base64") };
+};
 
 describe("firstOversizedAttachment", () => {
   const SMALL = { maxBytes: 3000, maxImageBytes: 1000 };
@@ -184,6 +214,31 @@ describe("firstOversizedAttachment", () => {
       ceiling: 3000,
       image: false,
     });
+  });
+
+  it("a NON-image declared image/png faces the FILE ceiling, as it does at the gateway", () => {
+    // A CAF voice memo declared image/png: the gateway sniffs audio/x-caf and applies
+    // `maxBytes`. Refusing it at the image ceiling would refuse a file the gateway takes.
+    expect(firstOversizedAttachment([inline(1001, "image/png", "caf")], SMALL)).toBeNull();
+    expect(firstOversizedAttachment([inline(3000, "image/png", "caf")], SMALL)).toBeNull();
+    expect(firstOversizedAttachment([inline(3001, "image/png", "caf")], SMALL)).toEqual({
+      index: 0,
+      decodedBytes: 3001,
+      ceiling: 3000,
+      image: false,
+    });
+  });
+
+  it("a real image declared application/octet-stream faces the IMAGE ceiling: the bytes decide", () => {
+    expect(firstOversizedAttachment([inline(1001, "application/octet-stream", "png")], SMALL)).toMatchObject({
+      ceiling: 1000,
+      image: true,
+    });
+  });
+
+  it("an image format outside the four known signatures is not held to the image ceiling early", () => {
+    // image/heic, image/svg+xml…: not known to be an image here — the gateway decides.
+    expect(firstOversizedAttachment([inline(1001, "image/heic", "zeros")], SMALL)).toBeNull();
   });
 
   it("refuses nothing when the ceilings are unknown, or the list is not one", () => {
@@ -423,6 +478,12 @@ describe("the send path refuses an attachment the gateway would refuse", () => {
     conn.attachmentCeilings = ceilings;
     return { gw: conn, session, writer };
   }
+
+  it("a recording declared image/png, over the image ceiling and under the file one, IS sent", async () => {
+    const { gw, session, writer } = await harness({ maxBytes: 3000, maxImageBytes: 1000 });
+    await performSend(session, bodyWith([inline(2000, "image/png", "caf")]), writer, null, "/media/outbound");
+    expect(gw.countOf("chat.send")).toBe(1);
+  });
 
   it("an image over the image ceiling is refused BEFORE chat.send, as an attachment too large", async () => {
     const { gw, session, writer } = await harness({ maxBytes: 3000, maxImageBytes: 1000 });

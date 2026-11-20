@@ -12,7 +12,8 @@ import { isModelNativeMime } from "../../convex/lib/mediaTransport";
 import { formatFileSize } from "./fileMetaView";
 import {
   DEFAULT_GATEWAY_MAX_PAYLOAD,
-  isGatewayImageMime,
+  IMAGE_SIGNATURE_BYTES,
+  isKnownImageSignature,
   maxRawInboundBytes,
 } from "../../convex/lib/attachmentLimits";
 import { uploadProgressStore } from "./uploadProgressStore";
@@ -107,6 +108,18 @@ export function attachmentParts(
  *  slash-star as a comment opener. */
 export const IMAGE_PICKER_ACCEPT = "image/" + "*";
 
+/** Do the file's first bytes say "image" the way the gateway will read them? False
+ *  when they cannot be read: not known to be an image, the gateway decides. */
+async function hasKnownImageSignature(file: File): Promise<boolean> {
+  try {
+    return isKnownImageSignature(
+      new Uint8Array(await file.slice(0, IMAGE_SIGNATURE_BYTES).arrayBuffer()),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createConvexAttachmentAdapter(
   convex: ConvexReactClient,
   // Surface a rejection (e.g. too large) as a VISIBLE toast — assistant-ui only
@@ -195,15 +208,17 @@ export function createConvexAttachmentAdapter(
           // Policy unknown -> keep the inline cap; the server still enforces.
         }
       }
-      // An image that rides INLINE is a gateway attachment, and the gateway holds every
-      // `image/*` to its image ceiling (its own clients test the declared type the same
-      // way). One sent by reference never reaches that check.
+      // An image that rides INLINE is a gateway attachment, held to the gateway's image
+      // ceiling. The gateway decides "image" on the BYTES, not on the declared type, so
+      // the ceiling is applied here only when the file's first bytes are a known image
+      // signature — a recording declared image/png is not refused on it. One sent by
+      // reference never reaches that check.
       if (
         !byReference &&
         maxInboundImageBytes !== null &&
-        isGatewayImageMime(file.type) &&
         file.size > maxInboundImageBytes &&
-        file.size <= effectiveCap
+        file.size <= effectiveCap &&
+        (await hasKnownImageSignature(file))
       ) {
         const locale = getLocale();
         const message = m.attach_image_too_large({

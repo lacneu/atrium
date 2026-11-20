@@ -2020,10 +2020,19 @@ describe("failDispatch — session visibility / settings refusals", () => {
 // limit and over its ceiling used to be POSTed, sent, then refused by the gateway.
 describe("dispatch — the gateway's per-attachment ceilings", () => {
   const MAXP = 26214400;
+  /** Leading bytes of real files: the gateway sniffs them, the declared type is not asked. */
+  const MAGIC: Record<string, number[]> = {
+    png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d],
+    jpeg: [0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1],
+    caf: [0x63, 0x61, 0x66, 0x66, 0, 1, 0, 0, 0x64, 0x65, 0x73, 0x63],
+  };
 
   async function dispatchOne(opts: {
     bytes: number;
     mimeType: string;
+    /** What the bytes really are (their leading signature). Default: what `mimeType`
+     *  names, when it is one of the formats below. */
+    format?: "png" | "jpeg" | "caf" | "zeros";
     ceilings: { attachmentMaxBytes: number | null; attachmentMaxImageBytes: number | null } | null;
     /** The instance whose health target carries them (default: the routed one). */
     onInstance?: string;
@@ -2059,7 +2068,9 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
           text: "",
           updatedAt: now,
         });
-        const storageId = await ctx.storage.store(new Blob([new Uint8Array(opts.bytes)]));
+        const body = new Uint8Array(opts.bytes);
+        body.set((MAGIC[opts.format ?? opts.mimeType.split("/")[1] ?? "zeros"] ?? []).slice(0, opts.bytes));
+        const storageId = await ctx.storage.store(new Blob([body]));
         const outboxId = await ctx.db.insert("outbox", {
           chatId,
           userId,
@@ -2119,6 +2130,20 @@ describe("dispatch — the gateway's per-attachment ceilings", () => {
 
   test("an image over the IMAGE ceiling fails the send, never POSTed — though it fits the frame and the file ceiling", async () => {
     const r = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: CEILINGS });
+    expect(r).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("a NON-image declared image/png is judged on the FILE ceiling, as the gateway judges it", async () => {
+    // A CAF voice memo declared image/png: the gateway sniffs audio/x-caf. Over the image
+    // ceiling, under the file one — it is sent.
+    const sent = await dispatchOne({ bytes: 2000, mimeType: "image/png", format: "caf", ceilings: CEILINGS });
+    expect(sent).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const over = await dispatchOne({ bytes: 5001, mimeType: "image/png", format: "caf", ceilings: CEILINGS });
+    expect(over).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("a real image declared application/octet-stream is judged on the IMAGE ceiling: the bytes decide", async () => {
+    const r = await dispatchOne({ bytes: 1001, mimeType: "application/octet-stream", format: "png", ceilings: CEILINGS });
     expect(r).toEqual({ status: "failed", posted: 0, tooLarge: true });
   });
 

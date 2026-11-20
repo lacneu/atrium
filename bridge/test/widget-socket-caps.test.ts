@@ -452,9 +452,9 @@ describe("a refused sub-agent interaction leaves nothing armed", () => {
   it("an image over the gateway's per-attachment ceiling: refused before arming, though the frame could carry it", async () => {
     // `hello-ok.policy.attachments`: the gateway refuses an image over `maxImageBytes`
     // whatever the frame allows — and the whole send with it.
-    const image = [
-      { type: "image", mimeType: "image/png", fileName: "x.png", content: Buffer.alloc(1_001).toString("base64") },
-    ];
+    const png = Buffer.alloc(1_001);
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // a real PNG head: the gateway sniffs
+    const image = [{ type: "image", mimeType: "image/png", fileName: "x.png", content: png.toString("base64") }];
     const sent: unknown[] = [];
     const send = (p: Record<string, unknown>) => {
       sent.push(p);

@@ -74,6 +74,8 @@ import {
   base64FitsFrame,
   DEFAULT_GATEWAY_MAX_PAYLOAD,
   exceedsAttachmentCeiling,
+  IMAGE_SIGNATURE_BYTES,
+  isKnownImageSignature,
 } from "./lib/attachmentLimits";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { contentLocaleForInstance } from "./lib/serverLocale";
@@ -3127,7 +3129,14 @@ export const dispatch = internalAction({
         }
         const blob = await ctx.storage.get(a.storageId);
         if (blob === null) continue;
-        if (exceedsAttachmentCeiling(blob.size, a.mimeType || blob.type, attachmentCeilings)) {
+        // The image ceiling only for bytes that ARE an image to the gateway, whatever
+        // type was declared (it sniffs them; lib/attachmentLimits.ts).
+        const knownImage =
+          attachmentCeilings !== null &&
+          isKnownImageSignature(
+            new Uint8Array(await blob.slice(0, IMAGE_SIGNATURE_BYTES).arrayBuffer()),
+          );
+        if (exceedsAttachmentCeiling(blob.size, knownImage, attachmentCeilings)) {
           console.error(
             `bridge.dispatch: inbound attachment over the gateway's per-attachment ceiling (${blob.size} bytes) — failing send (not dropping)`,
           );

@@ -74,20 +74,43 @@ export function attachmentCeilingsOf(stored: {
   return maxBytes === null && maxImageBytes === null ? null : { maxBytes, maxImageBytes };
 }
 
-/** Is this DECLARED type an image to the gateway? Its own clients test
- *  `mimeType.startsWith("image/")` — every `image/*`, decodable by a model or not. */
-export function isGatewayImageMime(mimeType: string | null | undefined): boolean {
-  return typeof mimeType === "string" && mimeType.trim().toLowerCase().startsWith("image/");
+/** How many leading bytes `isKnownImageSignature` reads. */
+export const IMAGE_SIGNATURE_BYTES = 12;
+
+/**
+ * Do these FIRST BYTES say "image" the way the gateway will?
+ *
+ * The gateway does not trust the declared type: it sniffs the payload's first bytes
+ * (src/media/sniff-mime-from-base64.ts → `detectMime`, file-type's `fileTypeFromBuffer`
+ * on the first 192 bytes) and a type it recognises wins over the declared one
+ * (src/media/attachment-processor.runtime.ts; in chat-attachments.ts before 2026.9.9).
+ * A CAF recording declared `image/png` is audio to it and faces the FILE ceiling.
+ *
+ * So the image ceiling is applied early only on a POSITIVE identification, by the
+ * signatures of the four formats the gateway certainly reads as `image/*`: PNG, JPEG,
+ * GIF and WebP. Anything else — other image formats included — is "not known to be an
+ * image": the image ceiling is not applied early, and the gateway decides.
+ */
+export function isKnownImageSignature(head: Uint8Array | null | undefined): boolean {
+  if (!head || head.length < 12) return false;
+  const at = (offset: number, ...bytes: number[]): boolean =>
+    bytes.every((b, i) => head[offset + i] === b);
+  return (
+    at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a) || // PNG
+    at(0, 0xff, 0xd8, 0xff) || // JPEG
+    at(0, 0x47, 0x49, 0x46, 0x38) || // GIF8
+    (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) // RIFF….WEBP
+  );
 }
 
-/** The ceiling a file of this declared type faces, or null when none is known. An
- *  image faces the image ceiling and the file one. */
+/** The ceiling a file faces, or null when none is known. A file identified as an image
+ *  faces the image ceiling and the file one. */
 export function attachmentCeilingFor(
-  mimeType: string | null | undefined,
+  knownImage: boolean,
   ceilings: AttachmentCeilings | null,
 ): number | null {
   if (ceilings === null) return null;
-  if (!isGatewayImageMime(mimeType)) return ceilings.maxBytes;
+  if (!knownImage) return ceilings.maxBytes;
   const known = [ceilings.maxImageBytes, ceilings.maxBytes].filter(
     (n): n is number => n !== null,
   );
@@ -98,9 +121,9 @@ export function attachmentCeilingFor(
  *  greater, like the gateway; never when the ceiling is unknown. */
 export function exceedsAttachmentCeiling(
   size: number,
-  mimeType: string | null | undefined,
+  knownImage: boolean,
   ceilings: AttachmentCeilings | null,
 ): boolean {
-  const ceiling = attachmentCeilingFor(mimeType, ceilings);
+  const ceiling = attachmentCeilingFor(knownImage, ceilings);
   return ceiling !== null && size > ceiling;
 }
