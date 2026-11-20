@@ -699,6 +699,25 @@ export class TurnSink {
   }
 
   /**
+   * The settled bubble's text, COMPLETED by text its run sent after the turn closed
+   * (Normalizer.settledCompletion). Never a turn event: nothing is reopened, the status,
+   * the error and the verdict stay as the terminal wrote them. Convex is the judge — it
+   * takes the text only as a strict extension of what that message of that run holds —
+   * and what it accepted is what this sink then remembers. False: nothing was written.
+   */
+  async completeSettledText(runId: string, text: string): Promise<boolean> {
+    const settled = this.lastSettled;
+    if (settled === null || this.writer.completeSettledText === undefined) return false;
+    const applied = await this.writer.completeSettledText({
+      messageId: settled.messageId,
+      runId,
+      text,
+    });
+    if (applied) settled.text = text;
+    return applied;
+  }
+
+  /**
    * STEER SPLIT (projection `on`, CU-20): an input was injected into this turn's run.
    * The current bubble settles as it stands and the rest of the run streams into a new
    * segment placed after the steered message. Returns whether a split happened (no

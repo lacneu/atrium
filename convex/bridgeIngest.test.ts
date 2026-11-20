@@ -368,6 +368,74 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     ]);
   });
 
+  test("completeSettledText: a settled bubble takes its run's later text only as a strict extension, and nothing else moves", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId, userId } = await seedAssistantMessage(t);
+    await t.run((ctx) => ctx.db.patch(messageId, { runId: "runA" }));
+    const complete = async (body: Record<string, unknown>) =>
+      (await post(t, { op: "completeSettledText", messageId, runId: "runA", ...body })).json();
+    const stored = () => t.run((ctx) => ctx.db.get(messageId));
+
+    // Still streaming: the live path owns the text.
+    expect(await complete({ text: "Hello world" })).toMatchObject({ ok: true, applied: false });
+
+    await t.run((ctx) =>
+      ctx.db.patch(messageId, {
+        status: "error" as const,
+        text: "Hello",
+        error: "provider failed",
+        errorCode: "gateway_error",
+        finalizeCause: "gateway_error",
+        finalizedAt: 5,
+      }),
+    );
+    // Not an extension: shorter, equal, different, or another run's.
+    for (const text of ["Hell", "Hello", "Goodbye world", ""]) {
+      expect(await complete({ text })).toMatchObject({ applied: false });
+    }
+    expect(await complete({ text: "Hello world", runId: "runB" })).toMatchObject({ applied: false });
+    expect((await stored())?.text).toBe("Hello");
+
+    // The extension: the text, and only the text.
+    expect(await complete({ text: "Hello world" })).toMatchObject({ ok: true, applied: true });
+    expect(await stored()).toMatchObject({
+      status: "error",
+      text: "Hello world",
+      error: "provider failed",
+      errorCode: "gateway_error",
+      finalizeCause: "gateway_error",
+      finalizedAt: 5,
+    });
+    // Idempotent: the repeat finds its text there.
+    expect(await complete({ text: "Hello world" })).toMatchObject({ applied: false });
+    expect(await t.run((ctx) => ctx.db.query("streamingText").collect())).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect())).toHaveLength(1);
+
+    // A bubble the transcript recomposed from its rows: the rows are the authority.
+    await t.run((ctx) => ctx.db.patch(messageId, { rowLayout: [] }));
+    expect(await complete({ text: "Hello world, again" })).toMatchObject({ applied: false });
+
+    // Another instance's bridge: refused at the message's own stamp.
+    const foreign = await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "error" as const,
+        text: "Hello",
+        runId: "runA",
+        boundInstance: "other",
+        updatedAt: 1,
+      }),
+    );
+    const refused = await post(t, { op: "completeSettledText", messageId: foreign, runId: "runA", text: "Hello world" });
+    expect(refused.status).toBe(403);
+    expect((await t.run((ctx) => ctx.db.get(foreign)))?.text).toBe("Hello");
+
+    // A malformed body is rejected before any write.
+    expect((await post(t, { op: "completeSettledText", messageId, runId: "", text: "x" })).status).toBe(400);
+  });
+
   test("snapshot growth is untouched: a LONGER snapshot replaces the text as before", async () => {
     const t = convexTest(schema, modules);
     const { messageId } = await seedAssistantMessage(t);

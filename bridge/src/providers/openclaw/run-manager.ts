@@ -446,6 +446,14 @@ export class RunManager {
     return { runId: rid, text, settled: record };
   }
 
+  /** The settled run's whole visible text: the earlier segments (cut at steers) + the
+   *  last bubble's. */
+  private settledRunText(): string {
+    const earlier = this.normalizer.segmentPrefixText;
+    const last = this.sink.lastSettledBubble?.text ?? "";
+    return earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`;
+  }
+
   /** A turn began and its settlement is not recorded yet (see noteIfSettled). */
   private settleUnrecorded = false;
 
@@ -457,13 +465,9 @@ export class RunManager {
   private noteIfSettled(): void {
     if (this.settleUnrecorded && !this.sink.active) {
       this.settleUnrecorded = false;
-      const b = this.sink.lastSettledBubble;
-      // The run's whole visible text: the earlier segments (cut at steers) + the last.
-      const earlier = this.normalizer.segmentPrefixText;
-      const last = b?.text ?? "";
       const record = {
-        messageId: b?.messageId ?? null,
-        text: earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`,
+        messageId: this.sink.lastSettledBubble?.messageId ?? null,
+        text: this.settledRunText(),
       };
       for (const id of this.normalizer.ownRunIds) {
         this.settledRuns.delete(id);
@@ -1169,6 +1173,12 @@ export class RunManager {
 
   /** The turn's own pipeline for a frame (a lane hands back what it held here). */
   private async feedPipeline(frame: unknown, now: number): Promise<void> {
+    // Decided SYNCHRONOUSLY: any other frame takes no extra await before the ordered
+    // path below (G-29).
+    const completion = this.normalizer.settledCompletion(frame as never);
+    // Not written (Convex holds another text, the write failed): the frame goes on — a
+    // final is then the late-final rule's.
+    if (completion !== null && (await this.completeSettled(completion))) return;
     const late = this.lateFinalFor(frame);
     if (late !== null) {
       const settled = late.settled;
@@ -1192,6 +1202,27 @@ export class RunManager {
     } finally {
       this.noteIfSettled();
     }
+  }
+
+  /**
+   * Text the run sent after the last turn settled its bubble — before that run's chat
+   * terminal (a definitive `lifecycle` error, a net): it completes that bubble
+   * (Normalizer.settledCompletion). Between turns only, and never a turn event — no
+   * status, no terminal, no phase. True: written.
+   */
+  private async completeSettled(tail: { runId: string; text: string }): Promise<boolean> {
+    let applied = false;
+    try {
+      await this.runOrdered(async () => {
+        applied = await this.sink.completeSettledText(tail.runId, tail.text);
+      });
+      // The run's record follows its bubble (what a later distinct final is compared with).
+      const record = this.settledRuns.get(tail.runId);
+      if (applied && record !== undefined) record.text = this.settledRunText();
+    } catch (e) {
+      console.error("[final] a settled bubble's completion was not written (non-fatal):", errForLog(e));
+    }
+    return applied;
   }
 
   /** A run of the session that opens a spontaneous (deferred) turn of its own: the

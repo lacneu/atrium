@@ -617,6 +617,13 @@ export class Normalizer {
   private frameRunSeq: number | null = null;
   /** Which frame wrote the text the bubble holds (see `chatRewriteInOrder`). */
   private textOrigin: { runId: string; runSeq: number } | null = null;
+  /** The run whose bubble this turn settled BEFORE that run's `chat` terminal, and the
+   *  text it settled with (see `settledCompletion`). `deltas`: the close was the run's own
+   *  definitive `lifecycle` error, which the gateway follows with the flush of its chat
+   *  buffer. Set by every close; null once the run's chat terminal was read. */
+  private settledTail: { runId: string; text: string; deltas: boolean } | null = null;
+  /** The frame being read is a `chat` terminal (`final`, `error`, `aborted`). */
+  private frameChatTerminal = false;
   hasSnapshot: boolean;
   hasVisibleToolText: boolean;
   // Chat-frame dedup keys ALREADY seen this turn. A single scalar slot only
@@ -1441,7 +1448,13 @@ export class Normalizer {
     if (eventType === "chat.side_result") {
       this.handleSideResult(payload, now, events);
     } else if (eventType === "chat") {
-      this.handleChat(payload, data, now, events);
+      const state = payload.state;
+      this.frameChatTerminal = state === "final" || state === "error" || state === "aborted";
+      try {
+        this.handleChat(payload, data, now, events);
+      } finally {
+        this.frameChatTerminal = false;
+      }
     } else {
       this.handleAgent(payload, data, now, events);
     }
@@ -2069,14 +2082,66 @@ export class Normalizer {
     now: number,
     events: BridgeEvent[],
   ): void {
+    const text = this.terminalMessageText(message, errorMessage);
+    if (text) this.applyVisible(text, true, false, now, events, "chat_final");
+  }
+
+  /** The answer text of a terminal's `message` — empty when it only restates the error. */
+  private terminalMessageText(message: Json, errorMessage: string | null): string {
     const text = textFromMessage(message);
-    if (!text) return;
-    if (errorMessage !== null) {
-      const plain = (t: string): string =>
-        t.replace(/^⚠️\s*/u, "").replace(/^Error:\s*/iu, "").replace(/\s+/gu, " ").trim();
-      if (plain(text) === plain(errorMessage)) return;
+    if (!text || errorMessage === null) return text;
+    const plain = (t: string): string =>
+      t.replace(/^⚠️\s*/u, "").replace(/^Error:\s*/iu, "").replace(/\s+/gu, " ").trim();
+    return plain(text) === plain(errorMessage) ? "" : text;
+  }
+
+  /**
+   * The text a `chat` frame adds to a bubble this turn ALREADY settled, or null.
+   *
+   * A turn can close before its run's `chat` terminal: on the run's definitive
+   * `lifecycle` error, on a net, on an end decided outside the stream. The gateway may
+   * still send that run's text afterwards. For a lifecycle error it does so in the same
+   * synchronous call: the `agent` frame leaves, then `finalizeLifecycleEvent` →
+   * `emitChatTerminal` flushes the paced chat buffer (`flushBufferedChatDeltaIfNeeded`)
+   * and sends the terminal, which carries the buffered text for `aborted` and, from
+   * 2026.9.5, for `error` (src/gateway/server-chat.ts). Before 2026.9.4 that flush always
+   * follows the lifecycle frame; from 2026.9.4 it precedes it except for
+   * `completionSource: "reply-dispatch"`.
+   *
+   * Nothing here reopens the turn. The text is offered as a COMPLETION of the settled
+   * bubble, and only when it strictly extends what the bubble settled with — a late or
+   * rewritten view is never an extension. Same run only, never an adopted one (its bubble
+   * may hold another run's text). A delta counts only after the lifecycle close, where at
+   * most that one flush follows; any other early close takes the terminal's text alone.
+   * The run's chat terminal ends the window: upstream forgets the run's buffer right
+   * there (`chatRunState.clearRun`). A terminal that does not extend the bubble is left
+   * to the caller — a DISTINCT late final is the run manager's (`lateFinalFor`).
+   */
+  settledCompletion(frame: Json): { runId: string; text: string } | null {
+    const tail = this.settledTail;
+    if (tail === null || !this.finalized) return null;
+    if (!isObject(frame) || frame.event !== "chat" || !isObject(frame.payload)) return null;
+    const payload = frame.payload;
+    if (payload.sessionKey !== this.sessionKey || payload.runId !== tail.runId) return null;
+    const state = payload.state;
+    let text: string;
+    if (state === "final" || state === "error" || state === "aborted") {
+      this.settledTail = null;
+      // An error terminal with no `errorMessage` uses `message` for the reason itself.
+      if (state === "error" && !isString(payload.errorMessage)) return null;
+      text = this.terminalMessageText(
+        payload.message,
+        state === "error" ? (payload.errorMessage as string) : null,
+      );
+    } else if (state === "delta" && tail.deltas) {
+      text = textFromMessage(payload.message);
+    } else {
+      return null;
     }
-    this.applyVisible(text, true, false, now, events, "chat_final");
+    if (this.segmentPrefix !== null) text = this.stripSegmentPrefix(text);
+    if (text.length <= tail.text.length || !text.startsWith(tail.text)) return null;
+    tail.text = text;
+    return { runId: tail.runId, text: this.safeSanitizeText(text) };
   }
 
   private clearRetryingPhase(events: BridgeEvent[]): void {
@@ -3366,6 +3431,8 @@ export class Normalizer {
         rawKind,
       );
       events.push(...this.finalize(now, "error", message, kind, "gateway_error"));
+      // The flush of the run's chat buffer follows this frame (see `settledCompletion`).
+      if (this.settledTail !== null) this.settledTail.deltas = true;
       return;
     }
     if (phase === "end") {
@@ -3744,6 +3811,16 @@ export class Normalizer {
     this.compactionPending = false;
     this.deadlines = new Map();
     const text = this.text;
+    // Closed before the run's `chat` terminal: that run's later chat text may still
+    // complete the bubble. A run the transcript closed keeps its lane instead.
+    const run = this.currentRunId;
+    this.settledTail =
+      run !== null &&
+      !this.frameChatTerminal &&
+      cause !== "transcript_settled" &&
+      !this.adoptedRunIds.has(run)
+        ? { runId: run, text, deltas: false }
+        : null;
     const finalEvent: BridgeEvent = {
       type: EVENT_MESSAGE_FINAL,
       text: this.safeSanitizeText(text),

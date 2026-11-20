@@ -1,0 +1,301 @@
+{
+ "_note": "Wire frames captured on the local bench (gateway 2026.9.8, run of 2026-10-13), unmodified. A selection of one run's frames on the conversation socket: its lifecycle start, then everything from the model call that wrote the answer to the end. The run's definitive lifecycle error (seq 38) is followed by its chat `aborted` terminal carrying the buffered text, then by a chat `error`.",
+ "abortedAfterLifecycleError": {
+  "gatewayVersion": "2026.9.8",
+  "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+  "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+  "frames": [
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "sessionId": "b41f9543-2bd5-4593-9b07-28cdc6dfc90b",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "start",
+      "startedAt": 1791860263046
+     },
+     "seq": 5,
+     "ts": 1791860263046,
+     "isHeartbeat": false
+    },
+    "seq": 326
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "sessionId": "b41f9543-2bd5-4593-9b07-28cdc6dfc90b",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": "openai",
+      "model": "gpt-5.5"
+     },
+     "seq": 14,
+     "ts": 1791860267452,
+     "isHeartbeat": false
+    },
+    "seq": 337
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "stream": "assistant",
+     "data": {
+      "text": "J",
+      "delta": "J",
+      "phase": "final_answer",
+      "itemId": "0668588f-54e8-4eff-9657-d7d1176e0485:2"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 15,
+     "ts": 1791860267888,
+     "isHeartbeat": false
+    },
+    "seq": 338
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 15,
+     "state": "delta",
+     "deltaText": "J",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "J"
+       }
+      ],
+      "timestamp": 1791860267889
+     }
+    },
+    "seq": 339
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "stream": "assistant",
+     "data": {
+      "delta": "’ai créé le fichier texte demandé dans le dossier sortant télé",
+      "phase": "final_answer",
+      "itemId": "0668588f-54e8-4eff-9657-d7d1176e0485:2"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 27,
+     "ts": 1791860267959,
+     "isHeartbeat": false
+    },
+    "seq": 340
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 27,
+     "state": "delta",
+     "deltaText": "’ai créé le fichier texte demandé dans le dossier sortant télé"
+    },
+    "seq": 341
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "stream": "assistant",
+     "data": {
+      "delta": "chargeable du webchat.",
+      "phase": "final_answer",
+      "itemId": "0668588f-54e8-4eff-9657-d7d1176e0485:2"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 33,
+     "ts": 1791860268029,
+     "isHeartbeat": false
+    },
+    "seq": 342
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 33,
+     "state": "delta",
+     "deltaText": "chargeable du webchat."
+    },
+    "seq": 343
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "stream": "usage",
+     "data": {
+      "outputTokens": 130
+     },
+     "agentId": "alice",
+     "seq": 34,
+     "ts": 1791860268171,
+     "isHeartbeat": false
+    },
+    "seq": 344
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "stream": "assistant",
+     "data": {
+      "text": "J’ai créé le fichier texte demandé dans le dossier sortant téléchargeable du webchat.",
+      "delta": "",
+      "mediaUrls": [
+       "/home/node/.openclaw/media/outbound/bench-media.txt"
+      ],
+      "phase": "final_answer",
+      "itemId": "0668588f-54e8-4eff-9657-d7d1176e0485:2"
+     },
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 35,
+     "ts": 1791860268173,
+     "isHeartbeat": false
+    },
+    "seq": 345
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "sessionId": "b41f9543-2bd5-4593-9b07-28cdc6dfc90b",
+     "agentId": "alice",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "finishing",
+      "stopReason": "stop",
+      "aborted": false,
+      "livenessState": "working",
+      "replayInvalid": true,
+      "endedAt": 1791860268213
+     },
+     "seq": 36,
+     "ts": 1791860268213,
+     "isHeartbeat": false
+    },
+    "seq": 346
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "agentId": "alice",
+     "sessionId": "b41f9543-2bd5-4593-9b07-28cdc6dfc90b",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "lane": "main",
+     "stream": "lifecycle",
+     "data": {
+      "phase": "model",
+      "provider": null,
+      "model": null
+     },
+     "seq": 37,
+     "ts": 1791860269722,
+     "isHeartbeat": false
+    },
+    "seq": 347
+   },
+   {
+    "type": "event",
+    "event": "agent",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "stream": "lifecycle",
+     "data": {
+      "stopReason": "stop",
+      "aborted": false,
+      "livenessState": "working",
+      "replayInvalid": true,
+      "phase": "error",
+      "endedAt": 1791860269759,
+      "startedAt": 1791860263046,
+      "error": "database or disk is full",
+      "executionSettled": true
+     },
+     "sessionId": "b41f9543-2bd5-4593-9b07-28cdc6dfc90b",
+     "agentId": "alice",
+     "seq": 38,
+     "ts": 1791860269760,
+     "isHeartbeat": false
+    },
+    "seq": 348
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "agentId": "alice",
+     "seq": 38,
+     "state": "aborted",
+     "stopReason": "stop",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "J’ai créé le fichier texte demandé dans le dossier sortant téléchargeable du webchat."
+       }
+      ],
+      "timestamp": 1791860269765
+     }
+    },
+    "seq": 349
+   },
+   {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+     "runId": "webchat-a6575068f2d1e851a3d58f838b7265e46ab36657612a7b5946050877584a2aaf",
+     "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx73p0qtvdp63t1np8qgpy1gf58g6pm0",
+     "seq": 1,
+     "state": "error",
+     "errorMessage": "⚠️ Agent failed before reply: database or disk is full.\nTo view logs, run `openclaw logs --follow` in a terminal."
+    },
+    "seq": 350
+   }
+  ]
+ }
+}
