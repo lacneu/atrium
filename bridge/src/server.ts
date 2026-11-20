@@ -296,7 +296,6 @@ import {
   describeSession,
   describeSessionAnswer,
   publishDescribedSession,
-  forgetPublishedMeta,
   publishSessionMeta,
   selectBudgetAssessment,
 } from "./providers/openclaw/models-roster.js";
@@ -2458,7 +2457,6 @@ async function performSendComposed(
       // every later send. Reported as what it is, under this describe's clock: the
       // mode `null`, and with it (one ordered group in setSessionMeta) the rest of the
       // access facts dropped. A newer describe still wins.
-      forgetPublishedMeta(conn);
       void writer
         .reportSessionMeta(body.chatId, {
           permissionMode: null,

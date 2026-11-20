@@ -21,11 +21,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { readChatMetadataChanged } from "../src/providers/openclaw/chat-metadata-changed.js";
-import {
-  attachRosterPolicy,
-  ensureAvailableModels,
-  publishSessionMeta,
-} from "../src/providers/openclaw/models-roster.js";
+import { attachRosterPolicy, ensureAvailableModels } from "../src/providers/openclaw/models-roster.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 import { sleep } from "./helpers/sleep.js";
 import { deviceIdentity, startWsFakeGateway, type WsFakeGateway } from "./helpers/ws-fake-gateway.js";
@@ -162,7 +158,7 @@ describe("the policy: the roster a chat shows follows the notice, without a turn
       writer,
       { debounceMs: DEBOUNCE_MS, retryMs: 10_000 },
     );
-    return { conn, policy, published, writer };
+    return { conn, policy, published };
   }
 
   it("publishes the new roster after a catalogue change — one refresh for a burst", async () => {
@@ -186,89 +182,24 @@ describe("the policy: the roster a chat shows follows the notice, without a turn
     }
   });
 
-  it("writes NOTHING to Convex when the refresh finds what was last published — the cost of an empty notice is two reads", async () => {
-    // 2026.8.1 → 2026.9.6 send `{}` on every metadata change: each one must be read
-    // (the catalogue MAY have changed) but an identical answer is not news.
-    const { gw, setRoster, listCalls } = rosterGateway([{ id: "a" }]);
-    gateway = gw;
-    await gw.ready;
-    const { conn, policy, published } = await connectWithPolicy(gw);
-    const describes = () => gw.requests.filter((r) => r.method === "sessions.describe").length;
-    try {
-      gw.push(metadataChanged(EMPTY, 1));
-      await sleep(SETTLE_MS);
-      expect(published).toEqual([["a"]]); // the first refresh publishes: nothing was on record
-      const before = { list: listCalls(), describe: describes() };
-      for (let round = 0; round < 3; round++) {
-        gw.push(metadataChanged(EMPTY, 2 + round));
-        await sleep(SETTLE_MS);
-      }
-      expect(published, "no write for an unchanged roster").toEqual([["a"]]);
-      // Each notice still cost exactly one describe and one models.list.
-      expect(listCalls() - before.list).toBe(3);
-      expect(describes() - before.describe).toBe(3);
-      // A real change is published.
-      setRoster([{ id: "a" }, { id: "b" }]);
-      gw.push(metadataChanged(EMPTY, 5));
-      await sleep(SETTLE_MS);
-      expect(published).toEqual([["a"], ["a", "b"]]);
-    } finally {
-      policy.dispose();
-      conn.close();
-    }
-  });
-
-  it("compares with what Convex was LAST sent, whichever path sent it", async () => {
-    // A send's own publish in between moved what Convex holds; a refresh that finds the
-    // earlier roster again must publish it, not take it for unchanged.
-    const { gw, setRoster } = rosterGateway([{ id: "a" }]);
-    gateway = gw;
-    await gw.ready;
-    const { conn, policy, published, writer } = await connectWithPolicy(gw);
-    try {
-      gw.push(metadataChanged(EMPTY, 1));
-      await sleep(SETTLE_MS);
-      expect(published).toEqual([["a"]]);
-      // The send path publishes another roster for the same chat.
-      await publishSessionMeta(
-        { chatId: "c1", connection: conn, agentId: "alice", sessionKey: "k" },
-        writer,
-        { sess: { key: "k", agentId: "alice", model: "openai/gpt-5.5" }, observedAt: 1 },
-        { owner: "alice", models: [{ id: "z", label: "z" }], observedAt: 1 } as never,
-      );
-      expect(published.at(-1)).toEqual(["z"]);
-      setRoster([{ id: "a" }]);
-      gw.push(metadataChanged(EMPTY, 2));
-      await sleep(SETTLE_MS);
-      expect(published.at(-1)).toEqual(["a"]);
-    } finally {
-      policy.dispose();
-      conn.close();
-    }
-  });
-
-  it("does NOT take the roster for unchanged while an earlier write is still in flight", async () => {
-    // A is on record. A send starts publishing B and its POST hangs (these writes run
-    // off the chain). A notice then finds A again: suppressing it would leave Convex
-    // with B once that POST lands, though the gateway is at A. The refresh publishes,
-    // under a NEWER observation stamp, which is what Convex orders the two by.
-    const { gw } = rosterGateway([{ id: "a" }]);
+  it("publishes on EVERY refresh, an unchanged roster included — Convex's observation stamps arbitrate, not the bridge", async () => {
+    // A bridge-side "skip the write when unchanged" was tried and withdrawn: the bridge
+    // cannot know what Convex kept (a late older observation is answered 200 and
+    // refused), so a record of "what was last published" can confirm a state Convex
+    // does not hold and then suppress the very write that would correct it. Each
+    // coalesced notice therefore costs one describe, one models.list and one write,
+    // each write under a newer observation stamp.
+    const { gw, listCalls } = rosterGateway([{ id: "a" }]);
     gateway = gw;
     await gw.ready;
     const conn = await OpenClawConnection.connect(gw.url, "tok", deviceIdentity());
-    const posts: { models: string[] | null; observedAt: number; land: () => void }[] = [];
-    let hold = false;
+    const stamps: number[] = [];
+    const published: (string[] | null)[] = [];
     const writer = {
-      reportSessionMeta: (_chatId: string, meta: { availableModels?: { id: string }[]; observedAt?: number }) =>
-        new Promise<void>((resolve) => {
-          const post = {
-            models: meta.availableModels?.map((m) => m.id) ?? null,
-            observedAt: meta.observedAt ?? 0,
-            land: resolve,
-          };
-          posts.push(post);
-          if (!hold) resolve();
-        }),
+      reportSessionMeta: async (_chatId: string, meta: { availableModels?: { id: string }[]; observedAt?: number }) => {
+        published.push(meta.availableModels?.map((m) => m.id) ?? null);
+        stamps.push(meta.observedAt ?? 0);
+      },
       reportSessionRoster: async () => {},
     };
     const policy = attachRosterPolicy(
@@ -276,55 +207,19 @@ describe("the policy: the roster a chat shows follows the notice, without a turn
       writer,
       { debounceMs: DEBOUNCE_MS, retryMs: 10_000 },
     );
+    const describes = () => gw.requests.filter((r) => r.method === "sessions.describe").length;
     try {
-      gw.push(metadataChanged(EMPTY, 1));
-      await sleep(SETTLE_MS);
-      expect(posts.map((p) => p.models)).toEqual([["a"]]);
-
-      // The send's publish of B starts, and does not land.
-      hold = true;
-      const pendingB = publishSessionMeta(
-        { chatId: "c1", connection: conn, agentId: "alice", sessionKey: "k" },
-        writer,
-        { sess: { key: "k", agentId: "alice", model: "openai/gpt-5.5" }, observedAt: 1_000 },
-        { owner: "alice", models: [{ id: "b", label: "b" }], observedAt: 1_000 } as never,
-      );
-      await sleep(5);
-      expect(posts.map((p) => p.models)).toEqual([["a"], ["b"]]);
-
-      // The notice: the gateway is (still) at A.
-      hold = false;
-      gw.push(metadataChanged(EMPTY, 2));
-      await sleep(SETTLE_MS);
-      expect(posts.map((p) => p.models), "the refresh is written, not suppressed").toEqual([["a"], ["b"], ["a"]]);
-      // …observed AFTER B, so Convex keeps A whichever of the two lands last.
-      expect(posts[2]!.observedAt).toBeGreaterThan(posts[1]!.observedAt);
-
-      // B lands late. It was not the last write to start, so it leaves no record of
-      // its own; what stands is A, the newer observation — and an identical notice now
-      // has a certain record to compare with, and writes nothing.
-      posts[1]!.land();
-      await pendingB;
-      gw.push(metadataChanged(EMPTY, 3));
-      await sleep(SETTLE_MS);
-      expect(posts).toHaveLength(3);
-    } finally {
-      policy.dispose();
-      conn.close();
-    }
-  });
-
-  it("a config.changed always publishes, even with an identical roster", async () => {
-    const { gw } = rosterGateway([{ id: "a" }]);
-    gateway = gw;
-    await gw.ready;
-    const { conn, policy, published } = await connectWithPolicy(gw);
-    try {
-      gw.push(metadataChanged(EMPTY, 1));
-      await sleep(SETTLE_MS);
-      gw.push({ type: "event", event: "config.changed", payload: { path: "/x", hash: "hmac-sha256:v1:r2", ts: 1 }, seq: 2 });
-      await sleep(SETTLE_MS);
-      expect(published).toEqual([["a"], ["a"]]);
+      for (let round = 0; round < 3; round++) {
+        gw.push(metadataChanged(EMPTY, 1 + round));
+        await sleep(SETTLE_MS);
+      }
+      expect(published).toEqual([["a"], ["a"], ["a"]]);
+      expect(listCalls()).toBe(3);
+      expect(describes()).toBe(3);
+      // Every write carries its own, later observation: what Convex orders them by.
+      expect(stamps[1]).toBeGreaterThanOrEqual(stamps[0]!);
+      expect(stamps[2]).toBeGreaterThanOrEqual(stamps[1]!);
+      expect(stamps.every((s) => s > 0)).toBe(true);
     } finally {
       policy.dispose();
       conn.close();

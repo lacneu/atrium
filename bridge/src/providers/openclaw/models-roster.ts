@@ -562,36 +562,6 @@ export async function describeSessionAnswer(
   return { kind: "unreadable" };
 }
 
-/** What each connection last published for its chat — the owner, the roster and the
- *  described state, without their stamps — so the one reader (`refreshAfterConfigChange`)
- *  can tell a refresh that brings no news. Kept ONLY while it is certain to be what
- *  Convex holds: the record is dropped the moment ANY write starts (their POSTs run off
- *  the chain and can still be in flight), and written back only by the write that was
- *  the last to start, once it has landed. While another write may still land, there is
- *  no record, and a refresh publishes — Convex orders the two by their observation
- *  stamps, so the newer observation wins whichever lands first. */
-const lastPublishedMeta = new WeakMap<object, string>();
-const publishSeq = new WeakMap<object, number>();
-/** A write for this connection's chat is starting: nothing is certain until it lands. */
-function beginPublish(connection: object): number {
-  const seq = (publishSeq.get(connection) ?? 0) + 1;
-  publishSeq.set(connection, seq);
-  lastPublishedMeta.delete(connection);
-  return seq;
-}
-/** A write that goes around `publishSessionMeta` (a roster-only report, the absent-session
- *  access facts): what was recorded no longer says what Convex holds. */
-export function forgetPublishedMeta(connection: object): void {
-  beginPublish(connection);
-}
-function publishedContent(
-  owner: string | null,
-  sess: Record<string, unknown>,
-  roster: RosterInHand,
-): string {
-  return JSON.stringify([owner, parseSessionMeta(sess, roster.models)]);
-}
-
 /**
  * The ONE "publish the session meta with its roster" unit, shared by the send path, the
  * knob patch and the config-change refresh. Unconditional: the ordering rules live in
@@ -625,7 +595,6 @@ export async function publishSessionMeta(
     if (inHand === null) inHand = await ensureAvailableModels(conn, owner, "fresh");
     else reask = true;
   }
-  const seq = beginPublish(conn);
   await writer.reportSessionMeta(session.chatId, {
     ...parseSessionMeta(described.sess, inHand?.models ?? null),
     availableModelsOwner: modelsQuery(conn, owner).ownerKey,
@@ -633,11 +602,6 @@ export async function publishSessionMeta(
     ...(session.sessionKey !== undefined ? { describedSessionKey: session.sessionKey } : {}),
     observedAt: described.observedAt,
   });
-  // Recorded only if no other write started meanwhile (and none is recorded when the
-  // POST threw: this line is not reached).
-  if (inHand !== null && publishSeq.get(conn) === seq) {
-    lastPublishedMeta.set(conn, publishedContent(owner, described.sess, inHand));
-  }
   if (!reask) return;
   void ensureAvailableModels(conn, owner, "fresh")
     .then((fresh) => {
@@ -645,9 +609,6 @@ export async function publishSessionMeta(
       // roster already published; only a new answer is worth a second write — and none
       // on a connection the chat re-bound away from meanwhile.
       if (conn.isClosed || fresh === null || fresh === inHand) return undefined;
-      // A roster-only write: the record of the last full publish no longer says what
-      // Convex holds.
-      forgetPublishedMeta(conn);
       return writer.reportSessionRoster(session.chatId, fresh);
     })
     .catch((err: unknown) => {
@@ -702,19 +663,8 @@ export async function refreshAfterConfigChange(
     const owner = resolveModelsOwner(described.sess, session.agentId);
     const roster = await ensureAvailableModels(session.connection, owner, "forced");
     if (session.connection.isClosed) return none;
-    const rosterEpoch = rosterEpochOf(session.connection, owner);
-    // A `chat.metadata.changed` whose refresh finds exactly what this connection last
-    // published writes nothing: before 2026.9.7 the gateway sends the notice empty on
-    // every metadata change, and a write per notice per open chat is contention for no
-    // news. A `config.changed` always publishes.
-    if (
-      notice.origin === "chat.metadata.changed" &&
-      roster !== null &&
-      lastPublishedMeta.get(session.connection) === publishedContent(owner, described.sess, roster)
-    ) {
-      return { published: true, rosterEpoch };
-    }
     await publishSessionMeta(session, writer, described, roster);
+    const rosterEpoch = rosterEpochOf(session.connection, owner);
     console.log(`[roster] chat=${session.chatId} refreshed after ${notice.origin ?? "config.changed"} hash=${notice.hash ?? "?"}: ${roster?.models.length ?? "no"} model(s), roster epoch ${rosterEpoch}`);
     return { published: true, rosterEpoch };
   } catch (err) {
