@@ -979,6 +979,9 @@ export class Normalizer {
     this.foreignRunRejections = new Map();
     this.commentaryFrames = 0;
     this.sawMediaGeneration = false;
+    // A delivery run is ONE run and ends at its own terminal; this object outlives it.
+    // Cleared here and set again by `noteRunStarted`, which every caller invokes after.
+    this.mediaDeliveryRun = false;
     this.observedChildKeys = new Set();
     // …and its completeness flag: left set, ONE capped turn would make every later
     // turn declare an incomplete list, quietly disabling the empty-response guard
