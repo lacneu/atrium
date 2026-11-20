@@ -247,6 +247,73 @@ describe("the policy: the roster a chat shows follows the notice, without a turn
     }
   });
 
+  it("does NOT take the roster for unchanged while an earlier write is still in flight", async () => {
+    // A is on record. A send starts publishing B and its POST hangs (these writes run
+    // off the chain). A notice then finds A again: suppressing it would leave Convex
+    // with B once that POST lands, though the gateway is at A. The refresh publishes,
+    // under a NEWER observation stamp, which is what Convex orders the two by.
+    const { gw } = rosterGateway([{ id: "a" }]);
+    gateway = gw;
+    await gw.ready;
+    const conn = await OpenClawConnection.connect(gw.url, "tok", deviceIdentity());
+    const posts: { models: string[] | null; observedAt: number; land: () => void }[] = [];
+    let hold = false;
+    const writer = {
+      reportSessionMeta: (_chatId: string, meta: { availableModels?: { id: string }[]; observedAt?: number }) =>
+        new Promise<void>((resolve) => {
+          const post = {
+            models: meta.availableModels?.map((m) => m.id) ?? null,
+            observedAt: meta.observedAt ?? 0,
+            land: resolve,
+          };
+          posts.push(post);
+          if (!hold) resolve();
+        }),
+      reportSessionRoster: async () => {},
+    };
+    const policy = attachRosterPolicy(
+      { connection: conn, sessionKey: "k", chatId: "c1", agentId: "alice" },
+      writer,
+      { debounceMs: DEBOUNCE_MS, retryMs: 10_000 },
+    );
+    try {
+      gw.push(metadataChanged(EMPTY, 1));
+      await sleep(SETTLE_MS);
+      expect(posts.map((p) => p.models)).toEqual([["a"]]);
+
+      // The send's publish of B starts, and does not land.
+      hold = true;
+      const pendingB = publishSessionMeta(
+        { chatId: "c1", connection: conn, agentId: "alice", sessionKey: "k" },
+        writer,
+        { sess: { key: "k", agentId: "alice", model: "openai/gpt-5.5" }, observedAt: 1_000 },
+        { owner: "alice", models: [{ id: "b", label: "b" }], observedAt: 1_000 } as never,
+      );
+      await sleep(5);
+      expect(posts.map((p) => p.models)).toEqual([["a"], ["b"]]);
+
+      // The notice: the gateway is (still) at A.
+      hold = false;
+      gw.push(metadataChanged(EMPTY, 2));
+      await sleep(SETTLE_MS);
+      expect(posts.map((p) => p.models), "the refresh is written, not suppressed").toEqual([["a"], ["b"], ["a"]]);
+      // …observed AFTER B, so Convex keeps A whichever of the two lands last.
+      expect(posts[2]!.observedAt).toBeGreaterThan(posts[1]!.observedAt);
+
+      // B lands late. It was not the last write to start, so it leaves no record of
+      // its own; what stands is A, the newer observation — and an identical notice now
+      // has a certain record to compare with, and writes nothing.
+      posts[1]!.land();
+      await pendingB;
+      gw.push(metadataChanged(EMPTY, 3));
+      await sleep(SETTLE_MS);
+      expect(posts).toHaveLength(3);
+    } finally {
+      policy.dispose();
+      conn.close();
+    }
+  });
+
   it("a config.changed always publishes, even with an identical roster", async () => {
     const { gw } = rosterGateway([{ id: "a" }]);
     gateway = gw;

@@ -562,6 +562,36 @@ export async function describeSessionAnswer(
   return { kind: "unreadable" };
 }
 
+/** What each connection last published for its chat — the owner, the roster and the
+ *  described state, without their stamps — so the one reader (`refreshAfterConfigChange`)
+ *  can tell a refresh that brings no news. Kept ONLY while it is certain to be what
+ *  Convex holds: the record is dropped the moment ANY write starts (their POSTs run off
+ *  the chain and can still be in flight), and written back only by the write that was
+ *  the last to start, once it has landed. While another write may still land, there is
+ *  no record, and a refresh publishes — Convex orders the two by their observation
+ *  stamps, so the newer observation wins whichever lands first. */
+const lastPublishedMeta = new WeakMap<object, string>();
+const publishSeq = new WeakMap<object, number>();
+/** A write for this connection's chat is starting: nothing is certain until it lands. */
+function beginPublish(connection: object): number {
+  const seq = (publishSeq.get(connection) ?? 0) + 1;
+  publishSeq.set(connection, seq);
+  lastPublishedMeta.delete(connection);
+  return seq;
+}
+/** A write that goes around `publishSessionMeta` (a roster-only report, the absent-session
+ *  access facts): what was recorded no longer says what Convex holds. */
+export function forgetPublishedMeta(connection: object): void {
+  beginPublish(connection);
+}
+function publishedContent(
+  owner: string | null,
+  sess: Record<string, unknown>,
+  roster: RosterInHand,
+): string {
+  return JSON.stringify([owner, parseSessionMeta(sess, roster.models)]);
+}
+
 /**
  * The ONE "publish the session meta with its roster" unit, shared by the send path, the
  * knob patch and the config-change refresh. Unconditional: the ordering rules live in
@@ -578,24 +608,6 @@ export async function describeSessionAnswer(
  * waited for — the only case where waiting buys the user anything (a first turn's
  * picker), the rule `ensureAvailableModels` applies itself.
  */
-/** What each connection last published for its chat — the owner, the roster and the
- *  described state, without their stamps. Written by EVERY publish below, so the one
- *  reader (`refreshAfterConfigChange`) compares against what Convex was last sent,
- *  whichever path sent it; forgotten with the connection. */
-const lastPublishedMeta = new WeakMap<object, string>();
-/** A write that went around `publishSessionMeta`: what was recorded no longer says what
- *  Convex holds. */
-export function forgetPublishedMeta(connection: object): void {
-  lastPublishedMeta.delete(connection);
-}
-function publishedContent(
-  owner: string | null,
-  sess: Record<string, unknown>,
-  roster: RosterInHand,
-): string {
-  return JSON.stringify([owner, parseSessionMeta(sess, roster.models)]);
-}
-
 export async function publishSessionMeta(
   /** `sessionKey`: the key `described` answered for, reported as its provenance. */
   session: { chatId: string; connection: ModelsConnection; agentId: string | null; sessionKey?: string },
@@ -613,6 +625,7 @@ export async function publishSessionMeta(
     if (inHand === null) inHand = await ensureAvailableModels(conn, owner, "fresh");
     else reask = true;
   }
+  const seq = beginPublish(conn);
   await writer.reportSessionMeta(session.chatId, {
     ...parseSessionMeta(described.sess, inHand?.models ?? null),
     availableModelsOwner: modelsQuery(conn, owner).ownerKey,
@@ -620,8 +633,11 @@ export async function publishSessionMeta(
     ...(session.sessionKey !== undefined ? { describedSessionKey: session.sessionKey } : {}),
     observedAt: described.observedAt,
   });
-  if (inHand === null) lastPublishedMeta.delete(conn);
-  else lastPublishedMeta.set(conn, publishedContent(owner, described.sess, inHand));
+  // Recorded only if no other write started meanwhile (and none is recorded when the
+  // POST threw: this line is not reached).
+  if (inHand !== null && publishSeq.get(conn) === seq) {
+    lastPublishedMeta.set(conn, publishedContent(owner, described.sess, inHand));
+  }
   if (!reask) return;
   void ensureAvailableModels(conn, owner, "fresh")
     .then((fresh) => {
