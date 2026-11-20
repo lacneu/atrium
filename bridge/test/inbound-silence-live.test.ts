@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BridgeConfig } from "../src/config.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
-import { SILENCE_CONFIRM_MS } from "../src/providers/openclaw/inbound-silence.js";
+import { SILENCE_PROBE_DEADLINE_MS } from "../src/providers/openclaw/inbound-silence.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 import { SessionRegistry } from "../src/session.js";
 import { servedMap } from "./helpers/served.js";
@@ -79,7 +79,7 @@ const silentFor = async (ms: number, c: OpenClawConnection) => {
 /** One interval of the watch elapses (the timer fires once). */
 const interval = (ms = 30_000) => vi.advanceTimersByTime(ms);
 /** The confirmation delay of a "silent" verdict elapses. */
-const confirm = () => vi.advanceTimersByTime(SILENCE_CONFIRM_MS);
+const confirm = () => vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS);
 /** The watch's own timers still armed (the handshake's and the requests' are not its). */
 const watchTimers = (c: OpenClawConnection) => {
   const w = c as unknown as { silenceTimer: unknown; silenceConfirmTimer: unknown };
@@ -109,7 +109,7 @@ describe("connection silence over a real socket", () => {
     // Over the budget: the verdict is reached, and acted on only once confirmed —
     // the whole confirmation delay, not a moment less.
     expect(c.isClosed).toBe(false);
-    vi.advanceTimersByTime(SILENCE_CONFIRM_MS - 1);
+    vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS - 1);
     expect(c.isClosed).toBe(false);
     vi.advanceTimersByTime(1);
     expect(c.isClosed).toBe(true);
@@ -214,7 +214,7 @@ describe("connection silence over a real socket", () => {
     // 120 s without a single frame from the gateway, in 5 s steps: real I/O runs
     // between two steps, so a probe sent at one is answered before the next.
     await silentFor(120_000, c);
-    const probes = gateway!.requests.filter((r) => r.method === "health");
+    const probes = gateway!.requests.filter((r) => r.method === "last-heartbeat");
     expect(probes.length).toBeGreaterThanOrEqual(1);
     // At most one probe per check interval — here one, at the first silent verdict.
     expect(probes.length).toBeLessThanOrEqual(2);
@@ -226,12 +226,82 @@ describe("connection silence over a real socket", () => {
     expect(c.connectionEnd?.kind).toBe("gateway_restarting");
   });
 
+  /** A gateway whose answer to the probe is held until `answer()` is called. */
+  const slowToAnswer = () => {
+    let release: (() => void) | null = null;
+    const onMethod = (method?: string) =>
+      method === "last-heartbeat"
+        ? new Promise<unknown>((resolve) => {
+            release = () => resolve({});
+          })
+        : {};
+    return { onMethod: onMethod as () => unknown, answer: () => release?.() };
+  };
+
+  it("an answer that takes SEVEN seconds during a drain keeps the socket — the probe has its own deadline", async () => {
+    // A draining gateway with a busy event loop: the answer comes, late. Five seconds
+    // would have cut a live turn one second before it; the probe's deadline is its own.
+    const gw = slowToAnswer();
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, gw.onMethod);
+    interval();
+    interval();
+    interval(); // the silent verdict: the probe is sent
+    await sleep(30);
+    expect(gateway!.requests.filter((r) => r.method === "last-heartbeat")).toHaveLength(1);
+    vi.advanceTimersByTime(7_000);
+    expect(c.isClosed).toBe(false);
+    gw.answer();
+    await sleep(30);
+    vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS);
+    expect(c.isClosed).toBe(false);
+    expect(c.connectionEnd).toBeNull();
+  });
+
+  it("no answer within the probe's deadline closes the socket — at the deadline, not before", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(SILENCE_PROBE_DEADLINE_MS).toBeGreaterThan(2 * 7_000); // the gateway's own worst bounded read, twice
+    const gw = slowToAnswer(); // never released
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, gw.onMethod);
+    interval();
+    interval();
+    interval();
+    await sleep(30);
+    vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS - 1);
+    expect(c.isClosed).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(c.isClosed).toBe(true);
+    expect(c.connectionEnd?.kind).toBe("inbound_silence");
+  });
+
+  it("ONE probe at a time: while it is pending, later checks neither close nor ask again — whatever the tick interval", async () => {
+    // A one-second interval: fourteen checks come due while the probe is pending.
+    const gw = slowToAnswer();
+    const c = await connect({ ...CAPTURED_HELLO_POLICY, tickIntervalMs: 1_000 }, gw.onMethod);
+    vi.advanceTimersByTime(3_000); // silent for more than 2 x 1 s: the probe is sent
+    await sleep(30);
+    const probes = () => gateway!.requests.filter((r) => r.method === "last-heartbeat").length;
+    expect(probes()).toBe(1);
+    for (let s = 0; s < 6; s++) {
+      vi.advanceTimersByTime(1_000);
+      await sleep(5);
+      expect(c.isClosed, `second ${s}`).toBe(false);
+    }
+    expect(probes()).toBe(1);
+    // The answer arrives six seconds in — far beyond the 2 s silence budget, and still
+    // an answer: the socket is judged on what arrived since the question.
+    gw.answer();
+    await sleep(30);
+    vi.advanceTimersByTime(SILENCE_PROBE_DEADLINE_MS - 6_000);
+    expect(c.isClosed).toBe(false);
+    expect(probes()).toBe(1);
+  });
+
   it("an ERROR answer to the probe is proof of life too", async () => {
     const c = await connect({ ...CAPTURED_HELLO_POLICY }, () => ({
       error: { code: "UNAVAILABLE", message: "gateway restarting" },
     }));
     await silentFor(120_000, c);
-    expect(gateway!.requests.some((r) => r.method === "health")).toBe(true);
+    expect(gateway!.requests.some((r) => r.method === "last-heartbeat")).toBe(true);
   });
 
   it("the same silence on a transport that answers nothing is closed, the probe leaving nothing behind", async () => {
@@ -242,7 +312,7 @@ describe("connection silence over a real socket", () => {
     interval();
     await sleep(30);
     // The probe was sent and is unanswered.
-    expect(gateway!.requests.filter((r) => r.method === "health")).toHaveLength(1);
+    expect(gateway!.requests.filter((r) => r.method === "last-heartbeat")).toHaveLength(1);
     confirm();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd?.kind).toBe("inbound_silence");
@@ -344,7 +414,7 @@ describe("a silent conversation socket, through the session", () => {
       version: "2026.9.36",
       policy: { ...CAPTURED_HELLO_POLICY },
       // The session's own setup is answered; the transport then stops answering.
-      onMethod: (method) => (method === "health" ? NO_ANSWER : {}),
+      onMethod: (method) => (method === "last-heartbeat" ? NO_ANSWER : {}),
     });
     await gateway.ready;
     const finalized: unknown[][] = [];

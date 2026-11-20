@@ -111,6 +111,20 @@ describe("createSilenceWatch", () => {
     expect(watch.check()).toBe("alive");
   });
 
+  it("counts what arrived, so a caller can ask \"anything since my question?\"", () => {
+    const c = clock();
+    const watch = createSilenceWatch(1_000, c.now);
+    const asked = watch.inboundCount;
+    c.advance(6_000);
+    expect(watch.inboundCount).toBe(asked);
+    watch.noteInbound();
+    expect(watch.inboundCount).toBe(asked + 1);
+    // Far beyond the 2 s budget by the time it is read — and still "something arrived".
+    c.advance(9_000);
+    expect(watch.check()).toBe("silent");
+    expect(watch.inboundCount).not.toBe(asked);
+  });
+
   it("stays silent once silent (the close is the caller's, a second check agrees)", () => {
     const c = clock();
     const watch = createSilenceWatch(1_000, c.now);

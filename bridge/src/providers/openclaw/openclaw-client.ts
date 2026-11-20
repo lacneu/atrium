@@ -41,7 +41,7 @@ import {
 import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js";
 import { readChatMetadataChanged } from "./chat-metadata-changed.js";
 import {
-  SILENCE_CONFIRM_MS,
+  SILENCE_PROBE_DEADLINE_MS,
   createSilenceWatch,
   readTickIntervalMs,
   type SilenceWatch,
@@ -499,39 +499,42 @@ export class OpenClawConnection {
       // (server-maintenance.ts, on the restart-drain signal) and announces `shutdown`
       // only after its active work has drained — up to five minutes
       // (infra/restart-budget.ts) during which a turn on this socket may still finish.
-      // One read-only request settles it: ANY response frame, an error included, is an
-      // inbound frame and resets the watch; only a transport that answers nothing is
-      // closed. (The gateway's own clients close without asking; a turn is at stake
-      // here.) At most one probe per check, bounded by the confirmation delay.
-      const confirmMs = Math.min(intervalMs, SILENCE_CONFIRM_MS);
-      // `health`: read-only, free of side effects, in every validated gateway's method
-      // list. Its answer is not read — that there is one is the point.
-      void this.request("health", {}, confirmMs).catch(() => {
+      // One read-only request settles it: ANYTHING that arrives before the probe's
+      // deadline — its answer, an error answer, any other frame, bytes of a frame in
+      // flight — keeps the socket; only a transport that delivers nothing is closed.
+      // (The gateway's own clients close without asking; a turn is at stake here.)
+      //
+      // `last-heartbeat`, not `health`: its handler answers from memory, synchronously
+      // (server-methods/system.ts, every validated version), whereas `health` waits for
+      // a collection of up to seven seconds once its cache — refreshed by the very
+      // maintenance a drain stops — has expired.
+      //
+      // ONE probe at a time: while this timer is armed the interval above returns
+      // early, so no second verdict can be reached, nor a second probe sent, before
+      // this one's deadline.
+      const inboundAtProbe = watch.inboundCount;
+      void this.request("last-heartbeat", {}, SILENCE_PROBE_DEADLINE_MS).catch(() => {
         /* an error answer already counted as a frame; no answer is the verdict below */
       });
-      // CONFIRMED rather than acted on at once, for a second reason: a timer runs
-      // before the I/O queued behind it, so after a pause of this process the verdict
-      // is reached while the gateway's frames are still unread in the socket.
-      this.silenceConfirmTimer = setTimeout(
-        () => {
-          this.silenceConfirmTimer = null;
-          if (this.closed) return;
-          this.noteArrivingBytes(watch);
-          if (watch.check() === "alive") return;
-          console.warn(
-            `[openclaw] no inbound frame for more than ${watch.maxSilenceMs} ms (tick interval ${intervalMs} ms) — closing the silent connection`,
-          );
-          this.silenceClosing = true;
-          try {
-            // The code and reason the gateway's own clients close a silent socket with.
-            this.ws.close(4000, "tick timeout");
-          } catch {
-            /* the socket may already be gone; onClose still runs below */
-          }
-          this.onClose(new OpenClawError("OpenClaw Gateway connection closed"));
-        },
-        confirmMs,
-      );
+      this.silenceConfirmTimer = setTimeout(() => {
+        this.silenceConfirmTimer = null;
+        if (this.closed) return;
+        this.noteArrivingBytes(watch);
+        // Judged on what arrived SINCE THE QUESTION, not on the silence budget: an
+        // answer six seconds in is an answer, however short the tick interval.
+        if (watch.inboundCount !== inboundAtProbe) return;
+        console.warn(
+          `[openclaw] no inbound frame for more than ${watch.maxSilenceMs} ms (tick interval ${intervalMs} ms), and no answer within ${SILENCE_PROBE_DEADLINE_MS} ms — closing the silent connection`,
+        );
+        this.silenceClosing = true;
+        try {
+          // The code and reason the gateway's own clients close a silent socket with.
+          this.ws.close(4000, "tick timeout");
+        } catch {
+          /* the socket may already be gone; onClose still runs below */
+        }
+        this.onClose(new OpenClawError("OpenClaw Gateway connection closed"));
+      }, SILENCE_PROBE_DEADLINE_MS);
       this.silenceConfirmTimer.unref?.();
     }, intervalMs);
     // Never the reason the process stays alive.

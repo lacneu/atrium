@@ -22,12 +22,19 @@ export const MIN_TICK_WATCH_INTERVAL_MS = 1_000;
  *  (upstream `MAX_SAFE_TIMEOUT_DELAY_MS`, packages/gateway-client/src/timeouts.ts). */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-/** How long a "silent" verdict waits before it is acted on (capped by the interval).
- *  A timer fires BEFORE the I/O queued behind it: after a pause of this process (a
- *  stalled event loop, a suspended host) the first check runs while the frames the
- *  gateway sent meanwhile are still unread in the socket. The verdict is confirmed
- *  once the loop has had this long to deliver them. */
-export const SILENCE_CONFIRM_MS = 5_000;
+/**
+ * How long a silent socket is given to ANSWER before it is closed.
+ *
+ * A "silent" verdict is never acted on at once: the connection asks the gateway one
+ * question (openclaw-client.ts) and closes only if nothing at all arrives within this
+ * deadline. Its own deadline, on purpose — not the tick interval, not a few seconds:
+ * the gateway that is asked may be draining a restart with its event loop busy, and
+ * the longest bounded read it grants itself is seven seconds
+ * (`HEALTH_COLLECTION_TIMEOUT_MS`, src/gateway/health/collector.ts). Twice that, plus
+ * a second for the network. It also covers a pause of THIS process, after which the
+ * verdict is reached while the gateway's frames are still unread in the socket.
+ */
+export const SILENCE_PROBE_DEADLINE_MS = 15_000;
 
 /**
  * The tick interval a `hello-ok.policy` advertises, clamped, or null.
@@ -51,9 +58,10 @@ export interface SilenceWatch {
   readonly maxSilenceMs: number;
   /** A frame arrived (any event or response frame). */
   noteInbound(): void;
-  /** Has the socket been silent for too long? Called once per interval, and once more
-   *  to confirm a "silent" verdict (SILENCE_CONFIRM_MS) before the socket is closed. */
+  /** Has the socket been silent for too long? Called once per interval. */
   check(): "alive" | "silent";
+  /** How many times `noteInbound` was called: "did anything arrive since I asked?" */
+  readonly inboundCount: number;
 }
 
 /**
@@ -64,10 +72,15 @@ export interface SilenceWatch {
 export function createSilenceWatch(intervalMs: number, now: () => number): SilenceWatch {
   const maxSilenceMs = intervalMs * 2;
   let lastInboundAt = now();
+  let inboundCount = 0;
   return {
     maxSilenceMs,
+    get inboundCount() {
+      return inboundCount;
+    },
     noteInbound() {
       lastInboundAt = now();
+      inboundCount += 1;
     },
     check() {
       // Strictly more than the budget, like the gateway's own clients.
