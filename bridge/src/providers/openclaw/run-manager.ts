@@ -25,7 +25,13 @@ import {
   isTalkConsultRunId,
 } from "../../core/talk-consult.js";
 import type { ConvexWriter } from "../../convex-writer.js";
-import { EVENT_SESSION_OVERFULL, type BridgeEvent } from "../../core/events.js";
+import {
+  EVENT_MODEL_FALLBACK,
+  EVENT_SESSION_OVERFULL,
+  stampReceived,
+  type BridgeEvent,
+} from "../../core/events.js";
+import { modelFallbackFromFrame, type ModelFallback } from "./model-fallback.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   parseProvenanceFrame,
@@ -1163,8 +1169,42 @@ export class RunManager {
     // A frame of a run with a lane (closing or closed by the transcript): onto its lane,
     // decided SYNCHRONOUSLY and never awaited here — a frame of any other run takes no
     // extra await, so the feed's single ordered application path (G-29) is untouched.
+    // A model fallback is a fact about a RUN, stated after its work (see
+    // model-fallback.ts): read here, before the lanes and the turn's pipeline, so it
+    // can neither be adopted as a turn's content nor open or close one.
+    const fallback = modelFallbackFromFrame(frame, this.sessionKey);
+    if (fallback !== null) {
+      await this.noteModelFallback(fallback, now);
+      return;
+    }
     if (this.enqueueOnLane(frame, now)) return;
     await this.feedPipeline(frame, now);
+  }
+
+  /**
+   * Put a run's model fallback on that run's bubble.
+   *
+   * While the run is the live turn's, through the sink: the bubble may not be open yet,
+   * and the sink holds the marker until it is. Otherwise — the usual case, the frame
+   * follows the run's terminal — on the bubble this bridge remembers for the run (its
+   * lane's, or the one its turn settled), and when it remembers none Convex looks the
+   * run's bubble up. A run that left no bubble gets no marker.
+   */
+  private async noteModelFallback(fallback: ModelFallback, now: number): Promise<void> {
+    const live = (): boolean => this.sink.active && this.normalizer.ownRunIds.has(fallback.runId);
+    if (live()) {
+      let applied = false;
+      await this.runOrdered(async () => {
+        if (!live()) return;
+        applied = true;
+        await this.sink.apply(stampReceived([{ type: EVENT_MODEL_FALLBACK, ...fallback }], now));
+      });
+      if (applied) return;
+    }
+    await this.sink.noteSettledRunFallback(
+      fallback,
+      this.lanes.get(fallback.runId)?.messageId ?? this.settledRuns.get(fallback.runId)?.messageId ?? null,
+    );
   }
 
   /** The turn's own pipeline for a frame (a lane hands back what it held here). */

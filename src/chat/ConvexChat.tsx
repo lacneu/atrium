@@ -261,6 +261,7 @@ import {
 import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
+import { ModelFallbackNotice } from "./ModelFallbackNotice";
 import { usageBadgeView, type ProviderUsageView } from "./usageView";
 import {
   assistantEmptyState,
@@ -4132,6 +4133,9 @@ function AssistantMessage() {
               condensed older memory, which is conversation-level information,
               not tool telemetry. Renders null on the (vast) majority of turns. */}
           <CompactionNotice />
+          {/* Model fallback marker — same standing: which model answered is about
+              the conversation, not about a tool. Null on almost every turn. */}
+          <ModelFallbackNotice />
           {showSource ? (
             <MessageSource />
           ) : (

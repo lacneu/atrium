@@ -168,6 +168,9 @@ type ClientPart =
   | { kind: "file"; url: string | null; storageId: string; filename: string; mimeType: string; transcriptFileId?: Id<"transcriptFiles"> }
   // Gateway context-compaction marker (content-free: phase + timestamp).
   | { kind: "compaction"; phase: string; at: number }
+  // The run was answered by another model than the one selected, or the session is back
+  // on its selected one. Model names only, bounded at write.
+  | { kind: "model_fallback"; state: "active" | "cleared"; model: string; selected?: string; at: number }
   // A work-plan update (update_plan): ordered steps + status. Bounded at
   // write time. WHICH part is current is decided by `stamp` — when the bridge
   // received the frame behind it — not by its position (lib/planOrder.ts), so
@@ -701,6 +704,10 @@ async function loadChatView(
                 at: part.at,
                 ...(part.reason !== undefined ? { reason: part.reason } : {}),
               });
+              break;
+            case "model_fallback":
+              // Model names only, bounded at write (stream.noteModelFallback): as-is.
+              parts.push(part);
               break;
           }
         }
@@ -1700,6 +1707,10 @@ export const chatStateInternal = internalQuery({
             // Content-free by construction (phase + timestamp): the gateway
             // compacted this turn — pairs with the chat.gateway_pressure trace.
             return { kind: "compaction" as const, phase: p.phase };
+          case "model_fallback":
+            // Structure only: that a fallback was stated, and which way — never a
+            // model name (gateway text) on the diagnostic surface.
+            return { kind: "model_fallback" as const, state: p.state };
           case "widget":
             // Structure only: an inline widget is present — never its title (user
             // content) nor its view id (a document address).

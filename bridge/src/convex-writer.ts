@@ -747,6 +747,22 @@ export interface ConvexWriter {
       missing: number | null;
     },
   ): Promise<void>;
+  /** A run was answered by another model than the one selected, or the session is back
+   *  on its selected one (see core/events EVENT_MODEL_FALLBACK) -> a marker on that
+   *  run's bubble. `messageId` is the bubble when the bridge knows it; null lets Convex
+   *  find the run's bubble (it never creates one). Model names only, never the
+   *  provider's reasons. OPTIONAL so the test fakes stay valid without it. */
+  noteModelFallback?(
+    chatId: string,
+    data: {
+      runId: string;
+      messageId: string | null;
+      sessionKey: string | null;
+      state: "active" | "cleared";
+      model: string;
+      selected?: string;
+    },
+  ): Promise<void>;
   /** The gateway's report about its own per-run numbering (see core/events
    *  EVENT_GATEWAY_SEQ_REPORT) -> an `openclaw.gateway_seq_report` trace. Not a frame
    *  loss. Counters and the run the report names; `messageId` is the turn that saw it.
@@ -1246,6 +1262,18 @@ type IngestOp =
       expected?: number;
       received?: number;
       missing?: number;
+    }
+  // A model fallback stated for a run -> a marker part on that run's bubble (found by
+  // `messageId`, else by the run). Never creates a bubble.
+  | {
+      op: "modelFallback";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      state: "active" | "cleared";
+      model: string;
+      selected?: string;
     }
   // The gateway's report about its own per-run numbering (content-free) -> an
   // `openclaw.gateway_seq_report` trace. Not a frame loss.
@@ -2698,6 +2726,31 @@ export class HttpConvexWriter implements ConvexWriter {
         errForLog(e),
       ),
     );
+  }
+
+  /** Off the per-message chain: the bubble it names is already written (a live turn's
+   *  open bubble, or a settled run's), and a marker must not delay the turn's own ops. */
+  async noteModelFallback(
+    chatId: string,
+    data: {
+      runId: string;
+      messageId: string | null;
+      sessionKey: string | null;
+      state: "active" | "cleared";
+      model: string;
+      selected?: string;
+    },
+  ): Promise<void> {
+    await this.doPost({
+      op: "modelFallback",
+      chatId,
+      runId: data.runId,
+      ...(data.messageId !== null ? { messageId: data.messageId } : {}),
+      ...(data.sessionKey !== null ? { sessionKey: data.sessionKey } : {}),
+      state: data.state,
+      model: data.model,
+      ...(data.selected !== undefined ? { selected: data.selected } : {}),
+    });
   }
 
   /** Same contract as `noteFrameGap`: off the per-message chain, errors swallowed. */

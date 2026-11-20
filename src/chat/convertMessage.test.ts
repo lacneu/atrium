@@ -573,3 +573,34 @@ describe("convertConvexMessage — display group place (phase 5)", () => {
     expect(meta.groupFirstId).toBeNull();
   });
 });
+
+describe("the model-fallback marker rides the bubble's metadata", () => {
+  it("an active fallback carries the model that answered and the one selected", () => {
+    const meta = customMeta(
+      makeMessage({
+        text: "BENCH_FALLBACK_OK",
+        parts: [
+          { kind: "model_fallback", state: "active", model: "openai/gpt-6.1-sol", selected: "openai/gpt-5.5", at: 1 },
+        ],
+      }),
+    );
+    expect(meta.modelFallback).toStrictEqual({
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+  });
+
+  it("a cleared one carries the selected model only, and never enters the reply's content", () => {
+    const message = makeMessage({
+      text: "REPLAY_OK",
+      parts: [{ kind: "model_fallback", state: "cleared", model: "openai/gpt-5.5", selected: "stale", at: 1 }],
+    });
+    expect(customMeta(message).modelFallback).toStrictEqual({ state: "cleared", model: "openai/gpt-5.5" });
+    expect(contentTypes(message)).toStrictEqual(["text"]);
+  });
+
+  it("a bubble with no such part carries none", () => {
+    expect("modelFallback" in customMeta(makeMessage({ text: "hello" }))).toBe(false);
+  });
+});

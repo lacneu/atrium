@@ -2405,3 +2405,242 @@ describe("bridge_ingest httpAction: the gateway's sequence report is not a frame
     expect("gatewaySeqReports" in traces[2]).toBe(false);
   });
 });
+
+// A model fallback is a fact about a RUN, stated by the gateway after the run's work
+// (bench run 2026-11-07T18-04-14-703Z: `lifecycle fallback` 67 ms after the run's
+// `chat final`). It is a marker on that run's bubble, found by the bubble's id or by the
+// run; it never creates, reopens or re-finalizes a bubble.
+describe("bridge_ingest httpAction: a model fallback marks the bubble of its run", () => {
+  const RUN = "webchat-34a22df1907f603c485a6c9ba6786784b8651b3e66d887368baa3eae3a89f539";
+  const SK = "agent:alice:atrium:chat:u-repro:turn-nx79mkhktt778b53ksc5p0gfqx8hrk98";
+
+  /** The settled answer of `RUN`, bound to the fixture instance. */
+  async function settledAnswer(t: T, over: Record<string, unknown> = {}) {
+    const { chatId, userId, messageId: other } = await seedAssistantMessage(t);
+    const messageId = await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "BENCH_FALLBACK_OK",
+        runId: RUN,
+        turnSessionKey: SK,
+        boundInstance: "prod",
+        updatedAt: 5,
+        finalizedAt: 5,
+        ...over,
+      }),
+    );
+    return { chatId, userId, messageId, other };
+  }
+  const fallbackParts = async (t: T, messageId: Id<"messages">) =>
+    (await partsOf(t, messageId)).map((p) => p.part).filter((p) => p.kind === "model_fallback");
+
+  test("with the bubble's id: one marker, the bubble stays settled", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await settledAnswer(t);
+    const res = await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: RUN,
+      messageId,
+      sessionKey: SK,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, messageId });
+    const parts = await fallbackParts(t, messageId);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({
+      kind: "model_fallback",
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    const after = await t.run((ctx) => ctx.db.get(messageId));
+    expect(after?.status).toBe("complete");
+    expect(after?.text).toBe("BENCH_FALLBACK_OK");
+    expect(after?.finalizedAt).toBe(5);
+  });
+
+  test("without the id: the run's own bubble is found, and no other", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId, other } = await settledAnswer(t);
+    const res = await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: RUN,
+      sessionKey: SK,
+      state: "cleared",
+      model: "openai/gpt-6.1-sol",
+    });
+    expect(await res.json()).toEqual({ ok: true, messageId });
+    expect(await fallbackParts(t, messageId)).toHaveLength(1);
+    expect(await fallbackParts(t, other)).toHaveLength(0);
+  });
+
+  test("a run that left no bubble gets no marker — and no bubble is made for it", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    const before = await t.run((ctx) => ctx.db.query("messages").collect());
+    const res = await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: "webchat-a-run-nobody-answered",
+      sessionKey: SK,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    expect(await res.json()).toEqual({ ok: true, messageId: null });
+    const after = await t.run((ctx) => ctx.db.query("messages").collect());
+    expect(after).toHaveLength(before.length);
+    expect(await t.run((ctx) => ctx.db.query("messageParts").collect())).toHaveLength(0);
+  });
+
+  test("the same frame twice keeps one marker; a later one of the run replaces it", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await settledAnswer(t);
+    const body = {
+      op: "modelFallback",
+      chatId,
+      runId: RUN,
+      messageId,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    };
+    await post(t, body);
+    const first = (await fallbackParts(t, messageId))[0] as { at: number };
+    const stamped = (await t.run((ctx) => ctx.db.get(messageId)))?.updatedAt;
+    await new Promise((r) => setTimeout(r, 5));
+    await post(t, body);
+    const again = await fallbackParts(t, messageId);
+    expect(again).toHaveLength(1);
+    // A retransmit changes nothing — the marker keeps its instant, the bubble its stamp.
+    expect((again[0] as { at: number }).at).toBe(first.at);
+    expect((await t.run((ctx) => ctx.db.get(messageId)))?.updatedAt).toBe(stamped);
+    await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: RUN,
+      messageId,
+      state: "cleared",
+      model: "openai/gpt-5.5",
+      selected: "openai/gpt-6.1-sol",
+    });
+    const parts = await fallbackParts(t, messageId);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ state: "cleared", model: "openai/gpt-5.5" });
+    expect("selected" in parts[0]).toBe(false);
+  });
+
+  test("a bubble of another chat, a user message, or another run's bubble is never marked", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId, messageId } = await settledAnswer(t);
+    const elsewhere = await t.run(async (ctx) => {
+      const otherChat = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod" });
+      const foreign = await ctx.db.insert("messages", {
+        chatId: otherChat,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "x",
+        runId: RUN,
+        updatedAt: 1,
+      });
+      const question = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "q",
+        // Even carrying the run's id: a question is never the run's answer.
+        runId: RUN,
+        boundInstance: "prod",
+        updatedAt: 9,
+      });
+      const otherRun = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "y",
+        runId: "webchat-another-run",
+        boundInstance: "prod",
+        updatedAt: 1,
+      });
+      return { foreign, question, otherRun };
+    });
+    for (const target of [elsewhere.foreign, elsewhere.question, elsewhere.otherRun]) {
+      const res = await post(t, {
+        op: "modelFallback",
+        chatId,
+        runId: RUN,
+        messageId: target,
+        state: "active",
+        model: "openai/gpt-6.1-sol",
+        selected: "openai/gpt-5.5",
+      });
+      // The named bubble is refused; the run's own is found instead.
+      expect(await res.json()).toEqual({ ok: true, messageId });
+      expect(await fallbackParts(t, target)).toHaveLength(0);
+    }
+    expect(await fallbackParts(t, messageId)).toHaveLength(1);
+  });
+
+  test("a bubble bound to another instance is not this bridge's to mark", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await settledAnswer(t, { boundInstance: "another-bridge" });
+    const res = await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: RUN,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    expect(await res.json()).toEqual({ ok: true, messageId: null });
+    expect(await fallbackParts(t, messageId)).toHaveLength(0);
+  });
+
+  test("malformed input is refused: unknown state, empty or oversized names, no run", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await settledAnswer(t);
+    for (const bad of [
+      { state: "weird", model: "m" },
+      { state: "active", model: "" },
+      { state: "active", model: "m".repeat(300) },
+      { state: "active", model: "ok", selected: "s".repeat(300) },
+      { state: "active", model: "line\nbreak" },
+      { state: "active", model: "ok", runId: "" },
+    ]) {
+      const res = await post(t, { op: "modelFallback", chatId, runId: RUN, messageId, ...bad });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+    expect(await fallbackParts(t, messageId)).toHaveLength(0);
+  });
+
+  test("the marker reaches the reader with its names, and the diagnostic view with its state only", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId, messageId } = await settledAnswer(t);
+    await post(t, {
+      op: "modelFallback",
+      chatId,
+      runId: RUN,
+      messageId,
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+    const view = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.messages.listByChat, { chatId });
+    const shown = view.flatMap((m) => m.parts).filter((p) => p.kind === "model_fallback");
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toMatchObject({ state: "active", model: "openai/gpt-6.1-sol", selected: "openai/gpt-5.5" });
+  });
+});

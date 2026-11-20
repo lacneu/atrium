@@ -6426,6 +6426,89 @@ export const splitSegment = internalMutation({
  * the first. The text joins the run's last bubble; when the run left none (its first
  * terminal had nothing to show), a bubble is created for it.
  */
+/**
+ * A MODEL FALLBACK the gateway stated for a run -> a marker on that run's bubble.
+ *
+ * The gateway says it after the run's work (captured after the run's terminal), so the
+ * bubble is usually settled already: this writes ONE part and touches nothing else —
+ * not the text, not the status, not the finalize stamps. It never creates a bubble: a
+ * run that showed nothing has nothing to mark.
+ *
+ * The bubble is the one the bridge names, when that is an answer of this chat carrying
+ * this run; otherwise the run's own answer in this chat (and session, when given). In
+ * both cases a bubble bound to another instance is not this bridge's to mark.
+ */
+export const noteModelFallback = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    runId: v.string(),
+    messageId: v.optional(v.id("messages")),
+    turnSessionKey: v.optional(v.string()),
+    state: v.union(v.literal("active"), v.literal("cleared")),
+    model: v.string(),
+    selected: v.optional(v.string()),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, a) => {
+    await assertChatBound(ctx, a.chatId, a.boundInstanceName);
+    const mine = (m: Doc<"messages"> | null): m is Doc<"messages"> =>
+      m !== null &&
+      m.chatId === a.chatId &&
+      m.role === "assistant" &&
+      m.runId === a.runId &&
+      (a.boundInstanceName === undefined ||
+        m.boundInstance === undefined ||
+        m.boundInstance === a.boundInstanceName);
+    const named = a.messageId === undefined ? null : await ctx.db.get(a.messageId);
+    let target: Doc<"messages"> | null = mine(named) ? named : null;
+    if (target === null) {
+      // The run's answer: its last segment when the run was cut at steered inputs.
+      const ofRun = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_run", (q) => q.eq("chatId", a.chatId).eq("runId", a.runId))
+        .order("desc")
+        .take(8);
+      target =
+        ofRun.find(
+          (m) => mine(m) && (a.turnSessionKey === undefined || m.turnSessionKey === undefined || m.turnSessionKey === a.turnSessionKey),
+        ) ?? null;
+    }
+    if (target === null) return null;
+    const now = Date.now();
+    const part = {
+      kind: "model_fallback" as const,
+      state: a.state,
+      model: a.model,
+      ...(a.state === "active" && a.selected !== undefined ? { selected: a.selected } : {}),
+      at: now,
+    };
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", target._id))
+      .collect();
+    const held = parts.find((p) => p.part.kind === "model_fallback");
+    if (held !== undefined) {
+      const same =
+        held.part.kind === "model_fallback" &&
+        held.part.state === part.state &&
+        held.part.model === part.model &&
+        held.part.selected === part.selected;
+      // A retransmit changes nothing — not even the bubble's `updatedAt`.
+      if (same) return target._id;
+      await ctx.db.patch(held._id, { part });
+    } else {
+      await ctx.db.insert("messageParts", {
+        messageId: target._id,
+        order: parts.reduce((m, e) => Math.max(m, e.order + 1), 0),
+        part,
+      });
+    }
+    await ctx.db.patch(target._id, { updatedAt: now });
+    return target._id;
+  },
+});
+
 export const appendLateFinal = internalMutation({
   args: {
     chatId: v.id("chats"),

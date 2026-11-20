@@ -23,6 +23,7 @@
 import type { SessionFillSource } from "./context-budget.js";
 import {
   EVENT_GATEWAY_SEQ_REPORT,
+  EVENT_MODEL_FALLBACK,
   EVENT_REASONING,
   EVENT_WIDGET,
   type NormalizedEvent,
@@ -685,6 +686,44 @@ export class TurnSink {
    *  projection `on`, CU-8. Reset when a turn begins. */
   get lastSettledBubble(): { messageId: string; runId: string | null; text: string } | null {
     return this.lastSettled;
+  }
+
+  /**
+   * A model fallback the gateway stated for a run that is not the live turn's (see
+   * core/events EVENT_MODEL_FALLBACK) — typically a run that just ended: the frame
+   * follows its terminal. Written on the bubble of THAT run: `messageId` when this
+   * bridge knows it, otherwise Convex finds the run's bubble, and writes nothing when
+   * the run left none. It opens no turn and changes no bubble's state.
+   */
+  async noteSettledRunFallback(
+    fallback: { runId: string; state: string; model: string; selected?: string },
+    messageId: string | null,
+  ): Promise<void> {
+    await this.writeModelFallback(fallback, messageId);
+  }
+
+  private async writeModelFallback(
+    fallback: { runId?: unknown; state?: unknown; model?: unknown; selected?: unknown },
+    messageId: string | null,
+  ): Promise<void> {
+    const runId = asString(fallback.runId);
+    const model = asString(fallback.model);
+    const state = fallback.state === "cleared" ? "cleared" : fallback.state === "active" ? "active" : null;
+    if (runId === "" || model === "" || state === null) return;
+    const selected = asString(fallback.selected);
+    try {
+      await this.writer.noteModelFallback?.(this.chatId, {
+        runId,
+        messageId,
+        sessionKey: this.sessionKey ?? null,
+        state,
+        model,
+        ...(state === "active" && selected !== "" ? { selected } : {}),
+      });
+    } catch (e) {
+      // A marker never fails the turn it describes.
+      console.error("[sink] model fallback not recorded (non-fatal):", errForLog(e));
+    }
   }
 
   /** A DISTINCT late final of a settled run (CU-8): joins `messageId` (that run's
@@ -1786,6 +1825,11 @@ export class TurnSink {
           // turn delivered none -> record a SOC2-safe diagnostic so the gap (missing
           // MEDIA:/mediaUrls delivery directive) is visible. No content, no part.
           await this.writer.noteMediaUndelivered(messageId, this.chatId);
+          break;
+        }
+        case EVENT_MODEL_FALLBACK: {
+          // Stated for a run of THIS turn while its bubble is open: on that bubble.
+          await this.writeModelFallback(event as Record<string, unknown>, messageId);
           break;
         }
         case EVENT_GATEWAY_SEQ_REPORT: {

@@ -1005,26 +1005,49 @@
     "fallback": {
       "phases": {
         "-": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "model fallback (the active model is no longer the selected one): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the provider rerouted the request to another model (Codex harness): the same marker as a lifecycle fallback",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "if (p.stream === \"fallback\") cleared = false;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "never captured (the Codex harness's provider reroute; the bench runs the API runtime); frame built from handleModelRerouted"
+          }
         }
       },
       "keys": {
         "fromModel": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the model fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the model that was asked for",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.fromProvider, data.fromModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "never captured (the Codex harness's provider reroute; the bench runs the API runtime); frame built from handleModelRerouted"
+          }
         },
         "reason": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the model fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "the provider's reason for rerouting, free text; deliberately never read: only the two model names are shown"
         },
         "toModel": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the model fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the model the provider routed to",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.toProvider, data.toModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "never captured (the Codex harness's provider reroute; the bench runs the API runtime); frame built from handleModelRerouted"
+          }
         }
       }
     },
@@ -1306,19 +1329,34 @@
           }
         },
         "fallback": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "lifecycle fallback (the active model is no longer the selected one): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the run was answered by another model than the one selected: a marker on that run's bubble, also when the frame follows the run's terminal",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "p.stream === \"lifecycle\" && data.phase === \"fallback\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
         },
         "fallback_cleared": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "lifecycle fallback_cleared: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the session is back on its selected model: a marker on the bubble of the run that carries it",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "p.stream === \"lifecycle\" && data.phase === \"fallback_cleared\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
         },
         "fallback_step": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "lifecycle fallback_step (a step of the fallback chain): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "one step of the gateway's failover chain; the Control UI does not read it either (handleLifecycleFallbackEvent returns on any lifecycle phase but fallback and fallback_cleared), and the fallback frame that follows names the outcome; Atrium follows it"
         },
         "finishing": {
           "status": "handled",
@@ -1384,14 +1422,30 @@
           }
         },
         "activeModel": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "activeModel of a fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the model that answered, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.activeProvider, data.activeModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
         },
         "activeProvider": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "activeProvider of a fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the model that answered, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.activeProvider, data.activeModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
         },
         "approvalId": {
           "status": "handled",
@@ -1410,14 +1464,12 @@
           "why": "the gateway's own bookkeeping for the transcript reply; Atrium places the reply by the transcript row itself (transcript projection); not read; no reader of it under ui/src either at this tag"
         },
         "attemptSummaries": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "attemptSummaries of a fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "why the selected model did not answer, in the provider's own words; deliberately never read: provider prose is neither stored nor shown, and the gateway's own notice text, delivered with the reply, already carries its summary"
         },
         "attempts": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "attempts of a fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "why the selected model did not answer, in the provider's own words; deliberately never read: provider prose is neither stored nor shown, and the gateway's own notice text, delivered with the reply, already carries its summary"
         },
         "completionSource": {
           "status": "ignored",
@@ -1471,39 +1523,32 @@
           "why": "whether execution began: Atrium's generation evidence is any frame past the preparation ones (provesGeneration); not read; no reader of it under ui/src either at this tag"
         },
         "fallbackStepChainPosition": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a fallback step: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
         },
         "fallbackStepFinalOutcome": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a fallback step: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
         },
         "fallbackStepFromFailureDetail": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a fallback step: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
         },
         "fallbackStepFromFailureReason": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a fallback step: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
         },
         "fallbackStepFromModel": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a fallback step: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
         },
         "fallbackStepToModel": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a fallback step: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
         },
         "fallbackStepType": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a fallback step: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
         },
         "livenessState": {
           "status": "handled",
@@ -1537,7 +1582,7 @@
         "previousActiveModel": {
           "status": "gap",
           "gap": "F7",
-          "note": "previousActiveModel of a fallback_cleared: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "the model the session leaves when a fallback is cleared, which the Control UI prints in the indicator's tooltip (Previous fallback: {model}); Atrium's cleared marker names the selected model only"
         },
         "provider": {
           "status": "ignored",
@@ -1557,23 +1602,38 @@
           }
         },
         "reasonSummary": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "reasonSummary of a fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "why the selected model did not answer, in the provider's own words; deliberately never read: provider prose is neither stored nor shown, and the gateway's own notice text, delivered with the reply, already carries its summary"
         },
         "replayInvalid": {
           "status": "ignored",
           "why": "a replay-invalidation flag: Atrium's compaction fallback keys on livenessState; not read; no reader of it under ui/src either at this tag"
         },
         "selectedModel": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "selectedModel of a fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the model that was asked for, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.selectedProvider, data.selectedModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
         },
         "selectedProvider": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "selectedProvider of a fallback: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the model that was asked for, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.selectedProvider, data.selectedModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
         },
         "startedAt": {
           "status": "ignored",
@@ -1855,94 +1915,130 @@
         "-": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run_status frame without a phase: no writer produces one in the vendored inventory's resolved rows; read like the startup phases, as not-yet-generation only"
         },
         "creating_worktree": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         },
         "memory_flushing": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         },
         "naming_worktree": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         },
         "preparing_context": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         },
         "preparing_workspace": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         },
         "provisioning_environment": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         },
         "retrying": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "a provider retry, whatever its reason: the back-off phase, with its counter when the frame carries a valid one",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (this.finalized || data.phase !== \"retrying\") return;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
         },
         "running_setup": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         },
         "starting_model": {
           "status": "gap",
           "gap": "F7",
-          "note": "run startup and retry status (read only as not-yet-generation by provesGeneration): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
         }
       },
       "keys": {
         "attempt": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "(maxAttempts as number) >= (attempt as number) &&"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
         },
         "delayMs": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "how long the runner waits before the next attempt; the label says which attempt, not for how long"
         },
         "maxAttempts": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "(maxAttempts as number) >= (attempt as number) &&"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
         },
         "maxRetries": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "the same retry counted from zero; the label uses attempt / maxAttempts, the pair the chat projection carries for a rate limit"
         },
         "message": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "the gateway's own sentence for the retry (the Control UI prints it as is); Atrium says the wait in its own localized wording and never carries gateway prose"
         },
         "phase": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "`retrying` selects the back-off; the startup phases are not read (see the phases)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (this.finalized || data.phase !== \"retrying\") return;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
         },
         "reason": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "handled",
+          "by": "`output_limit` is the run continuing a cut reply, not a provider being waited on: no back-off phase for it",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.reason === \"output_limit\") return;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
         },
         "retryAttempt": {
-          "status": "gap",
-          "gap": "F7",
-          "note": "a field of the run startup and retry status: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+          "status": "ignored",
+          "why": "the same retry counted from zero; the label uses attempt / maxAttempts, the pair the chat projection carries for a rate limit"
         }
       }
     },

@@ -208,6 +208,19 @@ export const messagePart = v.union(
     // rather than imply a pre-emptive threshold compaction.
     reason: v.optional(v.string()),
   }),
+  // The run behind this bubble was answered by ANOTHER MODEL than the one selected
+  // (`active`), or the session is back on its selected one (`cleared`) — the gateway's
+  // own statement, made after the run's work. `model` is the name the marker prints
+  // (the active model, or the selected one once cleared), `selected` the model that was
+  // asked for while a fallback holds. Model names only — a config-class `provider/model`
+  // slug, bounded at write — never the provider's reasons. At most one per bubble.
+  v.object({
+    kind: v.literal("model_fallback"),
+    state: v.union(v.literal("active"), v.literal("cleared")),
+    model: v.string(),
+    selected: v.optional(v.string()),
+    at: v.number(),
+  }),
   // Provenance report (provenance/v1, docs/PROVENANCE_CONTRACT.md): what a
   // gateway context-injecting plugin (conversational memory / document RAG)
   // fed the LLM for THIS turn. Emitted by the plugin on its gateway-scoped

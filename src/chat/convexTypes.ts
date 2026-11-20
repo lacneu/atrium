@@ -97,6 +97,17 @@ export type ConvexMessagePartView =
       /** A reasoning cut at write to the message's budget: only its first part is kept. */
       textCapped?: true;
     }
+  // Model fallback marker: the run behind this bubble was answered by another model
+  // than the one selected (`active`), or the session is back on its selected one
+  // (`cleared`). `model` is the name the notice prints. Model names only.
+  | {
+      kind: "model_fallback";
+      state: "active" | "cleared";
+      model: string;
+      /** The model that was asked for, while a fallback holds. */
+      selected?: string;
+      at: number;
+    }
   // Gateway context-compaction marker: the gateway summarized this session's
   // older context during the turn (content-free — phase + timestamp only).
   // Rendered as the always-visible "context optimized" note on the message.
@@ -372,6 +383,12 @@ export function isCronPart(
 
 export function isWidgetPart(p: ConvexMessagePartView): p is WidgetPartView {
   return p.kind === "widget";
+}
+
+export function isModelFallbackPart(
+  p: ConvexMessagePartView,
+): p is Extract<ConvexMessagePartView, { kind: "model_fallback" }> {
+  return p.kind === "model_fallback";
 }
 
 export function isCompactionPart(

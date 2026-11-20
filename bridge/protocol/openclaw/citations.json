@@ -3392,6 +3392,134 @@
       "literals": [
         "clientSeq.set(c, nextSeq);"
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:372-388",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/auto-reply/reply/agent-runner-result-payloads.ts",
+      "lines": [
+        [
+          372,
+          388
+        ]
+      ],
+      "literals": [
+        "phase: \"fallback\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:399-411",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/auto-reply/reply/agent-runner-result-payloads.ts",
+      "lines": [
+        [
+          399,
+          411
+        ]
+      ],
+      "literals": [
+        "phase: \"fallback_cleared\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:302-321",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "extensions/codex/src/app-server/event-projector-events.ts",
+      "lines": [
+        [
+          302,
+          321
+        ]
+      ],
+      "literals": [
+        "stream: \"fallback\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/tool-stream-status.ts:303-349",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "ui/src/pages/chat/tool-stream-status.ts",
+      "lines": [
+        [
+          303,
+          349
+        ]
+      ],
+      "literals": [
+        "if (phase === \"fallback\" && selected === active) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/run/attempt-recovery.ts:450-466",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/embedded-agent-runner/run/attempt-recovery.ts",
+      "lines": [
+        [
+          450,
+          466
+        ]
+      ],
+      "literals": [
+        "phase: \"retrying\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:388-399",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "extensions/codex/src/app-server/event-projector-events.ts",
+      "lines": [
+        [
+          388,
+          399
+        ]
+      ],
+      "literals": [
+        "phase: \"retrying\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:1480-1510",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          1480,
+          1510
+        ]
+      ],
+      "literals": [
+        "evt.data.reason === \"rate_limit\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-execution.ts:242-246",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/auto-reply/reply/agent-runner-execution.ts",
+      "lines": [
+        [
+          242,
+          246
+        ]
+      ],
+      "literals": [
+        "startupPhase !== lastRunStartupPhase"
+      ]
     }
   ]
 }

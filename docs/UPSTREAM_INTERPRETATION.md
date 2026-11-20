@@ -1465,6 +1465,51 @@ sockets and nothing else, at connection level, and no turn carries a `framesLost
 — the envelope seq names neither session nor run, so a hole is not charged to the reply in
 flight.
 
+### Model fallback
+
+**Upstream.** When its failover chain answers with another model than the selected one,
+the gateway emits `lifecycle` `phase:"fallback"` with the selected and active
+provider/model and the reasons (`$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:372-388`),
+and `phase:"fallback_cleared"` once the session is back on its selected model
+(`$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:399-411`). Both are emitted
+while the reply payloads are built, after the run's work: on the wire they follow the
+run's `lifecycle end` and `chat final`, with the run's seq back at 1. The Codex harness
+emits `stream:"fallback"` with `fromModel` / `toModel` when the provider reroutes a
+request (`$UP/extensions/codex/src/app-server/event-projector-events.ts:302-321`). The
+Control UI shows "Fallback active: {active model}" or "Fallback cleared: {selected
+model}" for eight seconds, ignores a fallback whose two names are equal, and does not
+read `fallback_step` (`$UP/ui/src/pages/chat/tool-stream-status.ts:303-349`). The gateway
+also adds its own notice text to the reply, as a status notice.
+
+**Atrium.** The frame is read as a fact about a run, apart from the turn's state
+(`model-fallback.ts`): it is never content of a turn and never opens, reopens or ends
+one. It becomes a marker on the bubble of the run it names — the live turn's bubble
+when the run is still that turn's, otherwise the bubble the run left, found by its run
+when the bridge does not hold it. A run that showed nothing gets no marker. The marker
+is kept on the bubble rather than shown for a few seconds, and prints the Control UI's
+two sentences, localized. Only model names are carried: the reasons and attempts are
+the provider's own text and are neither stored nor shown.
+
+### Provider retries
+
+**Upstream.** Every transient retry is emitted on the agent stream as `run_status`
+`phase:"retrying"` — by the embedded runner with its counters and reason
+(`$UP/src/agents/embedded-agent-runner/run/attempt-recovery.ts:450-466`), by the Codex
+harness with a sentence only
+(`$UP/extensions/codex/src/app-server/event-projector-events.ts:388-399`). The projection
+onto `chat` rewrites it to `starting_model` and names it a retry only when the reason is
+`rate_limit` (`$UP/src/gateway/server-chat.ts:1480-1510`). A startup phase is re-emitted
+only when it changes (`$UP/src/auto-reply/reply/agent-runner-execution.ts:242-246`), so
+none follows a retry that resumes on the same phase: in the Control UI too the retry
+label stands until the run shows activity.
+
+**Atrium.** `run_status` `retrying` publishes the same back-off phase as the `chat`
+retry status, with the counter when the frame carries a valid one (integers, 1..10) and
+without it otherwise; the gateway's sentence is not shown. It ends on the same resume
+signals (assistant text, tool progress, a preamble). A retry whose reason is
+`output_limit` — the run continuing a reply cut at its output limit — publishes nothing.
+The startup phases of the stream are not shown.
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1481,6 +1526,8 @@ flight.
 | Approvals of sub-agents | **Deliberately narrower (0.103.5)** — a conversation shows and answers its own session's approvals only; upstream addresses an approval to the raising session's whole lineage, stores that audience when it registers it, and serves it on `session.approval`, which Atrium does not consume (§10) |
 | Tool phases `input_delta` / `review` | **Conformant on the card's state** — neither closes a card, counts a tool or drops its arguments; the live diff stat and the reviewer's line are not shown (§11) |
 | `seq gap` report | **Conformant** — the gateway's own numbering, observed under its own name and never counted as a lost frame; only a hole in the envelope seq is a loss (§11) |
+| Model fallback | **Conformant on what is said, kept longer** — the Control UI's two sentences as a marker on the run's bubble, also when the frame follows the run's terminal; the reasons, the attempts and the previous model are not shown (§11) |
+| Provider retries | **Conformant** for the retry itself — read from the agent stream whatever the reason, with Atrium's own wording; the run's startup phases and the provider notices are not shown (§11) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or

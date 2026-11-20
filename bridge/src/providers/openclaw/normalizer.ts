@@ -2093,6 +2093,42 @@ export class Normalizer {
     return false;
   }
 
+  /**
+   * `stream:"run_status"` — only its `retrying` phase is read.
+   *
+   * The gateway projects a provider retry onto `chat` as a status frame and names it a
+   * retry there ONLY when its reason is `rate_limit` (server-chat.ts); an overloaded
+   * provider, a server error, a timeout, and every retry of the Codex harness arrive on
+   * `chat` as a bare `starting_model`. The agent stream says all of them:
+   * `{phase:"retrying", attempt?, maxAttempts?, reason?, message}` (the embedded
+   * runner's `onRetry`, attempt-recovery.ts; the Codex harness's `handleRetry`, which
+   * carries `message` alone). It is not droppable, unlike the `chat` projection.
+   *
+   * Published as the same back-off phase the `chat` path publishes, closed by the same
+   * resume signals. The counter rides only when it satisfies the label's contract;
+   * `message` is the gateway's sentence and never leaves this method. `output_limit` is
+   * the run continuing a reply cut at its output limit — not a provider being waited on
+   * — and says nothing here. The startup phases of this stream are not read.
+   */
+  private handleRunStatus(data: JsonObject, events: BridgeEvent[]): void {
+    if (this.finalized || data.phase !== "retrying") return;
+    if (data.reason === "output_limit") return;
+    const attempt = data.attempt;
+    const maxAttempts = data.maxAttempts;
+    const counted =
+      Number.isInteger(attempt) &&
+      Number.isInteger(maxAttempts) &&
+      (attempt as number) >= 1 &&
+      (maxAttempts as number) >= (attempt as number) &&
+      (maxAttempts as number) <= RETRY_MAX_ATTEMPTS;
+    events.push({
+      type: EVENT_TURN_PHASE,
+      phase: "retrying",
+      ...(counted ? { retry: { attempt, maxAttempts } } : {}),
+    });
+    this.inRetryingPhase = true;
+  }
+
   private clearRetryingPhase(events: BridgeEvent[]): void {
     if (!this.inRetryingPhase) return;
     this.inRetryingPhase = false;
@@ -2258,6 +2294,10 @@ export class Normalizer {
     }
     if (stream === "compaction") {
       this.handleCompaction(data, now, events);
+      return;
+    }
+    if (stream === "run_status") {
+      this.handleRunStatus(data, events);
       return;
     }
     if (stream === "tool") {

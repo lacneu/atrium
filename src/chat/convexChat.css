@@ -8473,6 +8473,11 @@ button.oc-perm__opt:disabled {
 .oc-compaction--failed .oc-compaction__label {
   color: var(--warning-foreground, #92400e);
 }
+/* Model-fallback marker (ModelFallbackNotice): the same event line. Without a detail
+   to show there is nothing to hover for. */
+.oc-model-fallback:not([data-state]) {
+  cursor: default;
+}
 
 
 /* Bridge tab — protocol-contract section: compact mono lists for drift/gaps. */

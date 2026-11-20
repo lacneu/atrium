@@ -32,6 +32,7 @@ import { hashKey } from "./lib/apikeys";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { compactionReasonClass } from "./lib/compactionReasons";
 import { finalizeCauseClass } from "./lib/finalizeCause";
+import { isModelFallbackLabel } from "./lib/modelFallback";
 import {
   gatewayVersionLabel,
   pressureVerdict,
@@ -399,6 +400,20 @@ type IngestOp =
       expected?: number;
       received?: number;
       missing?: number;
+    }
+  // A model fallback the gateway stated for a run (the run was answered by another
+  // model, or the session is back on its selected one): a marker part on that run's
+  // bubble — `messageId` when the bridge knows it, else found by the run. Model names
+  // only. Never creates a bubble.
+  | {
+      op: "modelFallback";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      state: string;
+      model: string;
+      selected?: string;
     }
   // The gateway's report about its own per-run numbering (`reason:"seq gap"`): two
   // counters inside the gateway, not a frame lost on the way to the bridge. Records an
@@ -1339,6 +1354,46 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
+    }
+    case "modelFallback": {
+      if (
+        typeof body.chatId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        (body.state !== "active" && body.state !== "cleared") ||
+        !isModelFallbackLabel(body.model) ||
+        (body.selected !== undefined && !isModelFallbackLabel(body.selected))
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const marked = await ctx.runMutation(internal.stream.noteModelFallback, {
+        chatId: body.chatId as Id<"chats">,
+        runId: body.runId,
+        ...(typeof body.messageId === "string" && body.messageId !== ""
+          ? { messageId: body.messageId as Id<"messages"> }
+          : {}),
+        ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
+          ? { turnSessionKey: body.sessionKey }
+          : {}),
+        state: body.state,
+        model: body.model,
+        ...(body.selected !== undefined ? { selected: body.selected } : {}),
+        boundInstanceName,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        correlationId: marked ?? body.chatId,
+        meta: {
+          op: body.op,
+          ...(marked !== null ? { messageId: marked } : {}),
+          // The state only: a model name is gateway text, kept out of traces.
+          state: body.state,
+          ok: marked !== null,
+          ...(marked === null ? { reason: "no_bubble_for_run" } : {}),
+        },
+      });
+      return json({ ok: true, messageId: marked });
     }
     case "gatewaySeqReportTrace": {
       await traceGatewaySeqReport(ctx, body);
