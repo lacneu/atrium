@@ -494,9 +494,24 @@ export class OpenClawConnection {
       if (this.closed || this.silenceConfirmTimer !== null) return;
       this.noteArrivingBytes(watch);
       if (watch.check() === "alive") return;
-      // CONFIRMED before it is acted on: a timer runs before the I/O queued behind it,
-      // so after a pause of this process the verdict is reached while the gateway's
-      // frames are still unread in the socket. They are read before this fires.
+      // PROBED before it is acted on. Silence is not proof of a dead transport: from
+      // 2026.9.6 a gateway that begins a restart stops its ticks at once
+      // (server-maintenance.ts, on the restart-drain signal) and announces `shutdown`
+      // only after its active work has drained — up to five minutes
+      // (infra/restart-budget.ts) during which a turn on this socket may still finish.
+      // One read-only request settles it: ANY response frame, an error included, is an
+      // inbound frame and resets the watch; only a transport that answers nothing is
+      // closed. (The gateway's own clients close without asking; a turn is at stake
+      // here.) At most one probe per check, bounded by the confirmation delay.
+      const confirmMs = Math.min(intervalMs, SILENCE_CONFIRM_MS);
+      // `health`: read-only, free of side effects, in every validated gateway's method
+      // list. Its answer is not read — that there is one is the point.
+      void this.request("health", {}, confirmMs).catch(() => {
+        /* an error answer already counted as a frame; no answer is the verdict below */
+      });
+      // CONFIRMED rather than acted on at once, for a second reason: a timer runs
+      // before the I/O queued behind it, so after a pause of this process the verdict
+      // is reached while the gateway's frames are still unread in the socket.
       this.silenceConfirmTimer = setTimeout(
         () => {
           this.silenceConfirmTimer = null;
@@ -515,7 +530,7 @@ export class OpenClawConnection {
           }
           this.onClose(new OpenClawError("OpenClaw Gateway connection closed"));
         },
-        Math.min(intervalMs, SILENCE_CONFIRM_MS),
+        confirmMs,
       );
       this.silenceConfirmTimer.unref?.();
     }, intervalMs);

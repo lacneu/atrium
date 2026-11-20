@@ -62,6 +62,20 @@ const connect = async (policy: Record<string, unknown>, onMethod?: () => unknown
   return conn;
 };
 
+/** A transport that answers NOTHING after the handshake — half-open, or a gateway that
+ *  hangs: the watch's probe goes unanswered like everything else. */
+const MUTE = () => NO_ANSWER;
+
+/** `ms` of silence in 5 s steps, real I/O running between two steps; the socket must
+ *  stay open throughout. */
+const silentFor = async (ms: number, c: OpenClawConnection) => {
+  for (let at = 5_000; at <= ms; at += 5_000) {
+    vi.advanceTimersByTime(5_000);
+    await sleep(15);
+    expect(c.isClosed, `after ${at} ms`).toBe(false);
+  }
+};
+
 /** One interval of the watch elapses (the timer fires once). */
 const interval = (ms = 30_000) => vi.advanceTimersByTime(ms);
 /** The confirmation delay of a "silent" verdict elapses. */
@@ -124,7 +138,7 @@ describe("connection silence over a real socket", () => {
     let paused = 0;
     const clock = performance.now.bind(performance);
     vi.spyOn(performance, "now").mockImplementation(() => clock() + paused);
-    const c = await connect({ ...CAPTURED_HELLO_POLICY });
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
     const frames = c.frames();
     // The process did not run for ten minutes; the one check that then runs sees a
     // long silence…
@@ -166,7 +180,7 @@ describe("connection silence over a real socket", () => {
     // A frame of tens of megabytes on a slow link: `message` fires once it is whole,
     // and the gateway's ticks queue behind it. The peer is plainly alive — its bytes
     // keep coming — so the watch must not close the socket in the middle of it.
-    const c = await connect({ ...CAPTURED_HELLO_POLICY });
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
     const frames = c.frames();
     const whole = JSON.stringify({ type: "event", event: "health", payload: { pad: "x".repeat(4_000) } });
     const pieces = [whole.slice(0, 1_000), whole.slice(1_000, 2_000), whole.slice(2_000, 3_000), whole.slice(3_000)];
@@ -188,6 +202,54 @@ describe("connection silence over a real socket", () => {
     confirm();
     expect(c.isClosed).toBe(true);
     expect(c.connectionEnd?.kind).toBe("inbound_silence");
+  });
+
+  it("a gateway that stops its ticks but still ANSWERS is not closed — a restart draining its active work", async () => {
+    // OpenClaw 2026.9.6+ stops `tick` the moment a restart begins and announces
+    // `shutdown` only once its active work has drained (up to five minutes). A turn
+    // whose tool stays silent for two minutes is on a perfectly live socket: the watch
+    // asks before it closes, and any answer keeps the socket.
+    const c = await connect({ ...CAPTURED_HELLO_POLICY });
+    const frames = c.frames();
+    // 120 s without a single frame from the gateway, in 5 s steps: real I/O runs
+    // between two steps, so a probe sent at one is answered before the next.
+    await silentFor(120_000, c);
+    const probes = gateway!.requests.filter((r) => r.method === "health");
+    expect(probes.length).toBeGreaterThanOrEqual(1);
+    // At most one probe per check interval — here one, at the first silent verdict.
+    expect(probes.length).toBeLessThanOrEqual(2);
+    // The drain ends: the result, then the real announcement, arrive on this socket.
+    gateway!.push({ type: "event", event: "shutdown", payload: { reason: "gateway restarting", restartExpectedMs: 1500 } });
+    expect(((await frames.next()).value as { event?: string }).event).toBe("shutdown");
+    gateway!.socket!.close(1012, "service restart");
+    await frames.next();
+    expect(c.connectionEnd?.kind).toBe("gateway_restarting");
+  });
+
+  it("an ERROR answer to the probe is proof of life too", async () => {
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, () => ({
+      error: { code: "UNAVAILABLE", message: "gateway restarting" },
+    }));
+    await silentFor(120_000, c);
+    expect(gateway!.requests.some((r) => r.method === "health")).toBe(true);
+  });
+
+  it("the same silence on a transport that answers nothing is closed, the probe leaving nothing behind", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
+    interval();
+    interval();
+    interval();
+    await sleep(30);
+    // The probe was sent and is unanswered.
+    expect(gateway!.requests.filter((r) => r.method === "health")).toHaveLength(1);
+    confirm();
+    expect(c.isClosed).toBe(true);
+    expect(c.connectionEnd?.kind).toBe("inbound_silence");
+    // Nothing of the watch or of its probe is left armed.
+    expect(watchTimers(c)).toBe(0);
+    await sleep(30);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("counts a response frame as activity too", async () => {
@@ -221,14 +283,15 @@ describe("connection silence over a real socket", () => {
   });
 
   it("stops the watch when the connection is closed for any other reason", async () => {
-    const c = await connect({ ...CAPTURED_HELLO_POLICY });
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
     expect(watchTimers(c)).toBe(1);
     // …including while a verdict awaits its confirmation.
     interval();
     interval();
     interval();
     expect(watchTimers(c)).toBe(2);
-    expect(vi.getTimerCount()).toBe(2);
+    // The interval, the confirmation, and the probe's own deadline.
+    expect(vi.getTimerCount()).toBe(3);
     c.close();
     expect(watchTimers(c)).toBe(0);
     // Really cancelled, not merely forgotten: nothing is left armed.
@@ -251,7 +314,7 @@ describe("connection silence over a real socket", () => {
 
   it("keeps an ANNOUNCED end's name when the socket then goes quiet instead of closing", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    const c = await connect({ ...CAPTURED_HELLO_POLICY });
+    const c = await connect({ ...CAPTURED_HELLO_POLICY }, MUTE);
     const frames = c.frames();
     gateway!.push({
       type: "event",
@@ -277,7 +340,12 @@ describe("a silent conversation socket, through the session", () => {
     // as for any other close — and the registry reconnects on the next use.
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
-    gateway = startWsFakeGateway({ version: "2026.9.36", policy: { ...CAPTURED_HELLO_POLICY } });
+    gateway = startWsFakeGateway({
+      version: "2026.9.36",
+      policy: { ...CAPTURED_HELLO_POLICY },
+      // The session's own setup is answered; the transport then stops answering.
+      onMethod: (method) => (method === "health" ? NO_ANSWER : {}),
+    });
     await gateway.ready;
     const finalized: unknown[][] = [];
     const writer = {
