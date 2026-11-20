@@ -2264,11 +2264,15 @@ export class Normalizer {
         // THIS request, not every request. A second command can be waiting on its
         // own authorisation, and releasing it here would re-arm the finishing promise
         // and close the turn while a human still had a decision to make.
-        this.releaseApproval(
-          [data.toolCallId, data.approvalId].filter(isString),
-          now,
-          events,
-        );
+        const aliases = [data.toolCallId, data.approvalId].filter(isString);
+        // A `resolved` that NAMES a request this turn does not hold releases nothing
+        // and says nothing: after an in-place wait the run's `approval-resolved` got
+        // there first, and publishing a phase for it would wipe whatever label stands.
+        // (One naming nothing still pairs with an unnamed request, by count.)
+        if (aliases.length > 0 && !aliases.some((alias) => this.approvalAliases.has(alias))) {
+          return;
+        }
+        this.releaseApproval(aliases, now, events);
       }
       return;
     }

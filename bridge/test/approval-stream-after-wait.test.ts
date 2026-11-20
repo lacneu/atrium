@@ -119,7 +119,9 @@ describe("the captured order: lifecycle wait, lifecycle release, then the approv
     expect(t.feed(CAPTURED.resolvedOnLifecycle)).toStrictEqual(["generating"]);
     expect(t.n.recvDeadlineArmed).toBe(true);
     t.feed(CAPTURED.result);
-    expect(t.feed(CAPTURED.resolvedOnApprovalStream)).not.toContain("awaiting_approval");
+    // Nothing is left to release: it publishes no phase at all — a `generating` here
+    // would clear whatever label another producer set meanwhile.
+    expect(t.feed(CAPTURED.resolvedOnApprovalStream)).toStrictEqual([]);
     expect(t.n.recvDeadlineArmed, "nothing waits on a person any more").toBe(true);
   });
 
@@ -145,6 +147,31 @@ describe("the captured order: lifecycle wait, lifecycle release, then the approv
     t.feed(CAPTURED.resolvedOnApprovalStream);
     // The stream's `resolved` names the tool call, which the wait is also known by.
     expect(t.n.recvDeadlineArmed, "released: the silence clock runs again").toBe(true);
+  });
+});
+
+describe("a `resolved` that matches nothing", () => {
+  it("does not wipe a provider back-off label that stands", () => {
+    const t = open();
+    t.feed(CAPTURED.start);
+    t.feed(CAPTURED.waiting);
+    t.feed(CAPTURED.resolvedOnLifecycle);
+    t.feed(CAPTURED.result);
+    // Shape-faithful: the retry the embedded runner emits (attempt-recovery.ts onRetry).
+    expect(
+      t.feed(agent("run_status", { phase: "retrying", attempt: 2, maxAttempts: 4, reason: "overloaded" })),
+    ).toStrictEqual(["retrying"]);
+    expect(t.feed(CAPTURED.resolvedOnApprovalStream)).toStrictEqual([]);
+  });
+
+  it("an unnamed one still answers an unnamed request", () => {
+    const t = open();
+    expect(t.feed(agent("approval", { phase: "requested", kind: "exec", status: "pending" }))).toStrictEqual([
+      "awaiting_approval",
+    ]);
+    expect(t.feed(agent("approval", { phase: "resolved", kind: "exec", status: "denied" }))).toStrictEqual([
+      "generating",
+    ]);
   });
 });
 
