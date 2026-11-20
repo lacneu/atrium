@@ -3328,6 +3328,70 @@
         "resultReceived: true",
         "entry.resultReceived = true;"
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:1422-1457",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          1422,
+          1457
+        ]
+      ],
+      "literals": [
+        "reason: \"seq gap\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/infra/agent-events.ts:421-422",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/infra/agent-events.ts",
+      "lines": [
+        [
+          421,
+          422
+        ]
+      ],
+      "literals": [
+        "const nextSeq = (state.seqByRun.get(event.runId) ?? 0) + 1;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/infra/agent-events.ts:592-603",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/infra/agent-events.ts",
+      "lines": [
+        [
+          592,
+          603
+        ]
+      ],
+      "literals": [
+        "notifyListeners(state.auditListeners, enriched);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-broadcast.ts:458-462",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-broadcast.ts",
+      "lines": [
+        [
+          458,
+          462
+        ]
+      ],
+      "literals": [
+        "clientSeq.set(c, nextSeq);"
+      ]
     }
   ]
 }

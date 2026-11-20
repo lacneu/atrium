@@ -63,7 +63,7 @@ import {
   EVENT_MEDIA_UNDELIVERED,
   EVENT_AGENT_ACTIVITY,
   EVENT_CONTEXT_COMPACTION,
-  EVENT_FRAME_GAP,
+  EVENT_GATEWAY_SEQ_REPORT,
   EVENT_PLAN_ADVANCE,
   EVENT_PLAN,
   EVENT_WIDGET,
@@ -2240,29 +2240,16 @@ export class Normalizer {
       return;
     }
     if (stream === "error") {
-      // The gateway's OWN loss diagnostic — not a turn failure. It tracks the
-      // per-run `seq` of the agent events it forwards and, when it sees a hole,
-      // tells us so on this stream (`{reason:"seq gap", expected, received}`,
-      // pinned upstream by server-chat.agent-events.test.ts). We had NO branch
-      // for it, so the single explicit signal that content was lost was
-      // silently discarded — the user then saw a truncated reply with no
-      // explanation, and we had nothing to diagnose with.
-      // It must NEVER finalize the turn in error: the frames that DID arrive are
-      // still valid, and the run continues. Content-free by construction
-      // (two counters), so it is safe to trace.
+      // The gateway's report about ITS OWN per-run numbering (see core/events
+      // EVENT_GATEWAY_SEQ_REPORT): not a frame lost on the way here, and never a turn
+      // failure. Named by the run the FRAME carries — the broadcast is scoped to the
+      // session, and a turn may hold more than one run.
       if (data.reason === "seq gap") {
-        const expected = typeof data.expected === "number" ? data.expected : null;
-        const received = typeof data.received === "number" ? data.received : null;
         events.push({
-          type: EVENT_FRAME_GAP,
-          source: "gateway",
-          expected,
-          received,
-          missing:
-            expected !== null && received !== null && received > expected
-              ? received - expected
-              : null,
-          runId: this.currentRunId,
+          type: EVENT_GATEWAY_SEQ_REPORT,
+          expected: typeof data.expected === "number" ? data.expected : null,
+          received: typeof data.received === "number" ? data.received : null,
+          runId: this.frameRunId !== "" ? this.frameRunId : null,
         });
       }
       // Any OTHER `stream:"error"` payload stays observe-only too: it is a

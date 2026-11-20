@@ -1892,12 +1892,13 @@ describe("agent.data vocabulary: tool progress vs completion, compaction verdict
   });
 });
 
-// FRAME LOSS — the gateway's own diagnostic, which we used to discard.
-// It tracks the per-run `seq` of the agent events it forwards and, on a hole,
-// broadcasts `stream:"error"` with `{reason:"seq gap", expected, received}`
-// (pinned upstream by server-chat.agent-events.test.ts). Atrium had NO branch for
-// that stream, so the single explicit "content was lost" signal was dropped.
-describe("frame loss: the gateway's seq-gap diagnostic", () => {
+// The gateway's SEQUENCE REPORT: its agent-event handler compares the per-run `seq` of
+// the event it handles with the last one it handled and, when they are not consecutive,
+// broadcasts `stream:"error"` with `{reason:"seq gap", expected, received}` (pinned
+// upstream by server-chat.agent-events.test.ts). Both counters are the gateway's own:
+// it is observed under its own name, never as a frame lost on the way here
+// (gateway-seq-report.test.ts holds the captured frame and the rest of the chain).
+describe("the gateway's seq-gap report", () => {
   function errFrame(data: Record<string, unknown>): unknown {
     return {
       type: "event",
@@ -1913,7 +1914,7 @@ describe("frame loss: the gateway's seq-gap diagnostic", () => {
     };
   }
 
-  it("emits a frame.gap diagnostic and does NOT fail the turn (upstream shape, verbatim)", () => {
+  it("emits a sequence report and does NOT fail the turn (upstream shape, verbatim)", () => {
     const normalizer = newNormalizer();
     const clock = new Clock();
     normalizer.beginTurn(clock.now);
@@ -1923,16 +1924,11 @@ describe("frame loss: the gateway's seq-gap diagnostic", () => {
       errFrame({ reason: "seq gap", expected: 2, received: 5 }),
       clock.tick(),
     );
-    const gaps = events.filter((e) => e.type === "frame.gap");
-    expect(gaps).toHaveLength(1);
-    expect(gaps[0]).toMatchObject({
-      source: "gateway",
-      expected: 2,
-      received: 5,
-      missing: 3,
-    });
-    // A lost frame is a DIAGNOSTIC, never a turn failure: the frames that did
-    // arrive are still valid and the run continues.
+    expect(events.filter((e) => e.type === "frame.gap")).toHaveLength(0);
+    const reports = events.filter((e) => e.type === "gateway.seq_report");
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ expected: 2, received: 5, runId: OWN_RUN });
+    // A DIAGNOSTIC, never a turn failure: the run continues.
     expect(events.some((e) => e.type === "run.status")).toBe(false);
     expect(events.some((e) => e.type === "message.final")).toBe(false);
   });
@@ -1948,7 +1944,7 @@ describe("frame loss: the gateway's seq-gap diagnostic", () => {
       errFrame({ reason: "something we have never seen" }),
       clock.tick(),
     );
-    expect(events.filter((e) => e.type === "frame.gap")).toHaveLength(0);
+    expect(events.filter((e) => e.type === "gateway.seq_report")).toHaveLength(0);
     expect(events.some((e) => e.type === "run.status")).toBe(false);
   });
 
@@ -1971,7 +1967,7 @@ describe("frame loss: the gateway's seq-gap diagnostic", () => {
       },
       clock.tick(),
     );
-    expect(events.filter((e) => e.type === "frame.gap")).toHaveLength(0);
+    expect(events.filter((e) => e.type === "gateway.seq_report")).toHaveLength(0);
   });
 });
 

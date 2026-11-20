@@ -1442,6 +1442,29 @@ does not know still closes the card, so a renamed terminal cannot leave one spin
 Narrower than the Control UI: the live `+added −removed` stat of a running edit and the
 reviewer's line ("Guardian reviewing / approved / denied") are not shown.
 
+### The gateway's `seq gap` report
+
+**Upstream.** The gateway's agent-event handler remembers the last seq it handled for
+each run; when the next event's seq is not that plus one it broadcasts
+`{stream:"error", data:{reason:"seq gap", expected, received}}` to the session
+(`$UP/src/gateway/server-chat.ts:1422-1457`). That seq is the runtime's per-run emission
+counter (`$UP/src/infra/agent-events.ts:421-422`), which also numbers emissions the
+handler never receives, such as audit-only events
+(`$UP/src/infra/agent-events.ts:592-603`). Both counters are inside the gateway:
+`received < expected` is a seq the handler had already passed, `received > expected`
+emissions it did not handle. A frame the gateway drops for one client leaves a hole in a
+different counter, the per-connection envelope `seq`, which advances even for a dropped
+frame (`$UP/src/gateway/server-broadcast.ts:458-462`). The Control UI reads no part of the
+report.
+
+**Atrium.** The report is observed under its own name and fails nothing: an
+`openclaw.gateway_seq_report` trace per report (the two counters, their direction, the run
+the frame names) and a `gatewaySeqReports` count on the turn's pressure trace. It is not a
+frame loss: `openclaw.frame_gap` records holes in the envelope seq of the bridge's own
+sockets and nothing else, at connection level, and no turn carries a `framesLost` counter
+— the envelope seq names neither session nor run, so a hole is not charged to the reply in
+flight.
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1457,6 +1480,7 @@ reviewer's line ("Guardian reviewing / approved / denied") are not shown.
 | Reasoning and work notes | **Conformant (0.103.0)** — shown after the fact above its row when the conversation shows reasoning (per-conversation choice, per-agent Atrium default); work notes live from completed preambles; Hermes is read, never written (its setter is global) (§9) |
 | Approvals of sub-agents | **Deliberately narrower (0.103.5)** — a conversation shows and answers its own session's approvals only; upstream addresses an approval to the raising session's whole lineage, stores that audience when it registers it, and serves it on `session.approval`, which Atrium does not consume (§10) |
 | Tool phases `input_delta` / `review` | **Conformant on the card's state** — neither closes a card, counts a tool or drops its arguments; the live diff stat and the reviewer's line are not shown (§11) |
+| `seq gap` report | **Conformant** — the gateway's own numbering, observed under its own name and never counted as a lost frame; only a hole in the envelope seq is a loss (§11) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or

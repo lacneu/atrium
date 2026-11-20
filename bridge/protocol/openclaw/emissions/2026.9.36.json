@@ -913,26 +913,58 @@
     "error": {
       "phases": {
         "-": {
-          "status": "gap",
-          "gap": "F6",
-          "note": "the seq-gap report: the gateway's report about ITS OWN per-run numbering (received = expected - 1 on every capture), not a lost frame; Atrium counts it as frames lost, which inflates framesLost and misleads the diagnostics"
+          "status": "handled",
+          "by": "the gateway's report about its own per-run numbering: observed under its own name (a trace, a per-turn count), never as a frame lost on the way to the bridge",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "type: EVENT_GATEWAY_SEQ_REPORT,"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
         }
       },
       "keys": {
         "expected": {
-          "status": "gap",
-          "gap": "F6",
-          "note": "a field of the seq-gap report: the gateway's report about ITS OWN per-run numbering (received = expected - 1 on every capture), not a lost frame; Atrium counts it as frames lost, which inflates framesLost and misleads the diagnostics"
+          "status": "handled",
+          "by": "the seq the gateway's handler expected next, carried on the report's trace",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "expected: typeof data.expected === \"number\" ? data.expected : null,"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
         },
         "reason": {
-          "status": "gap",
-          "gap": "F6",
-          "note": "a field of the seq-gap report: the gateway's report about ITS OWN per-run numbering (received = expected - 1 on every capture), not a lost frame; Atrium counts it as frames lost, which inflates framesLost and misleads the diagnostics"
+          "status": "handled",
+          "by": "`seq gap` selects the report; any other reason on this stream is ignored and fails nothing",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.reason === \"seq gap\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
         },
         "received": {
-          "status": "gap",
-          "gap": "F6",
-          "note": "a field of the seq-gap report: the gateway's report about ITS OWN per-run numbering (received = expected - 1 on every capture), not a lost frame; Atrium counts it as frames lost, which inflates framesLost and misleads the diagnostics"
+          "status": "handled",
+          "by": "the seq it received instead, carried on the report's trace (below expected: one it had passed; above: emissions it did not handle)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "received: typeof data.received === \"number\" ? data.received : null,"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
         }
       }
     },

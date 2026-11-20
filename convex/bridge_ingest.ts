@@ -200,6 +200,58 @@ async function traceIngest(
   }
 }
 
+/** A run id as the gateway mints them: a bounded plain token (letters, digits and the
+ *  separators its families use). Anything else is not stored. */
+const TRACE_RUN_ID = /^[A-Za-z0-9:._@-]{1,256}$/;
+
+/**
+ * The gateway's sequence report -> an `openclaw.gateway_seq_report` trace.
+ *
+ * The gateway's agent-event handler compares the seq of the event it handles with the
+ * last one it handled for that run; the seq itself is the runtime's per-run emission
+ * counter, which also counts emissions that handler never sees. `behind` = a seq it had
+ * already passed, `ahead` = emissions it did not handle. Both counters are the
+ * gateway's: nothing here says a frame was lost on the way to the bridge. Counters, the
+ * run the report names and the turn that saw it — never content.
+ */
+async function traceGatewaySeqReport(
+  ctx: ActionCtx,
+  body: {
+    op: string;
+    chatId: string;
+    messageId?: unknown;
+    runId?: unknown;
+    expected?: unknown;
+    received?: unknown;
+  },
+): Promise<void> {
+  const counter = (v: unknown): number | null =>
+    typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+  const expected = counter(body.expected);
+  const received = counter(body.received);
+  const messageId = typeof body.messageId === "string" && body.messageId ? body.messageId : null;
+  const runId = typeof body.runId === "string" && TRACE_RUN_ID.test(body.runId) ? body.runId : null;
+  await traceIngest(ctx, {
+    kind: "openclaw.gateway_seq_report",
+    chatId: body.chatId,
+    ...(runId !== null ? { runId } : {}),
+    correlationId: messageId !== null ? `${body.chatId}:${messageId}` : body.chatId,
+    meta: {
+      op: body.op,
+      ...(messageId !== null ? { messageId } : {}),
+      ...(expected !== null ? { expected } : {}),
+      ...(received !== null ? { received } : {}),
+      direction:
+        expected === null || received === null || received === expected
+          ? "unknown"
+          : received < expected
+            ? "behind"
+            : "ahead",
+      ok: true,
+    },
+  });
+}
+
 // NOTE: this file exports the ingest httpAction plus the `storageMeta`
 // internalQuery (above). httpActions run in the DEFAULT Convex runtime (fetch +
 // ctx.storage are available; Node built-ins are NOT).
@@ -334,10 +386,11 @@ type IngestOp =
       fetchMs?: number;
       uploadMs?: number;
     }
-  // Content-free FRAME-LOSS diagnostic: frames were lost between the gateway and
-  // a turn (the gateway's own `seq gap` report, or our envelope-seq detection).
-  // Counters and a source label only — no frame, no content. No DB write, no
-  // part: it records an `openclaw.frame_gap` trace.
+  // Content-free FRAME-LOSS diagnostic: a hole in the envelope seq of one of the
+  // bridge's sockets (`source`: envelope, speaker_gap, speaker_closed). Counters and a
+  // source label only — no frame, no content. No DB write, no part: it records an
+  // `openclaw.frame_gap` trace. `source: "gateway"` and `messageId` are what a bridge up
+  // to 0.103.6 sent for the gateway's sequence report: recorded as that report.
   | {
       op: "frameGapTrace";
       chatId: string;
@@ -346,6 +399,17 @@ type IngestOp =
       expected?: number;
       received?: number;
       missing?: number;
+    }
+  // The gateway's report about its own per-run numbering (`reason:"seq gap"`): two
+  // counters inside the gateway, not a frame lost on the way to the bridge. Records an
+  // `openclaw.gateway_seq_report` trace; no DB write, no part.
+  | {
+      op: "gatewaySeqReportTrace";
+      chatId: string;
+      messageId?: string;
+      runId?: string;
+      expected?: number;
+      received?: number;
     }
   // Content-free re-hydration DECISION trace (no DB write, no message part): records
   // WHY a dispatch did/didn't re-inject history as an `openclaw.rehydrate` trace keyed
@@ -404,8 +468,11 @@ type IngestOp =
       compactionReason?: string;
       /** The gateway REFUSED to compact rather than failing at it. */
       compactionRefused?: boolean;
-      /** Frames lost during the turn (omitted when none) — the per-turn
-       *  counterpart of the live `openclaw.frame_gap` traces. */
+      /** Sequence reports the gateway sent about the turn's runs (omitted when
+       *  none) — the per-turn count of the `openclaw.gateway_seq_report` traces. */
+      gatewaySeqReports?: number;
+      /** What a bridge up to 0.103.6 sent for those same reports, summed as if each
+       *  were lost frames. Accepted on the wire, never stored. */
       framesLost?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
@@ -1247,25 +1314,23 @@ export const ingest = httpAction(async (ctx, request) => {
       return json({ ok: true });
     }
     case "frameGapTrace": {
-      // FRAME LOSS between the gateway and a turn — the measure that did not
-      // exist before. Two sources: "gateway" (its own `seq gap` report on the
-      // agent stream) and "envelope" (our per-connection envelope-seq check).
-      // NO DB write and NO message part: the loss is a diagnostic, and a lost
-      // frame must never be able to fail a turn. Counters only, so nothing to
-      // redact by construction.
+      // An older bridge's sequence report, sent through this op: it is not a frame gap.
+      if (body.source === "gateway") {
+        await traceGatewaySeqReport(ctx, body);
+        return json({ ok: true });
+      }
+      // FRAME LOSS on one of the bridge's sockets (a hole in its envelope seq). NO DB
+      // write and NO message part: the loss is a diagnostic, and a lost frame must never
+      // be able to fail a turn. Counters only, so nothing to redact by construction.
+      // Correlated to the CHAT alone: the envelope seq names neither session nor run,
+      // and the same socket also carries sub-agent frames, so blaming the active reply
+      // would be a fabricated diagnostic.
       await traceIngest(ctx, {
         kind: "openclaw.frame_gap",
         chatId: body.chatId,
-        // Correlated to the TURN only when the loss is attributable to one (the
-        // gateway's own report carries a runId); a connection-level envelope hole
-        // correlates to the CHAT alone — the same socket also carries sub-agent
-        // frames, so blaming the active reply would be a fabricated diagnostic.
-        correlationId: body.messageId
-          ? `${body.chatId}:${body.messageId}`
-          : body.chatId,
+        correlationId: body.chatId,
         meta: {
           op: body.op,
-          ...(body.messageId ? { messageId: body.messageId } : {}),
           source: body.source,
           ...(body.expected !== undefined ? { expected: body.expected } : {}),
           ...(body.received !== undefined ? { received: body.received } : {}),
@@ -1273,6 +1338,10 @@ export const ingest = httpAction(async (ctx, request) => {
           ok: true,
         },
       });
+      return json({ ok: true });
+    }
+    case "gatewaySeqReportTrace": {
+      await traceGatewaySeqReport(ctx, body);
       return json({ ok: true });
     }
     case "mediaTrace": {
@@ -1472,10 +1541,13 @@ export const ingest = httpAction(async (ctx, request) => {
           // Tool calls this turn: the mid-turn growth driver (a hard overflow at
           // a low pre-turn fill reads causally: many tool results accumulated).
           ...(typeof body.toolCalls === "number" ? { toolCalls: body.toolCalls } : {}),
-          // Frames LOST during the turn (absent when none): the honest answer to
-          // "why does this reply look truncated". Counter only.
-          ...(typeof body.framesLost === "number"
-            ? { framesLost: body.framesLost }
+          // Sequence reports the gateway sent about the turn's runs (absent when
+          // none). Counter only. An older bridge's `framesLost` counted these same
+          // reports as lost frames: it is deliberately not carried.
+          ...(typeof body.gatewaySeqReports === "number" &&
+          Number.isSafeInteger(body.gatewaySeqReports) &&
+          body.gatewaySeqReports > 0
+            ? { gatewaySeqReports: body.gatewaySeqReports }
             : {}),
           // Chat finals the gateway CUT at its display cap before sending them
           // (absent when none). Counter only — the text stays out of traces.

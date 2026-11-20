@@ -640,9 +640,10 @@ export interface ConvexWriter {
        *  three models with different windows run on one instance, so a fill
        *  recorded without its owner cannot be checked against anything. */
       model?: string | null;
-      /** Frames lost during the turn (omitted when none) — the per-turn
-       *  counterpart of the live `openclaw.frame_gap` traces. */
-      framesLost?: number;
+      /** Sequence reports the gateway sent about the turn's runs (omitted when
+       *  none) — the per-turn count of the `openclaw.gateway_seq_report` traces.
+       *  Not frames lost. */
+      gatewaySeqReports?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
       /** The same count BY REASON, raw. Convex allowlists it. */
@@ -732,9 +733,11 @@ export interface ConvexWriter {
   /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
    *  the agent generated media (codex imageGeneration) but the turn delivered none. */
   noteMediaUndelivered(messageId: string, chatId: string): Promise<void>;
-  /** FRAME LOSS diagnostic (see core/events EVENT_FRAME_GAP) -> an
-   *  `openclaw.frame_gap` trace. Counters only, never content. OPTIONAL so the
-   *  test fakes and the talk-consult facade stay valid without it. */
+  /** FRAME LOSS diagnostic -> an `openclaw.frame_gap` trace: a hole in the envelope
+   *  `seq` of a socket (providers/openclaw/frame-seq.ts). Counters only, never content.
+   *  Connection-level: the envelope seq names neither session nor run, and the same
+   *  socket also carries sub-agent frames, so the loss is never charged to a turn.
+   *  OPTIONAL so the test fakes and the talk-consult facade stay valid without it. */
   noteFrameGap?(
     chatId: string,
     data: {
@@ -743,11 +746,18 @@ export interface ConvexWriter {
       received: number | null;
       missing: number | null;
     },
-    /** The turn that lost the frames — ONLY when the loss is attributable.
-     *  The gateway's own `seq gap` report carries a runId, so it is; a hole in
-     *  the per-CONNECTION envelope seq is not (the same socket also carries
-     *  sub-agent frames, so charging it to the active parent reply would
-     *  fabricate a "truncated answer" diagnostic). Omitted = connection-level. */
+  ): Promise<void>;
+  /** The gateway's report about its own per-run numbering (see core/events
+   *  EVENT_GATEWAY_SEQ_REPORT) -> an `openclaw.gateway_seq_report` trace. Not a frame
+   *  loss. Counters and the run the report names; `messageId` is the turn that saw it.
+   *  OPTIONAL for the same reason. */
+  noteGatewaySeqReport?(
+    chatId: string,
+    data: {
+      expected: number | null;
+      received: number | null;
+      runId: string | null;
+    },
     messageId?: string | null,
   ): Promise<void>;
   /** message.final -> internal.stream.finalize. */
@@ -1226,17 +1236,26 @@ type IngestOp =
       fetchMs?: number;
       uploadMs?: number;
     }
-  // FRAME LOSS (content-free) -> an `openclaw.frame_gap` trace. `source`:
-  // "gateway" = its own `seq gap` report on the agent stream; "envelope" = our
-  // per-connection envelope-seq check. Counters only; no DB write, no part.
+  // FRAME LOSS (content-free) -> an `openclaw.frame_gap` trace: a hole in a socket's
+  // envelope seq. `source`: "envelope" = this conversation's socket, "speaker_gap" /
+  // "speaker_closed" = a participant's speaker socket. Counters only; no DB write, no part.
   | {
       op: "frameGapTrace";
       chatId: string;
-      messageId?: string;
       source: string;
       expected?: number;
       received?: number;
       missing?: number;
+    }
+  // The gateway's report about its own per-run numbering (content-free) -> an
+  // `openclaw.gateway_seq_report` trace. Not a frame loss.
+  | {
+      op: "gatewaySeqReportTrace";
+      chatId: string;
+      messageId?: string;
+      runId?: string;
+      expected?: number;
+      received?: number;
     }
   // Re-hydration decision (content-free) -> `openclaw.rehydrate` trace keyed
   // chatId:outboxId. Message-less (its own correlation key) -> doPost, not enqueue.
@@ -2665,12 +2684,10 @@ export class HttpConvexWriter implements ConvexWriter {
       received: number | null;
       missing: number | null;
     },
-    messageId?: string | null,
   ): Promise<void> {
     await this.doPost({
       op: "frameGapTrace",
       chatId,
-      ...(messageId ? { messageId } : {}),
       source: data.source,
       ...(data.expected !== null ? { expected: data.expected } : {}),
       ...(data.received !== null ? { received: data.received } : {}),
@@ -2678,6 +2695,31 @@ export class HttpConvexWriter implements ConvexWriter {
     }).catch((e) =>
       console.error(
         "[frame-gap] trace skipped (non-fatal):",
+        errForLog(e),
+      ),
+    );
+  }
+
+  /** Same contract as `noteFrameGap`: off the per-message chain, errors swallowed. */
+  async noteGatewaySeqReport(
+    chatId: string,
+    data: {
+      expected: number | null;
+      received: number | null;
+      runId: string | null;
+    },
+    messageId?: string | null,
+  ): Promise<void> {
+    await this.doPost({
+      op: "gatewaySeqReportTrace",
+      chatId,
+      ...(messageId ? { messageId } : {}),
+      ...(data.runId !== null ? { runId: data.runId } : {}),
+      ...(data.expected !== null ? { expected: data.expected } : {}),
+      ...(data.received !== null ? { received: data.received } : {}),
+    }).catch((e) =>
+      console.error(
+        "[gateway-seq] trace skipped (non-fatal):",
         errForLog(e),
       ),
     );

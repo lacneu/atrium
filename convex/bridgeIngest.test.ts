@@ -2267,3 +2267,141 @@ describe("recordSubAgentInteractionReply carries widgetOmitted", () => {
     expect(row?.recoveringUntil ?? 0).toBeGreaterThan(Date.now());
   });
 });
+
+// The gateway's `seq gap` report compares two counters INSIDE the gateway (the runtime's
+// per-run emission seq and the last one its event handler saw): it is not a frame lost on
+// the way to the bridge. It has its own trace kind; `openclaw.frame_gap` is a hole in a
+// socket's envelope seq and nothing else. Numbers below are the captured ones (bench run
+// 2026-11-02T22-06-41-810Z: expected 12, received 11).
+describe("bridge_ingest httpAction: the gateway's sequence report is not a frame gap", () => {
+  const RUN = "69758b77-b176-47da-b2d3-e195b38980c6";
+
+  test("gatewaySeqReportTrace -> an openclaw.gateway_seq_report trace named by its run", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+
+    const res = await post(t, {
+      op: "gatewaySeqReportTrace",
+      chatId,
+      messageId,
+      runId: RUN,
+      expected: 12,
+      received: 11,
+    });
+    expect(res.status).toBe(200);
+
+    expect(await tracesByKind(t, "openclaw.frame_gap")).toHaveLength(0);
+    const reports = await tracesByKind(t, "openclaw.gateway_seq_report");
+    expect(reports).toHaveLength(1);
+    expect(reports[0].runId).toBe(RUN);
+    expect(reports[0].correlationId).toBe(`${chatId}:${messageId}`);
+    expect(JSON.parse(reports[0].meta ?? "{}")).toEqual({
+      op: "gatewaySeqReportTrace",
+      messageId,
+      expected: 12,
+      received: 11,
+      direction: "behind",
+      ok: true,
+    });
+    expect(await partsOf(t, messageId)).toHaveLength(0);
+  });
+
+  test("the direction is derived here, from the two counters alone", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    await post(t, { op: "gatewaySeqReportTrace", chatId, expected: 2, received: 5 });
+    await post(t, { op: "gatewaySeqReportTrace", chatId });
+    await post(t, { op: "gatewaySeqReportTrace", chatId, expected: 1.5, received: "9" });
+    const metas = (await tracesByKind(t, "openclaw.gateway_seq_report")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    expect(metas).toEqual([
+      { op: "gatewaySeqReportTrace", expected: 2, received: 5, direction: "ahead", ok: true },
+      { op: "gatewaySeqReportTrace", direction: "unknown", ok: true },
+      { op: "gatewaySeqReportTrace", direction: "unknown", ok: true },
+    ]);
+  });
+
+  test("a run id that is not a bounded plain token is not stored", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    await post(t, { op: "gatewaySeqReportTrace", chatId, runId: "x".repeat(400), expected: 3, received: 2 });
+    await post(t, { op: "gatewaySeqReportTrace", chatId, runId: "run with spaces\nand text", expected: 3, received: 2 });
+    const reports = await tracesByKind(t, "openclaw.gateway_seq_report");
+    expect(reports).toHaveLength(2);
+    expect(reports.every((r) => r.runId === undefined)).toBe(true);
+  });
+
+  test("an OLDER bridge's `frameGapTrace` with source `gateway` is recorded as the report it is", async () => {
+    // Up to 0.103.6 the bridge sent the gateway's report through the frame-gap op.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    await post(t, { op: "frameGapTrace", chatId, messageId, source: "gateway", expected: 12, received: 11 });
+
+    expect(await tracesByKind(t, "openclaw.frame_gap")).toHaveLength(0);
+    const reports = await tracesByKind(t, "openclaw.gateway_seq_report");
+    expect(reports).toHaveLength(1);
+    expect(JSON.parse(reports[0].meta ?? "{}")).toEqual({
+      op: "frameGapTrace",
+      messageId,
+      expected: 12,
+      received: 11,
+      direction: "behind",
+      ok: true,
+    });
+  });
+
+  test("an envelope hole is still an openclaw.frame_gap trace, at chat level", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    await post(t, { op: "frameGapTrace", chatId, source: "envelope", expected: 5, received: 7, missing: 2 });
+    await post(t, { op: "frameGapTrace", chatId, source: "speaker_closed" });
+
+    expect(await tracesByKind(t, "openclaw.gateway_seq_report")).toHaveLength(0);
+    const gaps = await tracesByKind(t, "openclaw.frame_gap");
+    expect(gaps.map((g) => JSON.parse(g.meta ?? "{}"))).toEqual([
+      { op: "frameGapTrace", source: "envelope", expected: 5, received: 7, missing: 2, ok: true },
+      { op: "frameGapTrace", source: "speaker_closed", ok: true },
+    ]);
+    expect(gaps[0].correlationId).toBe(chatId);
+  });
+
+  test("the pressure trace carries the report count, and never `framesLost`", async () => {
+    // `framesLost` was only ever fed by these reports (an envelope hole is not charged to
+    // a turn), so an older bridge's value is not a loss either: it is not stored.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      gatewaySeqReports: 2,
+    });
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      framesLost: 76,
+    });
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      gatewaySeqReports: -3,
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    expect(traces).toHaveLength(3);
+    expect(traces[0].gatewaySeqReports).toBe(2);
+    expect(traces.every((m) => !("framesLost" in m))).toBe(true);
+    expect("gatewaySeqReports" in traces[1]).toBe(false);
+    expect("gatewaySeqReports" in traces[2]).toBe(false);
+  });
+});

@@ -98,8 +98,7 @@ describe("envelope-seq gap detection", () => {
 });
 
 // The DETECTION is worthless if it is not wired: the connection-level callback
-// must reach the writer as an `openclaw.frame_gap` trace, and the per-turn tally
-// must count the frames actually MISSING (a single gap can swallow several).
+// must reach the writer as an `openclaw.frame_gap` trace.
 // The SHAPE contract, pinned from a LIVE capture against the supported gateway
 // (bridge frame capture, 2026-07-25): the per-CONNECTION counter is `frame.seq`
 // at the ENVELOPE root and it is contiguous across every event type, while
@@ -143,8 +142,6 @@ describe("frame-gap reporting reaches the writer", () => {
     expected: number | null;
     received: number | null;
     missing: number | null;
-    /** Whether the loss was charged to a specific turn (see ConvexWriter). */
-    attributed?: boolean;
   };
 
   class GapWriter implements ConvexWriter {
@@ -171,12 +168,8 @@ describe("frame-gap reporting reaches the writer", () => {
       return true;
     }
     async noteMediaUndelivered(): Promise<void> {}
-    async noteFrameGap(
-      _chatId: string,
-      data: GapCall,
-      messageId?: string | null,
-    ): Promise<void> {
-      this.gaps.push({ ...data, attributed: messageId != null });
+    async noteFrameGap(_chatId: string, data: GapCall): Promise<void> {
+      this.gaps.push({ ...data });
     }
     async finalize(
       _messageId: string,
@@ -208,9 +201,9 @@ describe("frame-gap reporting reaches the writer", () => {
     };
   }
 
-  it("the GATEWAY's own seq-gap report IS charged to the turn it names", async () => {
-    // This report carries the runId whose frames were lost, so attributing it to
-    // that turn is sound — unlike a connection-level envelope hole.
+  it("the gateway's own seq-gap report is NOT a frame gap: nothing reaches this writer path", async () => {
+    // It compares two counters inside the gateway and says nothing about this socket
+    // (gateway-seq-report.test.ts): only a hole in the envelope seq is a lost frame.
     const writer = new GapWriter();
     const manager = new RunManager("chatGap", SK, writer);
     await manager.beginTurn(1000, "webchat-gap-run");
@@ -218,54 +211,12 @@ describe("frame-gap reporting reaches the writer", () => {
       gapFrame("webchat-gap-run", { reason: "seq gap", expected: 2, received: 5 }),
       1010,
     );
-    // The turn's bubble is born from the run's first visible content: the report
-    // waits for it, then lands on it.
     await manager.feed(
       {
         type: "event",
         event: "chat",
         payload: {
           runId: "webchat-gap-run",
-          sessionKey: SK,
-          state: "delta",
-          message: { role: "assistant", content: [{ type: "text", text: "Voici" }] },
-        },
-      },
-      1020,
-    );
-    expect(writer.gaps).toEqual([
-      {
-        source: "gateway",
-        expected: 2,
-        received: 5,
-        missing: 3,
-        attributed: true,
-      },
-    ]);
-  });
-
-  it("the per-turn tally counts MISSING FRAMES, not the number of reports", async () => {
-    // Two gateway reports: expected 2 / received 5 = frames 2,3,4 lost (three),
-    // then expected 6 / received 9 = frames 6,7,8 lost (three) — six in total.
-    // Counting REPORTS would say 2 and understate exactly the incidents that
-    // matter most.
-    const writer = new GapWriter();
-    const manager = new RunManager("chatGap", SK, writer);
-    await manager.beginTurn(1000, "webchat-gap-run2");
-    await manager.feed(
-      gapFrame("webchat-gap-run2", { reason: "seq gap", expected: 2, received: 5 }),
-      1010,
-    );
-    await manager.feed(
-      gapFrame("webchat-gap-run2", { reason: "seq gap", expected: 6, received: 9 }),
-      1020,
-    );
-    await manager.feed(
-      {
-        type: "event",
-        event: "chat",
-        payload: {
-          runId: "webchat-gap-run2",
           sessionKey: SK,
           state: "final",
           message: {
@@ -276,8 +227,8 @@ describe("frame-gap reporting reaches the writer", () => {
       },
       1100,
     );
-    await new Promise((r) => setTimeout(r, 0)); // the pressure trace is fire-and-forget
-    expect(writer.pressures).toHaveLength(1);
-    expect(writer.pressures[0]?.framesLost).toBe(6);
+    await new Promise((r) => setTimeout(r, 0)); // the traces are fire-and-forget
+    expect(writer.gaps).toEqual([]);
+    expect(writer.pressures.every((p) => !Object.hasOwn(p, "framesLost"))).toBe(true);
   });
 });

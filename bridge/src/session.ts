@@ -392,9 +392,11 @@ class Session implements BridgeSession {
     // Recorded at CONNECTION (= chat) level, deliberately NOT charged to the
     // turn in flight (codex P2): the envelope seq names neither session nor run,
     // and this same socket also carries SUB-AGENT frames — so blaming the active
-    // reply would fabricate a "this answer is truncated" diagnostic. The
-    // gateway's OWN `seq gap` report does name its run and IS charged to the turn
-    // (normalizer -> sink). Fire-and-forget: a diagnostic never delays a turn.
+    // reply would fabricate a "this answer is truncated" diagnostic. (The
+    // gateway's own `seq gap` report is a different thing — its internal per-run
+    // numbering, not a frame lost here — and travels as its own event, see
+    // core/events EVENT_GATEWAY_SEQ_REPORT.) Fire-and-forget: a diagnostic never
+    // delays a turn.
     // The model roster follows the gateway's config WITHOUT a turn: the roster policy
     // (models-roster.ts) turns the connection's `config.changed` into an invalidation
     // and a refresh that pushes the roster to Convex; a frame gap moves the epoch in the
