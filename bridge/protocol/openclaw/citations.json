@@ -811,14 +811,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1449-1460",
+      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1459-1470",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/openclaw-client.ts",
       "lines": [
         [
-          1449,
-          1460
+          1459,
+          1470
         ]
       ],
       "literals": [

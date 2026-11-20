@@ -38,6 +38,7 @@ import {
   type ShutdownNotice,
 } from "./connection-end.js";
 import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js";
+import { readChatMetadataChanged } from "./chat-metadata-changed.js";
 import {
   SILENCE_CONFIRM_MS,
   createSilenceWatch,
@@ -354,8 +355,9 @@ export class OpenClawConnection {
   // model picker with no message until the bridge restarted (the 2026-08-04 symptom),
   // while not caching it at all would pay an 8s timeout on every turn.
   modelsByOwner = new Map<string, RosterEntry>(); // the entry is documented at its type
-  /** Roster epoch: incremented on each invalidation, both HERE — a frame gap at the
-   *  sequence tracker, a `config.changed` at intake, before the notice is reported. An
+  /** Roster epoch: incremented on each invalidation, all HERE — a frame gap at the
+   *  sequence tracker, a `config.changed` or a `chat.metadata.changed` that names a
+   *  stale catalogue at intake, before the notice is reported. An
    *  ordering, not a clock: two events in one millisecond are still ordered. */
   rosterEpoch = 0;
   private readonly configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
@@ -370,8 +372,9 @@ export class OpenClawConnection {
       this.sessionSharingListeners.delete(listener);
     };
   }
-  /** Raw signal: a `config.changed` notice arrived (config-changed.ts), the epoch already
-   *  moved. The policy — coalescing, the refresh that pushes the roster to Convex — lives
+  /** Raw signal: a `config.changed` notice arrived (config-changed.ts) — or a
+   *  `chat.metadata.changed` naming a stale model catalogue, marked by its `origin` — the
+   *  epoch already moved. The policy — coalescing, the refresh that pushes the roster to Convex — lives
    *  with the roster (models-roster.ts); this class only reads the frame and reports it.
    *  Returns the unsubscribe. */
   onConfigChanged(listener: (notice: ConfigChangedNotice) => void): () => void {
@@ -1039,7 +1042,14 @@ export class OpenClawConnection {
     // `config.changed` (config-changed.ts) is reported to the roster policy, then queued
     // UNCHANGED like any other frame (observe-only: the normalizer drops it, the drift
     // sensor sees it) — the same treatment as the shutdown notice above.
-    const configChanged = readConfigChanged(frame);
+    // `chat.metadata.changed` saying the model catalogue may have changed
+    // (chat-metadata-changed.ts) invalidates the same projection: it is reported to the
+    // same policy as a `config.changed`, under its own name, and queued unchanged too.
+    const configChanged: ConfigChangedNotice | null =
+      readConfigChanged(frame) ??
+      (readChatMetadataChanged(frame)?.modelCatalogStale === true
+        ? { hash: null, origin: "chat.metadata.changed" }
+        : null);
     if (configChanged !== null) {
       // The roster is a projection of the config that just changed: invalidated here,
       // with the frame-gap case above, so every invalidation lives in one place.

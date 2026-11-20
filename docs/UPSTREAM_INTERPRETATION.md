@@ -1067,7 +1067,7 @@ reads that start as a run start and must never infer a compaction from it.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`bridge/src/providers/openclaw/openclaw-client.ts:1449-1460`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1459-1470`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).

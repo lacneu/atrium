@@ -21,6 +21,10 @@ export interface ConfigChangedNotice {
   /** The projected revision hash — differs for every persisted revision (null when
    *  the gateway could not project one). */
   hash: string | null;
+  /** Set when the roster was invalidated by ANOTHER notice reported through the same
+   *  listeners (chat-metadata-changed.ts) — named for the refresh's log line. Absent
+   *  for a real `config.changed`. */
+  origin?: "chat.metadata.changed";
 }
 
 /** The notice carried by an inbound frame, or null for any other frame. Shape-checked,
