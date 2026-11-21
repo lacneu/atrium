@@ -1066,6 +1066,71 @@ describe("several `message`-tool sends in one turn", () => {
     ]);
   });
 
+  // AFTER A STEER SPLIT the text held is the current segment's: the earlier segments'
+  // text is taken off the gateway's cumulative text once, where it is read. Text that is
+  // already the segment's own is never read against that prefix again — the answer may
+  // open with the very words the earlier segment showed.
+  const lifecycleEnd = (seq: number, data: Record<string, unknown>) => ({
+    event: "agent",
+    payload: { sessionKey: SK, runId: RUN, seq, stream: "lifecycle", data },
+  });
+  const terminalFrame = (state: "final" | "error" | "aborted", seq: number, text?: string) => ({
+    event: "chat",
+    payload: {
+      sessionKey: SK,
+      runId: RUN,
+      seq,
+      state,
+      ...(state === "error" ? { errorMessage: "provider failed" } : {}),
+      ...(text === undefined ? {} : { message: { role: "assistant", content: [{ type: "text", text }] } }),
+    },
+  });
+  /** "First." shown; with `split`, settled at a steer cut — and the next segment opens
+   *  with the same words: "First. Again." */
+  function repeated(split: boolean): { n: Normalizer; at: () => number; whole: (local: string) => string } {
+    const { n, at } = turn();
+    n.feed(chat("First.", 1), at());
+    if (split) n.splitSegment();
+    const whole = (local: string) => (split ? `First.\n\n${local}` : local);
+    n.feed(chat(whole("First. Again."), 2), at());
+    expect(n.text).toBe("First. Again.");
+    return { n, at, whole };
+  }
+
+  it("the reviewer's sequence: split, a segment that repeats the prefix, a send, a final without text", () => {
+    const { n, at } = repeated(true);
+    expect(snaps(n.feed(send("Done.", "call-1", 3), at()))).toEqual([
+      { text: "First. Again.\n\nDone.", source: "message_tool" },
+    ]);
+    expect(n.text).toBe("First. Again.\n\nDone.");
+    const end = n.feed(terminalFrame("final", 4), at());
+    expect(end.find((e) => e.type === "message.final")?.text).toBe("First. Again.\n\nDone.");
+  });
+
+  for (const split of [false, true]) {
+    const label = split ? "after a split" : "without a split";
+    it(`${label}: a send keeps every word of the segment's text`, () => {
+      const { n, at } = repeated(split);
+      n.feed(send("Done.", "call-1", 3), at());
+      n.feed(send("Really.", "call-2", 4), at());
+      expect(n.text).toBe("First. Again.\n\nDone.\n\nReally.");
+    });
+
+    it(`${label}: a terminal's message loses the earlier segments once, and nothing more`, () => {
+      const { n, at, whole } = repeated(split);
+      const end = n.feed(terminalFrame("aborted", 3, whole("First. Again. And more.")), at());
+      expect(end.find((e) => e.type === "message.final")?.text).toBe("First. Again. And more.");
+    });
+
+    it(`${label}: a settled bubble's completion loses the earlier segments once, and nothing more`, () => {
+      const { n, at, whole } = repeated(split);
+      n.feed(lifecycleEnd(3, { phase: "error", error: "provider failed", executionSettled: true }), at());
+      expect(n.settledCompletion(terminalFrame("error", 4, whole("First. Again. And more.")))).toMatchObject({
+        text: "First. Again. And more.",
+      });
+    });
+  }
+
   // What the freshness guard protects is untouched by a send: only a `chat` frame ABOVE
   // the run's applied chat seq may shorten the bubble.
   it("hand-built: after a send, a stale chat frame still shortens nothing", () => {

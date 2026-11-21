@@ -2809,6 +2809,8 @@ export class Normalizer {
               now,
               events,
               "message_tool",
+              false,
+              true,
             );
           }
         } else if (unreadable) {
@@ -3861,11 +3863,16 @@ export class Normalizer {
      *  shrink there is a stale/out-of-order frame that Convex must refuse
      *  (G-14). Never widen this without an upstream signal to point at. */
     authorizedShrink = false,
+    /** The candidate is ALREADY the current segment's text (built from the text held
+     *  here), not the gateway's cumulative one: the earlier segments are not in it, and
+     *  reading it against their prefix would cut an answer that opens with the same
+     *  words. */
+    segmentLocal = false,
   ): void {
     if (this.finalized) {
       return;
     }
-    if (isSnapshot && this.segmentPrefix !== null) {
+    if (isSnapshot && !segmentLocal && this.segmentPrefix !== null) {
       candidate = this.stripSegmentPrefix(candidate);
     }
     let emitted: string;
