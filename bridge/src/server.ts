@@ -2385,12 +2385,6 @@ async function performSendComposed(
         // Re-describe so everything downstream (rehydration, the header meter, the
         // pressure snapshot) reads the session as it is AFTER the compaction.
         if (presend.compactOutcome === "compacted") {
-          // OUR compaction is about to rotate the session id, which is how the
-          // normalizer detects a preflight compaction. Name its cause now, or the
-          // marker would say a compaction happened and stay silent on why — and
-          // `session.operation`, the only source that carries the gateway's own
-          // reason, is unreachable from this connection (see session.ts).
-          session.runManager.notePresendCompactionCause("pre_compaction");
           try {
             const d2 = await describeSession(conn, sessionKey);
             if (d2) {
@@ -3279,6 +3273,12 @@ async function performSendComposed(
       // The guard shrank the session for THIS send: a `context_length` answer is
       // then transient, and Convex may re-dispatch it once.
       compactedBeforeSend: presend.compactOutcome === "compacted",
+      // OUR compaction rotates the session id, which is how the normalizer detects a
+      // preflight compaction. Its cause travels with THIS send's turn, or the marker
+      // would say a compaction happened and stay silent on why — `session.operation`,
+      // the only source of the gateway's own reason, is unreachable from this
+      // connection (see session.ts).
+      ...(presend.compactOutcome === "compacted" ? { presendCompactionCause: "pre_compaction" } : {}),
       interruptActive: plan.queueMode === "interrupt",
     });
   } catch (err) {

@@ -1725,7 +1725,7 @@ export class SessionRegistry {
     //    stream carries `{phase, willRetry, completed}` and no cause;
     //  - the CAUSE of the compactions ATRIUM itself performs: the pre-send guard
     //    labels its own compaction `pre_compaction` and the rotation it produces
-    //    carries that label (normalizer.notePresendCompactionCause);
+    //    carries that label (the send's `presendCompactionCause`, RunManager.beginTurn);
     //  - the guard's own REFUSAL class, on the guard's own trace.
     // What stays UNOBSERVABLE: the cause of a compaction the GATEWAY decided on its
     // own (an overflow it hit, a memory threshold it crossed). That needs a

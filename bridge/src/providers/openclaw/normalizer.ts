@@ -1114,13 +1114,17 @@ export class Normalizer {
    * us why: we asked, pre-emptively, before assembling the prompt — which is
    * exactly the `pre_compaction` class.
    *
-   * Consumed ONCE, by the rotation that our own compaction produces.
+   * Consumed ONCE, by the rotation that our own compaction produces — and it belongs to
+   * the turn of the send the guard compacted for: the run manager states it at every turn
+   * it begins — the send's cause, or none (`RunManager.beginTurn`). Left standing
+   * by a compaction that rotated nothing, it named the gateway's own compaction of a
+   * later turn.
    */
-  notePresendCompactionCause(reasonClass: string): void {
+  notePresendCompactionCause(reasonClass: string | null): void {
     this.presendCompactionCause = reasonClass;
   }
 
-  /** One-shot cause class stashed by the pre-send guard (see below). */
+  /** One-shot cause class of THIS turn's guard compaction (see above). */
   private presendCompactionCause: string | null = null;
 
   noteExpectedSessionId(sessionId: string | null): void {

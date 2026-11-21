@@ -711,12 +711,6 @@ export class RunManager {
 
   /** True while a turn is actively driving the sink — gates whether
    *  currentMessageId belongs to a LIVE turn (vs the last finished one). */
-  /** The pre-send guard compacted this session before the turn (W2): the cause of
-   *  the rotation that follows is ours, and the marker may say so. */
-  notePresendCompactionCause(reasonClass: string): void {
-    this.normalizer.notePresendCompactionCause(reasonClass);
-  }
-
   get turnActive(): boolean {
     return this.sink.active;
   }
@@ -869,6 +863,10 @@ export class RunManager {
       /** The pre-send guard COMPACTED this session right before this send (W2):
        *  makes a `context_length` failure retryable exactly once. */
       compactedBeforeSend?: boolean;
+      /** …and the cause that compaction gives the rotation it produces (W2): the marker
+       *  of THIS turn may say why. Carried by the send, never kept beside the turns — a
+       *  cause no rotation consumed would name a later turn's compaction. */
+      presendCompactionCause?: string | null;
       /** Projection `on`, `interrupt` send: the foreground turn is replaced. The
        *  gateway aborts its run; its bubble settles as stopped. */
       interruptActive?: boolean;
@@ -959,6 +957,9 @@ export class RunManager {
     }
     this.normalizer.noteExpectedSessionId(
       turnContext?.expectedSessionId ?? null,
+    );
+    this.normalizer.notePresendCompactionCause(
+      turnContext?.presendCompactionCause ?? null,
     );
     this.frameTally.clear();
     this.frameSampled.clear();
