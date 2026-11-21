@@ -129,11 +129,26 @@ class Writer extends RecordingWriter {
     return applied;
   }
   readonly late: string[] = [];
+  /** Late-final writes that fail before anything is committed. */
+  lateFailures = 0;
+  /** Late-final writes whose ANSWER is lost after the write committed. */
+  lostLateAnswers = 0;
+  failLate = false;
   async appendLateFinal(a: { messageId: string | null; text: string }): Promise<string | null> {
+    if (this.failLate) throw new Error("convex down");
+    if (this.lateFailures > 0) {
+      this.lateFailures--;
+      throw new Error("convex down");
+    }
     this.late.push(a.text);
     this.log.push(`late ${a.messageId} ${JSON.stringify(a.text)}`);
     const s = a.messageId === null ? undefined : this.settled.get(a.messageId);
+    // Convex's rule (`appendLateFinal`): an addition the bubble already holds is not appended.
     if (s !== undefined && !s.text.includes(a.text)) s.text = s.text.trim() === "" ? a.text : `${s.text}\n\n${a.text}`;
+    if (this.lostLateAnswers > 0) {
+      this.lostLateAnswers--;
+      throw new Error("answer lost");
+    }
     return a.messageId;
   }
   /** A steer cut: the segment settles with its text, the run goes on in a new bubble. */
@@ -831,6 +846,139 @@ describe("the completion's write: detached, kept until written, bounded", () => 
   });
 });
 
+describe("a debt is a DESTINATION, not a run id", () => {
+  /** Run A closes early twice, on two bubbles; the first completion's write is held. */
+  async function twoClosesOfOneRun() {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(chatDelta("runA", 1, "Hello"), lifecycleError("runA", 2));
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    await h.feedOnly(chatDelta("runA", 2, "Hello old tail"));
+    // The same run id again, before anything reconciled it: a second bubble, closed
+    // early too, with positions above the first window's mark.
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await h.feedOnly(chatDelta("runA", 5, "Hello"), lifecycleError("runA", 6));
+    return { h, release };
+  }
+
+  it("two early closes of one run id, the first write suspended: each bubble gets its own text", async () => {
+    const { h, release } = await twoClosesOfOneRun();
+    await h.feedOnly(chatDelta("runA", 6, "Hello new tail"), chatAborted("runA", 6, "Hello new tail"));
+    release();
+    await h.rm.completionsIdle();
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello old tail");
+    expect(h.writer.settled.get("msg2")!.text).toBe("Hello new tail");
+    expect(h.writer.late).toEqual([]);
+    // Two debts, written in the order they arose.
+    expect(h.writer.offered.map((o) => [o.messageId, o.text, o.applied])).toEqual([
+      ["msg1", "Hello old tail", true],
+      ["msg2", "Hello new tail", true],
+    ]);
+  });
+
+  it("a late final waits behind the debt of ITS bubble only", async () => {
+    const { h, release } = await twoClosesOfOneRun();
+    // The second turn's terminal brings nothing more; then a distinct late final of the
+    // run, for its latest bubble — which is owed nothing.
+    await h.feedOnly(chatAborted("runA", 6, "Hello"), chatFinal("runA", 7, "A distinct answer"));
+    expect(h.writer.log.at(-1)).toBe('late msg2 "A distinct answer"');
+    release();
+    await h.rm.completionsIdle();
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello old tail");
+    expect(h.writer.settled.get("msg2")!.text).toBe("Hello\n\nA distinct answer");
+  });
+
+  it("the window of a run a later turn adopted keeps the bubble of the turn that opened it", async () => {
+    // Run A's turn is closed from outside (a net): its window waits for its terminal.
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(chatDelta("runA", 1, "Hello"));
+    await h.rm.endTurn(h.tick(), "error", "approval_pending", "approval_timeout", "approval_pending");
+    // Run B's turn abandons its run to compact; one frame of run A is admitted as the
+    // replay, so A is one of that turn's runs when it settles — on B's bubble.
+    await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+    await h.feed(
+      chatDelta("runB", 1, "Partial"),
+      agent("runB", 2, "lifecycle", { phase: "end", livenessState: "abandoned", replayInvalid: true }),
+      chatDelta("runA", 5, "Other"),
+      agent("runB", 3, "lifecycle", { phase: "start" }),
+    );
+    expect(h.rm.activeRunIds).toContain("runA");
+    await h.rm.endTurn(h.tick(), "final", null, "recv_timeout");
+    expect(h.writer.settled.get("msg2")).toMatchObject({ runId: "runB" });
+    // Run A's terminal: for the bubble its own early close settled.
+    await h.feed(chatAborted("runA", 9, "Hello world"));
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
+    expect(h.writer.late).toEqual([]);
+  });
+});
+
+describe("every write of the completion chain has an outcome: the JOIN too", () => {
+  const OUT = "/home/node/.openclaw/media/outbound";
+  /** "One\r\nTwo" persisted; the terminal's sanitised text will not extend it. */
+  async function refusedCompletion() {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(chatDelta("runA", 1, "One\r\nTwo"), lifecycleError("runA", 2));
+    return h;
+  }
+  const terminal = () => chatAborted("runA", 2, `One\r\nTwo ${OUT}/a.txt ok`);
+
+  it("the completion is refused, the join FAILS, service is back: the next frame joins the text", async () => {
+    const h = await refusedCompletion();
+    h.writer.lateFailures = 1;
+    await h.feed(terminal());
+    expect(only(h.writer).text).toBe("One\r\nTwo");
+    await h.feed(tickFrame());
+    expect(h.writer.late).toEqual(["a.txt ok"]);
+    expect(only(h.writer).text).toBe("One\r\nTwo\n\na.txt ok");
+    // Discharged: nothing more is asked.
+    const asked = h.writer.offered.length;
+    await h.feed(tickFrame(), tickFrame());
+    expect(h.writer.offered).toHaveLength(asked);
+    expect(h.writer.late).toEqual(["a.txt ok"]);
+  });
+
+  it("the join's ANSWER is lost after it committed: asked again, the addition is not appended twice", async () => {
+    const h = await refusedCompletion();
+    h.writer.lostLateAnswers = 1;
+    await h.feed(terminal());
+    expect(only(h.writer).text).toBe("One\r\nTwo\n\na.txt ok");
+    await h.feed(tickFrame());
+    // Asked twice, appended once; and the run's record followed.
+    expect(h.writer.late).toEqual(["a.txt ok", "a.txt ok"]);
+    expect(only(h.writer).text).toBe("One\r\nTwo\n\na.txt ok");
+    await h.feed(chatFinal("runA", 3, "One\r\nTwo a.txt ok"));
+    expect(h.writer.late).toHaveLength(2);
+  });
+
+  it("a join that keeps failing is bounded by the same three passes, and said", async () => {
+    const h = await refusedCompletion();
+    h.writer.failLate = true;
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+    try {
+      await h.feed(terminal());
+      for (let i = 0; i < 8; i++) await h.feed(tickFrame());
+    } finally {
+      console.error = original;
+    }
+    const passes = lines.filter((l) => l.includes("completion was not written"));
+    expect(passes).toHaveLength(3);
+    expect(passes[2]).toContain("DROPPED");
+    expect(h.writer.offered).toHaveLength(3);
+  });
+
+  it("a join Convex answers with no bubble is an answer: the debt is discharged, not retried", async () => {
+    const h = await refusedCompletion();
+    h.writer.appendLateFinal = async () => null;
+    await h.feed(terminal(), tickFrame(), tickFrame());
+    expect(h.writer.offered).toHaveLength(1);
+  });
+});
+
 describe("a turn boundary while a completion is in flight", () => {
   const settle = () => new Promise((r) => setTimeout(r, 5));
   async function suspended() {
@@ -1382,9 +1530,15 @@ describe("part seven — an unstable tail at the close", () => {
     ["a terminal repeating the text (2026.9.5+)", () => chatError("runA", 2, "provider failed", `One\r\nTwo ${OUT}/a.txt ok`)],
   ])("a REFUSED flush is joined, never left to a terminal that may carry nothing: %s", async (_n, terminal) => {
     const h = await closedWith("One\r\nTwo");
-    await h.feed(chatDelta("runA", 2, `One\r\nTwo ${OUT}/a.txt ok`), terminal());
+    // One at a time: the flush's write (and its join) is done when the terminal arrives.
+    await h.feed(chatDelta("runA", 2, `One\r\nTwo ${OUT}/a.txt ok`));
+    await h.feed(terminal());
     expect(h.writer.late).toEqual(["a.txt ok"]);
     expect(only(h.writer).text).toBe("One\r\nTwo\n\na.txt ok");
+    // A refused text that adds nothing to the record is discharged: asked once per offer.
+    const asked = h.writer.offered.length;
+    await h.feed(tickFrame, tickFrame);
+    expect(h.writer.offered).toHaveLength(asked);
   });
 
   it("a stale view shorter than the text held back is never written", async () => {

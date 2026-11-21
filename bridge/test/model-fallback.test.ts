@@ -1506,7 +1506,9 @@ describe("a fact's write never holds the stream", () => {
       return real(chatId, data);
     };
     const manager = new RunManager("chat-writes", SKW, writer);
-    manager.armReplayBuffer();
+    // No dispatch in flight (a fact stated ahead of a run the gateway starts by itself):
+    // during one, a fact of a run that is not the open turn's waits for the ACK instead
+    // of asking (see "a fact stated before the ACK of a turn re-using a settled run id").
     await manager.feed(reroute("model-A"), 1_000);
     await beat();
     await manager.beginTurn(1_010, W, { expectedSessionId: null, dispatchOutboxId: "ob-1" });
@@ -1516,6 +1518,37 @@ describe("a fact's write never holds the stream", () => {
     await manager.runFactsIdle();
     expect(writer.effects).toStrictEqual(["fallback active model-A → msg_1"]);
     expect(warned.filter((w) => w.includes("left no bubble"))).toStrictEqual([]);
+  });
+
+  it("a fact stated before the ACK of a turn re-using a settled run id goes on THAT turn's bubble, not the earlier one", async () => {
+    const writer = new FallbackWriter();
+    const manager = await settledTurn(writer);
+    // The same run id is sent again; its fallback races the ACK.
+    manager.armReplayBuffer();
+    await manager.feed(reroute("model-A"), 1_020);
+    await manager.runFactsIdle();
+    // Nothing yet: until the ACK, the run named is the one that settled msg_1.
+    expect(writer.effects).toStrictEqual([]);
+    await manager.beginTurn(1_030, W, { expectedSessionId: null, dispatchOutboxId: "ob-2" });
+    await manager.feed(answer, 1_040);
+    await settle(writer, 2);
+    await manager.runFactsIdle();
+    expect(writer.effects).toStrictEqual(["fallback active model-A → msg_2"]);
+  });
+
+  it("a fact beside a settled run, stated while ANOTHER send is in flight, lands once that send has begun or failed", async () => {
+    for (const fails of [false, true]) {
+      const writer = new FallbackWriter();
+      const manager = await settledTurn(writer);
+      manager.armReplayBuffer();
+      await manager.feed(reroute("model-A"), 1_020);
+      await manager.runFactsIdle();
+      expect(writer.effects).toStrictEqual([]);
+      if (fails) manager.disarmReplayBuffer(1_030);
+      else await manager.beginTurn(1_030, "run-other", { expectedSessionId: null, dispatchOutboxId: "ob-2" });
+      await manager.runFactsIdle();
+      expect(writer.effects).toStrictEqual(["fallback active model-A → msg_1"]);
+    }
   });
 
   it("facts stated together are written one at a time, each once, in order", async () => {

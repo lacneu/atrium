@@ -2305,6 +2305,12 @@ export class Normalizer {
     return out;
   }
 
+  /** The window `runId` holds open, as an identity: one early close, one bubble. A later
+   *  early close of the same run id is another window. */
+  settledWindowOf(runId: string): object | undefined {
+    return this.settledWindows.get(runId);
+  }
+
   /** Convex took a completion: only an ACCEPTED text moves what the bubble is known to
    *  hold, so what a failed or refused write did not land can still be offered. */
   noteCompletionWritten(offer: SettledCompletion): void {

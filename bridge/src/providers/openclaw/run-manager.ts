@@ -103,15 +103,19 @@ interface RunLane {
 
 /** A settled run's bubble (null: none) and whole visible text. */
 type SettledRecord = { messageId: string | null; text: string };
-/** A completion a settled run's bubble is owed (see `RunManager.offerCompletion`): the
- *  latest text offered, the run's record as it was when it was offered, and how many
+/** A completion a settled bubble is owed (see `RunManager.offerCompletion`): the latest
+ *  text offered for that bubble, the record of the turn that settled it, and how many
  *  write passes failed. */
 interface KeptCompletion {
+  runId: string;
   offer: SettledCompletion;
-  record: SettledRecord | undefined;
+  record: SettledRecord;
   failures: number;
   scheduled: boolean;
 }
+/** What became of a write on the completion chain. `refused` is an ANSWER (Convex holds
+ *  something else; nothing to add; no bubble to join) — `failed` is no answer at all. */
+type SettledWriteOutcome = "written" | "refused" | "failed";
 
 export class RunManager {
   private readonly normalizer: Normalizer;
@@ -471,30 +475,49 @@ export class RunManager {
     return { runId: rid, text: visibleFinalText(f.payload?.message), settled: record };
   }
 
-  /** Join what a late final ADDS to its settled run's bubble. False: it adds nothing
-   *  (nothing was written). Compared with the record as it is NOW. */
+  /**
+   * Join what a late final ADDS to its settled run's bubble, compared with the record as
+   * it is NOW. Null: it adds nothing, nothing was asked. Otherwise the outcome of the
+   * write: `refused` when there is no bubble to join and none could be opened.
+   * Idempotent in Convex (`appendLateFinal`: an addition the bubble already holds is not
+   * appended again), so a join whose answer was lost can be asked again.
+   */
+  private async joinLateFinal(late: {
+    runId: string;
+    text: string;
+    settled: SettledRecord;
+  }): Promise<SettledWriteOutcome | null> {
+    const settled = late.settled;
+    const add = this.lateAddition(late.text, settled);
+    if (add === null) return null;
+    const opened = settled.messageId === null;
+    let into: string | null;
+    try {
+      into = await this.sink.writeLateFinal(late.runId, settled.messageId, add);
+    } catch (e) {
+      this.completionFailure = e;
+      return "failed";
+    }
+    if (into === null) return "refused";
+    settled.messageId = into;
+    settled.text = settled.text === "" ? add : `${settled.text}\n\n${add}`;
+    console.log(
+      `[final] a distinct late final joined the settled run's bubble (CU-8) run=${late.runId.slice(0, 60)}${opened ? " (new bubble)" : ""}`,
+    );
+    return "written";
+  }
+
+  /** A DISTINCT late final (CU-8), written once. False: it adds nothing. */
   private async writeLateFinal(late: {
     runId: string;
     text: string;
     settled: SettledRecord;
   }): Promise<boolean> {
-    const settled = late.settled;
-    const add = this.lateAddition(late.text, settled);
-    if (add === null) return false;
-    const opened = settled.messageId === null;
-    try {
-      const into = await this.sink.writeLateFinal(late.runId, settled.messageId, add);
-      if (into !== null) {
-        settled.messageId = into;
-        settled.text = settled.text === "" ? add : `${settled.text}\n\n${add}`;
-      }
-      console.log(
-        `[final] a distinct late final joined the settled run's bubble (CU-8) run=${late.runId.slice(0, 60)}${opened ? " (new bubble)" : ""}`,
-      );
-    } catch (e) {
-      console.error("[final] late final not written (non-fatal):", errForLog(e));
+    const outcome = await this.joinLateFinal(late);
+    if (outcome === "failed") {
+      console.error("[final] late final not written (non-fatal):", errForLog(this.completionFailure));
     }
-    return true;
+    return outcome !== null;
   }
 
   /** What a late terminal text adds to a settled run's record, or null. */
@@ -540,6 +563,12 @@ export class RunManager {
       for (const id of this.normalizer.ownRunIds) {
         this.settledRuns.delete(id);
         this.settledRuns.set(id, record);
+        // The window this turn's early close opened is for THIS record: a later turn
+        // re-using the run id gets another record, and another window.
+        const window = this.normalizer.settledWindowOf(id);
+        if (window !== undefined && !this.windowRecords.has(window)) {
+          this.windowRecords.set(window, record);
+        }
       }
       // The turn is over: what its runs still have queued goes on the bubble it left
       // (or on the one Convex finds for the run).
@@ -762,6 +791,7 @@ export class RunManager {
     this.replayArmed = false;
     this.pendingFrames = [];
     this.pendingFramesOverflowed = false;
+    this.scheduleWaitingRunFacts();
     if (this.pendingAnnounce.length > 0) {
       // `now` MUST be the session's own clock (the normalizer arms its recv
       // deadlines against it — an epoch value would park them forever).
@@ -997,9 +1027,10 @@ export class RunManager {
       }
       this.dumpTallyOnce();
     }
-    // Facts about this run that arrived before the ACK waited for its bubble: the
-    // replay may just have opened it (a turn it also finished drains at its settle).
-    this.scheduleLiveRunFacts();
+    // Facts that arrived before the ACK waited for it: this run's for its bubble, which
+    // the replay may just have opened (a turn it also finished drains at its settle);
+    // any other run's for the dispatch to stop being in flight.
+    this.scheduleWaitingRunFacts();
     // The replay itself can FINALIZE the turn (a whole response raced the ack):
     // deliver any announce stashed during the send window now — no later
     // feed/tick is guaranteed once the loop goes idle (codex P2). No-op while
@@ -1491,6 +1522,12 @@ export class RunManager {
         ? this.sink.currentMessageId
         : (this.lanes.get(runId)?.messageId ?? this.settledRuns.get(runId)?.messageId ?? null);
       if (live && known === null) return;
+      // A DISPATCH IS IN FLIGHT and the run is not the open turn's: until the ACK names
+      // the turn's run, nothing says whether this fact is beside the bubble the run
+      // settled earlier or the first word of the turn about to open on the same run id
+      // — written now, it went on the earlier bubble. It waits for the turn to begin
+      // (or the send to fail), which schedules every queue again.
+      if (!live && this.dispatchInFlight) return;
       // Taken out before the write: the per-run bound may drop the head meanwhile. And
       // "settled" as it stood when Convex was ASKED: its answer is about that instant.
       const fact = queue.facts.shift()!;
@@ -1522,6 +1559,11 @@ export class RunManager {
     }
   }
 
+  /** The dispatch is no longer in flight: every queue is given a pass again. */
+  private scheduleWaitingRunFacts(): void {
+    for (const runId of this.runFacts.keys()) this.scheduleRunFacts(runId, false);
+  }
+
   /** Resolves once every write pass queued so far is done (tests, orderly teardown). */
   async runFactsIdle(): Promise<void> {
     let tail: Promise<void>;
@@ -1547,8 +1589,8 @@ export class RunManager {
     }
     const late = this.lateFinalFor(frame);
     if (late !== null) {
-      if (this.keptCompletions.has(late.runId)) {
-        // The run's bubble is still owed a completion: this final is compared with what
+      if (this.keptCompletions.has(late.settled)) {
+        // THAT bubble is still owed a completion: this final is compared with what
         // the bubble holds once that write is done, behind it on its chain.
         this.completionTail = this.completionTail
           .then(() => this.writeLateFinal(late))
@@ -1588,54 +1630,66 @@ export class RunManager {
   // frame of the connection, a turn beginning. No timer here. After
   // `MAX_COMPLETION_PASSES` failed passes the text is dropped, and said.
 
-  /** What settled bubbles are still owed, by run (insertion-ordered, bounded). */
-  private readonly keptCompletions = new Map<string, KeptCompletion>();
+  /** What settled bubbles are still owed, by DESTINATION — the record of the turn that
+   *  settled the bubble (insertion-ordered, bounded). Never by run id: a run id can
+   *  settle a second bubble while the first is still owed its text. */
+  private readonly keptCompletions = new Map<SettledRecord, KeptCompletion>();
+  /** The record each early close's window completes (see `noteIfSettled`). */
+  private readonly windowRecords = new WeakMap<object, SettledRecord>();
   /** Serializes the writes to settled bubbles. Never awaited by a frame; cannot reject. */
   private completionTail: Promise<void> = Promise.resolve();
+  /** Why the last write to a settled bubble failed (for the trace of whoever asked). */
+  private completionFailure: unknown = null;
   private static readonly MAX_COMPLETION_PASSES = 3;
   private static readonly MAX_KEPT_COMPLETIONS = 32;
 
-  /** The run's bubble is owed `offer.text`. Synchronous; returns at once. */
+  /** The bubble `offer`'s window settled is owed `offer.text`. Synchronous. */
   private offerCompletion(offer: SettledCompletion): void {
-    const kept = this.keptCompletions.get(offer.runId);
+    // The destination is the WINDOW's: the record of the turn whose early close opened
+    // it, whatever record the run id names by now.
+    const record = this.windowRecords.get(offer.window);
+    if (record === undefined) return;
+    const kept = this.keptCompletions.get(record);
     if (kept !== undefined) {
-      // The latest text wins: it is the gateway's later view of the same buffer.
+      // Same bubble: the latest text wins, it is the gateway's later view of one buffer.
       kept.offer = offer;
     } else {
-      // The run's record is captured NOW: a later turn may own the run again and
-      // replace it, and this text is for the bubble the run had settled.
-      this.keptCompletions.set(offer.runId, {
+      this.keptCompletions.set(record, {
+        runId: offer.runId,
         offer,
-        record: this.settledRuns.get(offer.runId),
+        record,
         failures: 0,
         scheduled: false,
       });
       while (this.keptCompletions.size > RunManager.MAX_KEPT_COMPLETIONS) {
-        const oldest = this.keptCompletions.keys().next().value as string;
+        const [oldest, dropped] = this.keptCompletions.entries().next().value as [
+          SettledRecord,
+          KeptCompletion,
+        ];
         this.keptCompletions.delete(oldest);
         console.warn(
-          `[final] a settled bubble's completion was dropped, the oldest still owed (bound ${RunManager.MAX_KEPT_COMPLETIONS} runs) run=${oldest.slice(0, 60)}`,
+          `[final] a settled bubble's completion was dropped, the oldest still owed (bound ${RunManager.MAX_KEPT_COMPLETIONS}) run=${dropped.runId.slice(0, 60)}`,
         );
       }
     }
-    this.scheduleCompletion(offer.runId);
+    this.scheduleCompletion(record);
   }
 
   /** Queue a write pass for every completion still owed and not already queued: what a
    *  failed pass left. Synchronous, and nothing when nothing is owed. */
   private reofferCompletions(): void {
     if (this.keptCompletions.size === 0) return;
-    for (const runId of this.keptCompletions.keys()) this.scheduleCompletion(runId);
+    for (const record of this.keptCompletions.keys()) this.scheduleCompletion(record);
   }
 
-  private scheduleCompletion(runId: string): void {
-    const kept = this.keptCompletions.get(runId);
+  private scheduleCompletion(record: SettledRecord): void {
+    const kept = this.keptCompletions.get(record);
     if (kept === undefined || kept.scheduled) return;
     kept.scheduled = true;
     this.completionTail = this.completionTail
       .then(() => {
         kept.scheduled = false;
-        return this.writeCompletion(runId, kept);
+        return this.writeCompletion(kept);
       })
       .catch((err: unknown) => {
         console.error("[final] a completion pass failed (non-fatal):", errForLog(err));
@@ -1643,51 +1697,65 @@ export class RunManager {
   }
 
   /**
-   * Write what `runId`'s bubble is owed. Convex is the judge — it takes the text only as
-   * a strict extension of what that message of that run holds:
-   *  - written: the normalizer's reference and the run's record follow the bubble;
-   *  - refused (Convex holds a text this one does not extend — the sanitiser rewrote
-   *    something already persisted): the text is never dropped, what it ADDS to the
-   *    run's record joins the bubble as a late final does (CU-8) — a later offer of the
-   *    same text then adds nothing;
-   *  - failed: the text stays owed (see above), bounded.
+   * Write what a settled bubble is owed. Every write of the pass has one of three
+   * outcomes (`SettledWriteOutcome`), and the debt is discharged only by `written` or by
+   * the refusal of its LAST resort:
+   *  - the completion, WRITTEN: the normalizer's reference and the run's record follow
+   *    the bubble;
+   *  - the completion, REFUSED (Convex holds a text this one does not extend — the
+   *    sanitiser rewrote something already persisted; or the run left no bubble): the
+   *    text is never dropped, what it ADDS to the run's record is joined as a late final
+   *    is (CU-8) — the last resort. Joined, or nothing to add, or no bubble to join:
+   *    discharged;
+   *  - either write FAILED: the text stays owed (see above), under one bounded counter.
+   *    The next pass asks both again; both are idempotent in Convex.
    */
-  private async writeCompletion(runId: string, kept: KeptCompletion): Promise<void> {
-    while (this.keptCompletions.get(runId) === kept) {
+  private async writeCompletion(kept: KeptCompletion): Promise<void> {
+    const { record, runId } = kept;
+    while (this.keptCompletions.get(record) === kept) {
       const offer = kept.offer;
-      const record = kept.record;
-      const messageId = record?.messageId ?? null;
-      let applied = false;
-      if (messageId !== null) {
-        try {
-          applied = await this.sink.completeSettledText(messageId, runId, offer.text);
-        } catch (e) {
-          kept.failures++;
-          const last = kept.failures >= RunManager.MAX_COMPLETION_PASSES;
-          if (last && this.keptCompletions.get(runId) === kept) this.keptCompletions.delete(runId);
-          console.error(
-            `[final] a settled bubble's completion was not written (pass ${kept.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${last ? "DROPPED: the bubble keeps the text it settled with" : "kept, offered again at the next frame"} run=${runId.slice(0, 60)}:`,
-            errForLog(e),
-          );
-          return;
-        }
-      }
-      if (applied) {
+      let outcome = await this.completeSettled(record, runId, offer);
+      if (outcome === "written") {
         this.normalizer.noteCompletionWritten(offer);
         // The run's record follows its bubble (what a later distinct final is compared with).
-        if (record !== undefined) {
-          record.text = offer.earlier === null ? offer.text : `${offer.earlier}\n\n${offer.text}`;
-        }
-      } else if (record !== undefined) {
+        record.text = offer.earlier === null ? offer.text : `${offer.earlier}\n\n${offer.text}`;
+      } else if (outcome === "refused") {
         const whole = offer.earlier === null ? offer.text : `${offer.earlier}\n\n${offer.text}`;
-        await this.writeLateFinal({ runId, text: whole, settled: record });
+        outcome = (await this.joinLateFinal({ runId, text: whole, settled: record })) ?? "refused";
+      }
+      if (outcome === "failed") {
+        kept.failures++;
+        const last = kept.failures >= RunManager.MAX_COMPLETION_PASSES;
+        if (last && this.keptCompletions.get(record) === kept) this.keptCompletions.delete(record);
+        console.error(
+          `[final] a settled bubble's completion was not written (pass ${kept.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${last ? "DROPPED: the bubble keeps the text it settled with" : "kept, offered again at the next frame"} run=${runId.slice(0, 60)}:`,
+          errForLog(this.completionFailure),
+        );
+        return;
       }
       // A newer text offered while this one was being written goes next (the same text,
       // once written, is done).
-      if (kept.offer === offer || (applied && kept.offer.text === offer.text)) {
-        if (this.keptCompletions.get(runId) === kept) this.keptCompletions.delete(runId);
+      if (kept.offer === offer || (outcome === "written" && kept.offer.text === offer.text)) {
+        if (this.keptCompletions.get(record) === kept) this.keptCompletions.delete(record);
         return;
       }
+    }
+  }
+
+  /** The completion write itself. No bubble to complete is a refusal. */
+  private async completeSettled(
+    record: SettledRecord,
+    runId: string,
+    offer: SettledCompletion,
+  ): Promise<SettledWriteOutcome> {
+    if (record.messageId === null) return "refused";
+    try {
+      return (await this.sink.completeSettledText(record.messageId, runId, offer.text))
+        ? "written"
+        : "refused";
+    } catch (e) {
+      this.completionFailure = e;
+      return "failed";
     }
   }
 
