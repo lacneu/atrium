@@ -380,6 +380,7 @@ describe("a refused sub-agent interaction leaves nothing armed", () => {
     maxPayload: number | null,
     message: string,
     attachments?: unknown[],
+    attachmentCeilings: { maxBytes: number; maxImageBytes: number } | null = null,
   ) {
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
       const conn = fakeConn("2026.9.6");
@@ -390,6 +391,7 @@ describe("a refused sub-agent interaction leaves nothing armed", () => {
         },
         close: () => conn.close(),
         maxPayload,
+        attachmentCeilings,
         async request(method: string, params: Record<string, unknown>) {
           if (method === "chat.send") return chatSend(params);
           return { payload: {} };
@@ -443,6 +445,28 @@ describe("a refused sub-agent interaction leaves nothing armed", () => {
     const { res, busy, registry } = await post(() => ({ payload: {} }), 4_096, "go on", big);
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ ok: false, error: { code: "attachment_too_large" } });
+    expect(busy).toBeNull();
+    registry.closeAll();
+  });
+
+  it("an image over the gateway's per-attachment ceiling: refused before arming, though the frame could carry it", async () => {
+    // `hello-ok.policy.attachments`: the gateway refuses an image over `maxImageBytes`
+    // whatever the frame allows — and the whole send with it.
+    const png = Buffer.alloc(1_001);
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // a real PNG head: the gateway sniffs
+    const image = [{ type: "image", mimeType: "image/png", fileName: "x.png", content: png.toString("base64") }];
+    const sent: unknown[] = [];
+    const send = (p: Record<string, unknown>) => {
+      sent.push(p);
+      return { payload: {} };
+    };
+    const { res, busy, registry } = await post(send, 26_214_400, "go on", image, {
+      maxBytes: 5_000,
+      maxImageBytes: 1_000,
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ ok: false, error: { code: "attachment_too_large" } });
+    expect(sent).toEqual([]);
     expect(busy).toBeNull();
     registry.closeAll();
   });

@@ -73,6 +73,9 @@ import {
   base64ByteLength,
   base64FitsFrame,
   DEFAULT_GATEWAY_MAX_PAYLOAD,
+  exceedsAttachmentCeiling,
+  IMAGE_SIGNATURE_BYTES,
+  isKnownImageSignature,
 } from "./lib/attachmentLimits";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { contentLocaleForInstance } from "./lib/serverLocale";
@@ -3042,10 +3045,13 @@ export const dispatch = internalAction({
     // ALL attachments + the message against it — maxPayload bounds the whole
     // chat.send frame, NOT each file, so N files individually under the per-file cap
     // can still overflow it together (matches the bridge guard).
-    const reportedMaxPayload = await ctx.runQuery(
-      internal.bridgeHealth.maxPayloadInternal,
-      // Per routed instance (Model M): the cap is derived from THIS instance's
-      // gateway frame limit, not a global one.
+    // One read for both limits of the routed instance (Model M): its gateway's frame
+    // limit, and its per-attachment ceilings (hello-ok policy.attachments) where the
+    // bridge vouches for them. An inline file over its ceiling is refused by the
+    // gateway AFTER the frame was sent, the whole turn with it: it fails here instead,
+    // with the same clear code as the frame check. Unknown ceilings refuse nothing.
+    const { maxPayload: reportedMaxPayload, attachmentCeilings } = await ctx.runQuery(
+      internal.bridgeHealth.inboundLimitsInternal,
       { instanceName: routing.target.instanceName },
     );
     // CONSERVATIVE fallback when the bridge has NOT reported a maxPayload yet — an
@@ -3091,6 +3097,7 @@ export const dispatch = internalAction({
     const transports = planAttachmentTransports({
       inboundMediaMode,
       maxPayload,
+      attachmentMaxBytes: attachmentCeilings?.maxBytes ?? null,
       attachments: rowAttachments.map((a, i) => ({
         mimeType: a.mimeType,
         size: sizes[i] ?? null,
@@ -3122,6 +3129,20 @@ export const dispatch = internalAction({
         }
         const blob = await ctx.storage.get(a.storageId);
         if (blob === null) continue;
+        // The image ceiling only for bytes that ARE an image to the gateway, whatever
+        // type was declared (it sniffs them; lib/attachmentLimits.ts).
+        const knownImage =
+          attachmentCeilings !== null &&
+          isKnownImageSignature(
+            new Uint8Array(await blob.slice(0, IMAGE_SIGNATURE_BYTES).arrayBuffer()),
+          );
+        if (exceedsAttachmentCeiling(blob.size, knownImage, attachmentCeilings)) {
+          console.error(
+            `bridge.dispatch: inbound attachment over the gateway's per-attachment ceiling (${blob.size} bytes) — failing send (not dropping)`,
+          );
+          attachmentTooLarge = true;
+          break;
+        }
         const next = base64Total + base64ByteLength(blob.size);
         if (!base64FitsFrame(next, maxPayload)) {
           console.error(

@@ -12,7 +12,9 @@ import type { Doc } from "./_generated/dataModel";
 import {
   normalizeTarget,
   computeAvailability,
+  gatewayHostOf,
   isInstanceDownError,
+  resolveAttachmentCeilings,
 } from "./bridgeHealth";
 import { maxRawInboundBytes } from "./lib/attachmentLimits";
 
@@ -160,6 +162,32 @@ describe("normalizeTarget (defensive parse of the bridge /health body)", () => {
   });
 });
 
+describe("normalizeTarget — the per-attachment ceilings", () => {
+  const base = {
+    key: "o",
+    canonical: "o",
+    agentId: "main",
+    gatewayHost: "h:1",
+    state: "connected",
+    lastOkAt: 9,
+    attempts: 1,
+    okCount: 1,
+    errorCount: 0,
+  };
+  test("reads them when the bridge reports them", () => {
+    const t = normalizeTarget({ ...base, attachmentMaxBytes: 19464192, attachmentMaxImageBytes: 6291456 });
+    expect(t?.attachmentMaxBytes).toBe(19464192);
+    expect(t?.attachmentMaxImageBytes).toBe(6291456);
+  });
+  test("null when absent (an older bridge) or not a number", () => {
+    expect(normalizeTarget(base)?.attachmentMaxBytes).toBeNull();
+    expect(normalizeTarget(base)?.attachmentMaxImageBytes).toBeNull();
+    const bad = normalizeTarget({ ...base, attachmentMaxBytes: "19464192", attachmentMaxImageBytes: {} });
+    expect(bad?.attachmentMaxBytes).toBeNull();
+    expect(bad?.attachmentMaxImageBytes).toBeNull();
+  });
+});
+
 function doc(p: {
   reachable: boolean;
   checkedAt: number;
@@ -171,6 +199,9 @@ function doc(p: {
     agentId?: string;
     canonical?: string;
     maxPayload?: number;
+    attachmentMaxBytes?: number | null;
+    attachmentMaxImageBytes?: number | null;
+    gatewayHost?: string;
   }[];
 }): Doc<"bridgeHealth"> {
   return {
@@ -196,7 +227,157 @@ describe("computeAvailability (chat gate decision — fail OPEN)", () => {
       reason: null,
       checkedAt: null,
       maxInboundBytes: null,
+      maxInboundImageBytes: null,
     });
+  });
+
+  // The gateway's PER-ATTACHMENT ceilings (hello-ok policy.attachments, 2026.8.1+),
+  // published by the bridge per instance while a live socket vouches for them.
+  // THE RULE: an early refusal is never stricter than the gateway's own decision for
+  // that send — a ceiling that is not KNOWN for the instance refuses nothing.
+  const MiB = 1024 * 1024;
+  /** What the instance is NOW: an OpenClaw gateway (no row — the env-served case). */
+  const OPENCLAW = { provider: "openclaw", gatewayUrl: null };
+  const availabilityOf = (
+    d: Doc<"bridgeHealth">,
+    instanceName: string,
+    current: { provider: string; gatewayUrl: string | null } | null = OPENCLAW,
+  ) => computeAvailability(d, NOW, instanceName, undefined, undefined, undefined, current);
+  const target = (
+    instanceName: string,
+    attachmentMaxBytes: number | null,
+    attachmentMaxImageBytes: number | null,
+  ) => ({ state: "connected", instanceName, maxPayload: 26214400, attachmentMaxBytes, attachmentMaxImageBytes });
+
+  test("an instance's own ceilings narrow its caps: files and, more tightly, images", () => {
+    const d = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [target("a", 5 * MiB, 4 * MiB)] });
+    const a = availabilityOf(d, "a");
+    expect(a.maxInboundBytes).toBe(5 * MiB);
+    expect(a.maxInboundImageBytes).toBe(4 * MiB);
+  });
+
+  test("the default gateway: an image ceiling and no file ceiling beyond the frame", () => {
+    // What the bridge publishes for a default gateway (its advertised file ceiling is
+    // only the gateway's frame budget — the frame cap already owns that bound).
+    const d = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [target("a", null, 6291456)] });
+    const a = availabilityOf(d, "a");
+    expect(a.maxInboundBytes).toBe(maxRawInboundBytes(26214400));
+    expect(a.maxInboundImageBytes).toBe(6291456);
+  });
+
+  test("THE FIRST SEND of a second instance is never judged on the first one's ceilings", () => {
+    // Instance A advertises 1 MiB. Instance B (5 MiB configured, or a Hermes gateway)
+    // has no target yet: its ceiling is UNKNOWN, so a valid 2 MiB PDF for B is not
+    // refused — a refusal that would also prevent the send that creates B's target.
+    const d = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [target("a", 1 * MiB, 1 * MiB)] });
+    for (const other of ["b", "hermes"]) {
+      const b = availabilityOf(d, other);
+      expect(b.maxInboundBytes, other).toBe(maxRawInboundBytes(26214400)); // the frame alone
+      expect(b.maxInboundImageBytes, other).toBeNull();
+      expect(resolveAttachmentCeilings(d, other, NOW, OPENCLAW), other).toBeNull();
+    }
+    // A itself is held to its own.
+    expect(availabilityOf(d, "a").maxInboundBytes).toBe(1 * MiB);
+  });
+
+  test("a read that names NO instance gets no ceiling: the send it precedes has one", () => {
+    const d = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [target("a", 1 * MiB, 1 * MiB)] });
+    const global = computeAvailability(d, NOW);
+    expect(global.maxInboundBytes).toBe(maxRawInboundBytes(26214400));
+    expect(global.maxInboundImageBytes).toBeNull();
+    expect(resolveAttachmentCeilings(d, null, NOW, OPENCLAW)).toBeNull();
+    expect(resolveAttachmentCeilings(d, undefined, NOW, OPENCLAW)).toBeNull();
+  });
+
+  test("a target that carries none (Hermes, an older gateway, a socket that no longer vouches) is unknown — never another's", () => {
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 26214400,
+      targets: [target("a", 1 * MiB, 1 * MiB), target("hermes", null, null)],
+    });
+    expect(resolveAttachmentCeilings(d, "hermes", NOW, OPENCLAW)).toBeNull();
+    expect(availabilityOf(d, "hermes").maxInboundImageBytes).toBeNull();
+  });
+
+  test("a stale or unreachable snapshot vouches for nothing", () => {
+    const targets = [target("a", 1 * MiB, 1 * MiB)];
+    const fresh = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets });
+    expect(resolveAttachmentCeilings(fresh, "a", NOW, OPENCLAW)).toEqual({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB });
+    expect(resolveAttachmentCeilings(fresh, "a", NOW + 3 * 60 * 1000 + 1, OPENCLAW)).toBeNull();
+    const down = doc({ reachable: false, checkedAt: NOW, maxPayload: 26214400, targets });
+    expect(resolveAttachmentCeilings(down, "a", NOW, OPENCLAW)).toBeNull();
+  });
+
+  test("targets of one instance that disagree are not a fact: unknown", () => {
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 26214400,
+      targets: [target("a", 1 * MiB, 1 * MiB), target("a", 5 * MiB, 5 * MiB)],
+    });
+    expect(resolveAttachmentCeilings(d, "a", NOW, OPENCLAW)).toBeNull();
+    const partial = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 26214400,
+      targets: [target("a", 1 * MiB, 1 * MiB), target("a", null, null)],
+    });
+    expect(resolveAttachmentCeilings(partial, "a", NOW, OPENCLAW)).toBeNull();
+  });
+
+  test("an image also faces a FILE ceiling smaller than the image one", () => {
+    const d = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [target("a", 1000, 6291456)] });
+    expect(availabilityOf(d, "a").maxInboundImageBytes).toBe(1000);
+  });
+
+  test("a frame smaller than the ceilings still wins (the binding minimum)", () => {
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 131072 + 1200,
+      targets: [{ ...target("a", 5 * MiB, 4 * MiB), maxPayload: 131072 + 1200 }],
+    });
+    const a = availabilityOf(d, "a");
+    expect(a.maxInboundBytes).toBe(900);
+    expect(a.maxInboundImageBytes).toBe(900);
+  });
+
+  test("RECONFIGURED under the same name, OpenClaw → Hermes: the stored ceiling does not cross the provider boundary", () => {
+    // The snapshot still holds the OpenClaw gateway's 1 MiB under the name; the instance
+    // row now says Hermes. A 2 MiB PDF must not be refused on a limit Hermes never set.
+    const d = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [target("a", 1 * MiB, 1 * MiB)] });
+    const hermes = { provider: "hermes", gatewayUrl: "http://hermes:8642" };
+    expect(resolveAttachmentCeilings(d, "a", NOW, hermes)).toBeNull();
+    const a = availabilityOf(d, "a", hermes);
+    expect(a.maxInboundBytes).toBe(maxRawInboundBytes(26214400));
+    expect(a.maxInboundImageBytes).toBeNull();
+    // The same snapshot, the instance still OpenClaw: the ceiling applies.
+    expect(resolveAttachmentCeilings(d, "a", NOW, OPENCLAW)).toEqual({ maxBytes: 1 * MiB, maxImageBytes: 1 * MiB });
+  });
+
+  test("a caller that does not say what the instance is now gets no ceiling", () => {
+    const d = doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [target("a", 1 * MiB, 1 * MiB)] });
+    expect(resolveAttachmentCeilings(d, "a", NOW, null)).toBeNull();
+    expect(resolveAttachmentCeilings(d, "a", NOW, undefined)).toBeNull();
+    expect(computeAvailability(d, NOW, "a").maxInboundImageBytes).toBeNull();
+  });
+
+  test("RE-POINTED at another OpenClaw gateway under the same name: the ceiling read from the old host does not apply", () => {
+    const at = (gatewayHost: string) =>
+      doc({
+        reachable: true,
+        checkedAt: NOW,
+        maxPayload: 26214400,
+        targets: [{ ...target("a", 1 * MiB, 1 * MiB), gatewayHost }],
+      });
+    const now = { provider: "openclaw", gatewayUrl: "wss://new-gw.example.org:18789" };
+    expect(resolveAttachmentCeilings(at("old-gw.example.org:18789"), "a", NOW, now)).toBeNull();
+    expect(resolveAttachmentCeilings(at("new-gw.example.org:18789"), "a", NOW, now)).toEqual({
+      maxBytes: 1 * MiB,
+      maxImageBytes: 1 * MiB,
+    });
+    expect(gatewayHostOf("wss://new-gw.example.org:18789")).toBe("new-gw.example.org:18789");
   });
 
   test("maxInboundBytes is DERIVED from the gateway maxPayload (not hardcoded)", () => {
@@ -474,6 +655,72 @@ describe("getBridgeAvailability (ownership-scoped, one bridge / N gateways)", ()
       (await asB.query(api.bridgeHealth.getBridgeAvailability, { chatId: chatA }))
         .degraded,
     ).toBe(true);
+  });
+});
+
+describe("getBridgeAvailability — the composer's read never applies a ceiling the instance has outlived", () => {
+  // The snapshot is keyed by the instance NAME, which survives a reconfiguration. The
+  // query reads the instance's own row and applies the stored ceilings only to an
+  // OpenClaw gateway at the host they were read from.
+  async function imageCap(row: { kind?: "openclaw" | "hermes"; gatewayUrl: string }) {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "admin" });
+      await ctx.db.insert("instances", { name: "jerome", ...row });
+      await ctx.db.insert("bridgeHealth", {
+        key: "singleton",
+        reachable: true,
+        checkedAt: Date.now(),
+        maxPayload: 26214400,
+        targets: [
+          {
+            key: "jerome:u",
+            instanceName: "jerome",
+            canonical: "u",
+            agentId: "main",
+            gatewayHost: "gw:18789",
+            state: "connected",
+            lastOkAt: null,
+            lastErrorCode: null,
+            lastErrorAt: null,
+            attempts: 1,
+            okCount: 1,
+            errorCount: 0,
+            maxPayload: 26214400,
+            attachmentMaxBytes: 1048576,
+            attachmentMaxImageBytes: 1048576,
+          },
+        ],
+      });
+      const chatId = await ctx.db.insert("chats", { userId, instanceName: "jerome", updatedAt: 1 });
+      return { userId, chatId };
+    });
+    const a = await t
+      .withIdentity({ subject: `${userId}|s` })
+      .query(api.bridgeHealth.getBridgeAvailability, { chatId });
+    return { image: a.maxInboundImageBytes, file: a.maxInboundBytes };
+  }
+
+  test("still the OpenClaw gateway it was read from: applied", async () => {
+    expect(await imageCap({ kind: "openclaw", gatewayUrl: "ws://gw:18789" })).toEqual({
+      image: 1048576,
+      file: 1048576,
+    });
+  });
+
+  test("reconfigured to Hermes under the same name: not applied", async () => {
+    expect(await imageCap({ kind: "hermes", gatewayUrl: "http://gw:18789" })).toEqual({
+      image: null,
+      file: maxRawInboundBytes(26214400),
+    });
+  });
+
+  test("re-pointed at another OpenClaw gateway under the same name: not applied", async () => {
+    expect(await imageCap({ kind: "openclaw", gatewayUrl: "ws://other-gw:18789" })).toEqual({
+      image: null,
+      file: maxRawInboundBytes(26214400),
+    });
   });
 });
 

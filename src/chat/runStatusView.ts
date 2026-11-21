@@ -316,6 +316,8 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // A named connection end: the gateway said it was restarting, or it hung up on
   // us for being too slow to read. Both used to arrive as `connection_lost`.
   gateway_restarting: m.runstatus_error_gateway_restarting,
+  // A plain STOP (the gateway's notice promised no restart): never worded as one.
+  gateway_stopping: m.runstatus_error_gateway_stopping,
   connection_saturated: m.runstatus_error_connection_saturated,
   // The same two ends can also kill a send BEFORE the turn streams (failDispatch
   // stores the CURATED uppercase code then). SAME text, deliberately: the delivery
@@ -326,6 +328,7 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // budget closes the turn with no poll left (codex P1 ×2). Telling the user
   // "nothing ran, resend" would duplicate accepted agent work.
   GATEWAY_RESTARTING: m.runstatus_error_gateway_restarting,
+  GATEWAY_STOPPING: m.runstatus_error_gateway_stopping,
   CONNECTION_SATURATED: m.runstatus_error_connection_saturated,
   // The agent kept working past the recovery budget (recv-silence self-heal
   // exhausted) — the turn is closed but the agent may still finish gateway-side.
@@ -548,6 +551,7 @@ const ERROR_STRING_CODES = new Set([
   "stream_orphaned",
   "connection_lost",
   "gateway_restarting",
+  "gateway_stopping",
   "connection_saturated",
   "response_timeout",
   // failDispatch stores the code string in `error` too (raw === code -> the

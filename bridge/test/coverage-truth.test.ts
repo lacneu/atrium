@@ -128,6 +128,12 @@ const FROZEN_TRUTH_FLOOR = [
   "TerminalApprovalSnapshot.decision",
   "QuestionResolveResult.status",
   "ChatDeltaEvent.replace",
+  // The handshake policy (frame limits, tick interval, per-attachment ceilings), the
+  // restart delay that tells a restart from a stop, and the tick's unread clock
+  // (transport lot, 2026-11-20).
+  "HelloOk.policy",
+  "ShutdownEvent.restartExpectedMs",
+  "TickEvent.ts",
 ];
 
 const ratchet = JSON.parse(

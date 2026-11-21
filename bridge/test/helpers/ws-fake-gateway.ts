@@ -16,6 +16,17 @@ export const NO_ANSWER: unique symbol = Symbol("no-answer");
 export const MAX_PAYLOAD = 26_214_400;
 export const MAX_BUFFERED = 52_428_800;
 
+/** `hello-ok.policy` VERBATIM from a bench capture (gateway 2026.9.33; 2026.9.6 sends
+ *  the same object): the tick interval and the per-attachment ceilings included. */
+export const CAPTURED_HELLO_POLICY = {
+  allowedSessionVisibilities: ["shared", "read-only", "suggest", "draft"],
+  attachments: { maxBytes: 19464192, maxImageBytes: 6291456 },
+  hasMultipleSessionSharingIdentities: false,
+  maxBufferedBytes: 52428800,
+  maxPayload: 26214400,
+  tickIntervalMs: 30000,
+} as const;
+
 export function deviceIdentity() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   return {
@@ -48,12 +59,19 @@ export interface WsFakeGateway {
 
 /**
  * @param opts.version   the `server.version` announced in hello-ok
+ * @param opts.policy    the `policy` announced in hello-ok (default: frame limits only)
  * @param opts.onMethod  answers a request: return the `payload` of an ok response,
  *                       `{ error }` for a refusal, or `NO_ANSWER` to leave it pending;
  *                       unknown methods are answered `{}` when no `onMethod` is given
  */
 export function startWsFakeGateway(opts: {
   version?: string;
+  /** The `hello-ok.policy` to announce instead of the minimal default — e.g. the
+   *  object a real gateway sends (tick interval, attachment ceilings). */
+  policy?: Record<string, unknown>;
+  /** The `hello-ok.auth` to announce (e.g. `{ deviceToken }`, which starts a device-token
+   *  promotion on the client). Absent by default. */
+  auth?: Record<string, unknown>;
   onMethod?: (
     method: string,
     params: unknown,
@@ -103,7 +121,8 @@ export function startWsFakeGateway(opts: {
               type: "hello-ok",
               protocol: 4,
               server: { version: opts.version ?? "2026.9.1", connId: "conn-1" },
-              policy: { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
+              ...(opts.auth ? { auth: opts.auth } : {}),
+              policy: opts.policy ?? { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
             },
           }),
         );

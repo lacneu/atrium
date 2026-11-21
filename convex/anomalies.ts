@@ -205,6 +205,7 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   compaction_timeout: "assistant.cause.compaction_timeout",
   connection_lost: "assistant.cause.connection_lost",
   gateway_restarting: "assistant.cause.gateway_restarting",
+  gateway_stopping: "assistant.cause.gateway_stopping",
   connection_saturated: "assistant.cause.connection_saturated",
   response_timeout: "assistant.cause.response_timeout",
   stream_orphaned: "assistant.cause.stream_orphaned",

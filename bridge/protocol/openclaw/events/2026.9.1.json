@@ -4,9 +4,9 @@
   "catalogue": "event-catalogue.json",
   "counts": {
     "total": 56,
-    "handled": 8,
+    "handled": 10,
     "gap": 23,
-    "ignored": 25
+    "ignored": 23
   },
   "events": {
     "connect.challenge": {
@@ -39,7 +39,7 @@
     },
     "shutdown": {
       "status": "handled",
-      "by": "connection-end.ts — names the GATEWAY_RESTARTING cause instead of a bare socket close",
+      "by": "connection-end.ts — names the announced end instead of a bare socket close: GATEWAY_RESTARTING when the notice carries restartExpectedMs, GATEWAY_STOPPING when it does not (a plain stop)",
       "anchor": {
         "file": "src/providers/openclaw/connection-end.ts",
         "token": "eventPayload(frame, \"shutdown\")"
@@ -102,8 +102,12 @@
       "why": "Channel presence for chat surfaces (who is online). Atrium is not a chat client and no turn depends on it."
     },
     "tick": {
-      "status": "ignored",
-      "why": "Periodic clock broadcast carrying no turn state."
+      "status": "handled",
+      "by": "openclaw-client onMessage — proof of life for the connection-silence watch (inbound-silence.ts): the gateway's periodic tick is what keeps an idle socket from being closed after twice hello-ok.policy.tickIntervalMs of silence (any inbound frame counts, as in the gateway's own clients). Its payload (`ts`) is not read; the frame is queued unchanged and the normalizer drops it.",
+      "anchor": {
+        "file": "src/providers/openclaw/openclaw-client.ts",
+        "token": "silenceWatch?.noteInbound()"
+      }
     },
     "health": {
       "status": "ignored",
@@ -214,8 +218,12 @@
       "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     },
     "chat.metadata.changed": {
-      "status": "ignored",
-      "why": "Broadcast with an EMPTY payload and `dropIfSlow: true` (server-chat-metadata-lifecycle.ts) — a 'refresh your chat metadata' nudge for a client that caches the gateway's chat list. Atrium's chat list is Convex-authoritative and it calls `chat.history` only for `sessionInfo.hasActiveRun` after a delivery, never for the chat list, so there is nothing to refresh."
+      "status": "handled",
+      "by": "chat-metadata-changed.ts readChatMetadataChanged, reported by openclaw-client onMessage to the roster policy (models-roster.ts attachRosterPolicy): a notice that does not say the model catalogue is unchanged moves the roster epoch and ends in one coalesced refresh that pushes the model list to Convex — the Control UI's own rule (ui/src/lib/model-catalog-cache.ts modelCatalogEventInvalidation). At this version the payload is always `{}` (server-chat-metadata-lifecycle.ts broadcasts it empty), so every notice refreshes, as this version's Control UI does.",
+      "anchor": {
+        "file": "src/providers/openclaw/chat-metadata-changed.ts",
+        "token": "eventPayload(frame, \"chat.metadata.changed\")"
+      }
     },
     "controlUi.sessionPullRequests.changed": {
       "status": "ignored",

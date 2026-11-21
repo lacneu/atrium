@@ -3279,20 +3279,29 @@
     "TickEvent": {
       "fields": {
         "ts": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "ignored",
+          "why": "The tick's ARRIVAL is the signal: any inbound frame resets the connection-silence watch (inbound-silence.ts), exactly as in the gateway's own clients (ui/src/api/gateway.ts onActivity; packages/gateway-client client.ts lastTick = Date.now()). `ts` is the gateway's own clock at emission (server-maintenance.ts scheduler.now()): neither client reads it, and Atrium compares no clocks."
         }
       }
     },
     "ShutdownEvent": {
       "fields": {
         "reason": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "connection-end readShutdownNotice: its PRESENCE is recorded with the connection end (reasonPresent); the text itself is never propagated."
         },
         "restartExpectedMs": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "connection-end readShutdownNotice / classifyConnectionEnd: a number announces a RESTART (gateway_restarting; the delay kept when usable), its absence a plain STOP (gateway_stopping) — the gateway sets it for a restart only (run-loop.ts restartExpectedMs: isRestart ? 1500 : null) and its Control UI arms its restarting state on that field alone (ui/src/app/gateway-store.ts). The distinction reaches the dispatch code (GATEWAY_STOPPING), the finalize cause, the anomaly class and the reader's wording.",
+          "anchor": {
+            "file": "src/providers/openclaw/connection-end.ts",
+            "token": "payload.restartExpectedMs"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/connection-end.test.ts",
+            "note": "The stop frame is a bench capture ({reason: \"gateway stopping\"}, run 2026-10-01, ten occurrences); the restart shape is read in the source (run-loop.ts). Replayed by this test and over a real socket by connection-end-live.test.ts, proven by neutralization. No live run has driven a stop and a restart through the bridge since the two were told apart: owed."
+          }
         }
       }
     },
@@ -3364,8 +3373,8 @@
     "HelloOk": {
       "fields": {
         "auth": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: auth.deviceToken with auth.issuedAtMs is the device token promoted after the handshake (token mode only); auth.role / auth.scopes are not read (the debug line reads payload.role / payload.scopes, which the hello-ok does not carry)."
         },
         "controlUiTabs": {
           "status": "gap",
@@ -3380,24 +3389,33 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "features": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: features.events, the families the gateway announces, judged by the drift detector (protocolDrift.observeAnnouncedEvents)."
         },
         "pluginSurfaceUrls": {
           "status": "gap",
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "policy": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: policy.maxPayload (the frame limit a send's inline attachments must fit) and policy.maxBufferedBytes (the send-buffer ceiling); policy.tickIntervalMs arms the connection-silence watch (inbound-silence.ts readTickIntervalMs: a socket with no inbound frame for twice the interval is closed and named inbound_silence, as the Control UI's startTickWatch does). This version's policy carries no per-attachment ceilings.",
+          "anchor": {
+            "file": "src/providers/openclaw/openclaw-client.ts",
+            "token": "payload.policy"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/inbound-silence-live.test.ts",
+            "note": "The policy object is a bench capture (hello-ok of 2026.9.6 and 2026.9.33: tickIntervalMs 30000, attachments {maxBytes 19464192, maxImageBytes 6291456}), replayed through a real socket by this test and by attachment-ceilings.test.ts, each proven by neutralization. No live run has yet shown a half-open socket closed by the watch, nor an over-ceiling file refused before the send: both live proofs are owed."
+          }
         },
         "protocol": {
           "status": "gap",
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "server": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client connect: server.version is the gateway version the compat manifest and the capability policy key on (connection.gatewayVersion); server.connId is logged in debug only."
         },
         "snapshot": {
           "status": "gap",

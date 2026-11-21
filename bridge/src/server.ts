@@ -190,6 +190,8 @@ import {
 import {
   FRAME_ENVELOPE_OVERHEAD_BYTES,
   base64FitsFrame,
+  firstOversizedAttachment,
+  type AttachmentCeilings,
 } from "./core/attachment-limits.js";
 import {
   parseInboundConfig,
@@ -3075,6 +3077,17 @@ async function performSendComposed(
           `(base64 ${base64Bytes} > maxPayload ${conn.maxPayload})`,
       );
     }
+    // Per-attachment guard: the gateway ALSO bounds each attachment's decoded size
+    // (`policy.attachments`), an image more tightly, and refuses the whole send for
+    // one file over it — after the frame was written. Same classified refusal, before
+    // sending; nothing is refused when the gateway advertised no ceiling.
+    const oversized = firstOversizedAttachment(body.attachments, conn.attachmentCeilings);
+    if (oversized !== null) {
+      throw new Error(
+        `attachment too large for the gateway ` +
+          `(${oversized.image ? "image" : "file"} of ${oversized.decodedBytes} bytes > ${oversized.ceiling})`,
+      );
+    }
     params.attachments = body.attachments;
   }
   // THE FINAL FRAME, measured exactly as the client will write it. The checks above
@@ -5794,6 +5807,14 @@ export interface EnrichedHealthSnapshot extends Omit<
    *  hardcoding one. From a live session, else the last-seen fallback, else null. */
   maxPayload: number | null;
   targets: (TargetHealth & {
+    /** This INSTANCE's per-attachment ceilings (policy.attachments), as its newest live
+     *  socket that has heard no config change since its handshake read them. null when
+     *  no such socket vouches for them, or when its gateway enforces none beyond the
+     *  frame: an unknown ceiling refuses nothing, and never another instance's. There
+     *  is deliberately no top-level value — a reader that names no instance must not
+     *  be handed a limit that belongs to one. */
+    attachmentMaxBytes: number | null;
+    attachmentMaxImageBytes: number | null;
     gatewayVersion: string | null;
     /** This instance's OWN gateway frame limit (capped at the body cap) — so a bridge
      *  serving instances with DIFFERENT maxPayloads publishes each per target, and the
@@ -5817,9 +5838,20 @@ export function enrichHealthSnapshot(
     `${instanceName ?? ""}:${canonical}`;
   const versionByKey = new Map<string, string | null>();
   const payloadByKey = new Map<string, number | null>();
+  // The ceilings are the GATEWAY's, so they are kept per instance: the newest socket
+  // that still vouches for them speaks for every target of that instance. No fallback
+  // to a value last seen — `mediaMaxMb` reloads hot, and a socket that is gone cannot
+  // say the limit has not been raised since.
+  const ceilingsByInstance = new Map<string, { at: number; ceilings: AttachmentCeilings | null }>();
   for (const t of live) {
     versionByKey.set(liveKey(t.instanceName, t.canonical), t.gatewayVersion);
     payloadByKey.set(liveKey(t.instanceName, t.canonical), t.maxPayload);
+    if (t.attachmentCeilingsVouched !== true) continue;
+    const at = t.handshakeAt ?? 0;
+    const known = ceilingsByInstance.get(t.instanceName);
+    if (known === undefined || at >= known.at) {
+      ceilingsByInstance.set(t.instanceName, { at, ceilings: t.attachmentCeilings ?? null });
+    }
   }
   // Cap a gateway frame at the bridge's OWN HTTP body cap (the Convex->bridge /send
   // POST carries the base64-inflated payload): publish the binding MINIMUM so consumers
@@ -5851,10 +5883,14 @@ export function enrichHealthSnapshot(
         (t.instanceName !== null
           ? (fallbackByInstance.get(t.instanceName) ?? null)
           : null);
+      const ownCeilings =
+        t.instanceName !== null ? (ceilingsByInstance.get(t.instanceName)?.ceilings ?? null) : null;
       return {
         ...t,
         gatewayVersion: versionByKey.get(k) ?? null,
         maxPayload: capToBody(own),
+        attachmentMaxBytes: ownCeilings?.maxBytes ?? null,
+        attachmentMaxImageBytes: ownCeilings?.maxImageBytes ?? null,
       };
     }),
   };
@@ -7985,8 +8021,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           );
           const conn = session.connection;
           if (
-            conn.maxPayload !== null &&
-            !base64FitsFrame(base64Bytes, conn.maxPayload)
+            (conn.maxPayload !== null &&
+              !base64FitsFrame(base64Bytes, conn.maxPayload)) ||
+            // …and the gateway's own per-attachment ceiling, like the main path.
+            firstOversizedAttachment(saAtts, conn.attachmentCeilings) !== null
           ) {
             sendJson(res, 502, {
               ok: false,

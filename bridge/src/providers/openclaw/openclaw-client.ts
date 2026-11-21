@@ -9,7 +9,9 @@
 //     gateway issued it (fabricating ts yields an unverifiable signature).
 //   - signature is base64url, '=' padding stripped.
 //   - WS ping disabled (the gateway drives keepalive; a client ping it never
-//     answers tears the socket down).
+//     answers tears the socket down). The keepalive the gateway does drive is its
+//     `tick` event: a socket silent for twice the advertised interval is closed
+//     (inbound-silence.ts), as the gateway's own Control UI does.
 //   - request/response correlation by `id`; res frames are {type:res,id,ok,
 //     payload|error}. Non-res frames are pushed to an inbound queue.
 //   - clean close on gateway close/error/timeout: reject all pending requests,
@@ -27,6 +29,7 @@ import { URL } from "node:url";
 import WebSocket, { type RawData } from "ws";
 
 import type { DeviceIdentity } from "../../config.js";
+import { readAttachmentCeilings, type AttachmentCeilings } from "../../core/attachment-limits.js";
 import { createSeqTracker, type SeqGap } from "./frame-seq.js";
 import {
   eventPayload,
@@ -36,6 +39,13 @@ import {
   type ShutdownNotice,
 } from "./connection-end.js";
 import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js";
+import { readChatMetadataChanged } from "./chat-metadata-changed.js";
+import {
+  SILENCE_PROBE_DEADLINE_MS,
+  createSilenceWatch,
+  readTickIntervalMs,
+  type SilenceWatch,
+} from "./inbound-silence.js";
 import { redactToolPayloadText } from "../../vendor/upstream-redact/ui/src/lib/browser-redact.js";
 import { buildIdentityHeaders, type GatewayIdentity } from "./gateway-identity.js";
 import type { RosterEntry } from "./models-roster.js";
@@ -346,8 +356,9 @@ export class OpenClawConnection {
   // model picker with no message until the bridge restarted (the 2026-08-04 symptom),
   // while not caching it at all would pay an 8s timeout on every turn.
   modelsByOwner = new Map<string, RosterEntry>(); // the entry is documented at its type
-  /** Roster epoch: incremented on each invalidation, both HERE — a frame gap at the
-   *  sequence tracker, a `config.changed` at intake, before the notice is reported. An
+  /** Roster epoch: incremented on each invalidation, all HERE — a frame gap at the
+   *  sequence tracker, a `config.changed` or a `chat.metadata.changed` that names a
+   *  stale catalogue at intake, before the notice is reported. An
    *  ordering, not a clock: two events in one millisecond are still ordered. */
   rosterEpoch = 0;
   private readonly configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
@@ -362,8 +373,9 @@ export class OpenClawConnection {
       this.sessionSharingListeners.delete(listener);
     };
   }
-  /** Raw signal: a `config.changed` notice arrived (config-changed.ts), the epoch already
-   *  moved. The policy — coalescing, the refresh that pushes the roster to Convex — lives
+  /** Raw signal: a `config.changed` notice arrived (config-changed.ts) — or a
+   *  `chat.metadata.changed` naming a stale model catalogue, marked by its `origin` — the
+   *  epoch already moved. The policy — coalescing, the refresh that pushes the roster to Convex — lives
    *  with the roster (models-roster.ts); this class only reads the frame and reports it.
    *  Returns the unsubscribe. */
   onConfigChanged(listener: (notice: ConfigChangedNotice) => void): () => void {
@@ -403,6 +415,29 @@ export class OpenClawConnection {
   // first connect (the server enforces regardless).
   maxPayload: number | null = null;
 
+  // The gateway's PER-ATTACHMENT decoded-size ceilings, from the hello-ok
+  // `payload.policy.attachments` (2026.8.1+; core/attachment-limits.ts). The frame
+  // limit above bounds the whole send; these bound each file, and an image more
+  // tightly. `null` when the gateway advertises none: nothing is refused on it here.
+  //
+  // A HANDSHAKE FACT THAT CAN GO STALE: `agents.defaults.mediaMaxMb` reloads hot — no
+  // restart, no reconnect (src/gateway/config-reload-plan.ts) — and `chat.send` reads
+  // the limit from the current config on every send (chat-send-attachments.ts), while
+  // the hello-ok is sent once. So the first `config.changed` this socket hears — or a
+  // frame gap that may hide one — makes them UNKNOWN for the rest of its life (null,
+  // `attachmentCeilingsVouched` false): a ceiling raised since must not keep refusing.
+  // A later handshake learns the current ones.
+  attachmentCeilings: AttachmentCeilings | null = null;
+  /** True while nothing this socket heard can have changed the ceilings since its
+   *  handshake — what lets `/health` publish them as the instance's current ones. */
+  attachmentCeilingsVouched = false;
+  /** When this socket's hello-ok was read (ms): the newest vouching socket speaks. */
+  handshakeAt = 0;
+  private forgetAttachmentCeilings(): void {
+    this.attachmentCeilings = null;
+    this.attachmentCeilingsVouched = false;
+  }
+
   // Per-connection send-buffer ceiling, from the hello-ok
   // `payload.policy.maxBufferedBytes` (50 MiB upstream). Past it the gateway
   // either DROPS our frames or closes us with `1008 "slow consumer"` — so this
@@ -418,6 +453,121 @@ export class OpenClawConnection {
   private shutdownNotice: ShutdownNotice | null = null;
   /** Set when WE closed for inbound overflow — the close that follows is ours. */
   private overflowClosing = false;
+  /** Set when WE closed a silent socket (the watch below) — likewise ours. */
+  private silenceClosing = false;
+
+  // CONNECTION-SILENCE WATCH (inbound-silence.ts). The interval the gateway
+  // advertised in `hello-ok.policy.tickIntervalMs`, clamped; null when it advertised
+  // none, and then nothing watches this socket. Every inbound frame resets the watch,
+  // so only a socket that carries NOTHING — not even the gateway's `tick` — for twice
+  // the interval is closed, through the same end as any other close.
+  tickIntervalMs: number | null = null;
+  private silenceWatch: SilenceWatch | null = null;
+  private silenceTimer: NodeJS.Timeout | null = null;
+  private silenceConfirmTimer: NodeJS.Timeout | null = null;
+  /** The TCP socket under the WebSocket (from its upgrade), for `bytesRead` only. */
+  private rawSocket: { readonly bytesRead: number } | null = null;
+  private rawBytesSeen = 0;
+
+  /**
+   * A frame still ARRIVING is proof of life too. `message` fires once a frame is
+   * complete, and the gateway's ticks queue behind it: a 25 MiB frame on a link under
+   * about 3 Mbit/s takes longer than the whole silence budget, and a watch that counted
+   * finished frames only would close the socket in the middle of it (the gateway's own
+   * clients do). Bytes that keep coming say the peer is there.
+   */
+  private noteArrivingBytes(watch: SilenceWatch): void {
+    const bytes = this.rawSocket?.bytesRead;
+    if (typeof bytes !== "number" || bytes === this.rawBytesSeen) return;
+    this.rawBytesSeen = bytes;
+    watch.noteInbound();
+  }
+
+  private startSilenceWatch(policy: unknown): void {
+    this.tickIntervalMs = readTickIntervalMs(policy);
+    if (this.tickIntervalMs === null) return;
+    const intervalMs = this.tickIntervalMs;
+    const watch = createSilenceWatch(intervalMs, () => performance.now());
+    this.silenceWatch = watch;
+    this.rawBytesSeen = this.rawSocket?.bytesRead ?? 0;
+    this.silenceTimer = setInterval(() => {
+      if (this.closed || this.silenceConfirmTimer !== null) return;
+      this.noteArrivingBytes(watch);
+      if (watch.check() === "alive") return;
+      // PROBED before it is acted on. Silence is not proof of a dead transport: from
+      // 2026.9.6 a gateway that begins a restart stops its ticks at once
+      // (server-maintenance.ts, on the restart-drain signal) and announces `shutdown`
+      // only after its active work has drained — up to five minutes
+      // (infra/restart-budget.ts) during which a turn on this socket may still finish.
+      // One read-only request settles it: ANYTHING that arrives before the probe's
+      // deadline — its answer, an error answer, any other frame, bytes of a frame in
+      // flight — keeps the socket; only a transport that delivers nothing is closed.
+      // (The gateway's own clients close without asking; a turn is at stake here.)
+      //
+      // `last-heartbeat`, not `health`: its handler answers from memory, synchronously
+      // (server-methods/system.ts, every validated version), whereas `health` waits for
+      // a collection of up to seven seconds once its cache — refreshed by the very
+      // maintenance a drain stops — has expired.
+      //
+      // ONE probe at a time: while this timer is armed the interval above returns
+      // early, so no second verdict can be reached, nor a second probe sent, before
+      // this one's deadline.
+      const inboundAtProbe = watch.inboundCount;
+      const probedAt = performance.now();
+      void this.request("last-heartbeat", {}, SILENCE_PROBE_DEADLINE_MS).catch(() => {
+        /* an error answer already counted as a frame; no answer is the verdict below */
+      });
+      this.silenceConfirmTimer = setTimeout(() => {
+        // A TIMER NEVER JUDGES. Timers run BEFORE the I/O that queued behind them: if
+        // this process was blocked while the probe was pending, its answer is sitting
+        // unread in the socket when this fires. The verdict is taken in the CHECK phase
+        // (`setImmediate`), which the loop reaches only after a full POLL phase — and
+        // the poll phase reads every socket that has data, so by then `bytesRead` has
+        // moved for a socket that received anything at all, whether or not a whole
+        // frame has been parsed. One phase is enough by construction, not by tuning.
+        // The timer handle stays set until the verdict, so no second probe starts.
+        const lateBy = performance.now() - probedAt - SILENCE_PROBE_DEADLINE_MS;
+        setImmediate(() => {
+          this.silenceConfirmTimer = null;
+          if (this.closed) return;
+          this.noteArrivingBytes(watch);
+          // Judged on what arrived SINCE THE QUESTION, not on the silence budget: an
+          // answer six seconds in is an answer, however short the tick interval.
+          if (watch.inboundCount !== inboundAtProbe) return;
+          // The deadline itself fired far too late: this process was not running, and
+          // the probe never had its fifteen seconds of being listened to. Nothing is
+          // charged to the gateway — the window starts again, and a transport that is
+          // really mute is asked once more.
+          if (lateBy > SILENCE_PROBE_DEADLINE_MS) {
+            watch.restart();
+            return;
+          }
+          console.warn(
+            `[openclaw] no inbound frame for more than ${watch.maxSilenceMs} ms (tick interval ${intervalMs} ms), and no answer within ${SILENCE_PROBE_DEADLINE_MS} ms — closing the silent connection`,
+          );
+          this.silenceClosing = true;
+          try {
+            // The code and reason the gateway's own clients close a silent socket with.
+            this.ws.close(4000, "tick timeout");
+          } catch {
+            /* the socket may already be gone; onClose still runs below */
+          }
+          this.onClose(new OpenClawError("OpenClaw Gateway connection closed"));
+        });
+      }, SILENCE_PROBE_DEADLINE_MS);
+      this.silenceConfirmTimer.unref?.();
+    }, intervalMs);
+    // Never the reason the process stays alive.
+    this.silenceTimer.unref?.();
+  }
+
+  private stopSilenceWatch(): void {
+    if (this.silenceTimer !== null) clearInterval(this.silenceTimer);
+    if (this.silenceConfirmTimer !== null) clearTimeout(this.silenceConfirmTimer);
+    this.silenceTimer = null;
+    this.silenceConfirmTimer = null;
+    this.silenceWatch = null;
+  }
   connectionEnd: ConnectionEnd | null = null;
   /**
    * Carry over a `shutdown` notice seen DURING the handshake.
@@ -521,6 +671,13 @@ export class OpenClawConnection {
         identity === undefined ? undefined : { headers: identityHeaders },
       );
 
+      // The socket the upgrade ran on — `ws`'s public way to it. Read for `bytesRead`
+      // alone (the silence watch), never written to.
+      let upgradedSocket: { readonly bytesRead: number } | null = null;
+      ws.once("upgrade", (response) => {
+        upgradedSocket = response.socket;
+      });
+
       const fail = (err: Error) => {
         if (settled) return;
         settled = true;
@@ -573,6 +730,7 @@ export class OpenClawConnection {
       // Phase 1: await connect.challenge. Phase 2: await the connect response.
       // Promotion persists the server-issued device token before reconnecting.
       let phase: "challenge" | "connect" | "promotion" = "challenge";
+      let droppedAfterHello = false;
       let connection: OpenClawConnection | null = null;
       let reqId = "";
 
@@ -581,6 +739,12 @@ export class OpenClawConnection {
         // parses to `null` flowed on to the first property read and threw out of this
         // callback — during the handshake, before any session exists to absorb it.
         const frame = decodeInboundFrame(raw, "openclaw-handshake-parse");
+        // AFTER the hello-ok, BEFORE the reader exists (a device-token promotion is
+        // awaited in between): whatever arrives now is dropped below, unseen by the
+        // sequence tracker — whose first frame will then set its baseline past it. It
+        // may be the `config.changed` that makes the hello-ok's own facts stale, so
+        // the connection must not start by vouching for them.
+        if (phase === "promotion") droppedAfterHello = true;
         if (frame === null) return; // unreadable frame: reported inside, then ignored
         // Read a shutdown notice in EITHER phase, before anything else can reject
         // the frame: the gateway broadcasts it to every connection, including one
@@ -590,8 +754,8 @@ export class OpenClawConnection {
         if (handshakeNotice) {
           handshakeShutdown = handshakeNotice;
           console.log(
-            `[openclaw] gateway announced a shutdown DURING connect (restartExpectedMs=${
-              handshakeNotice.restartExpectedMs ?? "unknown"
+            `[openclaw] gateway announced a ${handshakeNotice.restartAnnounced ? "restart" : "stop"} DURING connect (restartExpectedMs=${
+              handshakeNotice.restartExpectedMs ?? "none"
             })`,
           );
           return; // not the challenge nor our connect ack; keep waiting (or the close wins)
@@ -693,6 +857,7 @@ export class OpenClawConnection {
             settled = true;
             clearTimeout(connectTimer);
             connection = new OpenClawConnection(ws);
+            connection.rawSocket = upgradedSocket;
             if (handshakeShutdown !== null) {
               connection.adoptShutdownNotice(handshakeShutdown);
             }
@@ -709,6 +874,15 @@ export class OpenClawConnection {
               typeof policy.maxPayload === "number" && policy.maxPayload > 0
                 ? policy.maxPayload
                 : null;
+            connection.attachmentCeilings = readAttachmentCeilings(policy);
+            connection.attachmentCeilingsVouched = true;
+            connection.handshakeAt = Date.now();
+            // A frame was dropped between the hello-ok and here: treated like a frame
+            // gap — the ceilings are unknown, the roster epoch moves.
+            if (droppedAfterHello) {
+              connection.forgetAttachmentCeilings();
+              connection.rosterEpoch += 1;
+            }
             connection.maxBufferedBytes =
               typeof policy.maxBufferedBytes === "number" &&
               policy.maxBufferedBytes > 0
@@ -722,6 +896,8 @@ export class OpenClawConnection {
             const features = (payload.features ?? {}) as Record<string, unknown>;
             protocolDrift.observeAnnouncedEvents(features.events);
             connection.attachReader();
+            // After the reader: the watch counts from the moment frames can be read.
+            connection.startSilenceWatch(policy);
             resolve(connection);
           };
 
@@ -889,9 +1065,19 @@ export class OpenClawConnection {
       // live reply, and nothing in it says which run: every baseline of this socket is
       // retired, so the next append re-reads instead of extending a prefix with a hole.
       this.liveText.invalidate();
+      // …and it may as well have been a `config.changed`: what a frame gap forgets.
+      this.rosterEpoch += 1;
+      this.forgetAttachmentCeilings();
       return;
     }
     frame = decoded;
+    // Proof of life for the silence watch: any event or response frame, the gateway's
+    // `tick` included — what its own clients count (protocol-client.ts handleMessage).
+    if (frame.type === "event" || frame.type === "res") {
+      this.silenceWatch?.noteInbound();
+      // Its bytes are accounted for: only bytes read AFTER it are a frame in flight.
+      this.rawBytesSeen = this.rawSocket?.bytesRead ?? this.rawBytesSeen;
+    }
     // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
     // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).
@@ -905,8 +1091,8 @@ export class OpenClawConnection {
     if (notice) {
       this.shutdownNotice = notice;
       console.log(
-        `[openclaw] gateway announced a shutdown (restartExpectedMs=${
-          notice.restartExpectedMs ?? "unknown"
+        `[openclaw] gateway announced a ${notice.restartAnnounced ? "restart" : "stop"} (restartExpectedMs=${
+          notice.restartExpectedMs ?? "none"
         })`,
       );
     }
@@ -947,6 +1133,8 @@ export class OpenClawConnection {
       // lost may have been its `config.changed` (sent `dropIfSlow`): the epoch moves,
       // here where both the sequence tracker and the epoch live. Free — no request.
       this.rosterEpoch += 1;
+      // …and the per-attachment ceilings, for the same reason.
+      this.forgetAttachmentCeilings();
       // The frame lost may have been an APPEND of a live reply (2026.9.7): a hole in the
       // envelope says nothing about which run, so every baseline is retired BEFORE this
       // frame is projected — an append now re-reads rather than skipping the lost text.
@@ -971,7 +1159,18 @@ export class OpenClawConnection {
     // `config.changed` (config-changed.ts) is reported to the roster policy, then queued
     // UNCHANGED like any other frame (observe-only: the normalizer drops it, the drift
     // sensor sees it) — the same treatment as the shutdown notice above.
-    const configChanged = readConfigChanged(frame);
+    // `chat.metadata.changed` saying the model catalogue may have changed
+    // (chat-metadata-changed.ts) invalidates the same projection: it is reported to the
+    // same policy as a `config.changed`, under its own name, and queued unchanged too.
+    const configRevision = readConfigChanged(frame);
+    // A persisted config revision may have moved the attachment limit (see the field).
+    if (configRevision !== null) this.forgetAttachmentCeilings();
+    const metadataChanged = configRevision === null ? readChatMetadataChanged(frame) : null;
+    const configChanged: ConfigChangedNotice | null =
+      configRevision ??
+      (metadataChanged?.modelCatalogStale === true
+        ? { hash: null, origin: "chat.metadata.changed" }
+        : null);
     if (configChanged !== null) {
       // The roster is a projection of the config that just changed: invalidated here,
       // with the frame-gap case above, so every invalidation lives in one place.
@@ -1179,6 +1378,8 @@ export class OpenClawConnection {
       return;
     }
     this.closed = true;
+    // The one exit of every close: the watch never outlives its socket.
+    this.stopSilenceWatch();
     const closedListeners = [...this.closedListeners];
     this.closedListeners.clear();
     this.configChangedListeners.clear();
@@ -1199,11 +1400,19 @@ export class OpenClawConnection {
           restartExpectedMs: null,
           reasonPresent: true,
         }
-      : classifyConnectionEnd({
-          code: socket?.code ?? null,
-          reasonText: socket?.reasonText ?? null,
-          shutdown: this.shutdownNotice,
-        });
+      : // An ANNOUNCED end keeps its name even when the socket then went quiet instead
+        // of closing: the gateway said what it was doing.
+        this.silenceClosing && this.shutdownNotice === null
+        ? {
+            kind: "inbound_silence" as const,
+            restartExpectedMs: null,
+            reasonPresent: false,
+          }
+        : classifyConnectionEnd({
+            code: socket?.code ?? null,
+            reasonText: socket?.reasonText ?? null,
+            shutdown: this.shutdownNotice,
+          });
     // The name must survive EVERY exit, not just a turn already streaming: a close
     // landing while we await the `chat.send` ack rejects the pending request, and
     // that rejection is what the dispatch path classifies. Appending the kind to

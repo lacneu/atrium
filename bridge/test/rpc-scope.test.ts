@@ -72,6 +72,10 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
   talk: "channels.ts",
   // `usage.status` is `async ({ respond }) => …` upstream: no params at all.
   usage: null,
+  // `last-heartbeat` — the silence watch's probe before it closes a quiet socket
+  // (openclaw-client.ts). `({ respond }) => …` upstream (server-methods/system.ts): no
+  // params at all, answered from memory.
+  "last-heartbeat": null,
   // Upstream validates only `tts.speak` (schema/channels.ts). The three methods the
   // bridge reaches (status/providers/convert) have NO param schema upstream, so
   // "vendor channels.ts" would not cover them. Mapped to the module anyway so the
@@ -128,6 +132,10 @@ function vendoredModules(): Set<string> {
  *  vendored AND every field classified. Shrinking this list is the work; growing it
  *  without a decision is what the test forbids. */
 const UNCOVERED_SNAPSHOT = [
+  // `last-heartbeat` — the silence watch's probe (2026-11-20). It takes no parameters
+  // upstream (server-methods/system.ts), so there is no schema to vendor; the bridge
+  // sends `{}` and reads nothing of the answer.
+  "last-heartbeat",
   // `cron.*` and `tasks.*` left this list on 2026-07-27 with schema/cron.ts and
   // schema/tasks.ts (31 more schemas classified).
   // `sessions.*` left this list on 2026-07-27: schema/sessions.ts is vendored and its

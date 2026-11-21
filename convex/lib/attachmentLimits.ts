@@ -42,3 +42,88 @@ export function maxRawInboundBytes(maxPayload: number): number {
 export function base64FitsFrame(base64Bytes: number, maxPayload: number): boolean {
   return base64Bytes + FRAME_ENVELOPE_OVERHEAD_BYTES <= maxPayload;
 }
+
+// ---------------------------------------------------------------------------------
+// PER-ATTACHMENT ceilings (the gateway's `hello-ok.policy.attachments`, OpenClaw
+// 2026.8.1+), carried by the bridge beside the frame limit. The frame limit bounds the
+// whole `chat.send`; the gateway ALSO bounds each attachment's decoded size, an image
+// more tightly (6 MiB), and refuses the whole send for one file over it.
+//
+// THE RULE: an early refusal here is never stricter than the gateway's own decision
+// for that send. A ceiling that is not known — no socket of the bridge vouches for it,
+// the instance is not named, the snapshot is stale — refuses nothing; the gateway's
+// own refusal remains. Same rule as `bridge/src/core/attachment-limits.ts`.
+// ---------------------------------------------------------------------------------
+
+/** The gateway's decoded-size ceilings for ONE attachment; a null member is unknown. */
+export interface AttachmentCeilings {
+  maxBytes: number | null;
+  maxImageBytes: number | null;
+}
+
+const knownCeiling = (n: number | null | undefined): number | null =>
+  typeof n === "number" && n > 0 ? n : null;
+
+/** The two stored numbers as ceilings, or null when neither is known. */
+export function attachmentCeilingsOf(stored: {
+  attachmentMaxBytes?: number | null;
+  attachmentMaxImageBytes?: number | null;
+}): AttachmentCeilings | null {
+  const maxBytes = knownCeiling(stored.attachmentMaxBytes);
+  const maxImageBytes = knownCeiling(stored.attachmentMaxImageBytes);
+  return maxBytes === null && maxImageBytes === null ? null : { maxBytes, maxImageBytes };
+}
+
+/** How many leading bytes `isKnownImageSignature` reads. */
+export const IMAGE_SIGNATURE_BYTES = 12;
+
+/**
+ * Do these FIRST BYTES say "image" the way the gateway will?
+ *
+ * The gateway does not trust the declared type: it sniffs the payload's first bytes
+ * (src/media/sniff-mime-from-base64.ts → `detectMime`, file-type's `fileTypeFromBuffer`
+ * on the first 192 bytes) and a type it recognises wins over the declared one
+ * (src/media/attachment-processor.runtime.ts; in chat-attachments.ts before 2026.9.9).
+ * A CAF recording declared `image/png` is audio to it and faces the FILE ceiling.
+ *
+ * So the image ceiling is applied early only on a POSITIVE identification, by the
+ * signatures of the four formats the gateway certainly reads as `image/*`: PNG, JPEG,
+ * GIF and WebP. Anything else — other image formats included — is "not known to be an
+ * image": the image ceiling is not applied early, and the gateway decides.
+ */
+export function isKnownImageSignature(head: Uint8Array | null | undefined): boolean {
+  if (!head || head.length < 12) return false;
+  const at = (offset: number, ...bytes: number[]): boolean =>
+    bytes.every((b, i) => head[offset + i] === b);
+  return (
+    at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a) || // PNG
+    at(0, 0xff, 0xd8, 0xff) || // JPEG
+    at(0, 0x47, 0x49, 0x46, 0x38) || // GIF8
+    (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) // RIFF….WEBP
+  );
+}
+
+/** The ceiling a file faces, or null when none is known. A file identified as an image
+ *  faces the image ceiling and the file one. */
+export function attachmentCeilingFor(
+  knownImage: boolean,
+  ceilings: AttachmentCeilings | null,
+): number | null {
+  if (ceilings === null) return null;
+  if (!knownImage) return ceilings.maxBytes;
+  const known = [ceilings.maxImageBytes, ceilings.maxBytes].filter(
+    (n): n is number => n !== null,
+  );
+  return known.length > 0 ? Math.min(...known) : null;
+}
+
+/** Would the gateway refuse an inline attachment of `size` bytes for its size? Strictly
+ *  greater, like the gateway; never when the ceiling is unknown. */
+export function exceedsAttachmentCeiling(
+  size: number,
+  knownImage: boolean,
+  ceilings: AttachmentCeilings | null,
+): boolean {
+  const ceiling = attachmentCeilingFor(knownImage, ceilings);
+  return ceiling !== null && size > ceiling;
+}

@@ -125,11 +125,11 @@ const KNOWN_OFFENDERS: ReadonlyArray<string> = [
   // (OpenClaw 2026.9.6), then -> 1846 by the note on the two session-rule refusals this map
   // deliberately does NOT carry, then -> 1851 by the agent-database refusal class, then -> 1856 by
   // the dropped-input class, then 1926 -> 1950 by the provider-account and no-cause classes
-  // (0.91.3). The offender
+  // (0.91.3), then 2091 -> 2092 by the announced-stop class (`gateway_stopping`). The offender
   // itself is untouched: same file, same
   // call, and the list still holds exactly two entries — the ratchet counts offenders, and this
   // record is what keeps a line shift from reading as one.
-  "anomalies.ts:2091",
+  "anomalies.ts:2092",
   // Moved 926 -> 930 by the snapshot credential mask, then -> 939 by the masked reads,
   // then 1207 -> 1212 by the reasoning mask of a report (0.103.0). Same file,
   // same call: the ratchet counts offenders, and this record is what keeps a line shift

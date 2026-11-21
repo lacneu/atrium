@@ -295,6 +295,29 @@ describe("connection end over a real socket", () => {
     expect(conn.connectionEnd?.restartExpectedMs).toBe(12_000);
   });
 
+  it("names a plain STOP off the wire, and a send it interrupts", async () => {
+    gateway = startFakeGateway();
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    const frames = conn.frames();
+    const pending = conn.request("chat.send", { text: "x" }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    // The frame a stopped gateway really sends (bench capture 2026-10-01).
+    gateway.socket!.send(
+      JSON.stringify({ type: "event", event: "shutdown", payload: { reason: "gateway stopping" } }),
+    );
+    await frames.next();
+    gateway.socket!.close(1012, "service restart");
+    await frames.next();
+    expect(conn.connectionEnd?.kind).toBe("gateway_stopping");
+    expect(conn.connectionEnd?.restartExpectedMs).toBeNull();
+    const failure = await pending;
+    expect(failure?.message).toContain("[gateway_stopping]");
+    expect(classifyGatewayError(failure)).toBe("GATEWAY_STOPPING");
+  });
+
   it("names a 1008 slow-consumer close, off the wire", async () => {
     gateway = startFakeGateway();
     await gateway.ready;
