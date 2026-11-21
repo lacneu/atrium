@@ -1048,6 +1048,10 @@ export class Normalizer {
     this.compactionPending = false;
     this.currentRunId = null;
     this.text = "";
+    // The earlier segments of a cut run are that run's cumulative buffer: another turn
+    // is another run. A RESUMED later segment is given its own (`restoreSegmentPrefix`).
+    // (`segmentLead` is read only beside a prefix, and set whenever one is.)
+    this.segmentPrefix = null;
     this.chatSeqHigh.clear();
     this.textOrigin = null;
     this.hasSnapshot = false;
