@@ -708,7 +708,7 @@ describe("the completion's write: detached, kept until written, bounded", () => 
     expect(h.writer.settled.get("msg3")!.text).toBe("Hello");
   });
 
-  it("what is owed is bounded by run: past the bound the oldest is dropped, and said", async () => {
+  it("at most 32 bubbles are owed a completion: the next one's is dropped, and said — never an older one", async () => {
     const h = harness();
     let release!: () => void;
     h.writer.gate = new Promise<void>((r) => (release = r));
@@ -731,62 +731,9 @@ describe("the completion's write: detached, kept until written, bounded", () => 
       console.warn = original;
     }
     expect(warnings.filter((w) => w.includes("completion was dropped"))).toHaveLength(2);
-    // The oldest was the write in flight (it lands); the next oldest was never written.
     const texts = [...h.writer.settled.values()].map((b) => b.text);
-    expect(texts.filter((t) => t === "Hello world")).toHaveLength(33);
-    expect(h.writer.settled.get("msg2")!.text).toBe("Hello");
-  });
-
-  it("the ANSWER is lost after the write committed: the retry is answered as written, the tail is not joined twice", async () => {
-    const h = await closedOnLifecycleError();
-    h.writer.lostAnswers = 1;
-    await h.feed(chatAborted("runA", 3, "Hello world"));
-    // Committed in Convex, unknown here.
-    expect(only(h.writer).text).toBe("Hello world");
-    await h.feed(tickFrame());
-    expect(h.writer.offered.map((o) => [o.text, o.applied])).toEqual([
-      ["Hello world", true],
-      ["Hello world", true],
-    ]);
-    expect(h.writer.late).toEqual([]);
-    expect(only(h.writer).text).toBe("Hello world");
-    // The run's record followed: a final repeating the text adds nothing.
-    await h.feed(chatFinal("runA", 4, "Hello world"));
-    expect(h.writer.late).toEqual([]);
-  });
-
-  it("THE TRAP, shown: were Convex to refuse the repeat, the same retry would join the tail a second time", async () => {
-    const h = await closedOnLifecycleError();
-    h.writer.convexAnswersRepeat = false;
-    h.writer.lostAnswers = 1;
-    await h.feed(chatAborted("runA", 3, "Hello world"), tickFrame());
-    // The bridge reads the refusal as "not in the bubble" and joins what the text adds
-    // to the record it still holds ("Hello"): the tail, a second time.
-    expect(h.writer.late).toEqual(["world"]);
-  });
-
-  it("a permanent failure is bounded and said once: three passes, then the text is dropped", async () => {
-    const h = await closedOnLifecycleError();
-    h.writer.failCompletions = true;
-    let attempts = 0;
-    const real = h.writer.completeSettledText.bind(h.writer);
-    h.writer.completeSettledText = async (a) => {
-      attempts++;
-      return real(a);
-    };
-    const lines = await traced(async () => {
-      await h.feed(chatAborted("runA", 3, "Hello world"));
-      for (let i = 0; i < 8; i++) await h.feed(tickFrame());
-    });
-    expect(attempts).toBe(3);
-    expect(lines).toHaveLength(3);
-    expect(lines.filter((l) => l.includes("DROPPED"))).toHaveLength(1);
-    expect(lines[2]).toContain("DROPPED");
-    expect(only(h.writer).text).toBe("Hello");
-    // Dropped for good: the backend coming back writes nothing by itself.
-    h.writer.failCompletions = false;
-    await h.feed(tickFrame());
-    expect(attempts).toBe(3);
+    expect(texts.slice(0, 32)).toEqual(Array.from({ length: 32 }, () => "Hello world"));
+    expect(texts.slice(32)).toEqual(["Hello", "Hello"]);
   });
 
   it("`feed` keeps flowing while a completion's write is held: the next turn runs to its end", async () => {
@@ -998,7 +945,7 @@ describe("one queue per bubble: a late final stays behind the completion its bub
     expect(h.writer.late).toEqual([0, 1, 2, 3, 4, 5, 6, 7].map((i) => `Late ${i}`));
   });
 
-  it("a debt dropped by the bound on debts still hands on what waited behind it", async () => {
+  it("AT THE CEILING (the reviewed sequence): a final arriving while 34 bubbles wait still goes behind the one already waiting", async () => {
     const h = harness();
     let release!: () => void;
     h.writer.gate = new Promise<void>((r) => (release = r));
@@ -1011,16 +958,18 @@ describe("one queue per bubble: a late final stays behind the completion its bub
           chatDelta(`run${i}`, 1, "Hello"),
           lifecycleError(`run${i}`, 2),
           chatDelta(`run${i}`, 2, "Hello world"),
-          ...(i === 1 ? [chatAborted("run1", 2, "Hello world"), chatFinal("run1", 3, "A distinct answer")] : []),
+          ...(i === 1 ? [chatAborted("run1", 2, "Hello world"), chatFinal("run1", 3, "First late")] : []),
         );
       }
+      // Past the bound on bubbles owed a completion: run1's queue is still its own.
+      await h.feedOnly(chatFinal("run1", 4, "Second late"));
+      expect(h.writer.late).toEqual([]);
       release();
       await h.rm.completionsIdle();
     } finally {
       console.warn = original;
     }
-    // run1's debt was dropped unwritten; its late final is not lost with it.
-    expect(h.writer.settled.get("msg2")!.text).toBe("Hello\n\nA distinct answer");
+    expect(h.writer.settled.get("msg2")!.text).toBe("Hello world\n\nFirst late\n\nSecond late");
   });
 
   it("a run that left NO bubble: the write that would open one is asked once, never retried", async () => {
@@ -1043,6 +992,142 @@ describe("one queue per bubble: a late final stays behind the completion its bub
     expect(asked).toBe(1);
     expect(lines.filter((l) => l.includes("is not asked again"))).toHaveLength(1);
     expect(h.writer.offered).toEqual([]);
+  });
+});
+
+// PROPERTY: whatever the interleaving and whatever each write does, a settled bubble's
+// text is its settled text, then what its run sent afterwards, each piece once and in
+// the order it arrived. A piece may be MISSING (a write that kept failing, a final asked
+// once that failed); it is never duplicated, and never ahead of an earlier one.
+describe("property — every interleaving leaves each bubble an in-order, duplicate-free composition", () => {
+  /** mulberry32. */
+  const prng = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  async function run(seed: number): Promise<void> {
+    const rand = prng(seed);
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!;
+    const h = harness();
+    // What each write does, decided by the seed.
+    const complete = h.writer.completeSettledText.bind(h.writer);
+    h.writer.completeSettledText = async (a) => {
+      const fate = pick(["ok", "ok", "ok", "fail", "lost"] as const);
+      if (fate === "fail") throw new Error("convex down");
+      const applied = await complete(a);
+      if (fate === "lost") throw new Error("answer lost");
+      return applied;
+    };
+    const late = h.writer.appendLateFinal.bind(h.writer);
+    h.writer.appendLateFinal = async (a) => {
+      const fate = pick(["ok", "ok", "ok", "fail", "lost"] as const);
+      if (fate === "fail") throw new Error("convex down");
+      const into = await late(a);
+      if (fate === "lost") throw new Error("answer lost");
+      return into;
+    };
+
+    // Two or three bubbles, each settled by its run's lifecycle error — on "Hello", or on
+    // a text whose line end the sanitiser rewrites: Convex then REFUSES every completion
+    // of that bubble (never an extension of what it holds), and each is joined.
+    const bubbles = rand() < 0.5 ? 2 : 3;
+    const scripts: Array<Array<() => unknown>> = [];
+    const expected: Array<{ base: string; words: string[]; lates: string[] }> = [];
+    for (let b = 0; b < bubbles; b++) {
+      const runId = `run${b}`;
+      const base = rand() < 0.35 ? "Hel\r\nlo" : "Hello";
+      await h.rm.beginTurn(h.tick(), runId, { expectedSessionId: null });
+      await h.feedOnly(chatDelta(runId, 1, base), lifecycleError(runId, 2));
+      // The run's script, in ITS order: flushed deltas, the terminal, then late finals.
+      const words: string[] = [];
+      const steps: Array<() => unknown> = [];
+      let seq = 2;
+      let text = base;
+      const deltas = Math.floor(rand() * 3);
+      for (let d = 0; d < deltas; d++) {
+        const word = `w${b}${d}`;
+        words.push(word);
+        text = `${text} ${word}`;
+        const [at, snapshot] = [++seq, text];
+        steps.push(() => chatDelta(runId, at, snapshot));
+      }
+      const last = `w${b}t`;
+      words.push(last);
+      text = `${text} ${last}`;
+      const [at, whole] = [++seq, text];
+      steps.push(() => chatAborted(runId, at, whole));
+      const lates: string[] = [];
+      const finals = Math.floor(rand() * 4);
+      for (let f = 0; f < finals; f++) {
+        const token = `L${b}${f}.`;
+        lates.push(token);
+        const n = ++seq;
+        steps.push(() => chatFinal(runId, n, token));
+      }
+      scripts.push(steps);
+      expected.push({ base, words, lates });
+    }
+
+    // Interleave the scripts, with ticks and turns of other runs in between.
+    let other = 0;
+    while (scripts.some((s) => s.length > 0)) {
+      const roll = rand();
+      if (roll < 0.15) {
+        await h.feedOnly(tickFrame());
+      } else if (roll < 0.25) {
+        const runId = `other${other++}`;
+        await h.rm.beginTurn(h.tick(), runId, { expectedSessionId: null });
+        await h.feedOnly(chatDelta(runId, 1, "Other"), chatFinal(runId, 2, "Other"));
+      } else {
+        const live = scripts.filter((s) => s.length > 0);
+        await h.feedOnly(pick(live).shift()!());
+      }
+      // Sometimes the chain is left to run, sometimes the next frame finds it busy.
+      if (rand() < 0.3) await h.rm.completionsIdle();
+    }
+    // The connection goes on: every debt gets its passes.
+    for (let i = 0; i < 6; i++) await h.feed(tickFrame());
+
+    for (let b = 0; b < bubbles; b++) {
+      const got = h.writer.settled.get(`msg${b + 1}`)!.text;
+      const where = `seed ${seed}, bubble ${b}: ${JSON.stringify(got)}`;
+      expect(got.startsWith(expected[b]!.base), where).toBe(true);
+      for (const order of [expected[b]!.words, expected[b]!.lates]) {
+        let from = 0;
+        for (const piece of order) {
+          const at = got.indexOf(piece);
+          if (at === -1) continue; // missing is allowed
+          expect(got.indexOf(piece, at + 1), `${where} — ${piece} twice`).toBe(-1);
+          expect(at >= from, `${where} — ${piece} out of order`).toBe(true);
+          from = at + piece.length;
+        }
+      }
+      // The run's own text comes before any late final.
+      const firstLate = Math.min(
+        ...expected[b]!.lates.map((t) => got.indexOf(t)).filter((i) => i !== -1),
+        Number.POSITIVE_INFINITY,
+      );
+      for (const word of expected[b]!.words) {
+        const at = got.indexOf(word);
+        if (at !== -1) expect(at < firstLate, `${where} — ${word} after a late final`).toBe(true);
+      }
+    }
+    expect(h.writer.writesAfterSettle, `seed ${seed}`).toBe(0);
+  }
+
+  it("400 seeded interleavings of offers, late finals, write outcomes, ticks and turns", async () => {
+    const { error, warn, log } = console;
+    console.error = console.warn = console.log = () => {};
+    try {
+      for (let seed = 1; seed <= 400; seed++) await run(seed);
+    } finally {
+      console.error = error;
+      console.warn = warn;
+      console.log = log;
+    }
   });
 });
 

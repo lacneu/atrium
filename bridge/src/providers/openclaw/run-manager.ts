@@ -1601,9 +1601,9 @@ export class RunManager {
     if (late !== null) {
       const owed = this.keptCompletions.get(late.settled);
       if (owed !== undefined) {
-        // THAT bubble is still owed a completion: one queue per bubble. This final
-        // stays behind the debt until it is settled — written, joined or dropped —
-        // and is only then compared with what the bubble holds.
+        // THAT bubble has a queue: this final goes to its tail, whatever the debt at
+        // its head is doing, and is compared with what the bubble holds only when its
+        // turn comes.
         if (owed.behind.length < RunManager.MAX_BEHIND_A_COMPLETION) {
           owed.behind.push(late);
         } else {
@@ -1635,10 +1635,17 @@ export class RunManager {
   // queued on a chain of its own (`completionTail`), like the facts about a run. A frame
   // never waits for that chain.
   //
-  // ONE QUEUE PER BUBBLE: the debt, then the late finals that arrived for the same
-  // bubble while it was owed (`KeptCompletion.behind`, at most
-  // `MAX_BEHIND_A_COMPLETION`; one more is dropped, and said). They are written when the
-  // debt is settled — never between two of its passes.
+  // ONE QUEUE PER BUBBLE (`keptCompletions`, by the bubble's record): the debt, then
+  // the late finals that arrived for the same bubble while the queue existed. The queue
+  // is listed from the first offer until it is DRAINED — the debt settled (written,
+  // joined, or dropped after its passes) and what waited behind it written — and "is
+  // there a queue for this bubble?" is the one question the frame path asks to route a
+  // late final. They are written when the debt is settled, never between two passes.
+  //
+  // Two bounds, and neither can reorder what it does not drop: at most
+  // `MAX_KEPT_COMPLETIONS` bubbles have a queue (the completion of one more is dropped,
+  // and said — no queue is ever removed to make room), and at most
+  // `MAX_BEHIND_A_COMPLETION` finals wait in one (one more is dropped, and said).
   //
   // A pass that FAILS — past the writer's own bounded retries (convex-writer.ts
   // `IDEMPOTENT_OPS`: a repeat of a completion that landed is answered as written) —
@@ -1671,6 +1678,15 @@ export class RunManager {
       // Same bubble: the latest text wins, it is the gateway's later view of one buffer.
       kept.offer = offer;
     } else {
+      // The bound is on the bubbles with a queue, and it refuses the NEWCOMER: a queue
+      // lives until it is drained (its debt settled, what waited behind it written),
+      // so no bound ever takes a queue away from under the finals routed to it.
+      if (this.keptCompletions.size >= RunManager.MAX_KEPT_COMPLETIONS) {
+        console.warn(
+          `[final] a settled bubble's completion was dropped: ${RunManager.MAX_KEPT_COMPLETIONS} bubbles are already owed one run=${offer.runId.slice(0, 60)}`,
+        );
+        return;
+      }
       this.keptCompletions.set(record, {
         runId: offer.runId,
         offer,
@@ -1679,18 +1695,6 @@ export class RunManager {
         scheduled: false,
         behind: [],
       });
-      while (this.keptCompletions.size > RunManager.MAX_KEPT_COMPLETIONS) {
-        const [oldest, dropped] = this.keptCompletions.entries().next().value as [
-          SettledRecord,
-          KeptCompletion,
-        ];
-        this.keptCompletions.delete(oldest);
-        console.warn(
-          `[final] a settled bubble's completion was dropped, the oldest still owed (bound ${RunManager.MAX_KEPT_COMPLETIONS}) run=${dropped.runId.slice(0, 60)}`,
-        );
-        // What waited behind it is written in its turn on the chain.
-        this.completionTail = this.completionTail.then(() => this.writeBehind(dropped));
-      }
     }
     this.scheduleCompletion(record);
   }
