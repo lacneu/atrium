@@ -136,6 +136,7 @@ import type * as lib_mediaTransport from "../lib/mediaTransport.js";
 import type * as lib_mentions from "../lib/mentions.js";
 import type * as lib_messageOrder from "../lib/messageOrder.js";
 import type * as lib_meteredReads from "../lib/meteredReads.js";
+import type * as lib_modelFallback from "../lib/modelFallback.js";
 import type * as lib_openclawThread from "../lib/openclawThread.js";
 import type * as lib_outboxQueue from "../lib/outboxQueue.js";
 import type * as lib_partDepth from "../lib/partDepth.js";
@@ -350,6 +351,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mentions": typeof lib_mentions;
   "lib/messageOrder": typeof lib_messageOrder;
   "lib/meteredReads": typeof lib_meteredReads;
+  "lib/modelFallback": typeof lib_modelFallback;
   "lib/openclawThread": typeof lib_openclawThread;
   "lib/outboxQueue": typeof lib_outboxQueue;
   "lib/partDepth": typeof lib_partDepth;
