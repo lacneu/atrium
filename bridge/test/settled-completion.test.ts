@@ -18,8 +18,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
-import type { FinalizeStatus } from "../src/convex-writer.js";
+import { describe, expect, it, vi } from "vitest";
+import { HttpConvexWriter, type FinalizeStatus } from "../src/convex-writer.js";
 import type { GatewayFrame } from "../src/providers/openclaw/openclaw-client.js";
 import { Normalizer } from "../src/providers/openclaw/normalizer.js";
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
@@ -853,9 +853,12 @@ describe("a debt is a DESTINATION, not a run id", () => {
     // The second turn's terminal brings nothing more; then a distinct late final of the
     // run, for its latest bubble — which is owed nothing.
     await h.feedOnly(chatAborted("runA", 6, "Hello"), chatFinal("runA", 7, "A distinct answer"));
-    expect(h.writer.log.at(-1)).toBe('late msg2 "A distinct answer"');
+    // Off the frame path, on the one chain every settled bubble's write takes: it is
+    // asked once the write in flight is answered — in ITS bubble, not behind msg1's debt.
+    expect(h.writer.late).toEqual([]);
     release();
     await h.rm.completionsIdle();
+    expect(h.writer.log.at(-1)).toBe('late msg2 "A distinct answer"');
     expect(h.writer.settled.get("msg1")!.text).toBe("Hello old tail");
     expect(h.writer.settled.get("msg2")!.text).toBe("Hello\n\nA distinct answer");
   });
@@ -1104,7 +1107,7 @@ describe("one queue per bubble: a late final stays behind the completion its bub
       await h.feed(tickFrame());
       await h.feed(tickFrame());
     });
-    expect(lines.filter((l) => l.includes("a late final behind a settled bubble's completion was not written") && l.includes("DROPPED"))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes("a late final in a settled bubble's queue was not written") && l.includes("DROPPED"))).toHaveLength(1);
     expect(h.writer.late).toEqual(["Second late"]);
     expect(only(h.writer).text).toBe("Hello world\n\nSecond late");
   });
@@ -1116,6 +1119,259 @@ describe("one queue per bubble: a late final stays behind the completion its bub
     expect(h.writer.lateKeys).toHaveLength(2);
     expect(h.writer.lateKeys[0]).not.toBe(h.writer.lateKeys[1]);
     expect(h.writer.lateKeys.every((k) => typeof k === "string" && k.length >= 32)).toBe(true);
+  });
+});
+
+// A DISTINCT late final (CU-8) of a bubble that is owed nothing was awaited by the frame
+// that carried it — and, its keyed write being retried by the writer (three attempts of
+// 20 s), a Convex endpoint that times out held every following frame of the connection
+// for up to 62.5 s. It takes the bubble's queue like every other write to a settled
+// bubble; what the wait guaranteed is kept by the queue's order.
+describe("a direct late final is written off the frame path", () => {
+  const erred = async (run: () => Promise<void>): Promise<string[]> => {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+    try {
+      await run();
+    } finally {
+      console.error = original;
+    }
+    return lines;
+  };
+  /** "Hello" answered and settled by its own final: the bubble is owed nothing. */
+  async function answered() {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(chatDelta("runA", 1, "Hello"), chatFinal("runA", 2, "Hello"));
+    expect(only(h.writer)).toMatchObject({ status: "complete", text: "Hello" });
+    return h;
+  }
+  /** Hold the late-final writes: each waits for `release()`. */
+  function holdLate(h: ReturnType<typeof harness>) {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const late = h.writer.appendLateFinal.bind(h.writer);
+    let asked = 0;
+    h.writer.appendLateFinal = async (a) => {
+      asked++;
+      await held;
+      return late(a);
+    };
+    return { release, asked: () => asked };
+  }
+
+  it("THE REAL WRITER, an endpoint that never answers: `feed` returns, the next turn's frames are written, and the final lands when Convex is back", async () => {
+    const h = await answered();
+    // The late final goes through the real HTTP writer: its timeout, its retries.
+    const posts: Array<{ op: string; writeKey?: string }> = [];
+    let down = true;
+    const fetchImpl = (async (_url: unknown, init: { body: string; signal: AbortSignal }) => {
+      const body = JSON.parse(init.body) as { op: string; writeKey?: string; messageId: string | null };
+      posts.push({ op: body.op, writeKey: body.writeKey });
+      if (down) {
+        // Never answers: only the writer's own deadline ends the attempt.
+        await new Promise<void>((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+      }
+      return new Response(JSON.stringify({ ok: true, messageId: body.messageId }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const http = new HttpConvexWriter({ convexHttpActionsUrl: "http://test.invalid", ingestSecret: "s", fetchImpl });
+    const recorded = h.writer.appendLateFinal.bind(h.writer);
+    h.writer.appendLateFinal = async (a) => {
+      const id = await http.appendLateFinal({ chatId: "c1", runId: a.runId ?? "", messageId: a.messageId, text: a.text, sessionKey: KEY, writeKey: a.writeKey });
+      await recorded(a);
+      return id;
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const lines = await erred(async () => {
+        let fed = false;
+        const feeding = h.feedOnly(chatFinal("runA", 3, "A second, distinct answer")).then(() => (fed = true));
+        await vi.advanceTimersByTimeAsync(0);
+        // The frame is done while its write has not been answered.
+        expect(fed).toBe(true);
+        await feeding;
+        expect(posts).toHaveLength(1);
+        // The connection goes on: a whole turn of another run is read and written.
+        await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+        await h.feedOnly(chatDelta("runB", 1, "Next answer"), chatFinal("runB", 2, "Next answer"));
+        expect(h.writer.settled.get("msg2")).toMatchObject({ status: "complete", text: "Next answer" });
+        expect(h.writer.late).toEqual([]);
+        // The writer's whole budget for one pass: 20 s, 0.5 s, 20 s, 2 s, 20 s.
+        await vi.advanceTimersByTimeAsync(62_500);
+        // That pass failed; the frames read meanwhile had asked for one more, now asking.
+        expect(posts).toHaveLength(4);
+        expect(h.writer.late).toEqual([]);
+        // Convex is back: the attempt in flight times out, the writer's retry lands.
+        down = false;
+        await vi.advanceTimersByTimeAsync(20_500);
+        await h.rm.completionsIdle();
+      });
+      expect(posts.map((p) => p.op)).toEqual(Array(5).fill("appendLateFinalKeyed"));
+      expect(new Set(posts.map((p) => p.writeKey)).size).toBe(1);
+      expect(h.writer.settled.get("msg1")!.text).toBe("Hello\n\nA second, distinct answer");
+      expect(h.writer.settled.get("msg2")!.text).toBe("Next answer");
+      expect(lines.filter((l) => l.includes("kept, asked again at the next frame"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the NEXT final of the same bubble waits for the first, and is compared with what the first wrote", async () => {
+    const h = await answered();
+    const { release, asked } = holdLate(h);
+    // The second is the gateway's cumulative view: the reply, the first late text, more.
+    await h.feedOnly(
+      chatFinal("runA", 3, "First late"),
+      chatFinal("runA", 4, "Hello\n\nFirst late\n\nAnd more"),
+      chatFinal("runA", 5, "First late"),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    // One write in flight: nothing of the same bubble is asked beside it.
+    expect(asked()).toBe(1);
+    release();
+    await h.rm.completionsIdle();
+    // Only what each ADDS to the bubble as the one before left it; the repeat adds nothing.
+    expect(h.writer.late).toEqual(["First late", "And more"]);
+    expect(only(h.writer).text).toBe("Hello\n\nFirst late\n\nAnd more");
+  });
+
+  it("two finals of a run that left NO bubble share one queue: the first opens the bubble, the second joins it", async () => {
+    const RUN = "announce:v1:agent:alice:subagent:child:run-1";
+    const h = harness();
+    await h.feed(agent(RUN, 0, "lifecycle", { phase: "start" }));
+    await h.rm.endTurn(h.tick(), "final", null, "recv_timeout");
+    await h.feed(chatAborted(RUN, 1));
+    expect(h.writer.starts).toBe(0);
+    h.writer.opensBubbles = true;
+    const { release } = holdLate(h);
+    await h.feedOnly(chatFinal(RUN, 2, "The report"), chatFinal(RUN, 3, "An addendum"));
+    release();
+    await h.rm.completionsIdle();
+    expect(h.writer.openedByKey.size).toBe(1);
+    expect([...h.writer.settled.values()].map((b) => b.text)).toEqual(["The report\n\nAn addendum"]);
+    expect(h.writer.log.filter((l) => l.startsWith("late "))).toEqual(['late null "The report"', 'late late1 "An addendum"']);
+  });
+
+  it("its write fails: kept at the head of its queue under its key, asked again at the next frames, dropped and said after three passes", async () => {
+    const h = await answered();
+    h.writer.failLate = true;
+    const lines = await erred(async () => {
+      await h.feed(chatFinal("runA", 3, "A distinct answer"), tickFrame(), tickFrame(), tickFrame(), tickFrame());
+    });
+    expect(h.writer.lateKeys).toHaveLength(3);
+    expect(new Set(h.writer.lateKeys).size).toBe(1);
+    expect(lines.filter((l) => l.includes("kept, asked again at the next frame"))).toHaveLength(2);
+    expect(lines.filter((l) => l.includes("DROPPED"))).toHaveLength(1);
+    expect(only(h.writer).text).toBe("Hello");
+    // The queue is gone with it: a later final is asked at once.
+    h.writer.failLate = false;
+    await h.feed(chatFinal("runA", 4, "Another"));
+    expect(only(h.writer).text).toBe("Hello\n\nAnother");
+  });
+
+  it("AT THE BOUND on the queues: the late final of one more bubble is dropped and said, and no queue is taken away", async () => {
+    const h = harness();
+    for (let i = 0; i < 33; i++) {
+      await h.rm.beginTurn(h.tick(), `run${i}`, { expectedSessionId: null });
+      await h.feed(chatDelta(`run${i}`, 1, `Answer ${i}`), chatFinal(`run${i}`, 2, `Answer ${i}`));
+    }
+    const { release } = holdLate(h);
+    const lines = await erred(async () => {
+      for (let i = 0; i < 33; i++) await h.feedOnly(chatFinal(`run${i}`, 3, `Late ${i}`));
+      // A second final for a bubble that HAS a queue is still routed to it.
+      await h.feedOnly(chatFinal("run0", 4, "Late again"));
+      release();
+      await h.rm.completionsIdle();
+    });
+    expect(lines.filter((l) => l.includes("late final DROPPED") && l.includes("already have a write queue"))).toHaveLength(1);
+    expect(h.writer.late).toEqual([...Array.from({ length: 32 }, (_, i) => `Late ${i}`).flatMap((t, i) => (i === 0 ? [t, "Late again"] : [t]))]);
+    expect(h.writer.settled.get("msg33")!.text).toBe("Answer 32");
+    expect(h.writer.settled.get("msg1")!.text).toBe("Answer 0\n\nLate 0\n\nLate again");
+  });
+
+  it("a final that adds nothing to a bubble with no queue takes no queue: 32 repeats, and the late final of one more bubble is still written", async () => {
+    const h = harness();
+    for (let i = 0; i < 34; i++) {
+      await h.rm.beginTurn(h.tick(), `run${i}`, { expectedSessionId: null });
+      await h.feed(chatDelta(`run${i}`, 1, `Answer ${i}`), chatFinal(`run${i}`, 2, `Answer ${i}`));
+    }
+    const { release } = holdLate(h);
+    const lines = await erred(async () => {
+      await h.feedOnly(chatFinal("run0", 3, "Late 0"));
+      // Repeats of finals already shown, and silent ones: ordinary frames.
+      for (let i = 1; i < 33; i++) await h.feedOnly(chatFinal(`run${i}`, 3, i % 2 === 0 ? `Answer ${i}` : "NO_REPLY"));
+      await h.feedOnly(chatFinal("run33", 3, "Late 33"));
+      release();
+      await h.rm.completionsIdle();
+    });
+    expect(lines).toEqual([]);
+    expect(h.writer.late).toEqual(["Late 0", "Late 33"]);
+  });
+
+  it("a fact about a run that left no bubble waits for the late final that opens one", async () => {
+    const RUN = "announce:v1:agent:alice:subagent:child:run-1";
+    const h = harness();
+    await h.feed(agent(RUN, 0, "lifecycle", { phase: "start" }));
+    await h.rm.endTurn(h.tick(), "final", null, "recv_timeout");
+    await h.feed(chatAborted(RUN, 1));
+    h.writer.opensBubbles = true;
+    // Convex's lookup of the run's bubble when the bridge names none.
+    h.writer.noteGatewayNotice = async (_c, d) => {
+      const id = d.messageId ?? [...h.writer.settled].find(([, b]) => b.runId === RUN)?.[0] ?? null;
+      if (id !== null) h.writer.facts.push(`notice ${d.text} → ${id}`);
+      return id;
+    };
+    const { release } = holdLate(h);
+    const lines = await erred(async () => {
+      await h.feedOnly(chatFinal(RUN, 2, "The report"));
+      await h.feedOnly({
+        type: "event",
+        event: "chat",
+        payload: { sessionKey: KEY, runId: RUN, seq: 3, state: "final", message: { role: "assistant", content: [{ type: "text", text: "Usage: 1 in / 1 out", openclawStatusNotice: true }] } },
+      });
+      await new Promise((r) => setTimeout(r, 5));
+      expect(h.writer.facts).toEqual([]);
+      release();
+      await h.rm.completionsIdle();
+      await h.rm.runFactsIdle();
+    });
+    expect(lines).toEqual([]);
+    expect(h.writer.facts).toEqual(["notice Usage: 1 in / 1 out → late1"]);
+  });
+
+  it("…and only for one pass: the write that would open the bubble keeps failing, the fact is then asked, answered `no bubble`, dropped and said", async () => {
+    const RUN = "announce:v1:agent:alice:subagent:child:run-1";
+    const h = harness();
+    await h.feed(agent(RUN, 0, "lifecycle", { phase: "start" }));
+    await h.rm.endTurn(h.tick(), "final", null, "recv_timeout");
+    await h.feed(chatAborted(RUN, 1));
+    h.writer.opensBubbles = true;
+    h.writer.failLate = true;
+    const asked: Array<string | null> = [];
+    h.writer.noteGatewayNotice = async (_c, d) => {
+      asked.push(d.messageId);
+      return null;
+    };
+    const warned: string[] = [];
+    const warn = console.warn;
+    console.warn = (...a: unknown[]) => void warned.push(a.map(String).join(" "));
+    try {
+      await erred(async () => {
+        await h.feedOnly(chatFinal(RUN, 2, "The report"));
+        await h.feedOnly({
+          type: "event",
+          event: "chat",
+          payload: { sessionKey: KEY, runId: RUN, seq: 3, state: "final", message: { role: "assistant", content: [{ type: "text", text: "Usage: 1 in / 1 out", openclawStatusNotice: true }] } },
+        });
+        await h.rm.completionsIdle();
+        await h.rm.runFactsIdle();
+      });
+    } finally {
+      console.warn = warn;
+    }
+    expect(asked).toEqual([null]);
+    expect(warned.filter((l) => l.includes("the run left no bubble to carry them"))).toHaveLength(1);
   });
 });
 
@@ -1731,20 +1987,26 @@ describe("replay equivalence — the pre-ACK buffer and the live path write the 
       chatFinal("runA", 2, "Hello"),
       chatFinal("runA", 3, "A second, distinct answer"),
     );
+    // The last replayed frame is held while it is read (no write of the frame path is
+    // left to hold it: a late final's is detached).
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
-    const late = h.writer.appendLateFinal.bind(h.writer);
-    h.writer.appendLateFinal = async (a) => {
-      await held;
-      return late(a);
+    const reader = h.rm as unknown as { feedPipeline: (frame: unknown, now: number) => Promise<void> };
+    const read = reader.feedPipeline.bind(h.rm);
+    let frames = 0;
+    reader.feedPipeline = async (frame, now) => {
+      if (++frames === 3) await held;
+      return read(frame, now);
     };
     const opening = h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
     await new Promise((r) => setTimeout(r, 5));
+    expect(frames).toBe(3);
     expect(h.rm.turnActive || h.rm.turnFinalizing).toBe(false);
     expect(h.rm.liveWork).toBe("dispatch in flight");
     release();
     await opening;
     expect(h.rm.liveWork).toBeNull();
+    await h.rm.completionsIdle();
     expect(h.writer.late).toEqual(["A second, distinct answer"]);
   });
 

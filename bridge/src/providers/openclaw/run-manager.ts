@@ -104,12 +104,13 @@ interface RunLane {
 
 /** A settled run's bubble (null: none) and whole visible text. */
 type SettledRecord = { messageId: string | null; text: string };
-/** A completion a settled bubble is owed (see `RunManager.offerCompletion`): the latest
- *  text offered for that bubble, the record of the turn that settled it, and how many
- *  write passes failed. */
+/** A settled bubble's write queue (see `RunManager.offerCompletion`): the completion it
+ *  is owed — the latest text offered for that bubble, null when the queue was opened by
+ *  a late final and nothing is owed — the record of the turn that settled it, and how
+ *  many write passes failed. */
 interface KeptCompletion {
   runId: string;
-  offer: SettledCompletion;
+  offer: SettledCompletion | null;
   record: SettledRecord;
   failures: number;
   scheduled: boolean;
@@ -528,14 +529,43 @@ export class RunManager {
     return "written";
   }
 
-  /** A DISTINCT late final (CU-8) on the frame path: asked now, under the writer's own
-   *  bounded retries (its key makes the write repeatable). False: it adds nothing. */
-  private async writeLateFinal(late: LateFinal): Promise<boolean> {
-    const outcome = await this.joinLateFinal(late);
-    if (outcome === "failed" || outcome === "lost") {
-      console.error("[final] late final not written (non-fatal):", errForLog(this.completionFailure));
+  /**
+   * A DISTINCT late final (CU-8) on the frame path: put in its bubble's queue, never
+   * awaited — its write is retried by the writer (its key makes it repeatable), and a
+   * frame must not wait a minute for a text beside the turn. A bubble with no queue gets
+   * one with nothing owed at its head (keyed by the run's record, so two finals of a run
+   * that left no bubble share it and the second is compared with what the first wrote).
+   * Both bounds refuse the newcomer.
+   */
+  private queueLateFinal(late: LateFinal): void {
+    const queue = this.keptCompletions.get(late.settled);
+    if (queue !== undefined) {
+      if (queue.behind.length < RunManager.MAX_BEHIND_A_COMPLETION) {
+        queue.behind.push(late);
+      } else {
+        console.error(
+          `[final] late final DROPPED: ${RunManager.MAX_BEHIND_A_COMPLETION} already wait in its bubble's queue run=${late.runId.slice(0, 60)}`,
+        );
+      }
+      return;
     }
-    return outcome !== null;
+    if (this.keptCompletions.size >= RunManager.MAX_KEPT_COMPLETIONS) {
+      console.error(
+        `[final] late final DROPPED: ${RunManager.MAX_KEPT_COMPLETIONS} settled bubbles already have a write queue run=${late.runId.slice(0, 60)}`,
+      );
+      return;
+    }
+    this.keptCompletions.set(late.settled, {
+      runId: late.runId,
+      offer: null,
+      record: late.settled,
+      failures: 0,
+      scheduled: false,
+      settledOffer: null,
+      joinKey: randomUUID(),
+      behind: [late],
+    });
+    this.scheduleCompletion(late.settled);
   }
 
   /** What a late terminal text adds to a settled run's record, or null. */
@@ -1534,6 +1564,7 @@ export class RunManager {
    *    for the bubble to open or the turn to settle.
    */
   private async writeRunFacts(runId: string, queue: RunFactQueue): Promise<void> {
+    let waitedFor: SettledRecord | undefined;
     while (this.runFacts.get(runId) === queue && queue.facts.length > 0) {
       const live = this.sink.active && this.normalizer.ownRunIds.has(runId);
       // While the run is the live turn's, its bubble is the turn's — once it is open.
@@ -1547,6 +1578,16 @@ export class RunManager {
       // — written now, it went on the earlier bubble. It waits for the turn to begin
       // (or the send to fail), which schedules every queue again.
       if (!live && this.dispatchInFlight) return;
+      // The settled run left no bubble, and a write queued for it may OPEN one (a late
+      // final, a refused completion's join): asked now, Convex would answer "no bubble"
+      // and the fact would be dropped beside a bubble about to exist. It waits for that
+      // queue's pass — once: a write that keeps failing does not hold the facts.
+      const record = live ? undefined : this.settledRuns.get(runId);
+      if (known === null && record !== undefined && record !== waitedFor && this.keptCompletions.has(record)) {
+        waitedFor = record;
+        await this.completionsIdle();
+        continue;
+      }
       // Taken out before the write: the per-run bound may drop the head meanwhile. And
       // "settled" as it stood when Convex was ASKED: its answer is about that instant.
       const fact = queue.facts.shift()!;
@@ -1608,21 +1649,14 @@ export class RunManager {
     }
     const late = this.lateFinalFor(frame);
     if (late !== null) {
-      const owed = this.keptCompletions.get(late.settled);
-      if (owed !== undefined) {
-        // THAT bubble has a queue: this final goes to its tail, whatever the debt at
-        // its head is doing, and is compared with what the bubble holds only when its
-        // turn comes.
-        if (owed.behind.length < RunManager.MAX_BEHIND_A_COMPLETION) {
-          owed.behind.push(late);
-        } else {
-          console.error(
-            `[final] late final DROPPED: ${RunManager.MAX_BEHIND_A_COMPLETION} already wait behind the completion its bubble is owed run=${late.runId.slice(0, 60)}`,
-          );
-        }
+      // THAT bubble has a queue: this final goes to its tail, whatever its head is
+      // doing, and is compared with what the bubble holds only when its turn comes.
+      // No queue: the record is what the bubble holds, and a final that adds nothing to
+      // it is an ordinary frame.
+      if (this.keptCompletions.has(late.settled) || this.lateAddition(late.text, late.settled) !== null) {
+        this.queueLateFinal(late);
         return;
       }
-      if (await this.writeLateFinal(late)) return;
     }
     try {
       await this.feedRouted(frame, now);
@@ -1642,18 +1676,22 @@ export class RunManager {
   // `offerCompletion` is all the frame path does, synchronously: the run is owed the
   // text (`keptCompletions`, one per run, the latest text wins) and a write pass is
   // queued on a chain of its own (`completionTail`), like the facts about a run. A frame
-  // never waits for that chain.
+  // never waits for that chain — nor does a DISTINCT late final (CU-8,
+  // `queueLateFinal`): every write to a settled bubble goes through its queue.
   //
-  // ONE QUEUE PER BUBBLE (`keptCompletions`, by the bubble's record): the debt, then
-  // the late finals that arrived for the same bubble while the queue existed. The queue
-  // is listed from the first offer until it is DRAINED — the debt settled (written,
+  // ONE QUEUE PER BUBBLE (`keptCompletions`, by the bubble's record): the debt if there
+  // is one, then the late finals that arrived for the same bubble while the queue
+  // existed (the first of them opens the queue when nothing is owed). The queue is
+  // listed from its first entry until it is DRAINED — the debt settled (written,
   // joined, or dropped after its passes) and what waited behind it written — and "is
   // there a queue for this bubble?" is the one question the frame path asks to route a
-  // late final. They are written when the debt is settled, never between two passes.
+  // late final. They are written when the debt is settled, never between two passes,
+  // each compared with the record as the writes before it left it: what awaiting the
+  // write on the frame path used to guarantee, kept by the queue's order.
   //
   // Two bounds, and neither can reorder what it does not drop: at most
-  // `MAX_KEPT_COMPLETIONS` bubbles have a queue (the completion of one more is dropped,
-  // and said — no queue is ever removed to make room), and at most
+  // `MAX_KEPT_COMPLETIONS` bubbles have a queue (the completion or the late final of one
+  // more is dropped, and said — no queue is ever removed to make room), and at most
   // `MAX_BEHIND_A_COMPLETION` finals wait in one (one more is dropped, and said).
   //
   // A pass that FAILS — past the writer's own bounded retries (convex-writer.ts
@@ -1749,7 +1787,7 @@ export class RunManager {
     const { record, runId } = kept;
     while (this.keptCompletions.get(record) === kept) {
       const offer = kept.offer;
-      if (kept.settledOffer !== offer) {
+      if (offer !== null && kept.settledOffer !== offer) {
         let outcome = await this.completeSettled(record, runId, offer);
         if (outcome === "written") {
           this.normalizer.noteCompletionWritten(offer);
@@ -1778,14 +1816,16 @@ export class RunManager {
         }
         // This text is SETTLED (written, joined, or dropped). A newer text offered
         // meanwhile is the debt now (the same text, once written, is done).
-        if (kept.offer !== offer && !(outcome === "written" && kept.offer.text === offer.text)) continue;
+        if (kept.offer !== offer && !(outcome === "written" && kept.offer?.text === offer.text)) continue;
         kept.settledOffer = kept.offer;
       }
       // What waited behind the debt, in order. A final whose write failed stays at the
       // head of the queue, owed like the debt was: the pass ends, and the next one
       // (the next frame, a turn beginning) asks for it again.
       if (!(await this.writeBehind(kept))) return;
-      if (kept.settledOffer !== kept.offer) continue;
+      // A text offered, or a final queued, while the last write was answered: the queue
+      // is not drained.
+      if (kept.settledOffer !== kept.offer || kept.behind.length > 0) continue;
       if (this.keptCompletions.get(record) === kept) this.keptCompletions.delete(record);
       return;
     }
@@ -1803,7 +1843,7 @@ export class RunManager {
         late.failures = (late.failures ?? 0) + 1;
         const dropped = late.failures >= RunManager.MAX_COMPLETION_PASSES;
         console.error(
-          `[final] a late final behind a settled bubble's completion was not written (pass ${late.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${dropped ? "DROPPED" : "kept, asked again at the next frame"} run=${late.runId.slice(0, 60)}:`,
+          `[final] a late final in a settled bubble's queue was not written (pass ${late.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${dropped ? "DROPPED" : "kept, asked again at the next frame"} run=${late.runId.slice(0, 60)}:`,
           errForLog(this.completionFailure),
         );
         if (!dropped) return false;
