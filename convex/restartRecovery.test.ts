@@ -388,6 +388,35 @@ describe("what a recovery entry may and may not join", () => {
     expect(all.map((m) => m.displayGroupId)).toEqual([undefined, undefined]);
   });
 
+  test("the run was cut right after a STEERED input: the recovery resumes the run it was steered into, not the input's own send", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    const STEER = "webchat-" + "c".repeat(64);
+    const steered = { entryId: "steer-1", seq: 12, role: "user", runId: STEER, sendId: STEER, steerTargetRunId: INTERRUPTED, hidden: false, visible: true };
+    const tail = projected.restart.filter((r) => r.seq >= 12).map((r) => ({ ...r, seq: r.seq + 1 }));
+    await apply(t, ids.chatId, [...projected.restart.filter((r) => r.seq <= 11), steered, ...tail], IDLE);
+    await settle(t);
+    const all = await assistants(t, ids.chatId);
+    expect(all.filter((m) => m.interruption?.recoveryRunId === RECOVERY).map((m) => m.runId)).toEqual([INTERRUPTED]);
+    expect(await t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).find((r) => r.recoversRunId !== undefined)?.recoversRunId)).toBe(INTERRUPTED);
+    void cut;
+  });
+
+  test("an input of a send that never ran (a queued input) right before the entry: nothing is attributed", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    await liveBubble(t, ids, INTERRUPTED);
+    const QUEUED = "webchat-" + "d".repeat(64);
+    const queued = { entryId: "queued-1", seq: 12, role: "user", runId: QUEUED, sendId: QUEUED, hidden: false, visible: true };
+    const tail = projected.restart.filter((r) => r.seq >= 12).map((r) => ({ ...r, seq: r.seq + 1 }));
+    await apply(t, ids.chatId, [...projected.restart.filter((r) => r.seq <= 11), queued, ...tail], IDLE);
+    await settle(t);
+    expect((await assistants(t, ids.chatId)).every((m) => m.interruption === undefined)).toBe(true);
+    // …and nothing is recorded: no later bubble of that id could ever be taken for it.
+    expect(await t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).filter((r) => r.recoversRunId !== undefined).length)).toBe(0);
+  });
+
   test("an entry of another provenance is no recovery", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t, INTERRUPTED);

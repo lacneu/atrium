@@ -16,7 +16,8 @@
 // recovery run's frames names the interrupted run. What the transcript does state is the
 // ORDER: the entry is appended right after the interrupted run's last row, while nothing
 // else can write (the gateway was down). So the run a recovery resumes is the run of the
-// row right before its entry — read here by `seq`, never by a time.
+// row right before its entry — read here by `seq`, never by a time (`resumedRunFromRow`
+// says what each kind of row there states).
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
@@ -25,10 +26,6 @@ import { steerSeqsOf } from "./transcriptProjection";
 
 /** Upstream `MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL` (src/sessions/input-provenance.ts). */
 const RECOVERY_SOURCE_TOOL = "main_session_restart_recovery";
-
-/** Rows read before the entry to find the run it follows (rows of that run only precede
- *  it; a few may name no run). */
-const RECOVERY_LOOKBACK = 8;
 
 /** Upstream `isMainSessionRestartRecoveryInputProvenance`: `internal_system`, and the
  *  source tool compared case-insensitively. */
@@ -58,6 +55,37 @@ export async function noteInterruption(
 }
 
 type Scope = { chatId: Id<"chats">; instanceName: string; sessionKey: string };
+
+/**
+ * The run the row RIGHT BEFORE a recovery entry says was executing, by what each kind of
+ * row carries (bridge transcript-rows.ts `readTranscriptIdentity`, upstream
+ * packages/gateway-client/src/session-projection-message-identity.ts):
+ *  - a row a run PRODUCED (assistant, tool result, nested tool, hidden or not) names that
+ *    run (`__openclaw.runId`): proven;
+ *  - an input STEERED into a run names its own send as `runId` and the run it went into
+ *    as `steerTargetRunId` — the executed run is the latter (upstream: the steered-into
+ *    run stays the source), proven;
+ *  - any other input row (the turn's own send, a queued or held input, a sub-agent
+ *    announce or a channel input, another recovery entry) names only the id it was SENT
+ *    under: a run of that id may never have existed. Not proven — the caller believes it
+ *    only if such a run is known;
+ *  - a row that named no run (a compaction marker, a system notice), even one Convex
+ *    shows with a presentation owner: nothing.
+ * `null`: nothing can be concluded.
+ */
+export function resumedRunFromRow(row: {
+  role: string;
+  runId?: string;
+  steerTargetRunId?: string;
+  presentationOwner?: boolean;
+}): { runId: string; proven: boolean } | null {
+  if (row.role.toLowerCase() === "user") {
+    if (row.steerTargetRunId !== undefined) return { runId: row.steerTargetRunId, proven: true };
+    return row.runId === undefined ? null : { runId: row.runId, proven: false };
+  }
+  if (row.runId === undefined || row.presentationOwner === true) return null;
+  return { runId: row.runId, proven: true };
+}
 
 /** The bubble that shows the END of a run: its last steer segment's, else the nearest
  *  earlier one that has a bubble. */
@@ -93,12 +121,24 @@ export async function resolveRecovery(
         q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", entry.sessionId).lt("seq", entry.seq),
       )
       .order("desc")
-      .take(RECOVERY_LOOKBACK);
-    // The row RIGHT before the entry must be there: a hole would name an older run.
-    if (before[0]?.seq !== entry.seq - 1) return null;
-    const row = before.find((r) => r.instanceName === scope.instanceName && r.runId !== undefined);
-    if (row === undefined) return null;
-    resumed = row.runId!;
+      .take(1);
+    // The row RIGHT before the entry, and only it: a hole would name an older run.
+    const prev = before[0];
+    if (prev === undefined || prev.seq !== entry.seq - 1 || prev.instanceName !== scope.instanceName) return null;
+    const named = resumedRunFromRow(prev);
+    if (named === null || named.runId === entry.runId) return null;
+    if (!named.proven) {
+      // An input row names its send: believed only when the gateway is known to have run
+      // a run under that id in this session.
+      const ran = await ctx.db
+        .query("transcriptRuns")
+        .withIndex("by_chat_session_run", (q) =>
+          q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("runId", named.runId),
+        )
+        .first();
+      if (ran === null) return null;
+    }
+    resumed = named.runId;
     await ctx.db.patch(entry._id, { recoversRunId: resumed });
   }
   await noteRecoveredRun(ctx, scope, resumed, entry.runId);
