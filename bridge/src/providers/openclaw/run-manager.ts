@@ -112,6 +112,15 @@ interface KeptCompletion {
   record: SettledRecord;
   failures: number;
   scheduled: boolean;
+  /** Late finals for the same bubble, in arrival order: written once the debt is
+   *  settled (see `RunManager.writeCompletion`). */
+  behind: LateFinal[];
+}
+/** A `chat` final of a settled run (CU-8): the run, its visible text and its record. */
+interface LateFinal {
+  runId: string;
+  text: string;
+  settled: SettledRecord;
 }
 /** What became of a write on the completion chain. `refused` is an ANSWER (Convex holds
  *  something else; nothing to add; no bubble to join) — `failed` is no answer at all. */
@@ -479,8 +488,9 @@ export class RunManager {
    * Join what a late final ADDS to its settled run's bubble, compared with the record as
    * it is NOW. Null: it adds nothing, nothing was asked. Otherwise the outcome of the
    * write: `refused` when there is no bubble to join and none could be opened.
-   * Idempotent in Convex (`appendLateFinal`: an addition the bubble already holds is not
-   * appended again), so a join whose answer was lost can be asked again.
+   * Idempotent in Convex WHEN IT NAMES A BUBBLE (`appendLateFinal`: an addition the
+   * bubble already holds is not appended again), so such a join can be asked again. With
+   * no bubble to name it opens one, every time it is asked.
    */
   private async joinLateFinal(late: {
     runId: string;
@@ -1589,17 +1599,18 @@ export class RunManager {
     }
     const late = this.lateFinalFor(frame);
     if (late !== null) {
-      if (this.keptCompletions.has(late.settled)) {
-        // THAT bubble is still owed a completion: this final is compared with what
-        // the bubble holds once that write is done, behind it on its chain.
-        this.completionTail = this.completionTail
-          .then(() => this.writeLateFinal(late))
-          .then(
-            () => undefined,
-            (err: unknown) => {
-              console.error("[final] late final not written (non-fatal):", errForLog(err));
-            },
+      const owed = this.keptCompletions.get(late.settled);
+      if (owed !== undefined) {
+        // THAT bubble is still owed a completion: one queue per bubble. This final
+        // stays behind the debt until it is settled — written, joined or dropped —
+        // and is only then compared with what the bubble holds.
+        if (owed.behind.length < RunManager.MAX_BEHIND_A_COMPLETION) {
+          owed.behind.push(late);
+        } else {
+          console.error(
+            `[final] late final DROPPED: ${RunManager.MAX_BEHIND_A_COMPLETION} already wait behind the completion its bubble is owed run=${late.runId.slice(0, 60)}`,
           );
+        }
         return;
       }
       if (await this.writeLateFinal(late)) return;
@@ -1624,6 +1635,11 @@ export class RunManager {
   // queued on a chain of its own (`completionTail`), like the facts about a run. A frame
   // never waits for that chain.
   //
+  // ONE QUEUE PER BUBBLE: the debt, then the late finals that arrived for the same
+  // bubble while it was owed (`KeptCompletion.behind`, at most
+  // `MAX_BEHIND_A_COMPLETION`; one more is dropped, and said). They are written when the
+  // debt is settled — never between two of its passes.
+  //
   // A pass that FAILS — past the writer's own bounded retries (convex-writer.ts
   // `IDEMPOTENT_OPS`: a repeat of a completion that landed is answered as written) —
   // leaves the text owed. It is offered again when something already happens: the next
@@ -1642,6 +1658,7 @@ export class RunManager {
   private completionFailure: unknown = null;
   private static readonly MAX_COMPLETION_PASSES = 3;
   private static readonly MAX_KEPT_COMPLETIONS = 32;
+  private static readonly MAX_BEHIND_A_COMPLETION = 8;
 
   /** The bubble `offer`'s window settled is owed `offer.text`. Synchronous. */
   private offerCompletion(offer: SettledCompletion): void {
@@ -1660,6 +1677,7 @@ export class RunManager {
         record,
         failures: 0,
         scheduled: false,
+        behind: [],
       });
       while (this.keptCompletions.size > RunManager.MAX_KEPT_COMPLETIONS) {
         const [oldest, dropped] = this.keptCompletions.entries().next().value as [
@@ -1670,6 +1688,8 @@ export class RunManager {
         console.warn(
           `[final] a settled bubble's completion was dropped, the oldest still owed (bound ${RunManager.MAX_KEPT_COMPLETIONS}) run=${dropped.runId.slice(0, 60)}`,
         );
+        // What waited behind it is written in its turn on the chain.
+        this.completionTail = this.completionTail.then(() => this.writeBehind(dropped));
       }
     }
     this.scheduleCompletion(record);
@@ -1720,25 +1740,46 @@ export class RunManager {
         // The run's record follows its bubble (what a later distinct final is compared with).
         record.text = offer.earlier === null ? offer.text : `${offer.earlier}\n\n${offer.text}`;
       } else if (outcome === "refused") {
+        // A run that left no bubble: the join OPENS one, and Convex cannot tell a repeat
+        // of that call from another turn's late final. Asked once, like any late final
+        // that opens a bubble (CU-8).
+        const opens = record.messageId === null;
         const whole = offer.earlier === null ? offer.text : `${offer.earlier}\n\n${offer.text}`;
         outcome = (await this.joinLateFinal({ runId, text: whole, settled: record })) ?? "refused";
+        if (outcome === "failed" && opens) {
+          console.error(
+            `[final] a settled run's late text was not written, and is not asked again (the write opens a bubble) run=${runId.slice(0, 60)}:`,
+            errForLog(this.completionFailure),
+          );
+          outcome = "refused";
+        }
       }
+      const dropped = outcome === "failed" && ++kept.failures >= RunManager.MAX_COMPLETION_PASSES;
       if (outcome === "failed") {
-        kept.failures++;
-        const last = kept.failures >= RunManager.MAX_COMPLETION_PASSES;
-        if (last && this.keptCompletions.get(record) === kept) this.keptCompletions.delete(record);
         console.error(
-          `[final] a settled bubble's completion was not written (pass ${kept.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${last ? "DROPPED: the bubble keeps the text it settled with" : "kept, offered again at the next frame"} run=${runId.slice(0, 60)}:`,
+          `[final] a settled bubble's completion was not written (pass ${kept.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${dropped ? "DROPPED: the bubble keeps the text it settled with" : "kept, offered again at the next frame"} run=${runId.slice(0, 60)}:`,
           errForLog(this.completionFailure),
         );
-        return;
+        // Still owed: what waits behind it for the same bubble waits too.
+        if (!dropped) return;
       }
-      // A newer text offered while this one was being written goes next (the same text,
-      // once written, is done).
-      if (kept.offer === offer || (outcome === "written" && kept.offer.text === offer.text)) {
-        if (this.keptCompletions.get(record) === kept) this.keptCompletions.delete(record);
-        return;
-      }
+      // This text is SETTLED (written, joined, or dropped). A newer text offered
+      // meanwhile is the debt now (the same text, once written, is done).
+      const newer = (): boolean =>
+        kept.offer !== offer && !(outcome === "written" && kept.offer.text === offer.text);
+      if (!newer()) await this.writeBehind(kept);
+      if (newer()) continue;
+      if (this.keptCompletions.get(record) === kept) this.keptCompletions.delete(record);
+      return;
+    }
+  }
+
+  /** The late finals that waited behind a settled debt, oldest first, each compared
+   *  with the bubble as the writes before it left it. The debt is still listed while
+   *  they are written, so one arriving meanwhile queues behind them. */
+  private async writeBehind(kept: KeptCompletion): Promise<void> {
+    for (let late = kept.behind.shift(); late !== undefined; late = kept.behind.shift()) {
+      await this.writeLateFinal(late);
     }
   }
 

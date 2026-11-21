@@ -914,6 +914,138 @@ describe("a debt is a DESTINATION, not a run id", () => {
   });
 });
 
+describe("one queue per bubble: a late final stays behind the completion its bubble is owed", () => {
+  const erred = async (run: () => Promise<void>): Promise<string[]> => {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+    try {
+      await run();
+    } finally {
+      console.error = original;
+    }
+    return lines;
+  };
+
+  it("the reviewed sequence: two failing passes with a distinct final waiting, then recovery — the completion, then the final, once, in order", async () => {
+    const h = await closedOnLifecycleError();
+    h.writer.transientFailures = 2;
+    await h.feed(chatAborted("runA", 3, "Hello world"));
+    // The final's own frame gives the debt its second pass, which fails too: the final
+    // is not written in front of a text the bubble is still owed.
+    await h.feed(chatFinal("runA", 4, "A distinct answer"));
+    expect(only(h.writer).text).toBe("Hello");
+    expect(h.writer.late).toEqual([]);
+    await h.feed(tickFrame());
+    expect(only(h.writer).text).toBe("Hello world\n\nA distinct answer");
+    expect(h.writer.late).toEqual(["A distinct answer"]);
+    expect(h.writer.completions.at(-1)).toBe('complete msg1 "Hello world" true');
+  });
+
+  it("the debt is finally DROPPED: the final then lands against the bubble as it is", async () => {
+    const h = await closedOnLifecycleError();
+    h.writer.failCompletions = true;
+    await h.feed(chatAborted("runA", 3, "Hello world"), chatFinal("runA", 4, "A distinct answer"));
+    expect(h.writer.late).toEqual([]);
+    await h.feed(tickFrame(), tickFrame());
+    expect(h.writer.late).toEqual(["A distinct answer"]);
+    expect(only(h.writer).text).toBe("Hello\n\nA distinct answer");
+    // Nothing is owed any more: the next final is written at once.
+    await h.feedOnly(chatFinal("runA", 5, "And another"));
+    expect(h.writer.late).toEqual(["A distinct answer", "And another"]);
+  });
+
+  it("several finals behind one debt keep their order, and one arriving while they are written goes after them", async () => {
+    const h = await closedOnLifecycleError();
+    let landed!: () => void;
+    h.writer.gate = new Promise<void>((r) => (landed = r));
+    await h.feedOnly(
+      chatAborted("runA", 3, "Hello world"),
+      chatFinal("runA", 4, "First late"),
+      chatFinal("runA", 5, "Second late"),
+    );
+    expect(h.writer.late).toEqual([]);
+    // The completion lands; the first queued final's write is held while a third arrives.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const late = h.writer.appendLateFinal.bind(h.writer);
+    let n = 0;
+    h.writer.appendLateFinal = async (a) => {
+      if (n++ === 0) await held;
+      return late(a);
+    };
+    landed();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(n).toBe(1);
+    await h.feedOnly(chatFinal("runA", 6, "Third late"));
+    release();
+    await h.rm.completionsIdle();
+    expect(h.writer.late).toEqual(["First late", "Second late", "Third late"]);
+    expect(only(h.writer).text).toBe("Hello world\n\nFirst late\n\nSecond late\n\nThird late");
+  });
+
+  it("at most eight wait behind one debt: one more is dropped, and said", async () => {
+    const h = await closedOnLifecycleError();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    const lines = await erred(async () => {
+      await h.feedOnly(chatAborted("runA", 3, "Hello world"));
+      for (let i = 0; i < 9; i++) await h.feedOnly(chatFinal("runA", 4 + i, `Late ${i}`));
+      release();
+      await h.rm.completionsIdle();
+    });
+    expect(lines.filter((l) => l.includes("late final DROPPED"))).toHaveLength(1);
+    expect(h.writer.late).toEqual([0, 1, 2, 3, 4, 5, 6, 7].map((i) => `Late ${i}`));
+  });
+
+  it("a debt dropped by the bound on debts still hands on what waited behind it", async () => {
+    const h = harness();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    const original = console.warn;
+    console.warn = () => {};
+    try {
+      for (let i = 0; i < 34; i++) {
+        await h.rm.beginTurn(h.tick(), `run${i}`, { expectedSessionId: null });
+        await h.feedOnly(
+          chatDelta(`run${i}`, 1, "Hello"),
+          lifecycleError(`run${i}`, 2),
+          chatDelta(`run${i}`, 2, "Hello world"),
+          ...(i === 1 ? [chatAborted("run1", 2, "Hello world"), chatFinal("run1", 3, "A distinct answer")] : []),
+        );
+      }
+      release();
+      await h.rm.completionsIdle();
+    } finally {
+      console.warn = original;
+    }
+    // run1's debt was dropped unwritten; its late final is not lost with it.
+    expect(h.writer.settled.get("msg2")!.text).toBe("Hello\n\nA distinct answer");
+  });
+
+  it("a run that left NO bubble: the write that would open one is asked once, never retried", async () => {
+    // A delivery that showed nothing when a net closed its deferred turn: no bubble.
+    const RUN = "announce:v1:agent:alice:subagent:child:run-1";
+    const h = harness();
+    await h.feed(agent(RUN, 0, "lifecycle", { phase: "start" }));
+    await h.rm.endTurn(h.tick(), "final", null, "recv_timeout");
+    expect(h.rm.turnActive).toBe(false);
+    expect(h.writer.starts).toBe(0);
+    let asked = 0;
+    h.writer.appendLateFinal = async (a) => {
+      asked++;
+      expect(a.messageId).toBeNull();
+      throw new Error("convex down");
+    };
+    const lines = await erred(async () => {
+      await h.feed(chatAborted(RUN, 1, "Hello world"), tickFrame(), tickFrame(), tickFrame());
+    });
+    expect(asked).toBe(1);
+    expect(lines.filter((l) => l.includes("is not asked again"))).toHaveLength(1);
+    expect(h.writer.offered).toEqual([]);
+  });
+});
+
 describe("every write of the completion chain has an outcome: the JOIN too", () => {
   const OUT = "/home/node/.openclaw/media/outbound";
   /** "One\r\nTwo" persisted; the terminal's sanitised text will not extend it. */
