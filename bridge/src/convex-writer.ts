@@ -1718,6 +1718,13 @@ export class HttpConvexWriter implements ConvexWriter {
     // segment it opened (convex/stream.ts `splitSegment`), so a lost answer is retried
     // instead of leaving the turn on the settled segment (codex pass 4).
     "splitSegment",
+    // FACTS ABOUT A RUN (a fallback marker, a status notice): Convex keeps one marker
+    // per bubble and one line per notice text, so a repeat of a write that landed
+    // changes nothing (convex/stream.ts `noteModelFallback`, `noteGatewayNotice`). They
+    // are written off the frame path, one at a time (RunManager `factsTail`): the
+    // back-off below delays the next fact, never a turn.
+    "modelFallback",
+    "gatewayNotice",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -2764,7 +2771,7 @@ export class HttpConvexWriter implements ConvexWriter {
       selected?: string;
     },
   ): Promise<string | null> {
-    const ack = await this.doPost<{ messageId?: string | null }>({
+    const ack = await this.doPostWithRetry<{ messageId?: string | null }>({
       op: "modelFallback",
       chatId,
       runId: data.runId,
@@ -2782,7 +2789,7 @@ export class HttpConvexWriter implements ConvexWriter {
     chatId: string,
     data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
   ): Promise<string | null> {
-    const ack = await this.doPost<{ messageId?: string | null }>({
+    const ack = await this.doPostWithRetry<{ messageId?: string | null }>({
       op: "gatewayNotice",
       chatId,
       runId: data.runId,

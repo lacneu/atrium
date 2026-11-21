@@ -53,15 +53,13 @@ const MAX_GATEWAY_NOTICE_CHARS = 2000;
 /** Something the gateway states about a run that is not the run's content. */
 type RunFact = { kind: "fallback"; fallback: ModelFallback } | { kind: "notice"; text: string };
 
-/** A run's facts still to write, oldest first, and what is known of their writing. */
+/** A run's facts still to write, oldest first. */
 interface RunFactQueue {
   facts: RunFact[];
   /** A turn owning the run has ended: "no bubble" is then Convex's last word. */
   settled: boolean;
-  /** Consecutive drains that ended on a FAILED write. */
-  failures: number;
-  /** When a failed write may be tried again (frame clock, seconds); null: not waiting. */
-  retryAt: number | null;
+  /** A write pass for this run is queued and has not started: another is not stacked. */
+  scheduled: boolean;
 }
 // Cap on the ANNOUNCE stash: it can hold a WHOLE late report streamed during a
 // long user turn (deltas + tools), so it is much larger than the pre-ack cap.
@@ -512,9 +510,9 @@ export class RunManager {
         this.settledRuns.set(id, record);
       }
       // The turn is over: what its runs still have queued goes on the bubble it left
-      // (or on the one Convex finds for the run) — never awaited by the turn.
+      // (or on the one Convex finds for the run).
       for (const id of this.normalizer.ownRunIds) {
-        if (this.runFacts.has(id)) void this.drainRunFacts(id, true);
+        if (this.runFacts.has(id)) this.scheduleRunFacts(id, true);
       }
       while (this.settledRuns.size > RunManager.MAX_SETTLED_RUNS) {
         this.settledRuns.delete(this.settledRuns.keys().next().value as string);
@@ -883,7 +881,6 @@ export class RunManager {
     if (held !== null) await this.completeSettled(held);
     this.settleUnrecorded = true;
     this.turnEpoch++;
-    this.factClock = Math.max(this.factClock, now);
     this.normalizer.beginTurn(now);
     // A frame of this run was refused by the pre-ack cap: what the normalizer reads
     // as an ABSENCE (no lifecycle start, say) proves nothing for this turn.
@@ -969,7 +966,7 @@ export class RunManager {
     }
     // Facts about this run that arrived before the ACK waited for its bubble: the
     // replay may just have opened it (a turn it also finished drains at its settle).
-    await this.drainLiveRunFacts();
+    this.scheduleLiveRunFacts();
     // The replay itself can FINALIZE the turn (a whole response raced the ack):
     // deliver any announce stashed during the send window now — no later
     // feed/tick is guaranteed once the loop goes idle (codex P2). No-op while
@@ -1252,8 +1249,6 @@ export class RunManager {
       if (carried) this.observedFrames.add(frame);
       // Observe-only protocol-drift classification (never gates the frame).
       protocolDrift.observe(frame);
-      // Any frame of the connection is the occasion to retry a write that failed.
-      this.retryRunFacts(now);
       // FACTS ABOUT A RUN that are not a turn's content (a model fallback, the
       // gateway's status notices) are taken HERE, at arrival — before the lanes, the
       // stashes and the turn's pipeline — so the same frame is read the same way
@@ -1261,7 +1256,7 @@ export class RunManager {
       // can neither become a turn's content nor open or close one.
       const facts = this.runFactsFor(frame);
       if (facts !== null) {
-        await this.noteRunFacts(facts.runId, facts.facts, now);
+        this.noteRunFacts(facts.runId, facts.facts);
         return;
       }
     }
@@ -1280,12 +1275,24 @@ export class RunManager {
   // --- FACTS ABOUT A RUN ------------------------------------------------------------
   //
   // A model fallback, its clearing, and the gateway's status notices say something about
-  // a RUN after (or beside) its work. They have ONE path: `runFactsFor` reads the frame
-  // at arrival, `noteRunFacts` appends what it states to the run's ordered queue, and
-  // `drainRunFacts` writes the queue, oldest first, on the run's bubble — at once when
-  // the bubble exists, later when it does not yet (the frame raced the `chat.send` ACK,
-  // or the turn has shown nothing so far). A fact is never written ahead of one still
-  // queued for its run, so the last one received is the last one written.
+  // a RUN after (or beside) its work. They are best-effort METADATA: they never delay,
+  // block or reorder a turn's content. `runFactsFor` reads the frame at arrival and
+  // `noteRunFacts` appends what it states to the run's ordered queue — both synchronous,
+  // and all the frame path ever does. The WRITES are detached from it: one chain
+  // (`factsTail`) writes the queues, oldest fact first, on the run's bubble — at once
+  // when the bubble exists, when it opens or when the turn settles otherwise. A fact is
+  // never written ahead of one still queued for its run, so the last one received is the
+  // last one written.
+  //
+  // Nothing is retried here. The writer retries a transient failure itself, bounded
+  // (convex-writer.ts `doPostWithRetry`: these two ops are idempotent in Convex); a write
+  // that still fails, or that Convex refuses, drops that one fact with one trace
+  // (TurnSink.writeRunFallback / writeRunNotice) and the next one goes on.
+  //
+  // A manager that is dropped (its session closed) leaves its chain to finish by itself:
+  // a write already started completes or times out in the writer, whose timers do not
+  // hold the process; the passes queued behind it only read this object's own memory,
+  // and facts still waiting for a bubble are never written.
 
   /** Per-run queues, by run (insertion-ordered: the oldest run is dropped first). */
   private readonly runFacts = new Map<string, RunFactQueue>();
@@ -1295,18 +1302,12 @@ export class RunManager {
   /** Runs whose `chat` final has been seen (bounded): a notice-only final after it is
    *  beside the answer, not the answer. */
   private readonly finalSeenRuns = new Set<string>();
-  /** Serializes the writes: one fact at a time, in the order they were queued. */
+  /** Serializes the writes: one fact at a time, in the order they were queued. Never
+   *  awaited by a frame; it cannot reject. */
   private factsTail: Promise<void> = Promise.resolve();
-  /** The clock of the last frame fed (seconds) — what a retry is spaced on. */
-  private factClock = 0;
   private static readonly MAX_RUN_FACT_RUNS = 32;
   private static readonly MAX_RUN_FACTS_PER_RUN = 16;
   private static readonly MAX_REMEMBERED_RUNS = 200;
-  /** A write that failed is tried again on a later frame of the connection, this many
-   *  times in all and no closer than this apart (frame clock, seconds): no timer lives
-   *  here, and the gateway's own tick frames keep a quiet connection moving. */
-  private static readonly MAX_RUN_FACT_ATTEMPTS = 5;
-  private static readonly RUN_FACT_RETRY_SPACING_S = 5;
 
   private static remember(set: Set<string>, key: string, cap: number): void {
     set.delete(key);
@@ -1357,9 +1358,9 @@ export class RunManager {
     return { runId: rid, facts };
   }
 
-  /** Queue what a frame states about `runId`, then write what can be written. */
-  private async noteRunFacts(runId: string, stated: RunFact[], now: number): Promise<void> {
-    this.factClock = now;
+  /** Queue what a frame states about `runId` and schedule its writing. Synchronous: the
+   *  frame that stated it is done here. */
+  private noteRunFacts(runId: string, stated: RunFact[]): void {
     let facts = stated;
     if (facts.some((fact) => fact.kind === "fallback")) {
       RunManager.remember(this.fallbackStatedRuns, runId, RunManager.MAX_REMEMBERED_RUNS);
@@ -1376,9 +1377,9 @@ export class RunManager {
       // A run already settled when its first fact arrives will get no later settle.
       settled:
         this.settledRuns.has(runId) && !(this.sink.active && this.normalizer.ownRunIds.has(runId)),
-      failures: 0,
-      retryAt: null,
+      scheduled: false,
     };
+    const before = queue.facts.length;
     for (const fact of facts) {
       if (fact.kind === "notice") {
         const text = sanitizeText(fact.text).trim().slice(0, MAX_GATEWAY_NOTICE_CHARS);
@@ -1388,7 +1389,7 @@ export class RunManager {
         queue.facts.push(fact);
       }
     }
-    if (queue.facts.length === 0) return;
+    if (queue.facts.length === before) return;
     // Bounded, oldest first — and said, because a dropped fact is a marker or a notice
     // the reader will not see.
     if (queue.facts.length > RunManager.MAX_RUN_FACTS_PER_RUN) {
@@ -1407,98 +1408,88 @@ export class RunManager {
         `[run-facts] ${lost} fact(s) dropped with their run, the oldest waiting (bound ${RunManager.MAX_RUN_FACT_RUNS} runs) run=${oldest.slice(0, 60)}`,
       );
     }
-    await this.drainRunFacts(runId, false);
+    this.scheduleRunFacts(runId, false);
   }
 
   /**
-   * Write `runId`'s queued facts on its bubble, oldest first, stopping at the first one
-   * that is not written. `settled`: a turn owning the run just ended.
-   *
-   * The three outcomes of a write are three different things (RunFactWrite):
+   * Queue a write pass for `runId`'s facts on the detached chain. `settled`: a turn
+   * owning the run just ended. Returns at once; nothing on the frame path waits for it.
+   * One pass per run waits at a time: a frame arriving while the chain is held by a slow
+   * write stacks nothing.
+   */
+  private scheduleRunFacts(runId: string, settled: boolean): void {
+    const queue = this.runFacts.get(runId);
+    if (queue === undefined) return;
+    if (settled) queue.settled = true;
+    if (queue.scheduled) return;
+    queue.scheduled = true;
+    this.factsTail = this.factsTail
+      .then(() => {
+        queue.scheduled = false;
+        return this.writeRunFacts(runId, queue);
+      })
+      .catch((err: unknown) => {
+        console.error("[run-facts] a write pass failed (non-fatal):", errForLog(err));
+      });
+  }
+
+  /**
+   * Write `runId`'s queued facts on its bubble, oldest first. The outcome of a write
+   * (RunFactWrite) decides what follows:
    *  - written: next fact;
+   *  - failed — after the writer's own retries, or refused outright: that fact is
+   *    dropped (the sink traced why) and the next one goes on;
    *  - no bubble — Convex's ANSWER: for a settled run it is final, the run showed
    *    nothing and its facts are dropped, and said; for any other run the bubble may
-   *    still come, the queue waits;
-   *  - failed: nothing is known. The fact keeps its place and the queue is kept,
-   *    settled run or not; it is tried again on a later frame (`retryRunFacts`), a
-   *    bounded number of times, then dropped with what really happened.
+   *    still come — the fact goes back to the head of its queue and the queue waits
+   *    for the bubble to open or the turn to settle.
    */
-  private drainRunFacts(runId: string, settled: boolean, retry = false): Promise<void> {
-    const queued = this.runFacts.get(runId);
-    if (queued !== undefined && settled) queued.settled = true;
-    // A write of this run failed and its retry is not due: everything queued behind it
-    // goes with that retry — a new fact, or the turn's end, does not jump the spacing.
-    if (queued !== undefined && queued.retryAt !== null && !retry) return this.factsTail;
-    const run = this.factsTail.then(async () => {
-      const queue = this.runFacts.get(runId);
-      if (queue === undefined) return;
-      queue.retryAt = null;
-      while (queue.facts.length > 0) {
-        const live = this.sink.active && this.normalizer.ownRunIds.has(runId);
-        // While the run is the live turn's, its bubble is the turn's — once it is open.
-        const known = live
-          ? this.sink.currentMessageId
-          : (this.lanes.get(runId)?.messageId ?? this.settledRuns.get(runId)?.messageId ?? null);
-        if (live && known === null) return;
-        const fact = queue.facts[0]!;
-        // `known` null: a run this bridge holds no bubble for (the transcript made it,
-        // or the frame preceded the turn) — Convex looks the run's bubble up.
-        const outcome: RunFactWrite =
-          fact.kind === "fallback"
-            ? await this.sink.writeRunFallback(fact.fallback, known)
-            : await this.sink.writeRunNotice(runId, known, fact.text);
-        if (this.runFacts.get(runId) !== queue) return; // evicted meanwhile
-        if (outcome === "written") {
-          queue.facts.shift();
-          queue.failures = 0;
-          continue;
-        }
-        if (outcome === "no_bubble") {
-          if (queue.settled) {
-            console.warn(
-              `[run-facts] ${queue.facts.length} fact(s) dropped: the run left no bubble to carry them run=${runId.slice(0, 60)}`,
-            );
-            this.runFacts.delete(runId);
-          }
-          return;
-        }
-        queue.failures += 1;
-        if (queue.failures >= RunManager.MAX_RUN_FACT_ATTEMPTS) {
-          console.warn(
-            `[run-facts] ${queue.facts.length} fact(s) dropped: their write failed ${queue.failures} times run=${runId.slice(0, 60)}`,
-          );
-          this.runFacts.delete(runId);
-          return;
-        }
-        queue.retryAt = this.factClock + RunManager.RUN_FACT_RETRY_SPACING_S;
-        return;
+  private async writeRunFacts(runId: string, queue: RunFactQueue): Promise<void> {
+    while (this.runFacts.get(runId) === queue && queue.facts.length > 0) {
+      const live = this.sink.active && this.normalizer.ownRunIds.has(runId);
+      // While the run is the live turn's, its bubble is the turn's — once it is open.
+      const known = live
+        ? this.sink.currentMessageId
+        : (this.lanes.get(runId)?.messageId ?? this.settledRuns.get(runId)?.messageId ?? null);
+      if (live && known === null) return;
+      // Taken out before the write: the per-run bound may drop the head meanwhile. And
+      // "settled" as it stood when Convex was ASKED: its answer is about that instant.
+      const fact = queue.facts.shift()!;
+      const settled = queue.settled;
+      // `known` null: a run this bridge holds no bubble for (the transcript made it,
+      // or the frame preceded the turn) — Convex looks the run's bubble up.
+      const outcome: RunFactWrite =
+        fact.kind === "fallback"
+          ? await this.sink.writeRunFallback(fact.fallback, known)
+          : await this.sink.writeRunNotice(runId, known, fact.text);
+      if (outcome !== "no_bubble") continue;
+      queue.facts.unshift(fact);
+      if (settled && this.runFacts.get(runId) === queue) {
+        console.warn(
+          `[run-facts] ${queue.facts.length} fact(s) dropped: the run left no bubble to carry them run=${runId.slice(0, 60)}`,
+        );
+        this.runFacts.delete(runId);
       }
-      if (this.runFacts.get(runId) === queue) this.runFacts.delete(runId);
-    });
-    this.factsTail = run.catch((err: unknown) => {
-      console.error("[run-facts] a write failed (non-fatal):", errForLog(err));
-    });
-    return this.factsTail;
-  }
-
-  /** A frame of the connection arrived: try again the queues whose last write failed,
-   *  once their spacing has passed. Never awaited — a retry does not hold a frame. */
-  private retryRunFacts(now: number): void {
-    this.factClock = now;
-    if (this.runFacts.size === 0) return;
-    for (const [runId, queue] of this.runFacts) {
-      if (queue.retryAt !== null && now >= queue.retryAt) {
-        void this.drainRunFacts(runId, false, true);
-      }
+      return;
     }
+    if (this.runFacts.get(runId) === queue && queue.facts.length === 0) this.runFacts.delete(runId);
   }
 
-  /** The live turn's bubble may just have opened: write what waited for it. */
-  private async drainLiveRunFacts(): Promise<void> {
+  /** The live turn's bubble may just have opened: schedule what waited for it. */
+  private scheduleLiveRunFacts(): void {
     if (this.runFacts.size === 0 || !this.sink.active || this.sink.currentMessageId === null) return;
-    for (const runId of [...this.runFacts.keys()]) {
-      if (this.normalizer.ownRunIds.has(runId)) await this.drainRunFacts(runId, false);
+    for (const runId of this.runFacts.keys()) {
+      if (this.normalizer.ownRunIds.has(runId)) this.scheduleRunFacts(runId, false);
     }
+  }
+
+  /** Resolves once every write pass queued so far is done (tests, orderly teardown). */
+  async runFactsIdle(): Promise<void> {
+    let tail: Promise<void>;
+    do {
+      tail = this.factsTail;
+      await tail;
+    } while (tail !== this.factsTail);
   }
 
   /** The turn's own pipeline for a frame (a lane hands back what it held here). */
@@ -1541,7 +1532,7 @@ export class RunManager {
     } finally {
       this.noteIfSettled();
     }
-    await this.drainLiveRunFacts();
+    this.scheduleLiveRunFacts();
   }
 
   /**

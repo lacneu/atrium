@@ -27,7 +27,7 @@ import {
   EVENT_WIDGET,
   type NormalizedEvent,
 } from "./events.js";
-import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
+import { ConvexIngestError, type ConvexWriter, type FinalizeStatus, type ToolPart } from "../convex-writer.js";
 import { announcedChildKey } from "../providers/openclaw/run-families.js";
 import { cronPartFromTool } from "./cron-part.js";
 import {
@@ -232,8 +232,10 @@ function boundRisk(v: {
  * What became of the write of a fact about a run (a fallback marker, a status notice):
  *  - `written`   — it is on the run's bubble (or the writer keeps no such thing);
  *  - `no_bubble` — Convex ANSWERED that the run has no bubble: nothing to write on;
- *  - `failed`    — the write did not get an answer it can be judged by (a timeout, a
- *                  5xx, a refusal): nothing is known about the bubble, the fact stands.
+ *  - `failed`    — the write did not land: the writer's bounded retries of a transient
+ *                  failure ran out, or Convex refused the request outright (a 4xx, which
+ *                  is not retried). Nothing is known about the bubble; the fact is
+ *                  dropped, and traced once, here (`traceRunFactDropped`).
  */
 export type RunFactWrite = "written" | "no_bubble" | "failed";
 
@@ -701,7 +703,7 @@ export class TurnSink {
    * `messageId` when the caller knows it, otherwise Convex finds the run's bubble.
    * Three outcomes, never two (see RunFactWrite): a write that FAILED says nothing about
    * whether the bubble exists. It opens no turn and changes no bubble's state; a marker
-   * never fails a turn.
+   * never fails a turn. Called off the frame path (RunManager's detached chain).
    */
   async writeRunFallback(
     fallback: { runId: string; state: "active" | "cleared"; model: string; selected?: string },
@@ -721,7 +723,7 @@ export class TurnSink {
       });
       return typeof marked === "string" ? "written" : "no_bubble";
     } catch (e) {
-      console.error("[sink] model fallback not recorded (non-fatal):", errForLog(e));
+      this.traceRunFactDropped("a model fallback marker", fallback.runId, e);
       return "failed";
     }
   }
@@ -743,9 +745,23 @@ export class TurnSink {
       });
       return typeof noticed === "string" ? "written" : "no_bubble";
     } catch (e) {
-      console.error("[sink] gateway notice not recorded (non-fatal):", errForLog(e));
+      this.traceRunFactDropped("a gateway notice", runId, e);
       return "failed";
     }
+  }
+
+  /** The ONE trace of a run fact that will not be shown, with what really happened: a
+   *  refusal (Convex answered 4xx — an older deployment that does not know the op, say)
+   *  is not a failure to reach it. */
+  private traceRunFactDropped(what: string, runId: string, err: unknown): void {
+    const status = err instanceof ConvexIngestError ? err.status : null;
+    const refused = status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429;
+    console.warn(
+      `[run-facts] ${what} dropped: ${
+        refused ? `Convex refused it (HTTP ${status}, not retried)` : "its write failed"
+      } run=${runId.slice(0, 60)}:`,
+      errForLog(err),
+    );
   }
 
   /** A DISTINCT late final of a settled run (CU-8): joins `messageId` (that run's
