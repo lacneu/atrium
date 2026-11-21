@@ -919,3 +919,170 @@ describe("a lost chat delta is recovered the way the Control UI recovers it", ()
     expect(tried).toBeGreaterThan(300);
   });
 });
+
+describe("several `message`-tool sends in one turn", () => {
+  // Each send is an outbound message of its own: the gateway appends one assistant
+  // message per send to the session transcript (src/gateway/
+  // internal-source-reply-persistence.ts `persistInternalSourceReply`), and its
+  // delivery mirror lists them one after the other. Captured on 2026.9.36 (bench run
+  // 2026-11-21T02-31-59-361Z): 52 characters, then 50, then the run's own text. Shown as
+  // a replacement, the second send was a shrink Convex refused — at 42593d9e as well.
+  const TWO_SENDS = JSON.parse(
+    readFileSync(resolve(__dirname, "./fixtures/message-tool-two-sends-frames.json"), "utf-8"),
+  ) as CapturedTurn;
+  const FIRST = "CODEMODE_SEND_DONE Voici les deux fichiers demandés.";
+  const SECOND = "CODEMODE_RESEND Voici de nouveau le fichier texte.";
+
+  it("captured: the second, shorter send is added to the first — nothing is refused", async () => {
+    const writer = await replay(asFixture("twoSends", TWO_SENDS), new GuardedWriter());
+    expect(writer.refused).toEqual([]);
+    const first = writer.history.indexOf(FIRST);
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(writer.history[first + 1]).toBe(`${FIRST}\n\n${SECOND}`);
+    // The run's own text then takes the bubble, as the chat stream's whole view of it:
+    // declared, since it is shorter than the two sends.
+    expect(writer.declaredShrinks).toEqual([{ oldLen: 104, newLen: 4, source: "chat_delta" }]);
+    expect(writer.shown).toBe(
+      "CODEMODE_SUMMARY Les deux fichiers ont été envoyés, puis le fichier texte renvoyé.",
+    );
+  });
+
+  it("captured: no write that comes from a `message`-tool send is refused, on any capture", async () => {
+    const turns: Fixture[] = [...loadCorpus(), asFixture("twoSends", TWO_SENDS)];
+    for (const [name, turn] of Object.entries(CAPTURED)) {
+      if (typeof turn !== "object" || !Array.isArray((turn as CapturedTurn).frames)) continue;
+      turns.push(asFixture(name, turn as CapturedTurn));
+    }
+    expect(turns.length).toBeGreaterThan(150);
+    let sends = 0;
+    for (const fx of turns) {
+      const writer = new GuardedWriter();
+      const sources: (SnapshotSource | undefined)[] = [];
+      const setSnapshot = writer.setSnapshot.bind(writer);
+      writer.setSnapshot = async (id, text, replace, source) => {
+        sources.push(source);
+        return setSnapshot(id, text, replace, source);
+      };
+      await replay(fx, writer);
+      sends += sources.filter((s) => s === "message_tool").length;
+      expect(
+        writer.refused.filter((r) => r.source === "message_tool"),
+        `${fx.version}/${fx.header.scenario}`,
+      ).toEqual([]);
+    }
+    // The check reads something. (Today only the capture above writes from a send: on
+    // the golden fixtures the sends belong to runs whose text the turn does not show.)
+    expect(sends).toBeGreaterThanOrEqual(2);
+  });
+
+  const SK = "agent:main:atrium:chat:u-1:c-1";
+  const RUN = "webchat-run-1";
+  function turn(): { n: Normalizer; at: () => number } {
+    const n = new Normalizer(SK, null);
+    let now = 1000;
+    n.beginTurn(now);
+    n.noteRunStarted(RUN, now);
+    return { n, at: () => (now += 0.01) };
+  }
+  const send = (text: string, toolCallId: string, seq: number) => ({
+    event: "agent",
+    payload: {
+      sessionKey: SK,
+      runId: RUN,
+      seq,
+      stream: "tool",
+      data: { phase: "start", name: "message", toolCallId, args: { action: "send", message: text } },
+    },
+  });
+  const chat = (text: string, seq: number, extra: Record<string, unknown> = {}) => ({
+    event: "chat",
+    payload: {
+      sessionKey: SK,
+      runId: RUN,
+      seq,
+      state: "delta",
+      deltaText: text,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+      ...extra,
+    },
+  });
+  const snaps = (events: BridgeEvent[]) =>
+    events
+      .filter((e) => e.type === "message.snapshot")
+      .map((e) => ({
+        text: e.text,
+        ...(e.replace === true ? { replace: true } : {}),
+        source: e.snapshotSource,
+      }));
+
+  it("hand-built: a send is added to the text shown, whoever wrote it, and never declared", () => {
+    const { n, at } = turn();
+    n.feed(chat("I am sending the two files now.", 1), at());
+    expect(snaps(n.feed(send("Here.", "call-1", 2), at()))).toEqual([
+      { text: "I am sending the two files now.\n\nHere.", source: "message_tool" },
+    ]);
+    expect(snaps(n.feed(send("Again.", "call-2", 3), at()))).toEqual([
+      { text: "I am sending the two files now.\n\nHere.\n\nAgain.", source: "message_tool" },
+    ]);
+  });
+
+  it("hand-built: the same tool call seen twice is one send", () => {
+    const { n, at } = turn();
+    n.feed(send("Here is the long first message.", "call-1", 1), at());
+    expect(snaps(n.feed(send("Here is the long first message.", "call-1", 1), at()))).toEqual([]);
+    expect(n.text).toBe("Here is the long first message.");
+  });
+
+  it("hand-built: a new turn starts from no earlier send", () => {
+    const { n, at } = turn();
+    n.feed(send("First turn.", "call-1", 1), at());
+    n.feed({ event: "chat", payload: { sessionKey: SK, runId: RUN, seq: 2, state: "final" } }, at());
+    n.beginTurn(at());
+    n.noteRunStarted("webchat-run-2", at());
+    const again = { ...send("Second turn.", "call-1", 1) };
+    again.payload = { ...again.payload, runId: "webchat-run-2" };
+    expect(snaps(n.feed(again, at()))).toEqual([{ text: "Second turn.", source: "message_tool" }]);
+  });
+
+  it("hand-built: a run abandoned for a replay takes its sends with it", () => {
+    const { n, at } = turn();
+    n.feed(send("Before the replay.", "call-1", 1), at());
+    const abandoned = n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SK,
+          runId: RUN,
+          seq: 2,
+          stream: "lifecycle",
+          data: { phase: "end", livenessState: "abandoned" },
+        },
+      },
+      at(),
+    );
+    expect(snaps(abandoned)).toEqual([{ text: "", replace: true, source: "compaction_reset" }]);
+    expect(snaps(n.feed(send("Before the replay.", "call-1", 3), at()))).toEqual([
+      { text: "Before the replay.", source: "message_tool" },
+    ]);
+  });
+
+  // What the freshness guard protects is untouched by a send: only a `chat` frame ABOVE
+  // the run's applied chat seq may shorten the bubble.
+  it("hand-built: after a send, a stale chat frame still shortens nothing", () => {
+    const { n, at } = turn();
+    n.feed(chat("A first long view of the answer.", 5), at());
+    n.feed(send("Here.", "call-1", 6), at());
+    const held = "A first long view of the answer.\n\nHere.";
+    expect(n.text).toBe(held);
+    // Run seq 4, below the chat seq applied (5): an older view, even marked `replace`.
+    expect(snaps(n.feed(chat("A fir", 4, { replace: true }), at()))).toEqual([]);
+    expect(n.text).toBe(held);
+    const stale = snaps(n.feed(chat("Something else", 4, { replace: true }), at()));
+    expect(stale.map((s) => s.replace)).toEqual([undefined]);
+    expect(n.text).toBe(held);
+    // …and the frame that follows the send in the run's order does: it is the whole view.
+    expect(snaps(n.feed(chat("The answer.", 7), at()))).toEqual([
+      { text: "The answer.", replace: true, source: "chat_delta" },
+    ]);
+  });
+});

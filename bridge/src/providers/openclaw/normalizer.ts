@@ -713,6 +713,8 @@ export class Normalizer {
   private frameChatTerminal = false;
   hasSnapshot: boolean;
   hasVisibleToolText: boolean;
+  /** The `message`-tool calls whose text this turn's bubble already received. */
+  private messageToolSends = new Set<string>();
   // Chat-frame dedup keys ALREADY seen this turn. A single scalar slot only
   // caught ADJACENT repeats: an upstream replay (`meta:{cached:true}`) that
   // re-sends A after B (A,B,A) slipped straight through and duplicated content.
@@ -1056,6 +1058,7 @@ export class Normalizer {
     this.textOrigin = null;
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
+    this.messageToolSends.clear();
     this.widgetViewIds = new Map();
     this.toolWidgets = 0;
     this.otherWidgets = 0;
@@ -2788,7 +2791,26 @@ export class Normalizer {
         const { text: visible, unreadable } = this.messageToolText(data.args);
         if (visible) {
           this.hasVisibleToolText = true;
-          this.applyVisible(visible, true, false, now, events, "message_tool");
+          // Each send is an outbound message of its OWN: the gateway appends one
+          // assistant message per send to the transcript (src/gateway/
+          // internal-source-reply-persistence.ts `persistInternalSourceReply`). So a
+          // send is ADDED to what the bubble shows and never stands in for it — written
+          // as a replacement, a send shorter than the text held was a shrink Convex
+          // refused, and the send stayed unseen until the turn closed. The run's own
+          // text remains the chat stream's to state (`handleChat`).
+          const repeated = toolCallId !== undefined && this.messageToolSends.has(toolCallId);
+          if (!repeated) {
+            if (toolCallId !== undefined) this.messageToolSends.add(toolCallId);
+            const shown = this.text;
+            this.applyVisible(
+              shown === "" ? visible : `${shown}\n\n${visible}`,
+              true,
+              false,
+              now,
+              events,
+              "message_tool",
+            );
+          }
         } else if (unreadable) {
           // The reply mechanism ran and we cannot read what it sent. LOUD, once
           // per turn: silence here is exactly how a turn ended blank with no
@@ -4238,6 +4260,7 @@ export class Normalizer {
     this.textOrigin = null;
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
+    this.messageToolSends.clear();
     // The replay re-emits its widgets; Convex keeps one part per view per message.
     this.widgetViewIds = new Map();
     this.toolWidgets = 0;
