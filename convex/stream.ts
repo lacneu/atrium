@@ -6632,8 +6632,12 @@ export const appendLateFinal = internalMutation({
  * settled bubble gains its missing tail, and nothing else about it moves — no status, no
  * error, no verdict, no part. Anything else is refused (false): a stale or rewritten view,
  * another run's bubble, a bubble still streaming, one the transcript already recomposed
- * from its rows (`rowLayout`: the durable rows are then the authority). A repeat finds
- * its text already there and is refused the same way.
+ * from its rows (`rowLayout`: the durable rows are then the authority).
+ *
+ * IDEMPOTENT: a repeat of a write that landed finds exactly its text there and is answered
+ * as written (true). The bridge retries a write whose answer it lost, and reads `false` as
+ * "this text is not in the bubble": answering a landed write `false` made it join the
+ * text a second time, as a late final.
  */
 export const completeSettledText = internalMutation({
   args: {
@@ -6649,6 +6653,7 @@ export const completeSettledText = internalMutation({
     await assertMessageBound(ctx, message, boundInstanceName);
     if (message.status === "streaming" || message.runId !== runId) return false;
     if (message.rowLayout !== undefined) return false;
+    if (text === message.text) return true;
     if (
       text.length > SEGMENT_TEXT_MAX_CHARS ||
       text.length <= message.text.length ||

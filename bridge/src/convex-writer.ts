@@ -521,7 +521,8 @@ export interface ConvexWriter {
     sessionKey: string | null;
   }): Promise<string | null>;
   /** Text the run sent after its bubble settled: written only as a strict extension of
-   *  that message's text (internal.stream.completeSettledText). False: refused. */
+   *  that message's text (internal.stream.completeSettledText). True: the message holds
+   *  this text (written now, or by an earlier attempt). False: refused. */
   completeSettledText?(args: { messageId: string; runId: string; text: string }): Promise<boolean>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
@@ -1725,6 +1726,14 @@ export class HttpConvexWriter implements ConvexWriter {
     // back-off below delays the next fact, never a turn.
     "modelFallback",
     "gatewayNotice",
+    // THE COMPLETION OF A SETTLED BUBBLE: Convex takes the text only as a strict
+    // extension of what the message holds, and answers a repeat of a write that landed
+    // as written (convex/stream.ts `completeSettledText`) — so a lost answer is retried
+    // without the text being joined twice. Not retrying lost the text for good: the
+    // gateway does not send a run's chat terminal again. Written off the frame path
+    // (RunManager `completionTail`): the back-off delays the next completion, never a
+    // turn.
+    "completeSettledText",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */

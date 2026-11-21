@@ -1207,6 +1207,28 @@ describe("the session-state clear is retried too (idempotent by construction)", 
   });
 });
 
+describe("a settled bubble's completion is retried too (idempotent in Convex)", () => {
+  test("a 503 once, then success: the text lands with no second offer from the gateway", async () => {
+    // The gateway does not send a run's chat terminal again: one flaky POST lost its text
+    // for good. Convex answers a repeat of a write that landed as written
+    // (convex/stream.ts `completeSettledText`), so the retry cannot join the text twice.
+    const bodies: string[] = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      bodies.push(init.body);
+      if (bodies.length === 1) {
+        return { ok: false, status: 503, text: async () => "unavailable" } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true, applied: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+
+    expect(await w.completeSettledText({ messageId: "m1", runId: "runA", text: "Hello world" })).toBe(true);
+
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+  });
+});
+
 describe("the PLAN clear is retried too (idempotent by construction)", () => {
   test("a transient failure is retried: a lost clear strands the superseded checklist", async () => {
     // The mutation writes a run-keyed TOMBSTONE, so a replay whose first write landed

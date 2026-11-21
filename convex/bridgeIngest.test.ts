@@ -389,8 +389,8 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
         finalizedAt: 5,
       }),
     );
-    // Not an extension: shorter, equal, different, or another run's.
-    for (const text of ["Hell", "Hello", "Goodbye world", ""]) {
+    // Not an extension: shorter, different, or another run's.
+    for (const text of ["Hell", "Goodbye world", ""]) {
       expect(await complete({ text })).toMatchObject({ applied: false });
     }
     expect(await complete({ text: "Hello world", runId: "runB" })).toMatchObject({ applied: false });
@@ -406,8 +406,14 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
       finalizeCause: "gateway_error",
       finalizedAt: 5,
     });
-    // Idempotent: the repeat finds its text there.
-    expect(await complete({ text: "Hello world" })).toMatchObject({ applied: false });
+    // IDEMPOTENT: a repeat of the write that landed (the bridge lost its answer) finds
+    // exactly its text there and is answered as written — `false` would tell the bridge
+    // the text is not in the bubble, and it would join it a second time.
+    const before = await stored();
+    expect(await complete({ text: "Hello world" })).toMatchObject({ ok: true, applied: true });
+    expect(await stored()).toEqual(before);
+    // …only the exact text: an older, shorter view is still refused.
+    expect(await complete({ text: "Hello" })).toMatchObject({ applied: false });
     expect(await t.run((ctx) => ctx.db.query("streamingText").collect())).toEqual([]);
     expect(await t.run((ctx) => ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect())).toHaveLength(1);
 
