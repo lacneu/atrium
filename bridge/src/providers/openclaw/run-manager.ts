@@ -948,7 +948,11 @@ export class RunManager {
       try {
         for (const { frame, now: frameNow } of raced) {
           try {
-            await this.feedObserved(frame, frameNow);
+            // The one reading that depends on what the frames before it did (see
+            // `runFactsFor`): a notice beside an answer the replay has just settled.
+            const facts = this.runFactsFor(frame, true);
+            if (facts !== null) this.noteRunFacts(facts.runId, facts.facts);
+            else await this.feedObserved(frame, frameNow);
           } catch (err) {
             // STOP at the first failure (codex P2): `beginTurn` rejects and /send treats
             // the whole send as failed — the remainder must not keep writing into a turn
@@ -1329,8 +1333,15 @@ export class RunManager {
    *
    * Decided from the order of arrival, not from the turn's state at that instant: the
    * answer and its notice may both precede the ACK.
+   *
+   * `replayed`: the frame comes back from the pre-ACK buffer, where it went because it
+   * was not a fact when it arrived. The order of arrival has been read (and this very
+   * frame counted as a final): only what could not be known then is asked again — the
+   * run has SETTLED since, on a frame replayed before this one (a lifecycle error, an
+   * aborted terminal), and a notice-only final after that is beside the answer, as it
+   * is when the same frames arrive during the turn.
    */
-  private runFactsFor(frame: unknown): { runId: string; facts: RunFact[] } | null {
+  private runFactsFor(frame: unknown, replayed = false): { runId: string; facts: RunFact[] } | null {
     const fallback = modelFallbackFromFrame(frame, this.sessionKey);
     if (fallback !== null) return { runId: fallback.runId, facts: [{ kind: "fallback", fallback }] };
     if (typeof frame !== "object" || frame === null) return null;
@@ -1339,10 +1350,10 @@ export class RunManager {
     const rid = sessionRunIdFor(frame, this.sessionKey);
     if (rid === null) return null;
     const answered =
-      this.finalSeenRuns.has(rid) ||
+      (!replayed && this.finalSeenRuns.has(rid)) ||
       (this.settledRuns.has(rid) &&
         !((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)));
-    RunManager.remember(this.finalSeenRuns, rid, RunManager.MAX_REMEMBERED_RUNS);
+    if (!replayed) RunManager.remember(this.finalSeenRuns, rid, RunManager.MAX_REMEMBERED_RUNS);
     if (!answered) return null;
     const content = (f.payload.message as { content?: unknown } | undefined)?.content;
     if (!Array.isArray(content) || content.length === 0) return null;

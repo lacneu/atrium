@@ -48,6 +48,16 @@ class Writer extends RecordingWriter {
   gate: Promise<void> | null = null;
   /** Every write, in the order it was made. */
   readonly log: string[] = [];
+  /** The facts about a run written on a bubble, in order (their own detached chain). */
+  readonly facts: string[] = [];
+  async noteModelFallback(_c: string, d: { messageId: string | null; state: string; model: string }): Promise<string | null> {
+    if (d.messageId !== null) this.facts.push(`fallback ${d.state} ${d.model} → ${d.messageId}`);
+    return d.messageId;
+  }
+  async noteGatewayNotice(_c: string, d: { messageId: string | null; text: string }): Promise<string | null> {
+    if (d.messageId !== null) this.facts.push(`notice ${d.text} → ${d.messageId}`);
+    return d.messageId;
+  }
 
   override async startAssistant(chatId: string, runId: string | null): Promise<string> {
     const id = await super.startAssistant(chatId, runId);
@@ -679,6 +689,47 @@ describe("replay equivalence — the pre-ACK buffer and the live path write the 
       expect(split.log, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.log);
       expect([...split.settled], `first ${cut} frame(s) before the ACK`).toStrictEqual([...live.settled]);
       expect(split.writesAfterSettle).toBe(0);
+    }
+  });
+
+  it.each([
+    ["closed by its aborted terminal", true],
+    ["closed by the lifecycle error alone", false],
+  ])("both lots at once: a fallback and its notices around a completed bubble (%s), cut at every position", async (_n, terminal) => {
+    const notice = (...texts: string[]) => ({
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: KEY,
+        runId: "runA",
+        state: "final",
+        message: { role: "assistant", content: texts.map((text) => ({ type: "text", text, openclawStatusNotice: true })) },
+      },
+    });
+    const frames = () => [
+      chatDelta("runA", 1, "Hello"),
+      agent("runA", 2, "fallback", { fromModel: "m", toModel: "model-B" }),
+      lifecycleError("runA", 3),
+      chatDelta("runA", 3, "Hello world"),
+      ...(terminal ? [chatAborted("runA", 3, "Hello world")] : []),
+      notice("↪️ Model Fallback: model-B", "Usage: 1 in / 1 out"),
+    ];
+    const run = async (cut: number) => {
+      const h = harness();
+      h.rm.armReplayBuffer();
+      await h.feed(...frames().slice(0, cut));
+      await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+      await h.feed(...frames().slice(cut));
+      await h.rm.runFactsIdle();
+      return h.writer;
+    };
+    const live = await run(0);
+    expect(only(live)).toMatchObject({ status: "error", text: "Hello world" });
+    expect(live.facts).toStrictEqual(["fallback active model-B → msg1", "notice Usage: 1 in / 1 out → msg1"]);
+    for (let cut = 1; cut <= frames().length; cut++) {
+      const split = await run(cut);
+      expect(split.log, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.log);
+      expect(split.facts, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.facts);
     }
   });
 
