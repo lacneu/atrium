@@ -130,19 +130,28 @@ export class RunManager {
   // PRE-ACK frame stash: response frames (delta/snapshot/tool/media/final) can
   // arrive on the shared socket BEFORE the chat.send `res` ack lands, while the
   // sink is still inactive — feed() would otherwise DROP them and lose the start
-  // (or all) of a streaming response. Buffer them (bounded) and REPLAY through
-  // the freshly-reset+seeded normalizer in beginTurn. The normalizer's runId
-  // filter (ownRunIds seeded from the ack) drops any foreign-run frame on replay.
+  // (or all) of a streaming response. Buffer them (bounded) and REPLAY them in
+  // beginTurn, each through the unit a live frame takes once the turn is open. The
+  // normalizer's runId filter (ownRunIds seeded from the ack) drops any foreign-run
+  // frame on replay.
   private pendingFrames: { frame: unknown; now: number }[] = [];
   // A frame was REFUSED by the pre-ack cap since the last arm: the upcoming turn's
   // stream is known to be incomplete (consumed by beginTurn).
   private pendingFramesOverflowed = false;
   // The buffer is ARMED only for the chat.send -> ack window (armReplayBuffer is
-  // called right before the request; beginTurn disarms after draining). Outside
+  // called right before the request; beginTurn disarms it as it takes the frames). Outside
   // that window an inactive feed() drops non-provenance frames as before, so a
   // late/background frame arriving AFTER a turn finalizes is NEVER buffered and
   // can never be replayed into the next turn (no stale-frame leak).
   private replayArmed = false;
+  // Set while beginTurn replays the pre-ack frames, resolved when the last one has been
+  // processed. The replay hands each frame to the SAME unit a live frame takes, one after
+  // the other, so it spans several awaits: a frame (or a tick) arriving meanwhile is
+  // younger than every frame being replayed and waits here for its turn.
+  private replayGate: Promise<void> | null = null;
+  // Frames whose chat-scoped compaction verdict was written at arrival: a frame that
+  // went on to the pre-ack buffer is not a second verdict when it is replayed.
+  private readonly idleVerdictRead = new WeakSet<object>();
   // ANNOUNCE frames that arrived while a REAL dispatch was in flight (or while a
   // real turn streamed): they must not open a spontaneous turn mid-send (the real
   // beginTurn would clobber it) NOR ride the pre-ack buffer (the replay seeds
@@ -653,7 +662,7 @@ export class RunManager {
    *  must treat this as live too — resetting here would wipe the session of
    *  the turn the gateway is about to start (codex P1, pass 13). */
   get dispatchInFlight(): boolean {
-    return this.replayArmed;
+    return this.replayArmed || this.replayGate !== null;
   }
 
   /**
@@ -665,7 +674,7 @@ export class RunManager {
    */
   get liveWork(): "turn in progress" | "dispatch in flight" | "delivery pending" | null {
     if (this.sink.active || this.sink.finalizing) return "turn in progress";
-    if (this.replayArmed) return "dispatch in flight";
+    if (this.dispatchInFlight) return "dispatch in flight";
     if (this.pendingAnnounce.length > 0) return "delivery pending";
     return null;
   }
@@ -917,43 +926,47 @@ export class RunManager {
         matched.map((p) => ({ type: "provenance", part: p.part })),
       );
     }
-    // Replay response frames that raced ahead of the ack, in arrival order,
-    // through the now-active sink + seeded normalizer — so the start of a
-    // streaming response is never lost. Foreign-run frames are filtered by the
-    // normalizer's runId guard; the buffer is drained either way.
+    // Replay the frames that raced ahead of the ack, in arrival order, each through the
+    // unit a LIVE frame takes after its observation (`feedObserved`): lanes, the
+    // completion of a settled bubble, the held text, a late final, the routing, the
+    // settle record. A replayed sequence then writes what the same sequence writes when
+    // it arrives after this point — the turn it opens can also close inside the replay,
+    // and what follows its close is read as what follows a close. They were observed and
+    // classified when they arrived (`feedInner`), which is not done again.
+    //
+    // DISARMED FIRST: the buffer is being drained, and a replayed frame must not be put
+    // back into it (foreign-run frames reach the normalizer's own admission, as live).
+    // The dispatch stays in flight for its readers until the gate opens.
     const raced = this.pendingFrames;
     this.pendingFrames = [];
-    // ENQUEUE ALL OF THEM SYNCHRONOUSLY, then await. Awaiting inside the loop would
-    // yield between two replayed frames, and a live frame arriving in that gap would
-    // take the next slot in the chain — the reply's middle landing before its start
-    // (measured: `one, four, two, three`). The chain orders what is enqueued; this
-    // loop is what decides the enqueue order, so it must not pause halfway.
-    // …and STOP at the first failure, as the sequential loop did (codex P2): when an
-    // apply fails, `beginTurn` rejects and /send treats the whole send as failed —
-    // letting the queued remainder keep writing into a turn the caller is about to
-    // fail would be a new behavior, not a preserved one. The flag is set by the
-    // rejection of the unit before the next one produces (they run in chain order).
-    let replayFailed = false;
-    const replayed = raced.map(({ frame, now: frameNow }) => {
-      this.tallyFrame(frame);
-      return this.applyOrdered(() =>
-        replayFailed ? [] : this.normalizer.feed(frame, frameNow),
-      ).catch((err) => {
-        // The PRE-ACK path reaches the normalizer without going through `feed()` above,
-        // so it needs its own report — with the exact frame that failed, which is the
-        // only thing that tells an operator which shape broke the send.
-        protocolDrift.observeException(frame, err, "pre-ack-replay");
-        replayFailed = true;
-        throw err;
-      });
-    });
-    await Promise.all(replayed);
+    this.replayArmed = false;
     if (raced.length > 0) {
+      // ONE FRAME AT A TIME, each awaited: a frame's decisions are taken on what the
+      // frames before it left (a close opens the window its next delta completes). The
+      // order against LIVE frames, which the synchronous enqueue used to give (measured
+      // without it: `one, four, two, three`), is given by the gate — `feed` and `tick`
+      // wait behind it, so nothing younger is read before the replay ends.
+      let release!: () => void;
+      this.replayGate = new Promise<void>((resolve) => (release = resolve));
+      try {
+        for (const { frame, now: frameNow } of raced) {
+          try {
+            await this.feedObserved(frame, frameNow);
+          } catch (err) {
+            // STOP at the first failure (codex P2): `beginTurn` rejects and /send treats
+            // the whole send as failed — the remainder must not keep writing into a turn
+            // the caller is about to fail. Reported with the exact frame that failed,
+            // which is the only thing that tells an operator which shape broke the send.
+            protocolDrift.observeException(frame, err, "pre-ack-replay");
+            throw err;
+          }
+        }
+      } finally {
+        this.replayGate = null;
+        release();
+      }
       this.dumpTallyOnce();
     }
-    // Disarm: between turns (sink inactive, NOT armed) feed() drops non-provenance
-    // frames, so a late/background frame can't accumulate and replay later.
-    this.replayArmed = false;
     // Facts about this run that arrived before the ACK waited for its bubble: the
     // replay may just have opened it (a turn it also finished drains at its settle).
     await this.drainLiveRunFacts();
@@ -1194,11 +1207,25 @@ export class RunManager {
     // present and future. It REPORTS AND RETHROWS: callers decide what a failed frame
     // means (a /send rejects, the loop logs and continues); the sensor only refuses to
     // let it vanish.
+    if (this.replayGate !== null) await this.behindReplay(frame);
     try {
       await this.feedInner(frame, now);
     } catch (err) {
       protocolDrift.observeException(frame, err, "feed");
       throw err;
+    }
+  }
+
+  /** A pre-ack replay in progress goes first (see `replayGate`). Called only while one
+   *  is: a frame takes no extra await otherwise (G-29).
+   *  A frame this manager hands itself back (a stash replaying through `feed` — it was
+   *  observed at its arrival) is already inside that unit and does not wait for it. */
+  private async behindReplay(frame?: unknown): Promise<void> {
+    while (
+      this.replayGate !== null &&
+      !(typeof frame === "object" && frame !== null && this.observedFrames.has(frame))
+    ) {
+      await this.replayGate;
     }
   }
 
@@ -1700,6 +1727,7 @@ export class RunManager {
       // active without the announce's own terminal. Ordering, not a proven fix.
       const idleVerdict = idleCompactionVerdict(frame, this.sessionKey);
       if (idleVerdict !== null) {
+        if (!this.noteIdleVerdictRead(frame)) return;
         await this.sink.apply([
           {
             type: EVENT_SESSION_OVERFULL,
@@ -1795,6 +1823,7 @@ export class RunManager {
       if (foreign) {
         const verdict = idleCompactionVerdict(frame, this.sessionKey);
         if (verdict !== null) {
+          if (!this.noteIdleVerdictRead(frame)) return;
           await this.sink.apply([
             {
               type: EVENT_SESSION_OVERFULL,
@@ -1853,8 +1882,20 @@ export class RunManager {
     }
   }
 
+  /** False when this frame's chat-scoped compaction verdict was already written (the
+   *  frame is replaying from the pre-ack buffer): one verdict per frame. */
+  private noteIdleVerdictRead(frame: unknown): boolean {
+    if (typeof frame !== "object" || frame === null) return true;
+    if (this.idleVerdictRead.has(frame)) return false;
+    this.idleVerdictRead.add(frame);
+    return true;
+  }
+
   /** Resolve expired normalizer deadlines; apply any emitted events. */
   async tick(now: number): Promise<void> {
+    // Behind a pre-ack replay, like a frame: a deadline is judged on what the replayed
+    // frames leave, not between two of them.
+    if (this.replayGate !== null) await this.behindReplay();
     if (!this.sink.active) {
       // Between turns: drain announce frames stashed while a real turn streamed
       // (the other flush point beside feed(); whichever fires first wins).

@@ -46,19 +46,24 @@ class Writer extends RecordingWriter {
   transientFailures = 0;
   /** While set, a completion write does not answer (its ACK is suspended). */
   gate: Promise<void> | null = null;
+  /** Every write, in the order it was made. */
+  readonly log: string[] = [];
 
   override async startAssistant(chatId: string, runId: string | null): Promise<string> {
     const id = await super.startAssistant(chatId, runId);
+    this.log.push(`start ${id} ${runId}`);
     this.live.set(id, "");
     this.runs.set(id, runId);
     return id;
   }
   override async appendDelta(m: string, text: string): Promise<void> {
     if (this.settled.has(m)) this.writesAfterSettle++;
+    this.log.push(`delta ${m} ${JSON.stringify(text)}`);
     this.live.set(m, (this.live.get(m) ?? "") + text);
   }
   override async setSnapshot(m: string, text: string, replace?: boolean): Promise<boolean> {
     if (this.settled.has(m)) this.writesAfterSettle++;
+    this.log.push(`snapshot ${m} ${JSON.stringify(text)}`);
     if (text.length < (this.live.get(m) ?? "").length && replace !== true) return false;
     this.live.set(m, text);
     return true;
@@ -70,6 +75,7 @@ class Writer extends RecordingWriter {
     error?: string | null,
   ): Promise<void> {
     this.finalizes.push(m);
+    this.log.push(`finalize ${m} ${status} ${JSON.stringify(text)}`);
     this.settled.set(m, {
       runId: this.runs.get(m) ?? null,
       status,
@@ -91,12 +97,14 @@ class Writer extends RecordingWriter {
       a.text.length > s.text.length &&
       a.text.startsWith(s.text);
     this.offered.push({ ...a, applied });
+    this.log.push(`complete ${a.messageId} ${JSON.stringify(a.text)} ${applied}`);
     if (applied) s!.text = a.text;
     return applied;
   }
   readonly late: string[] = [];
   async appendLateFinal(a: { messageId: string | null; text: string }): Promise<string | null> {
     this.late.push(a.text);
+    this.log.push(`late ${a.messageId} ${JSON.stringify(a.text)}`);
     const s = a.messageId === null ? undefined : this.settled.get(a.messageId);
     if (s !== undefined && !s.text.includes(a.text)) s.text = s.text.trim() === "" ? a.text : `${s.text}\n\n${a.text}`;
     return a.messageId;
@@ -556,11 +564,9 @@ describe("part eight — a turn boundary while a completion is in flight", () =>
     expect(h.writer.late).toEqual([]);
   });
 
-  // HANDED OVER to the integration of lot trames-3b (the pre-ACK replay rewrite): frames
-  // buffered before the ACK are replayed by `beginTurn` straight into `normalizer.feed`
-  // and never reach `feedPipeline`, where a completion is decided. Enable when replayed
-  // and live frames go through one unit.
-  it.skip("INTEGRATION trames-3b — a turn replayed from the pre-ACK buffer completes its settled bubble", async () => {
+  // The reviewer's sequence: the whole turn raced its ACK. Replayed frames take the unit a
+  // live frame takes, so the close opens the window its next delta completes.
+  it("INTEGRATION trames-3b — a turn replayed from the pre-ACK buffer completes its settled bubble", async () => {
     const h = harness();
     h.rm.armReplayBuffer();
     await h.feed(
@@ -572,6 +578,229 @@ describe("part eight — a turn boundary while a completion is in flight", () =>
     await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
     expect(only(h.writer)).toMatchObject({ status: "error", text: "Hello world" });
     expect(h.writer.finalizes).toHaveLength(1);
+    expect(h.writer.offered.map((o) => o.applied)).toEqual([true]);
+  });
+});
+
+// ONE UNIT FOR A FRAME, LIVE OR REPLAYED. The same frames, cut at every point between
+// "before the ACK" and "after it", make the same writes in the same order as when all of
+// them arrive during the turn. (model-fallback.test.ts holds the same table for the facts
+// about a run.)
+describe("replay equivalence — the pre-ACK buffer and the live path write the same", () => {
+  const OUT = "/home/node/.openclaw/media/outbound";
+  const tickFrame = () => ({ type: "event", event: "tick", payload: { ts: 1 } });
+  const SEQUENCES: { name: string; frames: () => unknown[]; settled: string; proof: (w: Writer) => void }[] = [
+    {
+      name: "completion after a lifecycle error, then the aborted terminal (the reviewed sequence)",
+      frames: () => [
+        chatDelta("runA", 1, "Hello"),
+        lifecycleError("runA", 2),
+        chatDelta("runA", 2, "Hello world"),
+        chatAborted("runA", 2, "Hello world"),
+      ],
+      settled: "Hello world",
+      proof: (w) => expect(w.offered.map((o) => o.applied)).toEqual([true]),
+    },
+    {
+      name: "the flushed delta dropped: the error terminal's own text completes",
+      frames: () => [
+        agent("runA", 0, "lifecycle", { phase: "start" }),
+        chatDelta("runA", 1, "Hello"),
+        lifecycleError("runA", 2),
+        chatError("runA", 3, "provider failed", "Hello world"),
+      ],
+      settled: "Hello world",
+      proof: (w) => expect(w.offered.map((o) => o.applied)).toEqual([true]),
+    },
+    {
+      name: "an unstable tail held at the close, written when the gateway moves on",
+      frames: () => [
+        chatDelta("runA", 1, "The log is in /tmp/x"),
+        lifecycleError("runA", 2),
+        agent("runA", 3, "lifecycle", { phase: "end" }),
+        tickFrame(),
+        tickFrame(),
+      ],
+      settled: "The log is in /tmp/x",
+      proof: (w) => expect(w.offered.map((o) => [o.text, o.applied])).toEqual([["The log is in /tmp/x", true]]),
+    },
+    {
+      name: "an unstable tail completed by the terminal's sanitised text",
+      frames: () => [
+        chatDelta("runA", 1, "Report at /home/node/.openclaw/media/out"),
+        lifecycleError("runA", 2),
+        chatDelta("runA", 2, `Report at ${OUT}/report.pdf. The answer is 42.`),
+        chatAborted("runA", 2, `Report at ${OUT}/report.pdf. The answer is 42.`),
+      ],
+      settled: "Report at report.pdf. The answer is 42.",
+      proof: (w) => expect(w.late).toEqual([]),
+    },
+    {
+      name: "a distinct late final after the run's final (CU-8)",
+      frames: () => [
+        chatDelta("runA", 1, "Hello"),
+        chatFinal("runA", 2, "Hello"),
+        chatFinal("runA", 3, "A second, distinct answer"),
+      ],
+      settled: "Hello\n\nA second, distinct answer",
+      proof: (w) => expect(w.late).toEqual(["A second, distinct answer"]),
+    },
+    {
+      name: "a terminal whose completion is refused: its text joins the bubble",
+      frames: () => [
+        chatDelta("runA", 1, "One\r\nTwo"),
+        lifecycleError("runA", 2),
+        chatAborted("runA", 2, `One\r\nTwo ${OUT}/a.txt ok`),
+      ],
+      settled: "One\r\nTwo\n\na.txt ok",
+      proof: (w) => {
+        expect(w.offered.map((o) => o.applied)).toEqual([false]);
+        expect(w.late).toEqual(["a.txt ok"]);
+      },
+    },
+  ];
+
+  async function play(frames: unknown[], cut: number): Promise<Writer> {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    await h.feed(...frames.slice(0, cut));
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await h.feed(...frames.slice(cut));
+    return h.writer;
+  }
+
+  it.each(SEQUENCES)("$name", async ({ frames, settled, proof }) => {
+    const live = await play(frames(), 0);
+    expect(only(live).text).toBe(settled);
+    proof(live);
+    const n = frames().length;
+    for (let cut = 1; cut <= n; cut++) {
+      const split = await play(frames(), cut);
+      expect(split.log, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.log);
+      expect([...split.settled], `first ${cut} frame(s) before the ACK`).toStrictEqual([...live.settled]);
+      expect(split.writesAfterSettle).toBe(0);
+    }
+  });
+
+  it("a frame arriving DURING the replay is read after every replayed frame", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    await h.feed(chatDelta("runA", 1, "Hello"), lifecycleError("runA", 2));
+    // The close's write is held: the replay is suspended between its two frames' effects.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const finalize = h.writer.finalize.bind(h.writer);
+    h.writer.finalize = async (...a) => {
+      await held;
+      return finalize(...a);
+    };
+    const opening = h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await new Promise((r) => setTimeout(r, 5));
+    // Live, while the replay waits: the run's flushed delta. Decided before the close has
+    // landed, it would find no settled bubble to complete.
+    const live = h.rm.feed(chatDelta("runA", 2, "Hello world"), h.tick());
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.rm.dispatchInFlight).toBe(true);
+    release();
+    await Promise.all([opening, live]);
+    expect(only(h.writer)).toMatchObject({ status: "error", text: "Hello world" });
+    expect(h.rm.dispatchInFlight).toBe(false);
+  });
+
+  it("a tick DURING the replay judges no deadline between two replayed frames", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    // The run waited for an approval and got it, all before the ACK.
+    await h.feed(
+      chatDelta("runA", 1, "Hello"),
+      agent("runA", 2, "lifecycle", { phase: "waiting-approval", approvalId: "ap1", toolCallId: "tc1" }),
+      agent("runA", 3, "lifecycle", { phase: "approval-resolved", approvalId: "ap1", toolCallId: "tc1" }),
+      chatFinal("runA", 4, "Hello"),
+    );
+    // The label's write is held: the replay stands between the request and its answer.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let phases = 0;
+    (h.writer as unknown as { setPhase: () => Promise<void> }).setPhase = async () => {
+      if (phases++ === 0) await held;
+    };
+    const opening = h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(phases).toBe(1);
+    // Far past the approval's own bound: judged there, the turn would close on
+    // `approval_timeout` with the answer one frame away.
+    const ticking = h.rm.tick(h.now() + 100_000);
+    await new Promise((r) => setTimeout(r, 5));
+    release();
+    await Promise.all([opening, ticking]);
+    expect(only(h.writer)).toMatchObject({ status: "complete", text: "Hello", error: null });
+  });
+
+  it("a delivery stashed during the send is opened by the replay that closes the turn, without waiting for itself", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    const DELIVERY = "announce:v1:agent:alice:subagent:child:run-1";
+    await h.feed(
+      chatFinal(DELIVERY, 1, "The report"),
+      chatDelta("runA", 1, "Hello"),
+      chatFinal("runA", 2, "Hello"),
+    );
+    // The replayed final closes the turn; the stashed delivery then comes back through
+    // `feed` from inside the replay — a frame the gate must recognise as its own.
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    expect([...h.writer.settled.values()].map((b) => b.text)).toEqual(["Hello", "The report"]);
+  });
+
+  it("the dispatch stays in flight until the last replayed frame is done, even once the turn it opened has closed", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    await h.feed(
+      chatDelta("runA", 1, "Hello"),
+      chatFinal("runA", 2, "Hello"),
+      chatFinal("runA", 3, "A second, distinct answer"),
+    );
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const late = h.writer.appendLateFinal.bind(h.writer);
+    h.writer.appendLateFinal = async (a) => {
+      await held;
+      return late(a);
+    };
+    const opening = h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.rm.turnActive || h.rm.turnFinalizing).toBe(false);
+    expect(h.rm.liveWork).toBe("dispatch in flight");
+    release();
+    await opening;
+    expect(h.rm.liveWork).toBeNull();
+    expect(h.writer.late).toEqual(["A second, distinct answer"]);
+  });
+
+  it("a replayed frame of another run is not put back in the buffer: it meets the turn's own admission", async () => {
+    // The run the gateway replays the turn on after a compaction is foreign to the ACK
+    // and admitted by the normalizer (the compaction announced it). Put back in the
+    // buffer it would be lost with it.
+    const frames = [
+      chatDelta("runA", 1, "Partial"),
+      agent("runA", 2, "compaction", { phase: "start" }),
+      agent("runA", 3, "compaction", { phase: "end", willRetry: true, completed: true }),
+      agent("runB", 0, "lifecycle", { phase: "start" }),
+      chatDelta("runB", 1, "The whole answer"),
+      chatFinal("runB", 2, "The whole answer"),
+    ];
+    const run = async (cut: number) => {
+      const h = harness();
+      h.rm.armReplayBuffer();
+      await h.feed(...frames.slice(0, cut));
+      await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+      await h.feed(...frames.slice(cut));
+      return h;
+    };
+    const live = await run(0);
+    expect(only(live.writer)).toMatchObject({ status: "complete", text: "The whole answer" });
+    const replayed = await run(frames.length);
+    expect(replayed.writer.log).toStrictEqual(live.writer.log);
+    expect(replayed.rm.dispatchInFlight).toBe(false);
   });
 });
 

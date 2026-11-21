@@ -657,6 +657,69 @@ describe("compaction verdicts across the ack (G-28)", () => {
     expect(JSON.stringify(writer.calls)).toContain("addCompactionPart");
   });
 
+  it("a BACKGROUND compaction verdict read before the ack is written once, not again at the replay", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    manager.armReplayBuffer();
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "bg-run",
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
+        },
+      },
+      clock.tick(),
+    );
+    const verdicts = () => writer.calls.filter((c) => JSON.stringify(c).includes("setSessionOverfull")).length;
+    expect(verdicts()).toBe(1);
+    // The frame went on to the pre-ack buffer; replayed, it is the same frame, foreign
+    // to the turn — its verdict is not a second one.
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+    expect(verdicts()).toBe(1);
+    expect(JSON.stringify(writer.calls)).not.toContain("addCompactionPart");
+  });
+
+  it("…nor when the replayed turn has already closed by the time the frame is replayed", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    manager.armReplayBuffer();
+    await manager.feed(chatDelta(OWN_RUN, "Bonjour"), clock.tick());
+    await manager.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "Bonjour" }] },
+        },
+      },
+      clock.tick(),
+    );
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "bg-run",
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
+        },
+      },
+      clock.tick(),
+    );
+    const verdicts = () => writer.calls.filter((c) => JSON.stringify(c).includes("setSessionOverfull")).length;
+    expect(verdicts()).toBe(1);
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+    expect(manager.turnActive).toBe(false);
+    expect(verdicts()).toBe(1);
+  });
+
   it("codex P2: a BACKGROUND compaction verdict is captured even during an active turn", async () => {
     const writer = new FakeWriter();
     const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);

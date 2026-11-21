@@ -1010,8 +1010,9 @@ describe("facts about a run: one ordered path, on either side of the ACK", () =>
 
 /**
  * EVERY FRAME IS OBSERVED AND CLASSIFIED ONCE, at arrival. A stash hands the same frame
- * back later — through `feed` for the announce stash and the preemption copy, straight
- * to the normalizer for the pre-ACK buffer, as parsed parts for provenance, on its lane
+ * back later — through `feed` for the announce stash and the preemption copy, through
+ * the live frame's unit past its observation for the pre-ACK buffer, as parsed parts for
+ * provenance, on its lane
  * for a run the transcript closed. Whatever the path, the frame gives what it would have
  * given live, and what is counted at observation is counted once.
  */
