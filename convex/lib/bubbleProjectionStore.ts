@@ -924,7 +924,11 @@ async function placeBetween(
 }
 
 /** The bubble of the nearest row of the session before (`desc`) or after (`asc`) `seq`
- *  that has one (any role). */
+ *  that has one (any role): the bubble it is assigned to, or — a row not placed yet,
+ *  because its run is not known over — the bubble that run still writes into. Without
+ *  the second, a bubble born right after a run that is still open (the gateway's restart
+ *  recovery answers while the turn it resumes is not settled yet) was anchored on the
+ *  question before it, and shown ABOVE the bubble it follows. */
 async function neighbourBubble(
   ctx: MutationCtx,
   scope: ProjectionScope,
@@ -933,6 +937,7 @@ async function neighbourBubble(
   budget: Budget,
 ): Promise<Doc<"messages"> | null> {
   let seen = 0;
+  const openRuns = new Set<string>();
   const range = ctx.db
     .query("transcriptRows")
     .withIndex("by_chat_session_seq", (q) => {
@@ -944,11 +949,38 @@ async function neighbourBubble(
   for await (const r of range) {
     if (++seen > MAX_ANCHOR_LOOKBACK || overCeiling(budget)) return null;
     budget.bytes += docBytes(r);
-    if (r.messageId === undefined) continue;
+    if (r.messageId === undefined) {
+      // One lookup per run met (its rows are consecutive).
+      if (r.runId === undefined || r.role.toLowerCase() === "user" || openRuns.has(r.runId)) continue;
+      openRuns.add(r.runId);
+      const live = await openBubbleOfRun(ctx, scope, r.runId, direction, budget);
+      if (live !== null) return live;
+      continue;
+    }
     const m = await messageOf(ctx, r.messageId, budget);
     if (m !== null && m.chatId === scope.chatId) return m;
   }
   return null;
+}
+
+/** The bubble a run that is not placed yet writes into, in scope: its latest segment's
+ *  for a neighbour BEFORE, its first for one AFTER. Bounded (a run has a few segments). */
+async function openBubbleOfRun(
+  ctx: MutationCtx,
+  scope: ProjectionScope,
+  runId: string,
+  direction: "asc" | "desc",
+  budget: Budget,
+): Promise<Doc<"messages"> | null> {
+  const own = await readBounded(
+    ctx.db.query("messages").withIndex("by_chat_run_segment", (q) => q.eq("chatId", scope.chatId).eq("runId", runId)),
+    8,
+    budget,
+  );
+  const inScope = own.docs
+    .filter((m) => m.role === "assistant" && bubbleInScope(m, { instanceName: scope.instanceName, sessionKey: scope.sessionKey }))
+    .sort((a, b) => (a.runSegment ?? 0) - (b.runSegment ?? 0));
+  return (direction === "desc" ? inScope.at(-1) : inScope[0]) ?? null;
 }
 
 /** The user bubble of a send (`messages.by_chat_send_id`), read once per transaction and

@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
+import { compareOrder } from "./lib/messageOrder";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -178,6 +179,35 @@ describe("a restart cuts a turn, the gateway's recovery answers (bench proof C2-
     // One display group: the recovery reads as the continuation of the turn it resumes.
     expect(first.displayGroupId).toBe(String(cut));
     expect(answer.displayGroupId).toBe(String(cut));
+  });
+
+  test("live order (bench run of 2026-11-21): the recovery's terminal arrives BEFORE the interrupted run is known over — its bubble is still placed AFTER the interrupted one", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    // The turn's bubble opens seconds after the question, as it does live.
+    vi.advanceTimersByTime(9_000);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    vi.advanceTimersByTime(30_000);
+    await socketClosed(t, ids.chatId, "restart");
+    // The reconnected bridge reads the interrupted run's rows and the entry: the session
+    // is busy (the recovery runs), so nothing says yet that the interrupted run is over.
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq <= 12), { hasActiveRun: true });
+    expect((await get(t, cut))?.status).toBe("streaming");
+    // The recovery's rows, live, then its terminal: its bubble is born while the
+    // interrupted bubble is still the live one of its run (its rows not placed yet).
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 12), { kind: "live" });
+    await apply(t, ids.chatId, [], { terminals: [{ runId: RECOVERY, status: "completed", at: Date.now() }], hasActiveRun: true });
+    // …and only then does an idle read say the interrupted run is over.
+    await apply(t, ids.chatId, [], IDLE);
+    await settle(t);
+    const shown = (await t.run((ctx) => ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", ids.chatId)).collect())).sort(compareOrder);
+    expect(shown.map((m) => [m.role, m.runId ?? null])).toEqual([
+      ["user", null],
+      ["assistant", INTERRUPTED],
+      ["assistant", RECOVERY],
+    ]);
+    expect(shown.map((m) => m.displayGroupId)).toEqual([undefined, String(cut), String(cut)]);
+    expect(shown[1]!.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, unanswered: true });
   });
 
   test("without the bridge's report of the shutdown, the recovery entry alone states the interruption", async () => {
