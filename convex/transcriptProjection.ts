@@ -86,7 +86,7 @@ import {
 } from "./lib/bubbleProjectionStore";
 import { drainNextQueued, SESSION_ACTIVE_FRESH_MS } from "./lib/outboxQueue";
 import { scheduleRegroup } from "./displayGroups";
-import { isRecoveryEntry, resolveRecovery } from "./lib/restartRecovery";
+import { isRecoveryEntry, resolveRecovery, tellRecoveredBubble } from "./lib/restartRecovery";
 import { displayReport } from "./messages";
 import { utf8Bytes } from "./lib/bubbleProjection";
 import {
@@ -749,9 +749,9 @@ async function upsertRows(
     // it resumes (lib/restartRecovery.ts). Read again while unresolved: the row before it
     // may be stored by this very apply.
     if (a.origin !== undefined && isRecoveryEntry(next) && (stored === null || stored.recoversRunId === undefined)) {
-      budget.queries += 6;
+      budget.queries++;
       const entry = await ctx.db.get(rowId);
-      if (entry !== null) await resolveRecovery(ctx, a, entry);
+      if (entry !== null) await resolveRecovery(ctx, a, entry, budget);
     }
     // PROJECTION `on` (phase 5): the launches the row states, as identities — the proof a
     // delivery run joins its launcher by (lib/delegationChain.ts). Idempotent per row.
@@ -1669,6 +1669,23 @@ async function projectAll(
     });
   }
 }
+
+/** A run's bubble is told what the rows say of its recovery (lib/restartRecovery.ts
+ *  `tellLater`): the one place this feature reads a message, one run per transaction. */
+export const noteRunRecovery = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    instanceName: v.string(),
+    runId: v.string(),
+    withdraw: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { chatId, sessionKey, instanceName, runId, withdraw }) => {
+    await tellRecoveredBubble(ctx, { chatId, sessionKey, instanceName }, runId, withdraw);
+    return null;
+  },
+});
 
 /** The continuation of a projection one mutation could not finish (phase 4). The floor
  *  and coverage holes are read again from the session's cursor: a newer read may have

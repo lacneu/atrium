@@ -744,6 +744,15 @@ describe("a turn the gateway cut — `unanswered`", () => {
   const call = (entryId: string, seq: number, over: Partial<PlanRow> = {}) =>
     row(entryId, seq, { runId: "R", visible: false, items: [], hasBlocks: true, stopReason: "toolUse", tools: [{ toolCallId: `c${seq}`, name: "wait", status: "call" }], ...over });
 
+  test("endsUnanswered: a RETRACTED row decides nothing, in either direction", () => {
+    // An answer, then an `aborted` row seen live that the durable transcript does not hold.
+    expect(endsUnanswered([row("a", 1, { stopReason: "stop" }), row("b", 2, { stopReason: "aborted", retracted: true, hidden: true })])).toBe(false);
+    // A cut on a tool call, then an answer seen live and retracted: the cut stands.
+    expect(endsUnanswered([row("a", 1, { stopReason: "toolUse" }), row("b", 2, { stopReason: "stop", retracted: true, hidden: true })])).toBe(true);
+    // Only retracted rows: nothing of the assistant's is left.
+    expect(endsUnanswered([row("a", 1, { stopReason: "stop", retracted: true, hidden: true })])).toBe(true);
+  });
+
   test("endsUnanswered: nothing of the assistant's, or a last row that is not an answer", () => {
     expect(endsUnanswered([])).toBe(true);
     expect(endsUnanswered([row("a", 1, { stopReason: "toolUse" })])).toBe(true);

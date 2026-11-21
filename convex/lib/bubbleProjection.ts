@@ -271,6 +271,9 @@ export type ProjectionPlan = {
      *  they now end on an answer (a row read later than the snapshot that settled it) —
      *  `false`, the bubble stops saying so. Absent: unchanged, or not known. */
     unanswered?: boolean;
+    /** The bubble states an interruption (`unanswered`, or a recovery the rows name — which
+     *  the message itself may not say yet): never dropped for showing nothing else. */
+    stated?: true;
   }>;
 };
 
@@ -561,16 +564,25 @@ export function rowError(rows: readonly PlanRow[]): string | undefined {
   return found;
 }
 
+/** The rows that COUNT: a row a covering durable read retracted is not in the transcript
+ *  (never rendered) and decides nothing — neither what a turn ended on nor what precedes
+ *  a recovery entry (lib/restartRecovery.ts). */
+export function countedRows<T extends { retracted?: boolean }>(rows: readonly T[]): T[] {
+  return rows.filter((r) => r.retracted !== true);
+}
+
 /** The stop reasons of an ANSWER (the runtime's `"stop" | "length"`, and the raw provider
  *  value `end_turn` that passes through — packages/llm-core/src/types.ts at v2026.9.36). */
 const ANSWERED_STOP: ReadonlySet<string> = new Set(["stop", "length", "end_turn"]);
 
 /** Do a bubble's rows END before an answer — nothing of the assistant's at all, or a last
  *  assistant row that states a stop reason which is not an answer's (`toolUse`: it was
- *  waiting on a tool; `aborted`, `error`)? A last row that states none proves nothing. */
+ *  waiting on a tool; `aborted`, `error`)? A last row that states none proves nothing.
+ *  Retracted rows do not count (`countedRows`): an `aborted` row seen live and gone from
+ *  the durable transcript is not how the turn ended, nor is a retracted answer one. */
 export function endsUnanswered(rows: readonly PlanRow[]): boolean {
   let last: PlanRow | undefined;
-  for (const r of rows) {
+  for (const r of countedRows(rows)) {
     if (r.role !== "assistant" || r.streamSegment === true) continue;
     if (last === undefined || r.seq > last.seq) last = r;
   }
@@ -737,6 +749,7 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
     }
     // A bubble that states an interruption is never removed for showing nothing else.
     const stated = bubble.recovered === true || (write.unanswered ?? bubble.unanswered === true);
+    if (stated) write.stated = true;
     // §3.3: every row the bubble showed was retracted and nothing of the transcript is left
     // in it — the text it carries exists nowhere any more.
     if (

@@ -560,6 +560,23 @@ async function projectRun(
     );
     if (f !== undefined) facts.set(id, f);
   }
+  // THE GATEWAY'S OWN RECOVERY (lib/restartRecovery.ts), from ROWS only, charged like
+  // every read here: a recovery run's entry still unresolved (it was stored before the row
+  // it follows) is resolved now that its run is over; and what this run's rows say of a
+  // recovery is read at EVERY pass, like `unanswered` — one index range, empty for a run
+  // no entry names. A recovered run's last bubble is never dropped for being empty.
+  const entry = rows.find((d) => isRecoveryEntry(d) && d.recoversRunId === undefined);
+  if (entry !== undefined) await resolveRecovery(ctx, scope, entry, budget);
+  const recoveredBy = await recoveryOf(ctx, scope, runId, budget);
+  if (recoveredBy !== null) {
+    for (let k = segments.length - 1; k >= 0; k--) {
+      const id = liveBubbleOf.get(segmentKey(runId, segments[k]!));
+      const last = id === undefined ? undefined : bubbles.get(id);
+      if (id === undefined || last === undefined) continue;
+      bubbles.set(id, { ...last, recovered: true });
+      break;
+    }
+  }
   const plan: ProjectionPlan = planProjection({
     floorSeq: scope.floorSeq,
     runIds: [runId],
@@ -570,16 +587,11 @@ async function projectRun(
     runs: facts,
   });
   await executePlan(ctx, scope, chat, plan, result, budget);
-  // THE GATEWAY'S OWN RECOVERY (lib/restartRecovery.ts): a recovery run's entry still
-  // unresolved (it was stored before the row it follows) is resolved now that its run is
-  // over; and what this run's bubble — also one born just above — says of a recovery is
-  // read from the rows at EVERY pass, like `unanswered`: `recoveryOf` reads each entry
-  // that names the run again, and one that stopped naming it withdraws the statement.
-  budget.queries += 12;
-  const entry = rows.find((d) => isRecoveryEntry(d) && d.recoversRunId === undefined);
-  if (entry !== undefined) await resolveRecovery(ctx, scope, entry);
-  const recoveredBy = await recoveryOf(ctx, scope, runId);
-  if (recoveredBy !== null) await noteRecoveredRun(ctx, scope, runId, recoveredBy);
+  // THE GATEWAY'S OWN RECOVERY: said on the bubble in a transaction of its own (the
+  // bubble's text is not this pass's to read twice) unless a bubble loaded here says it.
+  if (recoveredBy !== null && ![...budget.messages.values()].some((m) => m?.interruption?.recoveryRunId === recoveredBy)) {
+    await noteRecoveredRun(ctx, scope, runId);
+  }
   // A deleted segment's rows are rattached to the deleted bubble (never placed again).
   // Their texts are NOT read here: the deletion's own purge removes what was stored before
   // it (bounded in bytes), and nothing is stored after it (`writeRowTexts` refuses).
@@ -841,7 +853,7 @@ async function executePlan(
     // The run stopped unanswered after an announced shutdown: said on the bubble, BEFORE
     // it is settled — a bubble that states it is not dropped for being empty.
     if (w.unanswered !== undefined) await noteInterruption(ctx, message, { unanswered: w.unanswered });
-    const stated = (w.unanswered ?? message.interruption?.unanswered === true) || message.interruption?.recoveryRunId !== undefined;
+    const stated = w.stated === true || (w.unanswered ?? message.interruption?.unanswered === true) || message.interruption?.recoveryRunId !== undefined;
     // An error bubble whose terminal carried no text: the error the transcript states.
     if (w.errorText !== undefined && message.status === "error" && message.error === undefined) {
       await ctx.db.patch(messageId, { error: maskCredentialId(w.errorText), updatedAt: now });

@@ -154,8 +154,10 @@ describe("a restart cuts a turn, the gateway's recovery answers (bench proof C2-
 
     // The reconnected bridge reads the interrupted run's rows, then the recovery's.
     await apply(t, ids.chatId, projected.restart.filter((r) => r.seq <= 11), { hasActiveRun: true, activeRunIds: [RECOVERY] });
-    // The recovery entry alone, its run still working: the bubble says so at once.
+    // The recovery entry alone, its run still working: the bubble says so, in the
+    // transaction that follows the row's (the ingestion reads no message for it).
     await apply(t, ids.chatId, projected.restart.filter((r) => r.seq === 12), { kind: "live" });
+    await settle(t);
     expect((await get(t, cut))?.interruption?.recoveryRunId).toBe(RECOVERY);
     await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 11), IDLE);
     await settle(t);
@@ -361,6 +363,46 @@ describe("the gateway's recovery does NOT answer", () => {
     expect(m.interruption).toEqual({ shutdown: "restart" });
   });
 
+  test("a run that ANSWERED, then a live `aborted` row the durable transcript does not hold: retracted, it does not make the turn unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, RECOVERY);
+    const done = await liveBubble(t, ids, RECOVERY);
+    await socketClosed(t, ids.chatId, "restart");
+    const own = projected.restart.filter((r) => r.seq > 12);
+    const last = Math.max(...own.map((r) => r.seq));
+    await apply(t, ids.chatId, own, { hasActiveRun: true, activeRunIds: [RECOVERY] });
+    await apply(t, ids.chatId, [{ entryId: "ephemeral-abort", seq: last + 1, role: "assistant", runId: RECOVERY, stopReason: "aborted", hidden: false, visible: false }], {
+      kind: "live",
+      deltaCursor: undefined,
+    });
+    // The durable read covers that place with another row: the live one is retracted.
+    const NEXT = "webchat-" + "9".repeat(64);
+    await apply(t, ids.chatId, [...own, { entryId: "next-input", seq: last + 1, role: "user", runId: NEXT, sendId: NEXT, hidden: false, visible: true }], { kind: "page", ...IDLE });
+    await settle(t);
+    const m = (await get(t, done))!;
+    expect(m.text).toContain("interrompue");
+    expect(m.interruption).toEqual({ shutdown: "restart" });
+  });
+
+  test("a run CUT on a tool call, then a live answer row the durable transcript does not hold: retracted, the cut is still stated and the bubble kept", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    const own = projected.restart.filter((r) => r.seq <= 11);
+    await apply(t, ids.chatId, own, { hasActiveRun: true, activeRunIds: [INTERRUPTED] });
+    await apply(t, ids.chatId, [{ entryId: "ephemeral-answer", seq: 12, role: "assistant", runId: INTERRUPTED, stopReason: "stop", hidden: false, visible: false }], {
+      kind: "live",
+      deltaCursor: undefined,
+    });
+    const NEXT = "webchat-" + "9".repeat(64);
+    await apply(t, ids.chatId, [...own, { entryId: "next-input", seq: 12, role: "user", runId: NEXT, sendId: NEXT, hidden: false, visible: true }], { kind: "page", ...IDLE });
+    await settle(t);
+    const m = await get(t, cut);
+    expect(m).not.toBeNull();
+    expect(m!.interruption).toEqual({ shutdown: "restart", unanswered: true });
+  });
+
   test("a snapshot that still ends on a tool call is read first, the answer row comes later: `unanswered` goes away with it", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t, RECOVERY);
@@ -530,6 +572,20 @@ describe("what a bubble says of its recovery is read from the rows at every pass
     await settle(t);
     expect(await rowsWith(t)).toEqual([]);
     expect((await get(t, cut))?.interruption?.recoveryRunId).toBeUndefined();
+  });
+
+  test("the entry was resolved while the interrupted run had no bubble yet: the pass that makes the bubble asks for it to be told", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq <= 12), { hasActiveRun: true, activeRunIds: [INTERRUPTED, RECOVERY] });
+    await settle(t);
+    expect(await assistants(t, ids.chatId)).toEqual([]);
+    // The interrupted run is now known over: its bubble is born from its rows.
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 12), IDLE);
+    await settle(t);
+    const born = (await assistants(t, ids.chatId)).filter((m) => m.runId === INTERRUPTED);
+    expect(born).toHaveLength(1);
+    expect(born[0]!.interruption?.recoveryRunId).toBe(RECOVERY);
   });
 
   test("the entry stands: every later pass says the same", async () => {

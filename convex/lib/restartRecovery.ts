@@ -27,10 +27,13 @@
 // DERIVED, NEVER LATCHED. What an entry names (`recoversRunId`) and what a bubble says of
 // it (`interruption.recoveryRunId`) are read again from the rows at every projection pass
 // (`recoveryOf`): an entry a covering read retracted, or whose preceding row was, stops
-// stating it. (Rows are deleted only with their conversation.)
+// stating it. (Rows are deleted only with their conversation.) Only rows are read there;
+// the bubble is told in a transaction of its own (`tellLater`).
 
 import type { Doc, Id } from "../_generated/dataModel";
+import { internal } from "../_generated/api";
 import type { MutationCtx } from "../_generated/server";
+import { countedRows } from "./bubbleProjection";
 import { liveBubbleFor } from "./projectedRuns";
 import { steerSeqsOf } from "./transcriptProjection";
 
@@ -82,13 +85,18 @@ type Scope = { chatId: Id<"chats">; instanceName: string; sessionKey: string };
  * row carries (bridge transcript-rows.ts `readTranscriptIdentity`, upstream
  * packages/gateway-client/src/session-projection-message-identity.ts):
  *  - a row a run PRODUCED names that run (`__openclaw.runId`), and it is the run the
- *    recovery resumes only when the row is the tail of a turn that was CUT: a tool result
- *    or a nested tool (the run was between two model calls), or an assistant row that
- *    stopped on a tool call or was aborted (`stopReason`). Proven. An assistant row that
- *    ended its reply (any other stop reason, or none stated) may be the end of ANOTHER
- *    run that ran between the interruption and the recovery — a heartbeat, a delivery —
- *    and upstream also resumes a run whose final reply was captured but not delivered:
- *    the two cannot be told apart from the row, so nothing is concluded;
+ *    recovery resumes only when the row is the tail of a turn that was CUT — upstream's
+ *    predicate, transcribed (pre-persisted-user-turn.ts `isInterruptedTurnEntry` at
+ *    v2026.9.36): a tool result; a `custom` row that is real tool activity (the
+ *    `openclaw.nested-tool.v1` row, the only custom row that carries tool calls — the
+ *    bridge keeps them as `toolCallIds`); an assistant row that stopped on a tool call,
+ *    or that the shutdown aborted with nothing written. Proven. Anything else concludes
+ *    nothing: a `custom` row without tool calls (the gateway's `run-failed-before-reply`
+ *    notice names a run that FAILED, maybe another one, between the interruption and the
+ *    recovery; a row from a bridge that does not send the calls); an assistant row that
+ *    ended its reply (another run's end, or — upstream also resumes a run whose final
+ *    reply was captured but not delivered — this one's: the row cannot tell); any other
+ *    role;
  *  - an input STEERED into a run names its own send as `runId` and the run it went into
  *    as `steerTargetRunId` — the executed run is the latter (upstream: the steered-into
  *    run stays the source), proven;
@@ -106,14 +114,20 @@ export function resumedRunFromRow(row: {
   steerTargetRunId?: string;
   presentationOwner?: boolean;
   stopReason?: string;
+  toolCallIds?: readonly string[];
+  visible?: boolean;
 }): { runId: string; proven: boolean } | null {
-  if (row.role.toLowerCase() === "user") {
+  const role = row.role.toLowerCase();
+  if (role === "user") {
     if (row.steerTargetRunId !== undefined) return { runId: row.steerTargetRunId, proven: true };
     return row.runId === undefined ? null : { runId: row.runId, proven: false };
   }
   if (row.runId === undefined || row.presentationOwner === true) return null;
-  if (row.role.toLowerCase() === "assistant" && row.stopReason !== "toolUse" && row.stopReason !== "aborted") return null;
-  return { runId: row.runId, proven: true };
+  const cut =
+    role === "toolresult" ||
+    (role === "custom" && (row.toolCallIds?.length ?? 0) > 0) ||
+    (role === "assistant" && (row.stopReason === "toolUse" || (row.stopReason === "aborted" && row.visible === false)));
+  return cut ? { runId: row.runId, proven: true } : null;
 }
 
 /** The bubble that shows the END of a run: its last steer segment's, else the nearest
@@ -129,8 +143,15 @@ async function lastBubbleOf(ctx: MutationCtx, scope: Scope, runId: string): Prom
   return null;
 }
 
-/** The run the rows say `entry` resumes, read NOW — never what was remembered. */
-async function derivedResumedRun(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">): Promise<string | null> {
+/** What the recovery reads are charged to: the projection's shared budget. */
+export type RecoveryMeter = { queries: number; bytes: number };
+const charge = (meter: RecoveryMeter, docs: readonly unknown[]): void => {
+  meter.queries++;
+  for (const d of docs) meter.bytes += JSON.stringify(d).length;
+};
+
+/** The run the rows say `entry` resumes, read NOW — never what was remembered. Rows only. */
+async function derivedResumedRun(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">, meter: RecoveryMeter): Promise<string | null> {
   if (!isRecoveryEntry(entry) || entry.runId === undefined || entry.retracted === true || entry.instanceName !== scope.instanceName) return null;
   const before = await ctx.db
     .query("transcriptRows")
@@ -139,10 +160,9 @@ async function derivedResumedRun(ctx: MutationCtx, scope: Scope, entry: Doc<"tra
     )
     .order("desc")
     .take(4);
-  // The row RIGHT before the entry, and only it: a hole would name an older run. A
-  // retracted row is not in the transcript (the durable row that holds its `seq`, if
-  // any, is).
-  const prev = before.find((d) => d.retracted !== true);
+  charge(meter, before);
+  // The row RIGHT before the entry, and only it: a hole would name an older run.
+  const prev = countedRows(before)[0];
   if (prev === undefined || prev.seq !== entry.seq - 1 || prev.instanceName !== scope.instanceName) return null;
   const named = resumedRunFromRow(prev);
   if (named === null || named.runId === entry.runId) return null;
@@ -155,63 +175,94 @@ async function derivedResumedRun(ctx: MutationCtx, scope: Scope, entry: Doc<"tra
         q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("runId", named.runId),
       )
       .first();
+    charge(meter, ran === null ? [] : [ran]);
     if (ran === null) return null;
   }
   return named.runId;
 }
 
 /**
+ * THE BUBBLE IS TOLD IN ITS OWN TRANSACTION. Saying a recovery on a bubble means reading
+ * that message — its whole text — and the transcript's ingestion and projection read
+ * within a byte budget that this feature must not spend on text it does not use (a page
+ * naming fourteen large bubbles went past the transaction's read limit, and its retries
+ * with it). Here only ROWS are read, charged to the caller's budget; the bubble is told
+ * by `tellRecoveredBubble`, scheduled, one run per transaction. `withdraw`: the recovery
+ * run an entry no longer attributes to this run.
+ */
+async function tellLater(ctx: MutationCtx, scope: Scope, runId: string, withdraw?: string): Promise<void> {
+  await ctx.scheduler.runAfter(0, internal.transcriptProjection.noteRunRecovery, {
+    chatId: scope.chatId,
+    sessionKey: scope.sessionKey,
+    instanceName: scope.instanceName,
+    runId,
+    ...(withdraw !== undefined ? { withdraw } : {}),
+  });
+}
+
+/**
  * Read again which run `entry` resumes and keep what it carries (`recoversRunId`, what the
  * display grouping and a later-born bubble read) equal to it. When it stops naming a run,
- * that run's bubble stops saying so. Returns the resumed run, or null — also while the row
- * before the entry is not stored yet (a live post that overtook its read).
+ * that run's bubble is told. Returns the resumed run, or null — also while the row before
+ * the entry is not stored yet (a live post that overtook its read).
  */
-async function rederiveRecovery(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">): Promise<string | null> {
-  const resumed = await derivedResumedRun(ctx, scope, entry);
+async function rederiveRecovery(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">, meter: RecoveryMeter): Promise<string | null> {
+  const resumed = await derivedResumedRun(ctx, scope, entry, meter);
   const was = entry.recoversRunId;
   if (was === (resumed ?? undefined)) return resumed;
   await ctx.db.patch(entry._id, { recoversRunId: resumed ?? undefined });
-  if (was !== undefined) {
-    // What THIS entry made the bubble of that run say, and only that.
-    const bubble = await lastBubbleOf(ctx, scope, was);
-    if (bubble !== null && bubble.interruption?.recoveryRunId === entry.runId) await noteInterruption(ctx, bubble, { recoveryRunId: null });
-  }
+  if (was !== undefined && entry.runId !== undefined) await tellLater(ctx, scope, was, entry.runId);
   return resumed;
 }
 
 /**
  * A recovery entry was stored, or its run is projected: find the run it resumes and say
- * so — on the entry and on that run's bubble, when it has one. Read from the rows every
- * time. Returns the resumed run, or null.
+ * so — on the entry now, on that run's bubble in a transaction of its own. Read from the
+ * rows every time. Returns the resumed run, or null.
  */
 export async function resolveRecovery(
   ctx: MutationCtx,
   scope: Scope,
   entry: Doc<"transcriptRows">,
+  meter: RecoveryMeter,
 ): Promise<string | null> {
-  const resumed = await rederiveRecovery(ctx, scope, entry);
-  if (resumed !== null && entry.runId !== undefined) await noteRecoveredRun(ctx, scope, resumed, entry.runId);
+  const resumed = await rederiveRecovery(ctx, scope, entry, meter);
+  if (resumed !== null) await tellLater(ctx, scope, resumed);
   return resumed;
 }
 
-/** Say on the bubble of `runId` that the gateway's recovery run resumed it. */
-export async function noteRecoveredRun(ctx: MutationCtx, scope: Scope, runId: string, recoveryRunId: string): Promise<void> {
-  const bubble = await lastBubbleOf(ctx, scope, runId);
-  if (bubble !== null && bubble.role === "assistant") await noteInterruption(ctx, bubble, { recoveryRunId });
-}
-
 /** The recovery run that resumed `runId`, by the entries that name it — each read again
- *  from the rows (null: none, or more than one — never a guess). */
-export async function recoveryOf(ctx: MutationCtx, scope: Scope, runId: string): Promise<string | null> {
-  const entries = (
-    await ctx.db
-      .query("transcriptRows")
-      .withIndex("by_chat_recovers", (q) => q.eq("chatId", scope.chatId).eq("recoversRunId", runId))
-      .take(3)
-  ).filter((e) => e.sessionKey === scope.sessionKey && e.instanceName === scope.instanceName);
+ *  from the rows (null: none, or more than one — never a guess). Rows only: for a run no
+ *  entry names, ONE index range that returns nothing. */
+export async function recoveryOf(ctx: MutationCtx, scope: Scope, runId: string, meter: RecoveryMeter): Promise<string | null> {
+  const named = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_recovers", (q) => q.eq("chatId", scope.chatId).eq("recoversRunId", runId))
+    .take(3);
+  charge(meter, named);
   const runs = new Set<string>();
-  for (const e of entries) {
-    if ((await rederiveRecovery(ctx, scope, e)) === runId && e.runId !== undefined) runs.add(e.runId);
+  for (const e of named) {
+    if (e.sessionKey !== scope.sessionKey || e.instanceName !== scope.instanceName) continue;
+    if ((await rederiveRecovery(ctx, scope, e, meter)) === runId && e.runId !== undefined) runs.add(e.runId);
   }
   return runs.size === 1 ? [...runs][0]! : null;
+}
+
+/** Ask for the bubble of `runId` to say that `recoveryRunId` resumed it. */
+export async function noteRecoveredRun(ctx: MutationCtx, scope: Scope, runId: string): Promise<void> {
+  await tellLater(ctx, scope, runId);
+}
+
+/**
+ * The scheduled half (`transcriptProjection.noteRunRecovery`): what the rows say NOW of
+ * the recovery of `runId`, said on the bubble that shows its end — or withdrawn from it.
+ * Its own transaction: this run's rows and bubbles, nothing else.
+ */
+export async function tellRecoveredBubble(ctx: MutationCtx, scope: Scope, runId: string, withdraw?: string): Promise<void> {
+  const by = await recoveryOf(ctx, scope, runId, { queries: 0, bytes: 0 });
+  const bubble = await lastBubbleOf(ctx, scope, runId);
+  if (bubble === null || bubble.role !== "assistant") return;
+  if (by !== null) await noteInterruption(ctx, bubble, { recoveryRunId: by });
+  // What the entry made this bubble say, and only that.
+  else if (withdraw !== undefined && bubble.interruption?.recoveryRunId === withdraw) await noteInterruption(ctx, bubble, { recoveryRunId: null });
 }

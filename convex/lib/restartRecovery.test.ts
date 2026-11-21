@@ -13,10 +13,16 @@ describe("resumedRunFromRow", () => {
     // A row a run produced names that run — and the recovery resumes it only when the row
     // is the tail of a turn that was CUT (upstream `isInterruptedTurnEntry`).
     ["an assistant row that stopped on a tool call (the turn was waiting on the tool)", { ...base, role: "assistant", runId: R, stopReason: "toolUse" }, { runId: R, proven: true }],
-    ["an assistant row the shutdown aborted (the restart-abort tail)", { ...base, role: "assistant", runId: R, stopReason: "aborted" }, { runId: R, proven: true }],
+    ["an assistant row the shutdown aborted with nothing written (the restart-abort tail)", { hidden: false, visible: false, role: "assistant", runId: R, stopReason: "aborted" }, { runId: R, proven: true }],
+    ["an assistant row aborted with TEXT written (a person's stop, a timeout — not the restart's empty tail) — nothing", { ...base, role: "assistant", runId: R, stopReason: "aborted" }, null],
     ["a tool result of the run", { ...base, role: "toolResult", runId: R }, { runId: R, proven: true }],
     ["a tool result, as the bridge lower-cases the role", { ...base, role: "toolresult", runId: R }, { runId: R, proven: true }],
-    ["a nested-tool row of the run", { ...base, role: "custom", runId: R }, { runId: R, proven: true }],
+    ["a nested-tool row of the run (`openclaw.nested-tool.v1`: it carries the call)", { hidden: false, visible: false, role: "custom", runId: R, toolCallIds: ["tool_call:c1:exec:1"] }, { runId: R, proven: true }],
+    // A `custom` row is a cut turn's tail only as REAL tool activity. The gateway's failure
+    // notice names a run that failed — maybe another one, after the interruption.
+    ["the gateway's `run-failed-before-reply` notice (a custom row with a run, no tool call) — nothing", { ...base, role: "custom", runId: R }, null],
+    ["a custom row from a bridge that does not send the calls (an empty list) — nothing", { ...base, role: "custom", runId: R, toolCallIds: [] }, null],
+    ["a row of another role that carries a run — nothing", { ...base, role: "system", runId: R }, null],
     // The recovery is sent seconds after the gateway is back (or with no restart at all):
     // another run may have ANSWERED in between, and its last row sits right before the entry.
     ["an assistant row that ENDED its reply: maybe another run's (a delivery that ran in between) — nothing", { ...base, role: "assistant", runId: R, stopReason: "stop" }, null],
