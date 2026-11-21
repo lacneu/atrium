@@ -361,6 +361,37 @@ describe("the gateway's recovery does NOT answer", () => {
     expect(m.interruption).toEqual({ shutdown: "restart" });
   });
 
+  test("a snapshot that still ends on a tool call is read first, the answer row comes later: `unanswered` goes away with it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, RECOVERY);
+    const done = await liveBubble(t, ids, RECOVERY);
+    await socketClosed(t, ids.chatId, "restart");
+    // An idle read whose rows stop before the run's last one (an older snapshot).
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 12 && r.seq < 16), IDLE);
+    await settle(t);
+    expect((await get(t, done))?.interruption).toEqual({ shutdown: "restart", unanswered: true });
+    // The answer row is read after all: the bubble no longer says it stopped unanswered.
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq === 16), IDLE);
+    await settle(t);
+    const m = (await get(t, done))!;
+    expect(m.text).toContain("interrompue");
+    expect(m.interruption).toEqual({ shutdown: "restart" });
+  });
+
+  test("the turn RESUMED live after the announced shutdown: the announcement is no longer a fact about it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+    await t.mutation(internal.stuckStreams.markResumed, { messageId: cut });
+    expect((await get(t, cut))?.interruption).toBeUndefined();
+    // Whatever its transcript shows afterwards, nothing calls it interrupted.
+    await apply(t, ids.chatId, cutOnly, IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toBeUndefined();
+  });
+
   test("a close with no announced shutdown states nothing", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t, INTERRUPTED);

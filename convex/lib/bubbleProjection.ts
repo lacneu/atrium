@@ -265,10 +265,12 @@ export type ProjectionPlan = {
     vanish?: true;
     /** An `error` bubble with no error text: the text the transcript states (step 4). */
     errorText?: string;
-    /** The gateway announced a shutdown on this turn's socket, and the transcript shows
-     *  its run stopped before an answer (`endsUnanswered`): said on the bubble, which is
-     *  then kept even with nothing else to show. */
-    unanswered?: true;
+    /** DERIVED at every pass, never latched: the gateway announced a shutdown on this
+     *  turn's socket and its rows, all known, stop before an answer (`endsUnanswered`) —
+     *  `true`, said on the bubble, which is then kept even with nothing else to show; or
+     *  they now end on an answer (a row read later than the snapshot that settled it) —
+     *  `false`, the bubble stops saying so. Absent: unchanged, or not known. */
+    unanswered?: boolean;
   }>;
 };
 
@@ -729,11 +731,12 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
     // A TURN THE GATEWAY CUT: it announced a shutdown on the turn's socket, and every row
     // of the bubble's runs is known — they end before an answer. A fact, set once.
     const rowsWhole = bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true);
-    if (bubble.shutdownNoted === true && bubble.unanswered !== true && allSettled && rowsWhole && endsUnanswered(rows)) {
-      write.unanswered = true;
+    if (allSettled && rowsWhole) {
+      const now = bubble.shutdownNoted === true && endsUnanswered(rows);
+      if (now !== (bubble.unanswered === true)) write.unanswered = now;
     }
     // A bubble that states an interruption is never removed for showing nothing else.
-    const stated = bubble.recovered === true || bubble.unanswered === true || write.unanswered === true;
+    const stated = bubble.recovered === true || (write.unanswered ?? bubble.unanswered === true);
     // §3.3: every row the bubble showed was retracted and nothing of the transcript is left
     // in it — the text it carries exists nowhere any more.
     if (
@@ -760,7 +763,7 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       write.settle !== undefined ||
       write.vanish === true ||
       write.errorText !== undefined ||
-      write.unanswered === true
+      write.unanswered !== undefined
     ) {
       plan.rewrite.push(write);
     }

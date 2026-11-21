@@ -838,8 +838,8 @@ async function executePlan(
     }
     // The run stopped unanswered after an announced shutdown: said on the bubble, BEFORE
     // it is settled — a bubble that states it is not dropped for being empty.
-    if (w.unanswered === true) await noteInterruption(ctx, message, { unanswered: true });
-    const stated = w.unanswered === true || message.interruption?.unanswered === true || message.interruption?.recoveryRunId !== undefined;
+    if (w.unanswered !== undefined) await noteInterruption(ctx, message, { unanswered: w.unanswered });
+    const stated = (w.unanswered ?? message.interruption?.unanswered === true) || message.interruption?.recoveryRunId !== undefined;
     // An error bubble whose terminal carried no text: the error the transcript states.
     if (w.errorText !== undefined && message.status === "error" && message.error === undefined) {
       await ctx.db.patch(messageId, { error: maskCredentialId(w.errorText), updatedAt: now });

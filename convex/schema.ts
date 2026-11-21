@@ -2359,8 +2359,9 @@ export default defineSchema({
     // bridge's report, stuckStreams.resumeChatStreams). `recoveryRunId`: the gateway's own
     // restart recovery resumed the turn — its entry (`provenance.sourceTool:
     // "main_session_restart_recovery"`) follows this run's rows, and that run answers
-    // (lib/restartRecovery.ts). `unanswered`: settled from a transcript in which the run
-    // stops on a tool exchange, with no recovery (so far). The reader is told of the
+    // (lib/restartRecovery.ts). `unanswered`: its rows, all known, stop before an answer
+    // — DERIVED at every projection pass, removed when a later row answers. `shutdown`
+    // is removed when the turn resumes live. The reader is told of the
     // interruption when `recoveryRunId` is set, or `shutdown` with `unanswered`.
     interruption: v.optional(
       v.object({

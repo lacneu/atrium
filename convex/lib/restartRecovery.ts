@@ -39,18 +39,29 @@ export function isRecoveryEntry(row: { role: string; provenanceKind?: string; pr
 
 export type Interruption = NonNullable<Doc<"messages">["interruption"]>;
 
-/** Add facts to a bubble's interruption (never removes one); returns whether it changed. */
+/** What changes in what a bubble says of a cut turn. `shutdown: null` and
+ *  `unanswered: false` REMOVE the fact: `unanswered` is derived from the rows at every
+ *  projection pass, and an announced shutdown stops being a fact about a turn that
+ *  resumed live. */
+export type InterruptionChange = { shutdown?: "restart" | "stop" | null; recoveryRunId?: string; unanswered?: boolean };
+
+/** Apply a change to a bubble's interruption; returns whether it changed. */
 export async function noteInterruption(
   ctx: MutationCtx,
   message: Doc<"messages">,
-  facts: Interruption,
+  change: InterruptionChange,
 ): Promise<boolean> {
-  const next: Interruption = { ...message.interruption, ...facts };
   const prev = message.interruption ?? {};
-  if (prev.shutdown === next.shutdown && prev.recoveryRunId === next.recoveryRunId && prev.unanswered === next.unanswered) {
-    return false;
-  }
-  await ctx.db.patch(message._id, { interruption: next });
+  const shutdown = change.shutdown === undefined ? prev.shutdown : (change.shutdown ?? undefined);
+  const recoveryRunId = change.recoveryRunId ?? prev.recoveryRunId;
+  const unanswered = change.unanswered === undefined ? prev.unanswered : change.unanswered ? (true as const) : undefined;
+  if (prev.shutdown === shutdown && prev.recoveryRunId === recoveryRunId && prev.unanswered === unanswered) return false;
+  const next: Interruption = {
+    ...(shutdown !== undefined ? { shutdown } : {}),
+    ...(recoveryRunId !== undefined ? { recoveryRunId } : {}),
+    ...(unanswered === true ? { unanswered } : {}),
+  };
+  await ctx.db.patch(message._id, { interruption: Object.keys(next).length > 0 ? next : undefined });
   return true;
 }
 

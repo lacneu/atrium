@@ -954,6 +954,12 @@ export const markResumed = internalMutation({
       .withIndex("by_message", (q) => q.eq("messageId", messageId))
       .first();
     if (row !== null) await ctx.db.patch(row._id, { updatedAt: Date.now() });
+    // The gateway still runs the run: the shutdown announced on the socket that closed
+    // did not cut this turn, and is no longer a fact about it (lib/restartRecovery).
+    const message = await ctx.db.get(messageId);
+    if (message !== null && message.interruption?.shutdown !== undefined) {
+      await noteInterruption(ctx, message, { shutdown: null });
+    }
   },
 });
 
