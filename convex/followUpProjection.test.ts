@@ -1355,7 +1355,7 @@ describe("a socket close asks again until the gateway can be asked", () => {
       chatId,
       ...(restartExpectedMs === undefined ? {} : { restartExpectedMs }),
     });
-  const stamp = async (t: T, id: Id<"messages">) => (await t.run((ctx) => ctx.db.get(id)))?.resumeAskAt;
+  const stamp = async (t: T, id: Id<"messages">) => (await t.run((ctx) => ctx.db.get(id)))?.resumeChain;
 
   test("announced restart, gateway back after 2 s: the first question waits for the delay it gave, and the run is resumed within seconds", async () => {
     const t = convexTest(schema, modules);
@@ -1398,7 +1398,7 @@ describe("a socket close asks again until the gateway can be asked", () => {
     // Nobody could be asked: the run's end stays the gateway's to state.
     const message = await t.run((ctx) => ctx.db.get(id));
     expect(message?.status).toBe("streaming");
-    expect(message?.resumeAskAt).toBeUndefined();
+    expect(message?.resumeChain).toBeUndefined();
   });
 
   test("a close with no announcement (silence, plain close): asked at once, then on the same cadence", async () => {
@@ -1448,29 +1448,179 @@ describe("a socket close asks again until the gateway can be asked", () => {
     expect(n).toBe(2);
   });
 
-  test("one chain per bubble: a second close while a question is due starts none", async () => {
+  test("one chain per bubble: a second close while a question is due starts none — it is noted, and one question more is asked", async () => {
     const t = convexTest(schema, modules);
-    const { chatId } = await cutTurn(t);
+    const { chatId, id } = await cutTurn(t);
     const askedAt = bridge(Date.now(), 2_000, { resumed: true });
     expect(await close(t, chatId, 1_500)).toEqual({ asked: 1 });
-    expect(await close(t, chatId)).toEqual({ asked: 0 });
+    expect(await close(t, chatId)).toEqual({ asked: 0, noted: 1 });
+    expect((await stamp(t, id))?.closes).toBe(2);
+    const links = (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((f) =>
+      f.name.includes("resumeOrClose"),
+    );
+    expect(links).toHaveLength(1);
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(askedAt).toEqual([2_000]);
+    // The question due at 2000 ms cannot know the second close preceded it: asked once more.
+    expect(askedAt).toEqual([2_000, 2_800]);
+    expect(await stamp(t, id)).toBeUndefined();
   });
 
-  test("a link whose bubble another chain took over asks once and schedules nothing", async () => {
+  // THE REVIEWED SEQUENCE: the socket `/resume` reopened closes before `/resume` has
+  // answered. Its close used to be dropped by the one-chain guard, and the answer then
+  // ended the chain: a bubble streaming, and nobody left to ask.
+  for (const [name, first] of [
+    ["resumed", { resumed: true }],
+    ["followed", { resumed: false, reason: "followed" }],
+    ["unknown", { resumed: false }],
+    ["stale", { resumed: false, reason: "stale" }],
+    ["busy", { resumed: false, reason: "busy" }],
+    ["unreachable", null],
+  ] as const) {
+    test(`a close while the question is in flight is never lost: answer \`${name}\` → the gateway is asked again`, async () => {
+      const t = convexTest(schema, modules);
+      const { chatId, id } = await cutTurn(t);
+      const closedAt = Date.now();
+      const askedAt: number[] = [];
+      const noted: unknown[] = [];
+      vi.stubGlobal("fetch", async () => {
+        askedAt.push(Date.now() - closedAt);
+        if (askedAt.length === 1) {
+          // The reconnected socket closes BEFORE this first question is answered.
+          noted.push(await close(t, chatId));
+          return first === null
+            ? new Response(JSON.stringify({ ok: false, error: { code: "GATEWAY_DISCONNECTED" } }), { status: 502 })
+            : new Response(JSON.stringify({ ok: true, ...first }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true, resumed: true }), { status: 200 });
+      });
+      expect(await close(t, chatId)).toEqual({ asked: 1 });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(noted).toEqual([{ asked: 0, noted: 1 }]);
+      // Asked again 800 ms after the first answer, for the close that came meanwhile;
+      // the second answer, with no close after it, ends the chain.
+      expect(askedAt).toEqual([0, 800]);
+      expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("streaming");
+      expect(await stamp(t, id)).toBeUndefined();
+    });
+  }
+
+  test("a close while the question is in flight, answer `not_running`: the bubble is closed, and the chain ends with it", async () => {
     const t = convexTest(schema, modules);
-    const { id } = await cutTurn(t);
+    const { chatId, id } = await cutTurn(t);
+    let asks = 0;
+    vi.stubGlobal("fetch", async () => {
+      asks++;
+      await close(t, chatId);
+      return new Response(JSON.stringify({ ok: true, resumed: false, reason: "not_running" }), { status: 200 });
+    });
+    await close(t, chatId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(asks).toBe(1);
+    const message = await t.run((ctx) => ctx.db.get(id));
+    expect(message?.status).toBe("error");
+    expect(message?.resumeChain).toBeUndefined();
+  });
+
+  test("two closes noted while one question is in flight: still one chain, one question more", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    let asks = 0;
+    vi.stubGlobal("fetch", async () => {
+      if (++asks === 1) {
+        expect(await close(t, chatId)).toEqual({ asked: 0, noted: 1 });
+        expect(await close(t, chatId)).toEqual({ asked: 0, noted: 1 });
+        expect((await stamp(t, id))?.closes).toBe(3);
+      }
+      return new Response(JSON.stringify({ ok: true, resumed: true }), { status: 200 });
+    });
+    await close(t, chatId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(asks).toBe(2);
+    expect(await stamp(t, id)).toBeUndefined();
+  });
+
+  test("the window is counted from the LATEST close: a close noted at 9 min keeps the questions coming for ten more", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    const closedAt = Date.now();
+    const askedAt: number[] = [];
+    let again: unknown = null;
+    vi.stubGlobal("fetch", async () => {
+      const at = Date.now() - closedAt;
+      askedAt.push(at);
+      if (again === null && at >= 9 * 60_000) again = await close(t, chatId);
+      return new Response(JSON.stringify({ ok: false, error: { code: "GATEWAY_DISCONNECTED" } }), { status: 502 });
+    });
+    await close(t, chatId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(again).toEqual({ asked: 0, noted: 1 });
+    expect(askedAt.at(-1)).toBeGreaterThan(18 * 60_000);
+    expect(askedAt.at(-1)).toBeLessThanOrEqual(19 * 60_000 + 2 * RESUME_RETRY.maxMs);
+    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("streaming");
+    expect(await stamp(t, id)).toBeUndefined();
+  });
+
+  test("the bubble settles while a question is due: the link asks nothing and the chain ends", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
     const askedAt = bridge(Date.now(), Number.POSITIVE_INFINITY, {});
-    await t.run((ctx) => ctx.db.patch(id, { resumeAskAt: 42 }));
+    await close(t, chatId, 1_500);
+    await t.run((ctx) => ctx.db.patch(id, { status: "complete" as const }));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt).toEqual([]);
+    expect(await stamp(t, id)).toBeUndefined();
+  });
+
+  test("the bubble settles while its question is in flight: an unanswered question is not asked again", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    let asks = 0;
+    vi.stubGlobal("fetch", async () => {
+      asks++;
+      await t.run((ctx) => ctx.db.patch(id, { status: "complete" as const }));
+      return new Response("{}", { status: 502 });
+    });
+    await close(t, chatId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(asks).toBe(1);
+    expect(await stamp(t, id)).toBeUndefined();
+    // …and no further link was even scheduled for it.
+    const links = (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((f) =>
+      f.name.includes("resumeOrClose"),
+    );
+    expect(links).toHaveLength(1);
+  });
+
+  test("the bubble is deleted while a question is due: nothing is asked, nothing scheduled", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    const askedAt = bridge(Date.now(), Number.POSITIVE_INFINITY, {});
+    await close(t, chatId, 1_500);
+    await t.run((ctx) => ctx.db.delete(id));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt).toEqual([]);
+  });
+
+  test("a link lost with its action: once its stamp has aged out, a close starts a chain — and the lost link, should it run, is not the bubble's", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    const askedAt = bridge(Date.now(), Number.POSITIVE_INFINITY, {});
+    const lost = { at: Date.now() - 60_000, since: Date.now() - 61_000, closes: 4 };
+    await t.run((ctx) => ctx.db.patch(id, { resumeChain: lost }));
+    expect(await close(t, chatId, 1_500)).toEqual({ asked: 1 });
+    const held = await stamp(t, id);
+    expect(held?.closes).toBe(5);
     await t.action(internal.stuckStreams.resumeOrClose, {
       messageId: id,
       instanceName: "prod",
-      chain: { since: Date.now(), attempt: 0, at: 41 },
+      chain: { at: lost.at, attempt: 3, closes: 4 },
     });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect(askedAt).toHaveLength(1);
-    expect(await stamp(t, id)).toBe(42);
+    expect(await stamp(t, id)).toEqual(held);
+    const links = (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter(
+      (f) => f.name.includes("resumeOrClose") && f.state.kind === "pending",
+    );
+    expect(links).toHaveLength(1);
   });
 
   test("a question of the reconciliation cycle (no chain) is not repeated here", async () => {

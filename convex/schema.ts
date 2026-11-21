@@ -2345,10 +2345,14 @@ export default defineSchema({
     // every bubble an explicit terminal settled — that outcome is never overridden.
     closeInferred: v.optional(v.boolean()),
     // ASSISTANT rows of a projected conversation, while STREAMING with no socket of the
-    // bridge on them: when the gateway is asked next about this bubble's run (the retry
-    // chain a socket close starts — stuckStreams.resumeOrClose). One chain per bubble: a
-    // link runs only while it is the one named here. Absent: no chain in flight.
-    resumeAskAt: v.optional(v.number()),
+    // bridge on them: the retry chain a socket close started (stuckStreams.
+    // continueResumeChain holds its state table). `at`: when the gateway is asked next —
+    // it names the one link in charge; `since`: the latest close; `closes`: the closes
+    // noted, so that an answer to a question asked before a newer close does not end the
+    // chain. Absent: no chain in flight.
+    resumeChain: v.optional(
+      v.object({ at: v.number(), since: v.number(), closes: v.number() }),
+    ),
     // ASSISTANT rows of a projected conversation (phase 5, design §14): the DISPLAY GROUP
     // this bubble belongs to — the id of the group's first message — when consecutive
     // bubbles of one delegation chain show as one (convex/lib/delegationChain.ts). A

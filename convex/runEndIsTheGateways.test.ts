@@ -920,11 +920,12 @@ describe("Codex pass 4 — a socket's close asks; Convex decides from its own st
     expect(res).toEqual({ asked: 1 });
     const asked = (await scheduled(t)).filter((s) => s.name.includes("resumeOrClose"));
     // …as the first link of the bubble's retry chain, which the bubble names.
-    const at = (await get(t, b))?.resumeAskAt;
+    const held = (await get(t, b))?.resumeChain;
+    expect(held).toEqual({ at: held!.at, since: held!.at, closes: 1 });
     expect(asked.map((s) => s.args[0])).toEqual([
-      { messageId: b, instanceName: "prod", chain: { since: at, attempt: 0, at } },
+      { messageId: b, instanceName: "prod", chain: { at: held!.at, attempt: 0, closes: 1 } },
     ]);
-    expect(asked[0]!.scheduledTime - at!).toBeLessThan(50);
+    expect(asked[0]!.scheduledTime - held!.at).toBeLessThan(50);
   });
 
   test("nothing streaming in the chat: a no-op — nothing written, nothing scheduled", async () => {
