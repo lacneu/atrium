@@ -533,7 +533,9 @@ class Session implements BridgeSession {
         // reconnection instead of deciding from its own. Convex decides from its state
         // (a projected bubble of this chat still streaming is asked of the gateway; none,
         // nothing), and the request is held until acknowledged (convex-writer).
-        void writer.resumeStreams?.(chatId);
+        // …after the delay an announced restart gave: until then the gateway is down by
+        // its own word (the notice precedes the close; the end is not classified yet here).
+        void writer.resumeStreams?.(chatId, connection.announcedRestartMs ?? null);
       });
     }
   }

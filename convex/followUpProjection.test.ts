@@ -29,6 +29,11 @@ import {
 } from "./lib/followUp";
 import { curationSessionNonce, summarizeSessionNonce } from "./lib/rehydration";
 import {
+  firstResumeAskDelayMs,
+  RESTART_ASK_MARGIN_MS,
+  RESUME_RETRY,
+} from "./stuckStreams";
+import {
   GATEWAY_HOLDS_INPUT_REASON,
   PRE_ADMISSION_KINDS,
   RETRYABLE_KINDS,
@@ -1304,6 +1309,187 @@ describe("codex pass 4 — a stale /resume is never sent (P1)", () => {
     expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("streaming");
   });
 
+});
+
+describe("a socket close asks again until the gateway can be asked", () => {
+  // Live, 2026-11-21: the gateway announced `shutdown {restartExpectedMs: 1500}` and cut a
+  // turn; the one `/resume` asked at the close found it down (502), and nothing asked
+  // again before the stuck-stream net, five minutes later.
+  async function cutTurn(t: T) {
+    const { userId, chatId } = await seed(t, "on");
+    await t.run(async (ctx) => {
+      const prod = await ctx.db.query("instances").withIndex("by_name", (q) => q.eq("name", "prod")).first();
+      await ctx.db.patch(prod!._id, { bridgeUrl: "http://bridge-prod" });
+    });
+    const id = await streamingAssistant(t, chatId, userId);
+    return { chatId, id };
+  }
+  let prevSecret: string | undefined;
+  beforeEach(() => {
+    prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "s";
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+  /** A bridge whose gateway is away (502, as `/resume` answers it) until `backAfterMs`
+   *  after the close, then answers `body`. Records when each question was asked. */
+  const bridge = (closedAt: number, backAfterMs: number, body: Record<string, unknown>) => {
+    const askedAt: number[] = [];
+    vi.stubGlobal("fetch", async () => {
+      const at = Date.now() - closedAt;
+      askedAt.push(at);
+      return at < backAfterMs
+        ? new Response(JSON.stringify({ ok: false, error: { code: "GATEWAY_DISCONNECTED" } }), { status: 502 })
+        : new Response(JSON.stringify({ ok: true, ...body }), { status: 200 });
+    });
+    return askedAt;
+  };
+  const close = (t: T, chatId: Id<"chats">, restartExpectedMs?: number) =>
+    t.mutation(internal.stuckStreams.resumeChatStreams, {
+      instanceName: "prod",
+      chatId,
+      ...(restartExpectedMs === undefined ? {} : { restartExpectedMs }),
+    });
+  const stamp = async (t: T, id: Id<"messages">) => (await t.run((ctx) => ctx.db.get(id)))?.resumeAskAt;
+
+  test("announced restart, gateway back after 2 s: the first question waits for the delay it gave, and the run is resumed within seconds", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    const closedAt = Date.now();
+    const askedAt = bridge(closedAt, 2_000, { resumed: true });
+    await close(t, chatId, 1_500);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    // 1500 + 500 ms: not at the close, when the gateway said it was down.
+    expect(askedAt).toEqual([2_000]);
+    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("streaming");
+    expect(await stamp(t, id)).toBeUndefined();
+  });
+
+  test("announced restart, gateway back after 60 s: asked again on the Control UI's cadence until it answers", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    const closedAt = Date.now();
+    const askedAt = bridge(closedAt, 60_000, { resumed: true });
+    await close(t, chatId, 1_500);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    // 800 ms × 1.7 per unanswered question, capped at 15 s.
+    expect(askedAt.slice(0, 8)).toEqual([2_000, 2_800, 4_160, 6_472, 10_402, 17_084, 28_443, 43_443]);
+    expect(askedAt.at(-1)).toBeGreaterThanOrEqual(60_000);
+    expect(askedAt.at(-1)).toBeLessThan(75_000);
+    expect(askedAt.filter((at) => at >= 60_000)).toHaveLength(1);
+    expect(await stamp(t, id)).toBeUndefined();
+  });
+
+  test("gateway never back: the questions stop with the window, and the bubble is neither closed nor an empty success", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    const closedAt = Date.now();
+    const askedAt = bridge(closedAt, Number.POSITIVE_INFINITY, {});
+    await close(t, chatId, 1_500);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt.at(-1)).toBeLessThanOrEqual(RESUME_RETRY.windowMs);
+    expect(askedAt.at(-1)).toBeGreaterThan(RESUME_RETRY.windowMs - 2 * RESUME_RETRY.maxMs);
+    expect(askedAt.length).toBeLessThan(RESUME_RETRY.windowMs / RESUME_RETRY.maxMs + 10);
+    // Nobody could be asked: the run's end stays the gateway's to state.
+    const message = await t.run((ctx) => ctx.db.get(id));
+    expect(message?.status).toBe("streaming");
+    expect(message?.resumeAskAt).toBeUndefined();
+  });
+
+  test("a close with no announcement (silence, plain close): asked at once, then on the same cadence", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await cutTurn(t);
+    const closedAt = Date.now();
+    const askedAt = bridge(closedAt, 2_000, { resumed: true });
+    await close(t, chatId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt).toEqual([0, 800, 2_160]);
+  });
+
+  test("the gateway answers that the run is over: its settle is applied and nothing is asked again", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, id } = await cutTurn(t);
+    const askedAt = bridge(Date.now(), 2_000, { resumed: false, reason: "not_running" });
+    await close(t, chatId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt).toHaveLength(3);
+    // Nothing settled it here (no bridge wrote): what still streams is closed as an
+    // error, never as an empty success.
+    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("error");
+  });
+
+  test("an answered `unknown` or `followed` ends the chain: the bridge listens from there", async () => {
+    for (const body of [{ resumed: false }, { resumed: false, reason: "followed" }]) {
+      const t = convexTest(schema, modules);
+      const { chatId, id } = await cutTurn(t);
+      const askedAt = bridge(Date.now(), 0, body);
+      await close(t, chatId);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(askedAt).toEqual([0]);
+      expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("streaming");
+      expect(await stamp(t, id)).toBeUndefined();
+    }
+  });
+
+  test("`busy` (the chat's socket is taken right now) is asked again", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await cutTurn(t);
+    let n = 0;
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify({ ok: true, resumed: n++ > 0, ...(n === 1 ? { reason: "busy" } : {}) }), { status: 200 }),
+    );
+    await close(t, chatId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(n).toBe(2);
+  });
+
+  test("one chain per bubble: a second close while a question is due starts none", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await cutTurn(t);
+    const askedAt = bridge(Date.now(), 2_000, { resumed: true });
+    expect(await close(t, chatId, 1_500)).toEqual({ asked: 1 });
+    expect(await close(t, chatId)).toEqual({ asked: 0 });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt).toEqual([2_000]);
+  });
+
+  test("a link whose bubble another chain took over asks once and schedules nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { id } = await cutTurn(t);
+    const askedAt = bridge(Date.now(), Number.POSITIVE_INFINITY, {});
+    await t.run((ctx) => ctx.db.patch(id, { resumeAskAt: 42 }));
+    await t.action(internal.stuckStreams.resumeOrClose, {
+      messageId: id,
+      instanceName: "prod",
+      chain: { since: Date.now(), attempt: 0, at: 41 },
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt).toHaveLength(1);
+    expect(await stamp(t, id)).toBe(42);
+  });
+
+  test("a question of the reconciliation cycle (no chain) is not repeated here", async () => {
+    const t = convexTest(schema, modules);
+    const { id } = await cutTurn(t);
+    const askedAt = bridge(Date.now(), Number.POSITIVE_INFINITY, {});
+    await t.action(internal.stuckStreams.resumeOrClose, { messageId: id, instanceName: "prod" });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(askedAt).toHaveLength(1);
+  });
+
+  test("the first delay: the announcement plus a margin, bounded; none without one", () => {
+    expect(firstResumeAskDelayMs(undefined)).toBe(0);
+    expect(firstResumeAskDelayMs(1_500)).toBe(1_500 + RESTART_ASK_MARGIN_MS);
+    expect(firstResumeAskDelayMs(0)).toBe(RESTART_ASK_MARGIN_MS);
+    expect(firstResumeAskDelayMs(86_400_000)).toBe(60_000);
+    expect(firstResumeAskDelayMs(-1)).toBe(0);
+    expect(firstResumeAskDelayMs(Number.NaN)).toBe(0);
+  });
 });
 
 describe("codex pass 4 — held inputs are the RUN's, not the current segment's (P1)", () => {

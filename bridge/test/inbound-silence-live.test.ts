@@ -478,7 +478,11 @@ describe("a silent conversation socket, through the session", () => {
     });
     await gateway.ready;
     const finalized: unknown[][] = [];
+    const asked: unknown[][] = [];
     const writer = {
+      resumeStreams: async (...args: unknown[]) => {
+        asked.push(args);
+      },
       startAssistant: async () => "msg-1",
       appendDelta: async () => {},
       setSnapshot: async () => true,
@@ -517,6 +521,8 @@ describe("a silent conversation socket, through the session", () => {
       // Not finalized by the bridge, and marked as a stream with a hole.
       expect(finalized).toEqual([]);
       expect(s.runManager.streamGapNoted).toBe(true);
+      // …and Convex is asked about the chat's bubble, at once: nothing was announced.
+      expect(asked).toEqual([["c1", null]]);
 
       const again = await reg.acquire(routing);
       expect(again).not.toBe(s);

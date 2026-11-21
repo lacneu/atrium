@@ -50,6 +50,7 @@ import { redactToolPayloadText } from "../../vendor/upstream-redact/ui/src/lib/b
 import { buildIdentityHeaders, type GatewayIdentity } from "./gateway-identity.js";
 import type { RosterEntry } from "./models-roster.js";
 import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
+import { restartWindows } from "./restart-window.js";
 import { LiveTextBaselines, type LiveTextGap } from "./live-text-baseline.js";
 import { chatHistoryParams } from "../../core/rpc-params.js";
 import {
@@ -579,12 +580,28 @@ export class OpenClawConnection {
    * restart the gateway announced (codex P2).
    */
   adoptShutdownNotice(notice: ShutdownNotice): void {
+    this.noteShutdown(notice);
+  }
+
+  /** The gateway this socket is connected to (its normalized URL); null on a
+   *  connection built outside `connect`. */
+  private gateway: string | null = null;
+
+  private noteShutdown(notice: ShutdownNotice): void {
     this.shutdownNotice = notice;
+    if (notice.restartAnnounced && this.gateway !== null) {
+      restartWindows.announce(this.gateway, notice.restartExpectedMs, Date.now());
+    }
   }
 
   /** True once the gateway announced a shutdown/restart on this connection. */
   get shutdownAnnounced(): boolean {
     return this.shutdownNotice !== null;
+  }
+  /** The delay the gateway gave when it announced a RESTART on this connection
+   *  (`shutdown.restartExpectedMs`), or null: no restart announced, or no usable delay. */
+  get announcedRestartMs(): number | null {
+    return this.shutdownNotice?.restartExpectedMs ?? null;
   }
   /** Inbound frames buffered but not yet consumed (drop-pressure witness). */
   get inboundQueueLen(): number {
@@ -613,8 +630,44 @@ export class OpenClawConnection {
     this.ws = ws;
   }
 
-  /** Connect and complete the Ed25519 handshake. Resolves once connect ok. */
+  /**
+   * Connect and complete the Ed25519 handshake. Resolves once connect ok.
+   *
+   * A connection that cannot be made while the gateway's ANNOUNCED restart is still
+   * awaited (restart-window.ts) is named for it: the refusal itself says nothing, and the
+   * dispatch classifier reads the same marker a socket closed by the restart carries.
+   */
   static connect(
+    ...args: Parameters<typeof OpenClawConnection.connectOnce>
+  ): Promise<OpenClawConnection> {
+    return OpenClawConnection.connectOnce(...args).then(
+      (connection) => {
+        // A notice read during this very handshake keeps the window it opened.
+        if (connection.gateway !== null && !connection.shutdownAnnounced) {
+          restartWindows.connected(connection.gateway);
+        }
+        return connection;
+      },
+      (err: unknown) => {
+        let awaited = false;
+        try {
+          awaited = restartWindows.pending(normalizeWsUrl(args[0]), Date.now());
+        } catch {
+          awaited = false;
+        }
+        // A handshake the gateway ANSWERED is not a gateway that is away: it keeps its
+        // own text. The marker is read after the auth, scope and timeout rules
+        // (core/dispatch-errors.ts), so it names only what would have been a disconnect
+        // or nothing at all.
+        if (awaited && err instanceof Error && !(err instanceof GatewayConnectRefusedError)) {
+          throw new OpenClawError(`${err.message} [gateway_restarting]`);
+        }
+        throw err;
+      },
+    );
+  }
+
+  private static connectOnce(
     gatewayUrl: string,
     token: string,
     device: DeviceIdentity,
@@ -858,6 +911,7 @@ export class OpenClawConnection {
             clearTimeout(connectTimer);
             connection = new OpenClawConnection(ws);
             connection.rawSocket = upgradedSocket;
+            connection.gateway = normalizeWsUrl(gatewayUrl);
             if (handshakeShutdown !== null) {
               connection.adoptShutdownNotice(handshakeShutdown);
             }
@@ -1089,7 +1143,7 @@ export class OpenClawConnection {
     // reading without removing one.
     const notice = readShutdownNotice(frame);
     if (notice) {
-      this.shutdownNotice = notice;
+      this.noteShutdown(notice);
       console.log(
         `[openclaw] gateway announced a ${notice.restartAnnounced ? "restart" : "stop"} (restartExpectedMs=${
           notice.restartExpectedMs ?? "none"

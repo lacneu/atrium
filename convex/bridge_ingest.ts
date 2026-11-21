@@ -279,7 +279,9 @@ type IngestOp =
   // 0.102.1 — a conversation's gateway socket closed (every close, Codex pass 4): that
   // chat's projected bubbles still streaming are asked of the gateway. Without `chatId`
   // (a bridge of the first passes): the instance's projected bubbles.
-  | { op: "resumeStreams"; chatId?: string }
+  // `restartExpectedMs`: the gateway announced a restart before closing, and how long it
+  // said it would take — the first question waits for it.
+  | { op: "resumeStreams"; chatId?: string; restartExpectedMs?: number }
   // `rec*` fields are present only while a turn is being recorded (bridge tags the
   // flush): recSessionId is the turn's recording session (Convex records only if it
   // still matches the active one), bridgeSentAt (t1) + bridgeSkew feed segment A,
@@ -1022,9 +1024,13 @@ export const ingest = httpAction(async (ctx, request) => {
       // mutation re-checks it atomically. An older bridge names no chat: its instance's
       // projected bubbles, as before. Nothing else is touched.
       if (typeof body.chatId === "string") {
+        const expected = body.restartExpectedMs;
         await ctx.runMutation(internal.stuckStreams.resumeChatStreams, {
           instanceName: boundInstanceName,
           chatId: body.chatId,
+          ...(typeof expected === "number" && Number.isFinite(expected) && expected >= 0
+            ? { restartExpectedMs: expected }
+            : {}),
         });
       } else {
         await ctx.runMutation(internal.stuckStreams.sweepInstanceStreams, {

@@ -1578,6 +1578,26 @@ describe("sweepStreams (bridge boot-time orphan sweep)", () => {
     expect(scheduled.some((s) => s.name.includes("sweepInstanceStreams"))).toBe(false);
   });
 
+  test("`resumeStreams` after an ANNOUNCED restart: the first question is scheduled for the delay given, plus the margin; a value that is no delay is ignored", async () => {
+    for (const [restartExpectedMs, delay] of [[1500, 2000], [-5, 0], ["soon", 0]] as const) {
+      const t = convexTest(schema, modules);
+      const { messageId, chatId } = await seedAssistantMessage(t);
+      const now = Date.now();
+      await t.run(async (ctx) => {
+        await ctx.db.patch(messageId, { runId: "r1", turnSessionKey: "k", projectedTurn: true });
+        await ctx.db.insert("streamingText", { messageId, chatId, text: "", boundInstance: "prod", updatedAt: now });
+      });
+      const before = Date.now();
+      const res = await post(t, { op: "resumeStreams", chatId, restartExpectedMs });
+      expect(res.status).toBe(200);
+      const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      const asks = scheduled.filter((s) => s.name.includes("resumeOrClose"));
+      expect(asks).toHaveLength(1);
+      expect(asks[0]!.scheduledTime - before).toBeGreaterThanOrEqual(delay);
+      expect(asks[0]!.scheduledTime - before).toBeLessThan(delay + 1_000);
+    }
+  });
+
   test("0.102.1 (Codex pass 2): `startAssistant` carries the bridge's `projectedTurn` onto the bubble; absent, nothing", async () => {
     const t = convexTest(schema, modules);
     await seedAuthOnly(t);

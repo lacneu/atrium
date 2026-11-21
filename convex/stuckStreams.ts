@@ -673,8 +673,14 @@ export const sweepInstanceStreams = internalMutation({
  * Idempotent: a second request asks the same question again, whose answer is the same.
  */
 export const resumeChatStreams = internalMutation({
-  args: { instanceName: v.string(), chatId: v.string() },
-  handler: async (ctx, { instanceName, chatId }) => {
+  args: {
+    instanceName: v.string(),
+    chatId: v.string(),
+    restartExpectedMs: v.optional(v.number()),
+  },
+  handler: async (ctx, { instanceName, chatId, restartExpectedMs }) => {
+    const now = Date.now();
+    const firstDelay = firstResumeAskDelayMs(restartExpectedMs);
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return { asked: 0 };
     // The atomic barrier: only the instance this chat routes to may ask about it.
@@ -699,9 +705,15 @@ export const resumeChatStreams = internalMutation({
       ) {
         continue;
       }
-      await ctx.scheduler.runAfter(0, internal.stuckStreams.resumeOrClose, {
+      // One chain per bubble: a link still due (or just due — its action may be running)
+      // asks already. A link lost with its action leaves a stamp that ages out.
+      if (msg.resumeAskAt !== undefined && msg.resumeAskAt > now - RESUME_LINK_GRACE_MS) continue;
+      const at = now + firstDelay;
+      await ctx.db.patch(msg._id, { resumeAskAt: at });
+      await ctx.scheduler.runAfter(firstDelay, internal.stuckStreams.resumeOrClose, {
         messageId: msg._id,
         instanceName,
+        chain: { since: now, attempt: 0, at },
       });
       asked++;
     }
@@ -716,6 +728,90 @@ const RESUME_CHAT_PAGE = 8;
 
 /** How long Convex waits for the bridge's resume answer (none: asked again later). */
 const RESUME_POST_TIMEOUT_MS = 30_000;
+
+/**
+ * ASKING AGAIN after a socket close, until the gateway can be asked. The Control UI
+ * reconnects on its own after a close — 800 ms, ×1.7, capped at 15 s, without end
+ * (ui/src/api/gateway.ts `reconnect`, packages/gateway-client/src/protocol-client.ts
+ * `scheduleReconnect` at v2026.9.36) — and re-reads the chat at each hello. Here the
+ * question is `/resume`, asked on the same cadence while the bridge or its gateway does
+ * not answer. It is a question repeated, never a deadline on the run: past the window the
+ * chain stops and the bubble stays as it is, for the reconciliation cycle to ask about
+ * (agents.applyDiscovery, the stuck-stream net) — only the gateway's answer ends it.
+ */
+export const RESUME_RETRY = {
+  initialMs: 800,
+  multiplier: 1.7,
+  maxMs: 15_000,
+  /** The chain's whole life, from the close that started it. */
+  windowMs: 10 * 60_000,
+} as const;
+/** After an ANNOUNCED restart the first question waits for the delay the gateway gave
+ *  (`shutdown.restartExpectedMs`), plus this: asking a gateway that said it is down
+ *  answers nothing. */
+export const RESTART_ASK_MARGIN_MS = 500;
+/** A hostile or absurd announcement never parks the first question further than this. */
+const RESTART_ASK_MAX_MS = 60_000;
+/** How long a link's stamp stands for a chain in flight once it is due: the action's own
+ *  budget (the bridge's answer) and its hand-over to the next link. */
+const RESUME_LINK_GRACE_MS = RESUME_POST_TIMEOUT_MS + 15_000;
+
+/** When the first question of a chain is asked: now, or once an announced restart is due over. */
+export function firstResumeAskDelayMs(restartExpectedMs: number | undefined): number {
+  if (restartExpectedMs === undefined || !Number.isFinite(restartExpectedMs) || restartExpectedMs < 0) {
+    return 0;
+  }
+  return Math.min(Math.floor(restartExpectedMs) + RESTART_ASK_MARGIN_MS, RESTART_ASK_MAX_MS);
+}
+
+/** The delay before the question after `attempt` unanswered ones, or null once the
+ *  chain's window is spent (`elapsedMs` since the close that started it). */
+export function resumeRetryDelayMs(attempt: number, elapsedMs: number): number | null {
+  const delay = Math.min(
+    RESUME_RETRY.maxMs,
+    Math.round(RESUME_RETRY.initialMs * RESUME_RETRY.multiplier ** Math.max(0, attempt)),
+  );
+  return elapsedMs + delay > RESUME_RETRY.windowMs ? null : delay;
+}
+
+const resumeChain = v.object({ since: v.number(), attempt: v.number(), at: v.number() });
+
+/**
+ * One link of a retry chain is done. `again`: its question got NO answer (the bridge
+ * unreachable, its gateway unreachable, or the chat's socket taken right now) — the next
+ * link is scheduled, while this link is still the bubble's and the bubble still streams.
+ * Anything else ends the chain. Returns the delay scheduled, or null.
+ */
+export const continueResumeChain = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    instanceName: v.string(),
+    chain: resumeChain,
+    again: v.boolean(),
+  },
+  handler: async (ctx, { messageId, instanceName, chain, again }) => {
+    const msg = await ctx.db.get(messageId);
+    // Another chain took the bubble over (this link's stamp aged out): it asks.
+    if (msg === null || msg.resumeAskAt !== chain.at) return null;
+    const now = Date.now();
+    const delay =
+      again && msg.status === "streaming"
+        ? resumeRetryDelayMs(chain.attempt, now - chain.since)
+        : null;
+    if (delay === null) {
+      await ctx.db.patch(messageId, { resumeAskAt: undefined });
+      return null;
+    }
+    const at = now + delay;
+    await ctx.db.patch(messageId, { resumeAskAt: at });
+    await ctx.scheduler.runAfter(delay, internal.stuckStreams.resumeOrClose, {
+      messageId,
+      instanceName,
+      chain: { since: chain.since, attempt: chain.attempt + 1, at },
+    });
+    return delay;
+  },
+});
 
 /**
  * What the resume request needs about one bubble left streaming:
@@ -871,11 +967,17 @@ export const resumeOrClose = internalAction({
   args: {
     messageId: v.id("messages"),
     instanceName: v.string(),
+    // The retry chain this question is a link of (a socket close started it). None: a
+    // question of the reconciliation cycle, which comes round again by itself.
+    chain: v.optional(resumeChain),
   },
-  handler: async (ctx, { messageId, instanceName }) => {
+  handler: async (ctx, { messageId, instanceName, chain }) => {
     const askedAt = Date.now();
     let verdict: ResumeVerdict = "unknown";
     let why = "";
+    // The question reached nobody who could answer: the bridge, or its gateway, is not
+    // there (a thrown request, a non-2xx answer — the bridge's 502 names the gateway).
+    let unanswered = false;
     try {
       const target = await ctx.runQuery(internal.stuckStreams.resumeTarget, { messageId });
       const secret = process.env.BRIDGE_SHARED_SECRET;
@@ -924,6 +1026,7 @@ export const resumeOrClose = internalAction({
               },
             }),
           });
+          unanswered = !res.ok;
           verdict = resumeVerdict(res.ok, res.ok ? await res.json() : null);
         }
       } else {
@@ -932,6 +1035,7 @@ export const resumeOrClose = internalAction({
     } catch (err) {
       console.error("stuckStreams.resumeOrClose: resume request failed:", err);
       verdict = "unknown";
+      unanswered = true;
     }
     if (why !== "") console.log(`stuckStreams.resumeOrClose: not asked (${why})`);
     console.log(`stuckStreams.resumeOrClose: ${verdict}`);
@@ -944,7 +1048,18 @@ export const resumeOrClose = internalAction({
         askedAt,
       });
     }
-    // Every other answer leaves the bubble as it is: the next cycle looks again.
+    // Every other answer leaves the bubble as it is: the next cycle looks again — and,
+    // on a chain, the next link when nobody could answer this one. An answered `unknown`
+    // is not asked again here: the bridge now listens to the bubble's session, and the
+    // gateway's own word ends it (admitResume).
+    if (chain !== undefined) {
+      await ctx.runMutation(internal.stuckStreams.continueResumeChain, {
+        messageId,
+        instanceName,
+        chain,
+        again: unanswered || verdict === "busy",
+      });
+    }
   },
 });
 

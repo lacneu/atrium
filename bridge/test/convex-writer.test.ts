@@ -2139,6 +2139,23 @@ describe("0.102.1 — the close of a socket is a best-effort SHORTCUT to the rec
       vi.useRealTimers();
     }
   });
+
+  test("an announced restart's delay rides the request; without one the field is absent", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.resumeStreams("c1", 1500);
+    await w.resumeStreams("c2", null);
+    await w.resumeStreams("c3");
+    expect(bodies.filter((b) => b.op === "resumeStreams")).toEqual([
+      { op: "resumeStreams", chatId: "c1", restartExpectedMs: 1500 },
+      { op: "resumeStreams", chatId: "c2" },
+      { op: "resumeStreams", chatId: "c3" },
+    ]);
+  });
 });
 
 describe("0.102.1 (Codex pass 2) — startAssistant states a projected turn", () => {
