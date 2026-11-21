@@ -585,6 +585,9 @@ async function retractUnreadLiveRows(
     await ctx.db.patch(d._id, { liveOnly: undefined, retracted: true, hidden: true, updatedAt: a.now });
     count++;
     if (d.runId !== undefined && d.role.toLowerCase() !== "user") runs.add(d.runId);
+    // A retracted recovery entry no longer states which run it resumed: that run's
+    // bubble is read again (lib/restartRecovery.ts).
+    if (d.recoversRunId !== undefined) runs.add(d.recoversRunId);
   }
   return { runs: [...runs], count };
 }

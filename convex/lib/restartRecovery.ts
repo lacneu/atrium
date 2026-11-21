@@ -14,10 +14,20 @@
 // THE LINK. Upstream keeps "which run this recovery resumes" in its session store only
 // (`restartRecoveryDeliverySourceRunId`): nothing in the entry, its provenance or the
 // recovery run's frames names the interrupted run. What the transcript does state is the
-// ORDER: the entry is appended right after the interrupted run's last row, while nothing
-// else can write (the gateway was down). So the run a recovery resumes is the run of the
-// row right before its entry — read here by `seq`, never by a time (`resumedRunFromRow`
-// says what each kind of row there states).
+// ORDER, and it is NOT a proof by itself: the recovery is an ordinary `agent` request
+// sent by a gateway that is up again (five seconds after its start, later under its
+// retries, or after a tool timeout with no restart at all —
+// main-session-restart-recovery-runtime.ts, main-session-recovery-lifecycle.ts
+// `isRecoveryInterruption`), so another run of the session may have written in between.
+// The row right before the entry therefore names the resumed run only when it also
+// states a turn that was CUT (`resumedRunFromRow`, upstream's own reading of an
+// interrupted turn's tail: pre-persisted-user-turn.ts `isInterruptedTurnEntry`) — read
+// by `seq`, never by a time.
+//
+// DERIVED, NEVER LATCHED. What an entry names (`recoversRunId`) and what a bubble says of
+// it (`interruption.recoveryRunId`) are read again from the rows at every projection pass
+// (`recoveryOf`): an entry a covering read retracted, or whose preceding row was, stops
+// stating it. (Rows are deleted only with their conversation.)
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
@@ -39,11 +49,11 @@ export function isRecoveryEntry(row: { role: string; provenanceKind?: string; pr
 
 export type Interruption = NonNullable<Doc<"messages">["interruption"]>;
 
-/** What changes in what a bubble says of a cut turn. `shutdown: null` and
- *  `unanswered: false` REMOVE the fact: `unanswered` is derived from the rows at every
- *  projection pass, and an announced shutdown stops being a fact about a turn that
- *  resumed live. */
-export type InterruptionChange = { shutdown?: "restart" | "stop" | null; recoveryRunId?: string; unanswered?: boolean };
+/** What changes in what a bubble says of a cut turn. `shutdown: null`,
+ *  `recoveryRunId: null` and `unanswered: false` REMOVE the fact: `unanswered` and
+ *  `recoveryRunId` are derived from the rows at every projection pass, and an announced
+ *  shutdown stops being a fact about a turn that resumed live. */
+export type InterruptionChange = { shutdown?: "restart" | "stop" | null; recoveryRunId?: string | null; unanswered?: boolean };
 
 /** Apply a change to a bubble's interruption; returns whether it changed. */
 export async function noteInterruption(
@@ -53,7 +63,7 @@ export async function noteInterruption(
 ): Promise<boolean> {
   const prev = message.interruption ?? {};
   const shutdown = change.shutdown === undefined ? prev.shutdown : (change.shutdown ?? undefined);
-  const recoveryRunId = change.recoveryRunId ?? prev.recoveryRunId;
+  const recoveryRunId = change.recoveryRunId === undefined ? prev.recoveryRunId : (change.recoveryRunId ?? undefined);
   const unanswered = change.unanswered === undefined ? prev.unanswered : change.unanswered ? (true as const) : undefined;
   if (prev.shutdown === shutdown && prev.recoveryRunId === recoveryRunId && prev.unanswered === unanswered) return false;
   const next: Interruption = {
@@ -71,8 +81,14 @@ type Scope = { chatId: Id<"chats">; instanceName: string; sessionKey: string };
  * The run the row RIGHT BEFORE a recovery entry says was executing, by what each kind of
  * row carries (bridge transcript-rows.ts `readTranscriptIdentity`, upstream
  * packages/gateway-client/src/session-projection-message-identity.ts):
- *  - a row a run PRODUCED (assistant, tool result, nested tool, hidden or not) names that
- *    run (`__openclaw.runId`): proven;
+ *  - a row a run PRODUCED names that run (`__openclaw.runId`), and it is the run the
+ *    recovery resumes only when the row is the tail of a turn that was CUT: a tool result
+ *    or a nested tool (the run was between two model calls), or an assistant row that
+ *    stopped on a tool call or was aborted (`stopReason`). Proven. An assistant row that
+ *    ended its reply (any other stop reason, or none stated) may be the end of ANOTHER
+ *    run that ran between the interruption and the recovery — a heartbeat, a delivery —
+ *    and upstream also resumes a run whose final reply was captured but not delivered:
+ *    the two cannot be told apart from the row, so nothing is concluded;
  *  - an input STEERED into a run names its own send as `runId` and the run it went into
  *    as `steerTargetRunId` — the executed run is the latter (upstream: the steered-into
  *    run stays the source), proven;
@@ -89,12 +105,14 @@ export function resumedRunFromRow(row: {
   runId?: string;
   steerTargetRunId?: string;
   presentationOwner?: boolean;
+  stopReason?: string;
 }): { runId: string; proven: boolean } | null {
   if (row.role.toLowerCase() === "user") {
     if (row.steerTargetRunId !== undefined) return { runId: row.steerTargetRunId, proven: true };
     return row.runId === undefined ? null : { runId: row.runId, proven: false };
   }
   if (row.runId === undefined || row.presentationOwner === true) return null;
+  if (row.role.toLowerCase() === "assistant" && row.stopReason !== "toolUse" && row.stopReason !== "aborted") return null;
   return { runId: row.runId, proven: true };
 }
 
@@ -111,48 +129,68 @@ async function lastBubbleOf(ctx: MutationCtx, scope: Scope, runId: string): Prom
   return null;
 }
 
+/** The run the rows say `entry` resumes, read NOW — never what was remembered. */
+async function derivedResumedRun(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">): Promise<string | null> {
+  if (!isRecoveryEntry(entry) || entry.runId === undefined || entry.retracted === true || entry.instanceName !== scope.instanceName) return null;
+  const before = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_session_seq", (q) =>
+      q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", entry.sessionId).lt("seq", entry.seq),
+    )
+    .order("desc")
+    .take(4);
+  // The row RIGHT before the entry, and only it: a hole would name an older run. A
+  // retracted row is not in the transcript (the durable row that holds its `seq`, if
+  // any, is).
+  const prev = before.find((d) => d.retracted !== true);
+  if (prev === undefined || prev.seq !== entry.seq - 1 || prev.instanceName !== scope.instanceName) return null;
+  const named = resumedRunFromRow(prev);
+  if (named === null || named.runId === entry.runId) return null;
+  if (!named.proven) {
+    // An input row names its send: believed only when the gateway is known to have run
+    // a run under that id in this session.
+    const ran = await ctx.db
+      .query("transcriptRuns")
+      .withIndex("by_chat_session_run", (q) =>
+        q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("runId", named.runId),
+      )
+      .first();
+    if (ran === null) return null;
+  }
+  return named.runId;
+}
+
 /**
- * A recovery entry was stored (or read again while still unresolved): find the run it
- * resumes and say so — on the entry (`recoversRunId`, what the display grouping and a
- * later-born bubble read) and on that run's bubble, when it has one. Returns the resumed
- * run, or null while the row before the entry is not stored yet (a live post that
- * overtook its read): resolved again when the recovery run is projected.
+ * Read again which run `entry` resumes and keep what it carries (`recoversRunId`, what the
+ * display grouping and a later-born bubble read) equal to it. When it stops naming a run,
+ * that run's bubble stops saying so. Returns the resumed run, or null — also while the row
+ * before the entry is not stored yet (a live post that overtook its read).
+ */
+async function rederiveRecovery(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">): Promise<string | null> {
+  const resumed = await derivedResumedRun(ctx, scope, entry);
+  const was = entry.recoversRunId;
+  if (was === (resumed ?? undefined)) return resumed;
+  await ctx.db.patch(entry._id, { recoversRunId: resumed ?? undefined });
+  if (was !== undefined) {
+    // What THIS entry made the bubble of that run say, and only that.
+    const bubble = await lastBubbleOf(ctx, scope, was);
+    if (bubble !== null && bubble.interruption?.recoveryRunId === entry.runId) await noteInterruption(ctx, bubble, { recoveryRunId: null });
+  }
+  return resumed;
+}
+
+/**
+ * A recovery entry was stored, or its run is projected: find the run it resumes and say
+ * so — on the entry and on that run's bubble, when it has one. Read from the rows every
+ * time. Returns the resumed run, or null.
  */
 export async function resolveRecovery(
   ctx: MutationCtx,
   scope: Scope,
   entry: Doc<"transcriptRows">,
 ): Promise<string | null> {
-  if (!isRecoveryEntry(entry) || entry.runId === undefined || entry.instanceName !== scope.instanceName) return null;
-  let resumed = entry.recoversRunId ?? null;
-  if (resumed === null) {
-    const before = await ctx.db
-      .query("transcriptRows")
-      .withIndex("by_chat_session_seq", (q) =>
-        q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", entry.sessionId).lt("seq", entry.seq),
-      )
-      .order("desc")
-      .take(1);
-    // The row RIGHT before the entry, and only it: a hole would name an older run.
-    const prev = before[0];
-    if (prev === undefined || prev.seq !== entry.seq - 1 || prev.instanceName !== scope.instanceName) return null;
-    const named = resumedRunFromRow(prev);
-    if (named === null || named.runId === entry.runId) return null;
-    if (!named.proven) {
-      // An input row names its send: believed only when the gateway is known to have run
-      // a run under that id in this session.
-      const ran = await ctx.db
-        .query("transcriptRuns")
-        .withIndex("by_chat_session_run", (q) =>
-          q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("runId", named.runId),
-        )
-        .first();
-      if (ran === null) return null;
-    }
-    resumed = named.runId;
-    await ctx.db.patch(entry._id, { recoversRunId: resumed });
-  }
-  await noteRecoveredRun(ctx, scope, resumed, entry.runId);
+  const resumed = await rederiveRecovery(ctx, scope, entry);
+  if (resumed !== null && entry.runId !== undefined) await noteRecoveredRun(ctx, scope, resumed, entry.runId);
   return resumed;
 }
 
@@ -162,15 +200,18 @@ export async function noteRecoveredRun(ctx: MutationCtx, scope: Scope, runId: st
   if (bubble !== null && bubble.role === "assistant") await noteInterruption(ctx, bubble, { recoveryRunId });
 }
 
-/** The recovery run that resumed `runId`, by its stored entry (null: none, or more than
- *  one entry names it — never a guess). */
+/** The recovery run that resumed `runId`, by the entries that name it — each read again
+ *  from the rows (null: none, or more than one — never a guess). */
 export async function recoveryOf(ctx: MutationCtx, scope: Scope, runId: string): Promise<string | null> {
   const entries = (
     await ctx.db
       .query("transcriptRows")
       .withIndex("by_chat_recovers", (q) => q.eq("chatId", scope.chatId).eq("recoversRunId", runId))
       .take(3)
-  ).filter((e) => e.sessionKey === scope.sessionKey && e.instanceName === scope.instanceName && e.runId !== undefined);
-  const runs = new Set(entries.map((e) => e.runId!));
+  ).filter((e) => e.sessionKey === scope.sessionKey && e.instanceName === scope.instanceName);
+  const runs = new Set<string>();
+  for (const e of entries) {
+    if ((await rederiveRecovery(ctx, scope, e)) === runId && e.runId !== undefined) runs.add(e.runId);
+  }
   return runs.size === 1 ? [...runs][0]! : null;
 }

@@ -572,8 +572,10 @@ async function projectRun(
   await executePlan(ctx, scope, chat, plan, result, budget);
   // THE GATEWAY'S OWN RECOVERY (lib/restartRecovery.ts): a recovery run's entry still
   // unresolved (it was stored before the row it follows) is resolved now that its run is
-  // over; and a run a recovery resumed says so on its bubble — also one born just above.
-  budget.queries += 8;
+  // over; and what this run's bubble — also one born just above — says of a recovery is
+  // read from the rows at EVERY pass, like `unanswered`: `recoveryOf` reads each entry
+  // that names the run again, and one that stopped naming it withdraws the statement.
+  budget.queries += 12;
   const entry = rows.find((d) => isRecoveryEntry(d) && d.recoversRunId === undefined);
   if (entry !== undefined) await resolveRecovery(ctx, scope, entry);
   const recoveredBy = await recoveryOf(ctx, scope, runId);

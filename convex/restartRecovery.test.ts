@@ -448,6 +448,22 @@ describe("what a recovery entry may and may not join", () => {
     expect(await t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).filter((r) => r.recoversRunId !== undefined).length)).toBe(0);
   });
 
+  test("ANOTHER run answered between the cut and the recovery (a heartbeat): its last row is right before the entry, and nothing is attributed", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    await liveBubble(t, ids, INTERRUPTED);
+    const BEAT = "webchat-" + "e".repeat(64);
+    const between = [
+      { entryId: "beat-in", seq: 12, role: "user", runId: BEAT, sendId: BEAT, hidden: true, visible: false },
+      { entryId: "beat-out", seq: 13, role: "assistant", runId: BEAT, stopReason: "stop", hidden: true, visible: false },
+    ];
+    const tail = projected.restart.filter((r) => r.seq >= 12).map((r) => ({ ...r, seq: r.seq + 2 }));
+    await apply(t, ids.chatId, [...projected.restart.filter((r) => r.seq <= 11), ...between, ...tail], IDLE);
+    await settle(t);
+    expect((await assistants(t, ids.chatId)).every((m) => m.interruption?.recoveryRunId === undefined)).toBe(true);
+    expect(await t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).filter((r) => r.recoversRunId !== undefined).length)).toBe(0);
+  });
+
   test("an entry of another provenance is no recovery", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t, INTERRUPTED);
@@ -467,5 +483,66 @@ describe("what a recovery entry may and may not join", () => {
     await apply(t, ids.chatId, rows, IDLE);
     await settle(t);
     expect((await get(t, cut))?.interruption).toBeUndefined();
+  });
+});
+
+describe("what a bubble says of its recovery is read from the rows at every pass", () => {
+  const rowsWith = (t: T) => t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).filter((r) => r.recoversRunId !== undefined));
+
+  test("the recovery entry was only seen LIVE and a durable read that covers its place does not return it: the bubble stops saying a recovery resumed it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq <= 11), IDLE);
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq === 12), { kind: "live", deltaCursor: undefined });
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ recoveryRunId: RECOVERY });
+    expect((await rowsWith(t)).map((r) => r.recoversRunId)).toEqual([INTERRUPTED]);
+    // The durable transcript holds another entry there: the live one is retracted.
+    const OTHER = "webchat-" + "f".repeat(64);
+    // (A delta that returns none of the interrupted run's rows and ends no run: only the
+    // retraction brings that run back to be read.)
+    await apply(t, ids.chatId, [{ entryId: "other-12", seq: 12, role: "user", runId: OTHER, sendId: OTHER, hidden: false, visible: true }], {
+      hasActiveRun: true,
+      activeRunIds: [OTHER],
+    });
+    await settle(t);
+    expect((await get(t, cut))?.interruption?.recoveryRunId).toBeUndefined();
+    expect(await rowsWith(t)).toEqual([]);
+  });
+
+  test("the row BEFORE the entry was only seen live and is retracted: the entry stops naming its run, the bubble stops saying it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq <= 10), { hasActiveRun: true, activeRunIds: [INTERRUPTED] });
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq === 11), { kind: "live", deltaCursor: undefined });
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq === 12), { kind: "live", deltaCursor: undefined });
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ recoveryRunId: RECOVERY });
+    // The durable read covers its place and does not return it.
+    await apply(
+      t,
+      ids.chatId,
+      [...projected.restart.filter((r) => r.seq <= 10), ...projected.restart.filter((r) => r.seq === 12)],
+      { kind: "page", hasActiveRun: true, activeRunIds: [RECOVERY] },
+    );
+    await settle(t);
+    expect(await rowsWith(t)).toEqual([]);
+    expect((await get(t, cut))?.interruption?.recoveryRunId).toBeUndefined();
+  });
+
+  test("the entry stands: every later pass says the same", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, projected.restart, IDLE);
+    await settle(t);
+    const before = (await get(t, cut))?.interruption;
+    expect(before?.recoveryRunId).toBe(RECOVERY);
+    await apply(t, ids.chatId, projected.restart, { kind: "page", ...IDLE });
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual(before);
+    expect((await rowsWith(t)).map((r) => r.recoversRunId)).toEqual([INTERRUPTED]);
   });
 });

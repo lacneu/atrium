@@ -10,10 +10,19 @@ const base = { hidden: false, visible: true };
 
 describe("resumedRunFromRow", () => {
   const cases: Array<[what: string, row: Parameters<typeof resumedRunFromRow>[0] & Record<string, unknown>, expected: ReturnType<typeof resumedRunFromRow>]> = [
-    ["an assistant row of the run (its producer, `__openclaw.runId`)", { ...base, role: "assistant", runId: R }, { runId: R, proven: true }],
+    // A row a run produced names that run — and the recovery resumes it only when the row
+    // is the tail of a turn that was CUT (upstream `isInterruptedTurnEntry`).
+    ["an assistant row that stopped on a tool call (the turn was waiting on the tool)", { ...base, role: "assistant", runId: R, stopReason: "toolUse" }, { runId: R, proven: true }],
+    ["an assistant row the shutdown aborted (the restart-abort tail)", { ...base, role: "assistant", runId: R, stopReason: "aborted" }, { runId: R, proven: true }],
     ["a tool result of the run", { ...base, role: "toolResult", runId: R }, { runId: R, proven: true }],
+    ["a tool result, as the bridge lower-cases the role", { ...base, role: "toolresult", runId: R }, { runId: R, proven: true }],
     ["a nested-tool row of the run", { ...base, role: "custom", runId: R }, { runId: R, proven: true }],
-    ["a hidden row of the run (NO_REPLY)", { hidden: true, visible: false, role: "assistant", runId: R }, { runId: R, proven: true }],
+    // The recovery is sent seconds after the gateway is back (or with no restart at all):
+    // another run may have ANSWERED in between, and its last row sits right before the entry.
+    ["an assistant row that ENDED its reply: maybe another run's (a delivery that ran in between) — nothing", { ...base, role: "assistant", runId: R, stopReason: "stop" }, null],
+    ["a hidden reply that ended (a heartbeat's HEARTBEAT_OK, a NO_REPLY) — nothing", { hidden: true, visible: false, role: "assistant", runId: R, stopReason: "stop" }, null],
+    ["an assistant row that states no stop reason — nothing", { ...base, role: "assistant", runId: R }, null],
+    ["an assistant row that ended in an error (the run is over, not cut) — nothing", { ...base, role: "assistant", runId: R, stopReason: "error" }, null],
     // Upstream keeps the run a steered input went INTO as the executed source: the input's
     // own id (its send) never ran.
     ["a STEERED input: the run it was steered into, never its own send", { ...base, role: "user", runId: S, sendId: S, steerTargetRunId: R }, { runId: R, proven: true }],
