@@ -15,6 +15,7 @@ import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { isDeliveryRun } from "./deliveryRuns";
 import { bubbleInScope, type BubbleScope } from "./projectedRuns";
 import { isWatchdogOrphan } from "./streamOrphan";
+import { isRecoveryEntry, noteInterruption, noteRecoveredRun, recoveryOf, resolveRecovery } from "./restartRecovery";
 import { syncBubbleRowParts } from "./rowParts";
 import { maskCredentialId } from "./chatRenderState";
 import {
@@ -319,6 +320,7 @@ async function runFacts(
     ...(belowFloor ? { belowFloor: true as const } : {}),
     ...(gapped ? { gapped: true as const } : {}),
     status: run.status as RunStatus,
+    ...(complete && run.firstSeq === undefined ? { empty: true as const } : {}),
     ...(run.errorText !== undefined ? { errorText: run.errorText } : {}),
   };
 }
@@ -568,6 +570,14 @@ async function projectRun(
     runs: facts,
   });
   await executePlan(ctx, scope, chat, plan, result, budget);
+  // THE GATEWAY'S OWN RECOVERY (lib/restartRecovery.ts): a recovery run's entry still
+  // unresolved (it was stored before the row it follows) is resolved now that its run is
+  // over; and a run a recovery resumed says so on its bubble — also one born just above.
+  budget.queries += 8;
+  const entry = rows.find((d) => isRecoveryEntry(d) && d.recoversRunId === undefined);
+  if (entry !== undefined) await resolveRecovery(ctx, scope, entry);
+  const recoveredBy = await recoveryOf(ctx, scope, runId);
+  if (recoveredBy !== null) await noteRecoveredRun(ctx, scope, runId, recoveredBy);
   // A deleted segment's rows are rattached to the deleted bubble (never placed again).
   // Their texts are NOT read here: the deletion's own purge removes what was stored before
   // it (bounded in bytes), and nothing is stored after it (`writeRowTexts` refuses).
@@ -703,6 +713,9 @@ async function loadBubble(
     ...(layoutKey(message.rowLayout) !== undefined ? { layoutKey: layoutKey(message.rowLayout) } : {}),
     ...(message.error !== undefined ? { hasError: true } : {}),
     ...(orphaned ? { orphaned: true } : {}),
+    ...(message.interruption?.shutdown !== undefined ? { shutdownNoted: true as const } : {}),
+    ...(message.interruption?.unanswered === true ? { unanswered: true as const } : {}),
+    ...(message.interruption?.recoveryRunId !== undefined ? { recovered: true as const } : {}),
   });
 }
 
@@ -823,6 +836,10 @@ async function executePlan(
       if (await dropVanishedBubble(ctx, messageId)) result.rewritten++;
       continue;
     }
+    // The run stopped unanswered after an announced shutdown: said on the bubble, BEFORE
+    // it is settled — a bubble that states it is not dropped for being empty.
+    if (w.unanswered === true) await noteInterruption(ctx, message, { unanswered: true });
+    const stated = w.unanswered === true || message.interruption?.unanswered === true || message.interruption?.recoveryRunId !== undefined;
     // An error bubble whose terminal carried no text: the error the transcript states.
     if (w.errorText !== undefined && message.status === "error" && message.error === undefined) {
       await ctx.db.patch(messageId, { error: maskCredentialId(w.errorText), updatedAt: now });
@@ -850,7 +867,7 @@ async function executePlan(
         ...(orphaned && message.runId !== undefined ? { expectedRunId: message.runId } : {}),
         // A run over with nothing a reader sees leaves no bubble (CU-21), as phase 3's
         // live terminal already did — but tool cards or files its rows lay out ARE seen.
-        ...(settle === "complete" && (w.layout ?? message.rowLayout ?? []).length === 0 ? { dropIfEmpty: true } : {}),
+        ...(settle === "complete" && !stated && (w.layout ?? message.rowLayout ?? []).length === 0 ? { dropIfEmpty: true } : {}),
       });
       result.settled++;
     }

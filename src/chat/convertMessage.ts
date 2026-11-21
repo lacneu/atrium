@@ -785,6 +785,9 @@ export function convertConvexMessage(
         // The gateway's status notices — rendered by GatewayNotices under the reply,
         // never inside it. Absent on a bubble without one, for the same reason.
         ...(gatewayNotices.length > 0 ? { gatewayNotices } : {}),
+        // A turn the gateway cut (a restart, a stop): what is known of it — rendered by
+        // TurnInterruptionNotice under the bubble's work. Absent on every other bubble.
+        ...(message.interruption !== undefined ? { interruption: message.interruption } : {}),
         // L2: count of READY downloadable document attachments for this turn —
         // drives the subtle "joints" badge on the Sources chip.
         attachedDocCount: message.attachedDocCount ?? 0,

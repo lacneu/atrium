@@ -1082,7 +1082,7 @@ reads that start as a run start and must never infer a compaction from it.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`bridge/src/providers/openclaw/openclaw-client.ts:1634-1645`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1640-1651`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).
@@ -1555,6 +1555,44 @@ without it otherwise; the gateway's sentence is not shown. It ends on the same r
 signals (assistant text, tool progress, a preamble). A retry whose reason is
 `output_limit` — the run continuing a reply cut at its output limit — publishes nothing.
 The startup phases of the stream are not shown.
+
+## 12. A turn the gateway cut, and its own recovery
+
+### Upstream contract
+
+A gateway restart aborts the runs it interrupts; once it is back — after a restart, or a
+stop followed by a start — it resumes each interrupted main-session turn by itself
+(`$UP/src/gateway/server-startup-post-attach.ts:979-982`; no setting turns it off). It
+appends a `user` entry whose text begins `[System] Your previous turn was interrupted`
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:62`), marked
+`provenance: {kind: "internal_system", sourceTool: "main_session_restart_recovery"}`
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:453`,
+`$UP/src/sessions/input-provenance.ts:24`), and starts a NEW run that answers: a fresh
+uuid, also the entry's idempotency key
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:256,440`). Which
+run it resumes is kept in the gateway's session store only
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:392`): nothing in
+the entry, its provenance or the recovery run's frames names it. The provenance exists on
+every validated version; the sentence changed at v2026.9.36 (it no longer says "by a
+gateway restart").
+
+The Control UI shows that entry as a notice with a fixed text, between the interrupted
+work and the recovery's answer (`$UP/ui/src/pages/chat/system-notice-kinds.ts:28`); the
+notice starts a turn (`$UP/ui/src/pages/chat/chat-system-notice.ts:52`), so the two are
+never one group. A tool call the interrupted run left with no result has no outcome there
+— neither running nor failed (`$UP/ui/src/lib/chat/tool-cards.ts:178`).
+
+### Atrium behavior and verdict
+
+Same facts, one deliberate difference. The entry itself is not shown as a message; the
+bubble of the run it follows — the run of the row right before it in the transcript, the
+only link the transcript states — says that the gateway cut the turn and that the agent
+resumed it, naming a restart or a stop when the bridge saw the gateway announce one on
+the turn's socket. A call left with no result is shown as interrupted. The difference:
+the recovery's answer is grouped with the interrupted bubble (one display group), where
+the Control UI shows two turns — Atrium reads it as the continuation of the turn the
+reader asked for. With no recovery entry, the bubble states the interruption only when a
+shutdown was announced on its socket and its transcript stops before an answer.
 
 ## Conformance summary
 

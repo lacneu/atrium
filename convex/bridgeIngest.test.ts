@@ -1598,6 +1598,20 @@ describe("sweepStreams (bridge boot-time orphan sweep)", () => {
     }
   });
 
+  test("`resumeStreams` carries the shutdown the gateway ANNOUNCED onto the turn's bubble; anything else is no shutdown", async () => {
+    for (const [shutdown, stored] of [["restart", { shutdown: "restart" }], ["stop", { shutdown: "stop" }], ["reboot", undefined], [undefined, undefined]] as const) {
+      const t = convexTest(schema, modules);
+      const { messageId, chatId } = await seedAssistantMessage(t);
+      await t.run(async (ctx) => {
+        await ctx.db.patch(messageId, { runId: "r1", turnSessionKey: "k", projectedTurn: true });
+        await ctx.db.insert("streamingText", { messageId, chatId, text: "", boundInstance: "prod", updatedAt: Date.now() });
+      });
+      const res = await post(t, { op: "resumeStreams", chatId, ...(shutdown !== undefined ? { shutdown } : {}) });
+      expect(res.status).toBe(200);
+      expect((await t.run((ctx) => ctx.db.get(messageId)))?.interruption).toEqual(stored);
+    }
+  });
+
   test("0.102.1 (Codex pass 2): `startAssistant` carries the bridge's `projectedTurn` onto the bubble; absent, nothing", async () => {
     const t = convexTest(schema, modules);
     await seedAuthOnly(t);

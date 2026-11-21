@@ -1,0 +1,1392 @@
+{
+ "_comment": "Verbatim transcript rows of two live proofs on OpenClaw 2026.9.36 (2026-11-21): a turn cut by an in-process gateway restart (restart) and by a gateway stop (stop), each followed by the gateway's own restart recovery. `source` says which frame carried the row.",
+ "restart": {
+  "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx78dqkpq6ad35yh16z22fp6m18jms0v",
+  "shutdown": {
+   "reason": "gateway restarting",
+   "restartExpectedMs": 1500
+  },
+  "rows": [
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "a81d8d01-76d7-453d-a054-1fe63b3e2ce0",
+     "messageSeq": 3
+    },
+    "message": {
+     "role": "user",
+     "content": "Lance exactement cette commande shell avec ton outil exec, une seule fois : sleep 70 ; echo P3A_SLEPT . Quand elle est terminee, reponds EXACTEMENT: P3A_TURN_DONE\n\n[LIVRAISON]\nPour qu'un fichier que tu génères soit téléchargeable par l'utilisateur dans ce webchat : écris-le sous /home/node/.openclaw/media/outbound/ puis ajoute, dans ta réponse finale, une ligne dédiée EXACTEMENT au format MEDIA:<chemin absolu du fichier>. N'utilise PAS de lien markdown vers un chemin local — il ne serait pas cliquable.",
+     "timestamp": 1795237308112,
+     "idempotencyKey": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf:user",
+     "__openclaw": {
+      "senderIsOwner": true,
+      "transport": {
+       "clients": [
+        {
+         "id": "cli",
+         "mode": "cli"
+        }
+       ]
+      },
+      "id": "a81d8d01-76d7-453d-a054-1fe63b3e2ce0",
+      "idempotencyKey": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf:user",
+      "recordTimestampMs": 1795237308287,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 7
+      },
+      "seq": 3
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "7e96b359-ee7f-469f-8991-a2eeb53763ea",
+     "messageSeq": 4
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_1394f242afb24ae68583018015d4d107|fc_0fa1861c928049b6016b0125be142c87d2a038a0fb86861c6b",
+       "name": "exec",
+       "arguments": {
+        "title": "Read foreground execution instructions",
+        "code": "text(await skills.read(\"foreground-exec-requests\")); const ts = await catalog.search(\"exec shell command\"); for (const t of ts) text(t);"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 353,
+      "output": 57,
+      "totalTokens": 13722,
+      "cacheRead": 13312,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.000706,
+       "output": 0.00057,
+       "cacheRead": 0.0013312,
+       "cacheWrite": 0,
+       "total": 0.0026072
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795237308494,
+     "responseId": "resp_0fa1861c928049b6016b0125bcab7087d2bf16ef4672f2af0f",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795237310997,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+      "id": "7e96b359-ee7f-469f-8991-a2eeb53763ea",
+      "recordTimestampMs": 1795237310999,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 9
+      },
+      "seq": 4
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "8437ca61-0e51-4992-abb6-e5d362fc26ce",
+     "messageSeq": 5
+    },
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_1394f242afb24ae68583018015d4d107|fc_0fa1861c928049b6016b0125be142c87d2a038a0fb86861c6b",
+     "toolName": "exec",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"88cda58662f89d076809c5f6\",\"searchCount\":1,\"describeCount\":0,\"callCount\":0,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[{\"type\":\"text\",\"text\":\"---\\nname: foreground-exec-requests\\ndescription: Run user-requested foreground shell commands with explicit exec timing constraints and exact follow-up replies.\\n---\\n\\n# Foreground exec requests\\n\\nUse this when the user asks to execute a specific shell command via `exec`, wait for it in the foreground, and then send a specific reply.\\n\\n1. Use the available shell-execution interface with the requested shell command unchanged in `command`. If shell `exec` is directly exposed, call it directly. If the exposed `exec` is a JavaScript Code Mode runner, invoke its enabled shell tool instead, for example `return await exec({command:\\\"sleep 40\\\", timeoutSeconds:60});`. Do not submit shell source as JavaScript. When the tool and schema are already available, skip discovery and rereading skills.\\n2. Do not create a background helper or a second command merely to wait. Code Mode transport does not itself make the shell command a background task.\\n3. Map timing fields to the current `exec` schema: use `yieldMs` for the foreground wait budget and `timeoutSeconds` for the process timeout. If the user says \\\"timeout 330 secondes\\\", pass `timeoutSeconds: 330`.\\n4. Keep it foreground unless the user asks otherwise: set `background: false` when an explicit foreground constraint is part of the request.\\n5. If shell `exec` returns a running `sessionId`—including with `background:false` and a large `yieldMs`—finish that same command through `process` before replying: call `process(action=\\\"poll\\\", sessionId=..., timeout=30000)` as needed until it completes. The poll timeout is milliseconds and is capped at 30000. In Code Mode, an outer `status:\\\"waiting\\\"` instead requires `wait` with its top-level `runId`; after it resolves, inspect the nested tool result and continue polling the shell `sessionId` if still running. Never interchange these IDs, pass `timeoutSeconds` to `process`, or use `computer.wait`.\\n6. Check the command's outcome, not just a `completed` status. If it failed, timed out, or was cancelled, report that outcome instead of a success-confirming follow-up. If the tool requests approval or reports a blocker, follow that tool result instead of inventing a completion.\\n7. After successful completion, deliver the requested follow-up on the surface the user named. If they require `message(action=\\\"send\\\")` to the current conversation and then a silent assistant turn, follow [current-chat-message-delivery](../current-chat-message-delivery.md) with the exact requested text; otherwise use the named surface or normal final response.\\n\\nCompletion check: the requested command has completed successfully through the available shell `exec` interface, and any exact post-command text is delivered once, either through a successful required message-tool send followed by `NO_REPLY` or, when that current-chat route is unavailable, as the normal final response without extra text.\\n\"},{\"type\":\"text\",\"text\":\"{\\\"callableName\\\":\\\"exec\\\",\\\"toolName\\\":\\\"exec\\\",\\\"label\\\":\\\"exec\\\",\\\"description\\\":\\\"Run shell now; background continuation supported. Completed calls return command output directly. Use process only when exec reports running with a sessionId; output text alone is not a process handle. Long run: automatic completion wake when enabled and output/failure occurs; otherwise process confirms completion. No sleep loops for reminders/follow-ups; use automations. TTY CLI/UI/coding agent: pty=true. Quote arguments containing shell metacharacters, including URL query strings with `?` or `&`.\\\",\\\"source\\\":\\\"openclaw\\\",\\\"input\\\":\\\"{ command: string; ask?: string; background?: boolean; elevated?: boolean; env?: {}; host?: \\\\\\\"auto\\\\\\\" | \\\\\\\"sandbox\\\\\\\" | \\\\\\\"gateway\\\\\\\" | \\\\\\\"node\\\\\\\"; node?: string; pty?: boolean; timeoutSeconds?: number; title?: string; workdir?: string; yieldMs?: number }\\\"}\"},{\"type\":\"text\",\"text\":\"{\\\"callableName\\\":\\\"secrets\\\",\\\"toolName\\\":\\\"secrets\\\",\\\"label\\\":\\\"Secrets\\\",\\\"description\\\":\\\"Protected credentials: `list` metadata first; `request` missing task-needed name + reason via human masked entry; `delete` removes an entry. Request waits for human; value goes straight to shared store, never model/chat. Use the returned store SecretRef for supported config fields. Gateway HTTPS egress only: enabled proxy + exact allowedHosts required; no hosts blocks egress, not config refs. No plaintext fallback. Protected entries cannot supply SSH/sudo passwords or subprocess stdin; `${secret:NAME}` is not shell substitution. Check the supported consumer before requesting a credential. Gateway-host commands: use auto-injected opaque env sentinel under stored name. No secret templates; never override/print that variable. Native shell/sandbox/node: no protected injection. First command snapshots store for run; late saves need next turn. Operator-set env entries are readable and managed separately from this protected store. no_answer means no credential was supplied.\\\",\\\"source\\\":\\\"openclaw\\\",\\\"input\\\":\\\"{ action: \\\\\\\"request\\\\\\\" | \\\\\\\"list\\\\\\\" | \\\\\\\"delete\\\\\\\"; allowedHosts?: Array<string>; kind?: \\\\\\\"secret\\\\\\\"; name?: string; reason?: string; timeoutSeconds?: number /* integer */ }\\\"}\"},{\"type\":\"text\",\"text\":\"{\\\"callableName\\\":\\\"file_fetch\\\",\\\"toolName\\\":\\\"file_fetch\\\",\\\"label\\\":\\\"File Fetch\\\",\\\"description\\\":\\\"Retrieve a file from a paired node by absolute path. Saves all fetched bytes in the gateway's file-transfer media store and returns localPath and mediaId. Returns supported images as image content blocks and inlines small text files (≤8 KB). Use this for screenshots, photos, receipts, logs, source files. The mediaId can be reused as sourceMediaId for binary copies when node-write capability is available. Requires operator opt-in: gateway.nodes.commands.allow must include 'file.fetch', and file-transfer policy must authorize the path through allowReadPaths or a remembered exact approval. Without policy configured, every call is denied.\\\",\\\"source\\\":\\\"openclaw\\\",\\\"input\\\":\\\"{ node: string; path: string; gatewayToken?: string; gatewayUrl?: string; maxBytes?: number /* integer, >= 1 */; timeoutMs?: number /* integer, >= 1 */ }\\\"}\"},{\"type\":\"text\",\"text\":\"{\\\"callableName\\\":\\\"gateway\\\",\\\"toolName\\\":\\\"gateway\\\",\\\"label\\\":\\\"Gateway\\\",\\\"description\\\":\\\"Read gateway config/schema. update.run: owner request or operator schedule; automatic restart + completion notice. Never via shell. Other system changes: use openclaw tool.\\\",\\\"source\\\":\\\"openclaw\\\",\\\"input\\\":\\\"{ action: \\\\\\\"config.get\\\\\\\" | \\\\\\\"config.schema.lookup\\\\\\\" | \\\\\\\"update.run\\\\\\\"; gatewayToken?: string; gatewayUrl?: string; note?: string; path?: string; timeoutMs?: number /* integer, >= 1 */ }\\\"}\"},{\"type\":\"text\",\"text\":\"{\\\"callableName\\\":\\\"dir_fetch\\\",\\\"toolName\\\":\\\"dir_fetch\\\",\\\"label\\\":\\\"Directory Fetch\\\",\\\"description\\\":\\\"Retrieve a whole directory tree, including dotfiles, from a paired node as a gzipped tarball. Unpack it on the gateway. Text is limited to 8192 UTF-8 bytes and shows rootDir, total fileCount and a prefix of complete saved relPath and size records when representable; full files and media metadata stay in structured details. Use rootDir plus relPath for local follow-up operations. Omitted files remain saved under rootDir; inspect them with available local file or directory capabilities. There is no fetch pagination. A denied descendant rejects the whole transfer. Rejects trees larger than 16 MB compressed. Requires operator opt-in: gateway.nodes.commands.allow must include 'dir.fetch', and file-transfer policy must authorize the path through allowReadPaths or a remembered exact approval.\\\",\\\"source\\\":\\\"openclaw\\\",\\\"input\\\":\\\"{ node: string; path: string; gatewayToken?: string; gatewayUrl?: string; maxBytes?: number /* integer, >"
+      }
+     ],
+     "isError": false,
+     "timestamp": 1795237311040,
+     "__openclaw": {
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+      "id": "8437ca61-0e51-4992-abb6-e5d362fc26ce",
+      "recordTimestampMs": 1795237311045,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 10
+      },
+      "seq": 5,
+      "truncated": true,
+      "reason": "display-cap"
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "bbba9b62-8920-49fc-a8c7-a301794cd12b",
+     "messageSeq": 6
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_3c01f2467d50421eb8fb9b4fdc3fece8|fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22",
+       "name": "exec",
+       "arguments": {
+        "title": "Run requested shell command",
+        "code": "const [shell] = await catalog.search(\"+exec\"); return await shell({command:\"sleep 70 ; echo P3A_SLEPT\", background:false, yieldMs:1000, timeoutSeconds:100});"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 2536,
+      "output": 68,
+      "totalTokens": 16172,
+      "cacheRead": 13568,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.005072,
+       "output": 0.00068,
+       "cacheRead": 0.0013568000000000002,
+       "cacheWrite": 0,
+       "total": 0.0071088
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795237311057,
+     "responseId": "resp_0fa1861c928049b6016b0125bf3b8487d289005fd4958f4f31",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795237313424,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+      "id": "bbba9b62-8920-49fc-a8c7-a301794cd12b",
+      "recordTimestampMs": 1795237313428,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 12
+      },
+      "seq": 6
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "ab84130d-1427-4db8-817a-38271158fb05",
+     "messageSeq": 7
+    },
+    "message": {
+     "role": "custom",
+     "customType": "openclaw.nested-tool.v1",
+     "display": true,
+     "excludeFromContext": true,
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "tool_call:call_3c01f2467d50421eb8fb9b4fdc3fece8_fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22:exec:1",
+       "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+       "name": "exec",
+       "arguments": {
+        "command": "sleep 70 ; echo P3A_SLEPT",
+        "background": false,
+        "yieldMs": 1000,
+        "timeoutSeconds": 100
+       },
+       "parentToolCallId": "call_3c01f2467d50421eb8fb9b4fdc3fece8|fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22",
+       "timestamp": 1795237313446
+      },
+      {
+       "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+       "scopeId": "dd4a650b-29e7-42fd-b020-35dd72fa7259",
+       "afterEntryId": "bbba9b62-8920-49fc-a8c7-a301794cd12b",
+       "startOrder": 0,
+       "parentToolCallId": "call_3c01f2467d50421eb8fb9b4fdc3fece8|fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22",
+       "toolCallId": "tool_call:call_3c01f2467d50421eb8fb9b4fdc3fece8_fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22:exec:1",
+       "toolName": "exec",
+       "isError": false,
+       "startedAt": 1795237313446,
+       "timestamp": 1795237314462,
+       "content": [
+        {
+         "type": "text",
+         "text": "Command still running (session glow-zephyr, pid 130042). Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up."
+        }
+       ],
+       "type": "toolResult",
+       "role": "toolResult"
+      }
+     ],
+     "timestamp": 1795237313446,
+     "idempotencyKey": "dd4a650b-29e7-42fd-b020-35dd72fa7259:tool_call:call_3c01f2467d50421eb8fb9b4fdc3fece8_fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22:exec:1",
+     "__openclaw": {
+      "id": "ab84130d-1427-4db8-817a-38271158fb05",
+      "idempotencyKey": "dd4a650b-29e7-42fd-b020-35dd72fa7259:tool_call:call_3c01f2467d50421eb8fb9b4fdc3fece8_fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22:exec:1",
+      "recordTimestampMs": 1795237314463,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 13,
+       "activity": {
+        "afterRawSeq": 12,
+        "scopeId": "dd4a650b-29e7-42fd-b020-35dd72fa7259",
+        "startOrder": 0
+       }
+      },
+      "seq": 7,
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf"
+     },
+     "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf"
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "cddf90f4-2339-483f-a45b-3d531d54f677",
+     "messageSeq": 8
+    },
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_3c01f2467d50421eb8fb9b4fdc3fece8|fc_0fa1861c928049b6016b0125c04bf887d284b7a08217458e22",
+     "toolName": "exec",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"88cda58662f89d076809c5f6\",\"searchCount\":2,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"running\",\"sessionId\":\"glow-zephyr\",\"pid\":130042,\"startedAt\":1795237313455,\"cwd\":\"/home/node/.openclaw/workspace-alice\",\"tail\":\"\",\"followUp\":\"Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.\"}}"
+      }
+     ],
+     "isError": false,
+     "timestamp": 1795237314471,
+     "__openclaw": {
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+      "id": "cddf90f4-2339-483f-a45b-3d531d54f677",
+      "recordTimestampMs": 1795237314473,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 14
+      },
+      "seq": 8
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "598659df-ce5c-485f-b97d-01dfd88694bb",
+     "messageSeq": 9
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_4e7444281fb7411a900e5a86857fd638|fc_0fa1861c928049b6016b0125c41c3c87d29bbbbf2f1a431127",
+       "name": "exec",
+       "arguments": {
+        "title": "Wait for command completion",
+        "code": "const [process] = await catalog.search(\"+process\"); return await process({action:\"poll\",sessionId:\"glow-zephyr\",timeout:30000});"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 335,
+      "output": 57,
+      "totalTokens": 16392,
+      "cacheRead": 16000,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.00067,
+       "output": 0.00057,
+       "cacheRead": 0.0016,
+       "cacheWrite": 0,
+       "total": 0.00284
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795237314484,
+     "responseId": "resp_0fa1861c928049b6016b0125c2c23887d29d736193837a5222",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795237316966,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+      "id": "598659df-ce5c-485f-b97d-01dfd88694bb",
+      "recordTimestampMs": 1795237316968,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 16
+      },
+      "seq": 9
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "a7755124-1573-4cad-bd76-51136a65f8be",
+     "messageSeq": 10
+    },
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_4e7444281fb7411a900e5a86857fd638|fc_0fa1861c928049b6016b0125c41c3c87d29bbbbf2f1a431127",
+     "toolName": "exec",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"status\":\"waiting\",\"runId\":\"cm_959cd4c2-dc3a-4f1d-89d5-bfe83d3411c5\",\"reason\":\"pending_tools\",\"pendingToolCalls\":[{\"id\":\"bridge:callValue:1\",\"method\":\"callValue\"}],\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"88cda58662f89d076809c5f6\",\"searchCount\":3,\"describeCount\":0,\"callCount\":2,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[]}"
+      }
+     ],
+     "isError": false,
+     "timestamp": 1795237327033,
+     "__openclaw": {
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+      "id": "a7755124-1573-4cad-bd76-51136a65f8be",
+      "recordTimestampMs": 1795237327035,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 17
+      },
+      "seq": 10
+     }
+    }
+   },
+   {
+    "source": "chat.history",
+    "envelope": {},
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_d3e81395d6994c90accd5bef05e9629c|fc_0fa1861c928049b6016b0125d07b8c87d28b32c73acf496614",
+       "name": "wait",
+       "arguments": {
+        "runId": "cm_959cd4c2-dc3a-4f1d-89d5-bfe83d3411c5"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 283,
+      "output": 45,
+      "totalTokens": 16584,
+      "cacheRead": 16256,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.000566,
+       "output": 0.00045,
+       "cacheRead": 0.0016256,
+       "cacheWrite": 0,
+       "total": 0.0026416
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795237327049,
+     "responseId": "resp_0fa1861c928049b6016b0125cf305c87d2a169e438fa7d220d",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795237329106,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "webchat-f5d1f2db9ee87713854fde13ad4d7448c962f4e5dcd7fa9d485b1bef4d73fabf",
+      "id": "95cc0e2d-c0bb-4511-91a4-281feaad1e49",
+      "recordTimestampMs": 1795237329108,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 19
+      },
+      "seq": 11
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "4378ec0a-6f9a-4c66-9153-5f4e294676dc",
+     "messageSeq": 12
+    },
+    "message": {
+     "role": "user",
+     "content": "[System] Your previous turn was interrupted while OpenClaw was waiting on tool/model work. This can happen after a Gateway restart or a tool execution timeout. The interruption did not cancel the user's task. Continue from the existing transcript: check the current state, recover interrupted work, and finish the task without asking the user to repeat the request. Interrupted subagents are not automatically relaunched. Reconcile every listed unfinished child against its saved history, current status, and the user's requested outcome. Prefer a follow-up in the same retained child session when its task is still needed; confirm the previous execution has stopped and verify uncertain tool effects before continuing it. Do not duplicate running work or blindly replay commands. If retained work already satisfies the task, use its result; otherwise continue it, assign replacement work, or finish it yourself. A restart interruption alone is not a blocker. Finish the original task or report the specific remaining blocker that requires user input or unavailable authority. Treat a tool result marked interrupted or missing as having an unknown outcome; verify what happened before repeating an action. If a tool failed, say so; never claim completion or success.",
+     "timestamp": 1795237347379,
+     "idempotencyKey": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd:user",
+     "provenance": {
+      "kind": "internal_system",
+      "sourceSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx78dqkpq6ad35yh16z22fp6m18jms0v",
+      "sourceTool": "main_session_restart_recovery"
+     },
+     "__openclaw": {
+      "senderIsOwner": false,
+      "id": "4378ec0a-6f9a-4c66-9153-5f4e294676dc",
+      "idempotencyKey": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd:user",
+      "recordTimestampMs": 1795237349369,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 22
+      },
+      "seq": 12
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "1b566c59-6e71-4c22-837b-916c5ea87b1a",
+     "messageSeq": 13
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_558f3a3563ee4b48bb952c61cf538fc1|fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0",
+       "name": "exec",
+       "arguments": {
+        "title": "Recover command completion state",
+        "code": "const [process] = await catalog.search(\"+process\"); return await process({action:\"poll\",sessionId:\"glow-zephyr\",timeout:30000});"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 14901,
+      "output": 57,
+      "totalTokens": 14958,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.029802,
+       "output": 0.00057,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0.030372
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795237349390,
+     "responseId": "resp_0f757738d3e984e7016b0125e5dd3087d29a14a68604bad627",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795237351989,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd",
+      "id": "1b566c59-6e71-4c22-837b-916c5ea87b1a",
+      "recordTimestampMs": 1795237351991,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 25
+      },
+      "seq": 13
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "d88d2664-f556-4179-9a7d-e6ea7dd63d00",
+     "messageSeq": 14
+    },
+    "message": {
+     "role": "custom",
+     "customType": "openclaw.nested-tool.v1",
+     "display": true,
+     "excludeFromContext": true,
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "tool_call:call_558f3a3563ee4b48bb952c61cf538fc1_fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0:process:1",
+       "runId": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd",
+       "name": "process",
+       "arguments": {
+        "action": "poll",
+        "sessionId": "glow-zephyr",
+        "timeout": 30000
+       },
+       "parentToolCallId": "call_558f3a3563ee4b48bb952c61cf538fc1|fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0",
+       "timestamp": 1795237352106
+      },
+      {
+       "runId": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd",
+       "scopeId": "d32f733f-ad54-4f69-95e7-db4a4b432214",
+       "afterEntryId": "1b566c59-6e71-4c22-837b-916c5ea87b1a",
+       "startOrder": 0,
+       "parentToolCallId": "call_558f3a3563ee4b48bb952c61cf538fc1|fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0",
+       "toolCallId": "tool_call:call_558f3a3563ee4b48bb952c61cf538fc1_fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0:process:1",
+       "toolName": "process",
+       "isError": true,
+       "startedAt": 1795237352106,
+       "timestamp": 1795237352110,
+       "content": [
+        {
+         "type": "text",
+         "text": "(no new output)\n\nProcess exited with signal SIGTERM."
+        }
+       ],
+       "type": "toolResult",
+       "role": "toolResult"
+      }
+     ],
+     "timestamp": 1795237352106,
+     "idempotencyKey": "d32f733f-ad54-4f69-95e7-db4a4b432214:tool_call:call_558f3a3563ee4b48bb952c61cf538fc1_fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0:process:1",
+     "__openclaw": {
+      "id": "d88d2664-f556-4179-9a7d-e6ea7dd63d00",
+      "idempotencyKey": "d32f733f-ad54-4f69-95e7-db4a4b432214:tool_call:call_558f3a3563ee4b48bb952c61cf538fc1_fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0:process:1",
+      "recordTimestampMs": 1795237352111,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 26,
+       "activity": {
+        "afterRawSeq": 25,
+        "scopeId": "d32f733f-ad54-4f69-95e7-db4a4b432214",
+        "startOrder": 0
+       }
+      },
+      "seq": 14,
+      "runId": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd"
+     },
+     "runId": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd"
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "2f7ad608-7b52-4653-aab3-0b3e44a8fc02",
+     "messageSeq": 15
+    },
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_558f3a3563ee4b48bb952c61cf538fc1|fc_0f757738d3e984e7016b0125e71cc087d29376ac5f85ac8bd0",
+     "toolName": "exec",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":43,\"sources\":{\"openclaw\":43,\"mcp\":0,\"client\":0},\"counterScope\":\"ee0d19487e68e21c77955b78\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"failed\",\"sessionId\":\"glow-zephyr\",\"exitSignal\":\"SIGTERM\",\"exitReason\":\"manual-cancel\",\"timedOut\":false,\"noOutputTimedOut\":false,\"name\":\"sleep 70\",\"aggregated\":\"\"}}"
+      }
+     ],
+     "isError": false,
+     "timestamp": 1795237352120,
+     "__openclaw": {
+      "runId": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd",
+      "id": "2f7ad608-7b52-4653-aab3-0b3e44a8fc02",
+      "recordTimestampMs": 1795237352121,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 27
+      },
+      "seq": 15
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "529a1b8b-c4d2-475b-92ae-abaabbeeb56a",
+     "messageSeq": 16
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "La commande a été interrompue (SIGTERM) avant sa fin. Je ne l’ai pas relancée, conformément à ta demande d’une seule exécution.",
+       "textSignature": "{\"v\":1,\"id\":\"msg_0f757738d3e984e7016b0125e95d7c87d28c7afda9d9047c6e\",\"phase\":\"final_answer\"}"
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 15099,
+      "output": 37,
+      "totalTokens": 15136,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.030198,
+       "output": 0.00037,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0.030567999999999998
+      }
+     },
+     "stopReason": "stop",
+     "timestamp": 1795237352136,
+     "responseId": "resp_0f757738d3e984e7016b0125e85fd487d2ba55308d67dca5ae",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795237353986,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "stop",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd",
+      "id": "529a1b8b-c4d2-475b-92ae-abaabbeeb56a",
+      "recordTimestampMs": 1795237353988,
+      "transcriptPosition": {
+       "source": "q6zBOhDvWBDPXjdlH2Y_hqi3Vzec88UnucWan5TYnng",
+       "rawSeq": 29
+      },
+      "seq": 16
+     }
+    }
+   }
+  ]
+ },
+ "stop": {
+  "shutdown": {
+   "reason": "gateway stopping"
+  },
+  "rows": [
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "53776f49-8dab-4958-a6a6-6741c27a40d9",
+     "messageSeq": 38
+    },
+    "message": {
+     "role": "user",
+     "content": "Lance exactement cette commande shell avec ton outil exec, une seule fois : sleep 420 ; echo P3D2_SLEPT . Quand elle est terminee, reponds EXACTEMENT: P3D2_TURN_DONE\n\n[LIVRAISON]\nPour qu'un fichier que tu génères soit téléchargeable par l'utilisateur dans ce webchat : écris-le sous /home/node/.openclaw/media/outbound/ puis ajoute, dans ta réponse finale, une ligne dédiée EXACTEMENT au format MEDIA:<chemin absolu du fichier>. N'utilise PAS de lien markdown vers un chemin local — il ne serait pas cliquable.",
+     "timestamp": 1795238515649,
+     "idempotencyKey": "webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7:user",
+     "__openclaw": {
+      "senderIsOwner": true,
+      "transport": {
+       "clients": [
+        {
+         "id": "cli",
+         "mode": "cli"
+        }
+       ]
+      },
+      "id": "53776f49-8dab-4958-a6a6-6741c27a40d9",
+      "idempotencyKey": "webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7:user",
+      "recordTimestampMs": 1795238516186,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 59
+      },
+      "seq": 38
+     }
+    }
+   },
+   {
+    "source": "chat.history",
+    "envelope": {},
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_70dace6c20f24b91b608fab409399756|fc_03fb3060b0fda943016b012a7bcfa487d2afe362ad6498fb8e",
+       "name": "exec",
+       "arguments": {
+        "title": "Run requested shell command once",
+        "code": "return await exec({command:\"sleep 420 ; echo P3D2_SLEPT\",background:false,yieldMs:1000,timeoutSeconds:450});"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 406,
+      "output": 57,
+      "totalTokens": 22095,
+      "cacheRead": 21632,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.000812,
+       "output": 0.00057,
+       "cacheRead": 0.0021632,
+       "cacheWrite": 0,
+       "total": 0.0035452
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795238518105,
+     "responseId": "resp_03fb3060b0fda943016b012a76dd8887d286cc15e7f02c656b",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795238524685,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7",
+      "id": "7b704f79-8150-44b8-861a-73dc2d6bc08b",
+      "recordTimestampMs": 1795238524697,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 62
+      },
+      "seq": 39
+     }
+    }
+   },
+   {
+    "source": "chat.history",
+    "envelope": {},
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_15e74b8c4c824ca1ac31cc8014d10d66|fc_0e9e09c0877c7873016b012bab678487d280eec8c559602b1f",
+       "name": "exec",
+       "arguments": {
+        "title": "Await shell command completion",
+        "code": "return await process({action:\"poll\",sessionId:\"salty-shell\",timeout:30000});"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 324,
+      "output": 43,
+      "totalTokens": 26351,
+      "cacheRead": 25984,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.000648,
+       "output": 0.00043,
+       "cacheRead": 0.0025984000000000003,
+       "cacheWrite": 0,
+       "total": 0.0036764000000000002
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795238821656,
+     "responseId": "resp_0e9e09c0877c7873016b012ba5f0b087d2a9db3633c9afe5ab",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795238828018,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7",
+      "id": "c6a2e7a2-73eb-47d7-8aff-9a09b0fff355",
+      "recordTimestampMs": 1795238828023,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 139
+      },
+      "seq": 91
+     }
+    }
+   },
+   {
+    "source": "chat.history",
+    "envelope": {},
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_15e74b8c4c824ca1ac31cc8014d10d66|fc_0e9e09c0877c7873016b012bab678487d280eec8c559602b1f",
+     "toolName": "exec",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"status\":\"waiting\",\"runId\":\"cm_07f682a7-d3a6-4ed5-9661-a4cc2ebbd817\",\"reason\":\"pending_tools\",\"pendingToolCalls\":[{\"id\":\"bridge:callValue:1\",\"method\":\"callValue\"}],\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"1fd9dd01a4b61794c9a78726\",\"searchCount\":0,\"describeCount\":0,\"callCount\":8,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[]}"
+      }
+     ],
+     "isError": false,
+     "timestamp": 1795238838052,
+     "__openclaw": {
+      "runId": "webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7",
+      "id": "d4c97d3d-06a8-419a-8177-37eba8ab23df",
+      "recordTimestampMs": 1795238838054,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 140
+      },
+      "seq": 92
+     }
+    }
+   },
+   {
+    "source": "chat.history",
+    "envelope": {},
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_2c2ce73fd02e4a93892cea28756c1596|fc_0f756734112327e8016b012bc28a1887d29dc6645530f3bdd9",
+       "name": "wait",
+       "arguments": {
+        "runId": "cm_07f682a7-d3a6-4ed5-9661-a4cc2ebbd817"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 4704,
+      "output": 42,
+      "totalTokens": 26634,
+      "cacheRead": 21888,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.009408,
+       "output": 0.00042,
+       "cacheRead": 0.0021888000000000003,
+       "cacheWrite": 0,
+       "total": 0.012016800000000001
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795238841747,
+     "responseId": "resp_0f756734112327e8016b012bba345487d2a2eac50fdcce56e9",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795238851220,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7",
+      "id": "7652f028-c4f0-4bbf-8389-b4204ae4644b",
+      "recordTimestampMs": 1795238851224,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 145
+      },
+      "seq": 93
+     }
+    }
+   },
+   {
+    "source": "chat.history",
+    "envelope": {},
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_2c2ce73fd02e4a93892cea28756c1596|fc_0f756734112327e8016b012bc28a1887d29dc6645530f3bdd9",
+     "toolName": "wait",
+     "content": [
+      {
+       "type": "text",
+       "text": "{"
+      }
+     ],
+     "isError": true,
+     "timestamp": 1795238851250,
+     "__openclaw": {
+      "runId": "webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7",
+      "id": "b5f66399-a2d1-42e1-8106-39136f42be75",
+      "recordTimestampMs": 1795238851251,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 146
+      },
+      "seq": 94,
+      "truncated": true,
+      "reason": "display-cap"
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "82c1f740-40d6-49be-b350-b1262b60a29c",
+     "messageSeq": 95
+    },
+    "message": {
+     "role": "user",
+     "content": "[System] Your previous turn was interrupted while OpenClaw was waiting on tool/model work. This can happen after a Gateway restart or a tool execution timeout. The interruption did not cancel the user's task. Continue from the existing transcript: check the current state, recover interrupted work, and finish the task without asking the user to repeat the request. Interrupted subagents are not automatically relaunched. Reconcile every listed unfinished child against its saved history, current status, and the user's requested outcome. Prefer a follow-up in the same retained child session when its task is still needed; confirm the previous execution has stopped and verify uncertain tool effects before continuing it. Do not duplicate running work or blindly replay commands. If retained work already satisfies the task, use its result; otherwise continue it, assign replacement work, or finish it yourself. A restart interruption alone is not a blocker. Finish the original task or report the specific remaining blocker that requires user input or unavailable authority. Treat a tool result marked interrupted or missing as having an unknown outcome; verify what happened before repeating an action. If a tool failed, say so; never claim completion or success.",
+     "timestamp": 1795238971467,
+     "idempotencyKey": "c390ab3b-df0e-41c2-b69b-41f09c739df3:user",
+     "provenance": {
+      "kind": "internal_system",
+      "sourceSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx78g6mn4zx1v2brxssnbvgcf18jm5p9",
+      "sourceTool": "main_session_restart_recovery"
+     },
+     "__openclaw": {
+      "senderIsOwner": false,
+      "id": "82c1f740-40d6-49be-b350-b1262b60a29c",
+      "idempotencyKey": "c390ab3b-df0e-41c2-b69b-41f09c739df3:user",
+      "recordTimestampMs": 1795238974961,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 148
+      },
+      "seq": 95
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "7f448410-55a5-4614-ad1c-412a231bbe74",
+     "messageSeq": 96
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_1f373c6a1d6141568c665e0e5f69426d|fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0",
+       "name": "exec",
+       "arguments": {
+        "title": "Recover interrupted command result",
+        "code": "const tools = await catalog.search(\"process\"); const tool = tools.find(t => t.name === \"process\") || tools[0]; return await tool({action:\"poll\",sessionId:\"salty-shell\",timeout:30000});"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 24920,
+      "output": 71,
+      "totalTokens": 24991,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.04984,
+       "output": 0.00071,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0.050550000000000005
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795238975041,
+     "responseId": "resp_0041ea1394417ebf016b012c3fe62087d2b80cece358e8461f",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795238982607,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+      "id": "7f448410-55a5-4614-ad1c-412a231bbe74",
+      "recordTimestampMs": 1795238982617,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 151
+      },
+      "seq": 96
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "cfdc4dfe-5001-4b6a-827e-f925d4aedf63",
+     "messageSeq": 97
+    },
+    "message": {
+     "role": "custom",
+     "customType": "openclaw.nested-tool.v1",
+     "display": true,
+     "excludeFromContext": true,
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "tool_call:call_1f373c6a1d6141568c665e0e5f69426d_fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0:process:1",
+       "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+       "name": "process",
+       "arguments": {
+        "action": "poll",
+        "sessionId": "salty-shell",
+        "timeout": 30000
+       },
+       "parentToolCallId": "call_1f373c6a1d6141568c665e0e5f69426d|fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0",
+       "timestamp": 1795238982776
+      },
+      {
+       "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+       "scopeId": "b0af19f8-55e1-4268-bfed-e2874533a9bd",
+       "afterEntryId": "7f448410-55a5-4614-ad1c-412a231bbe74",
+       "startOrder": 0,
+       "parentToolCallId": "call_1f373c6a1d6141568c665e0e5f69426d|fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0",
+       "toolCallId": "tool_call:call_1f373c6a1d6141568c665e0e5f69426d_fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0:process:1",
+       "toolName": "process",
+       "isError": true,
+       "startedAt": 1795238982776,
+       "timestamp": 1795238982806,
+       "content": [
+        {
+         "type": "text",
+         "text": "No session found for salty-shell"
+        }
+       ],
+       "type": "toolResult",
+       "role": "toolResult"
+      }
+     ],
+     "timestamp": 1795238982776,
+     "idempotencyKey": "b0af19f8-55e1-4268-bfed-e2874533a9bd:tool_call:call_1f373c6a1d6141568c665e0e5f69426d_fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0:process:1",
+     "__openclaw": {
+      "id": "cfdc4dfe-5001-4b6a-827e-f925d4aedf63",
+      "idempotencyKey": "b0af19f8-55e1-4268-bfed-e2874533a9bd:tool_call:call_1f373c6a1d6141568c665e0e5f69426d_fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0:process:1",
+      "recordTimestampMs": 1795238982807,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 152,
+       "activity": {
+        "afterRawSeq": 151,
+        "scopeId": "b0af19f8-55e1-4268-bfed-e2874533a9bd",
+        "startOrder": 0
+       }
+      },
+      "seq": 97,
+      "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3"
+     },
+     "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3"
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "081486e4-5d42-4b7f-9d43-3a7a7e54e79a",
+     "messageSeq": 98
+    },
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_1f373c6a1d6141568c665e0e5f69426d|fc_0041ea1394417ebf016b012c4569dc87d28c95e8c57a0518b0",
+     "toolName": "exec",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":43,\"sources\":{\"openclaw\":43,\"mcp\":0,\"client\":0},\"counterScope\":\"034a485f1b1690d3942a9e6e\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"failed\",\"error\":\"No session found for salty-shell\"}}"
+      }
+     ],
+     "isError": false,
+     "timestamp": 1795238982824,
+     "__openclaw": {
+      "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+      "id": "081486e4-5d42-4b7f-9d43-3a7a7e54e79a",
+      "recordTimestampMs": 1795238982825,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 153
+      },
+      "seq": 98
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "6611391d-9030-4d97-b4dd-e04daf33578d",
+     "messageSeq": 99
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "call_d6348973868d4983894446c890a5f989|fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d",
+       "name": "exec",
+       "arguments": {
+        "title": "Find retained command completion evidence",
+        "code": "text(await sessions_history({sessionKey:\"agent:alice:atrium:chat:u-repro:turn-nx78g6mn4zx1v2brxssnbvgcf18jm5p9\",includeTools:true,limit:12}));"
+       }
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 266,
+      "output": 77,
+      "totalTokens": 25175,
+      "cacheRead": 24832,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.000532,
+       "output": 0.00077,
+       "cacheRead": 0.0024832,
+       "cacheWrite": 0,
+       "total": 0.0037852
+      }
+     },
+     "stopReason": "toolUse",
+     "timestamp": 1795238982845,
+     "responseId": "resp_0041ea1394417ebf016b012c47020c87d2870efed2cbc62d4d",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795238989260,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "toolUse",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+      "id": "6611391d-9030-4d97-b4dd-e04daf33578d",
+      "recordTimestampMs": 1795238989267,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 155
+      },
+      "seq": 99
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "a394f957-d938-4415-8129-149fb62175d6",
+     "messageSeq": 100
+    },
+    "message": {
+     "role": "custom",
+     "customType": "openclaw.nested-tool.v1",
+     "display": true,
+     "excludeFromContext": true,
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "tool_call:call_d6348973868d4983894446c890a5f989_fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d:sessions_history:1",
+       "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+       "name": "sessions_history",
+       "arguments": {
+        "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx78g6mn4zx1v2brxssnbvgcf18jm5p9",
+        "includeTools": true,
+        "limit": 12
+       },
+       "parentToolCallId": "call_d6348973868d4983894446c890a5f989|fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d",
+       "timestamp": 1795238989292
+      },
+      {
+       "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+       "scopeId": "b0af19f8-55e1-4268-bfed-e2874533a9bd",
+       "afterEntryId": "6611391d-9030-4d97-b4dd-e04daf33578d",
+       "startOrder": 1,
+       "parentToolCallId": "call_d6348973868d4983894446c890a5f989|fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d",
+       "toolCallId": "tool_call:call_d6348973868d4983894446c890a5f989_fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d:sessions_history:1",
+       "toolName": "sessions_history",
+       "isError": false,
+       "startedAt": 1795238989292,
+       "timestamp": 1795238989322,
+       "content": [
+        {
+         "type": "text",
+         "text": "{\n  \"sessionKey\": \"agent:alice:atrium:chat:u-repro:turn-nx78g6mn4zx1v2brxssnbvgcf18jm5p9\",\n  \"messages\": [\n    {\n      \"role\": \"custom\",\n      \"customType\": \"openclaw.nested-tool.v1\",\n      \"display\": true,\n      \"excludeFromContext\": true,\n      \"content\": [\n        {\n          \"type\": \"toolCall\",\n          \"id\": \"tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\",\n          \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\",\n          \"name\": \"process\",\n          \"arguments\": {\n            \"action\": \"poll\",\n            \"sessionId\": \"salty-shell\",\n            \"timeout\": 30000\n          },\n          \"parentToolCallId\": \"call_2f56b4e96c2244dea8c7caf0225d9440|fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd\",\n          \"timestamp\": 1795238783092\n        },\n        {\n          \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\",\n          \"scopeId\": \"4548ce35-1e4a-4364-af78-cb78f5236e99\",\n          \"afterEntryId\": \"e32658f3-3ae1-48bc-bfb1-5e84fdc13bad\",\n          \"startOrder\": 6,\n          \"parentToolCallId\": \"call_2f56b4e96c2244dea8c7caf0225d9440|fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd\",\n          \"toolCallId\": \"tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\",\n          \"toolName\": \"process\",\n          \"isError\": false,\n          \"startedAt\": 1795238783092,\n          \"timestamp\": 1795238813106,\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"(no new output)\\n\\nProcess still running.\"\n            }\n          ],\n          \"type\": \"toolResult\",\n          \"role\": \"toolResult\"\n        }\n      ],\n      \"timestamp\": 1795238783092,\n      \"idempotencyKey\": \"4548ce35-1e4a-4364-af78-cb78f5236e99:tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\",\n      \"__openclaw\": {\n        \"id\": \"10b58e16-9c97-4869-bd82-8fe0f8b43409\",\n        \"idempotencyKey\": \"4548ce35-1e4a-4364-af78-cb78f5236e99:tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\",\n        \"recordTimestampMs\": 1795238813108,\n        \"transcriptPosition\": {\n          \"source\": \"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\",\n          \"rawSeq\": 135,\n          \"activity\": {\n            \"afterRawSeq\": 129,\n            \"scopeId\": \"4548ce35-1e4a-4364-af78-cb78f5236e99\",\n            \"startOrder\": 6\n          }\n        },\n        \"seq\": 88,\n        \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\"\n      },\n      \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"toolCall\",\n          \"id\": \"call_b19ffa93f918450996eb0177f5709cf4|fc_0e9e09c0877c7873016b012ba5092c87d2957e6d0f14f7b74d\",\n          \"name\": \"wait\",\n          \"arguments\": {\n            \"runId\": \"cm_89e8e70c-afa7-4e58-a797-c45d159765c5\"\n          }\n        }\n      ],\n      \"api\": \"openai-chatgpt-responses\",\n      \"provider\": \"openai\",\n      \"model\": \"gpt-6.1-sol\",\n      \"stopReason\": \"toolUse\",\n      \"timestamp\": 1795238812247,\n      \"responseId\": \"resp_0e9e09c0877c7873016b012b9c82d487d2ae485d428ea291e7\",\n      \"responseModel\": \"gpt-6.1-sol\",\n      \"diagnostics\": [\n        {\n          \"type\": \"openai_responses_terminal\",\n          \"timestamp\": 1795238821610,\n          \"details\": {\n            \"eventType\": \"response.completed\",\n            \"stopReason\": \"toolUse\",\n            \"endTurn\": \"absent\"\n          }\n        }\n      ],\n      \"__openclaw\": {\n        \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\",\n        \"id\": \"cabc2cfb-df96-4cee-b0e9-f8d61ca559b1\",\n        \"recordTimestampMs\": 1795238821612,\n        \"transcriptPosition\": {\n          \"source\": \"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\",\n          \"rawSeq\": 136\n        },\n        \"seq\": 89\n      }\n    },\n    {\n      \"role\": \"toolResult\",\n      \"toolCallId\": \"call_b19ffa93f918450996eb0177f5709cf4|fc_0e9e09c0877c7873016b012ba5092c87d2957e6d0f14f7b74d\",\n      \"toolName\": \"wait\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{\\\"status\\\":\\\"completed\\\",\\\"replaySafe\\\":false,\\\"telemetry\\\":{\\\"catalogSize\\\":57,\\\"sources\\\":{\\\"openclaw\\\":57,\\\"mcp\\\":0,\\\"client\\\":0},\\\"counterScope\\\":\\\"1fd9dd01a4b61794c9a78726\\\",\\\"searchCount\\\":0,\\\"describeCount\\\":0,\\\"callCount\\\":7,\\\"visibleTools\\\":[\\\"exec\\\",\\\"wait\\\"]},\\\"output\\\":[],\\\"value\\\":{\\\"status\\\":\\\"running\\\",\\\"sessionId\\\":\\\"salty-shell\\\",\\\"aggregated\\\":\\\"\\\",\\\"name\\\":\\\"sleep 420\\\",\\\"stdinWritable\\\":false,\\\"waitingForInput\\\":false,\\\"idleMs\\\":288147,\\\"lastOutputAt\\\":1795238524950,\\\"retryInMs\\\":60000}}\"\n        }\n      ],\n      \"isError\": false,\n      \"timestamp\": 1795238821633,\n      \"__openclaw\": {\n        \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\",\n        \"id\": \"caeadc62-9e85-44fb-be95-0c456ee17734\",\n        \"recordTimestampMs\": 1795238821635,\n        \"transcriptPosition\": {\n          \"source\": \"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\",\n          \"rawSeq\": 137\n        },\n        \"seq\": 90\n      }\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"toolCall\",\n          \"id\": \"call_15e74b8c4c824ca1ac31cc8014d10d66|fc_0e9e09c0877c7873016b012bab678487d280eec8c559602b1f\",\n          \"name\": \"exec\",\n          \"arguments\": {\n            \"title\": \"Await shell command completion\",\n            \"code\": \"return await process({action:\\\"poll\\\",sessionId:\\\"salty-shell\\\",timeout:30000});\"\n          }\n        }\n      ],\n      \"api\": \"openai-chatgpt-responses\",\n      \"provider\": \"openai\",\n      \"model\": \"gpt-6.1-sol\",\n      \"stopReason\": \"toolUse\",\n      \"timestamp\": 1795238821656,\n      \"responseId\": \"resp_0e9e09c0877c7873016b012ba5f0b087d2a9db3633c9afe5ab\",\n      \"responseModel\": \"gpt-6.1-sol\",\n      \"diagnostics\": [\n        {\n          \"type\": \"openai_responses_terminal\",\n          \"timestamp\": 1795238828018,\n          \"details\": {\n            \"eventType\": \"response.completed\",\n            \"stopReason\": \"toolUse\",\n            \"endTurn\": \"absent\"\n          }\n        }\n      ],\n      \"__openclaw\": {\n        \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\",\n        \"id\": \"c6a2e7a2-73eb-47d7-8aff-9a09b0fff355\",\n        \"recordTimestampMs\": 1795238828023,\n        \"transcriptPosition\": {\n          \"source\": \"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\",\n          \"rawSeq\": 139\n        },\n        \"seq\": 91\n      }\n    },\n    {\n      \"role\": \"toolResult\",\n      \"toolCallId\": \"call_15e74b8c4c824ca1ac31cc8014d10d66|fc_0e9e09c0877c7873016b012bab678487d280eec8c559602b1f\",\n      \"toolName\": \"exec\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{\\\"status\\\":\\\"waiting\\\",\\\"runId\\\":\\\"cm_07f682a7-d3a6-4ed5-9661-a4cc2ebbd817\\\",\\\"reason\\\":\\\"pending_tools\\\",\\\"pendingToolCalls\\\":[{\\\"id\\\":\\\"bridge:callValue:1\\\",\\\"method\\\":\\\"callValue\\\"}],\\\"replaySafe\\\":false,\\\"telemetry\\\":{\\\"catalogSize\\\":57,\\\"sources\\\":{\\\"openclaw\\\":57,\\\"mcp\\\":0,\\\"client\\\":0},\\\"counterScope\\\":\\\"1fd9dd01a4b61794c9a78726\\\",\\\"searchCount\\\":0,\\\"describeCount\\\":0,\\\"callCount\\\":8,\\\"visibleTools\\\":[\\\"exec\\\",\\\"wait\\\"]},\\\"output\\\":[]}\"\n        }\n      ],\n      \"isError\": false,\n      \"timestamp\": 1795238838052,\n      \"__openclaw\": {\n        \"runId\": \"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\",\n        \"id\": \"d4c97d3d-06a8-419a-8177-37eba8ab23df\",\n        \"recordTimestampMs\": 1795238838054,\n        \"transcriptPosition\": {\n          \"source\": \"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\",\n          \"rawSeq\": 140\n        },\n        \"seq\": 92\n      }\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"toolCall\",\n          \"id\": \"call_2c2ce73fd02e4a93892cea28756c1596|fc"
+        }
+       ],
+       "type": "toolResult",
+       "role": "toolResult",
+       "__openclaw": {
+        "truncated": true,
+        "reason": "display-cap"
+       }
+      }
+     ],
+     "timestamp": 1795238989292,
+     "idempotencyKey": "b0af19f8-55e1-4268-bfed-e2874533a9bd:tool_call:call_d6348973868d4983894446c890a5f989_fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d:sessions_history:1",
+     "__openclaw": {
+      "id": "a394f957-d938-4415-8129-149fb62175d6",
+      "idempotencyKey": "b0af19f8-55e1-4268-bfed-e2874533a9bd:tool_call:call_d6348973868d4983894446c890a5f989_fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d:sessions_history:1",
+      "recordTimestampMs": 1795238989326,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 156,
+       "activity": {
+        "afterRawSeq": 155,
+        "scopeId": "b0af19f8-55e1-4268-bfed-e2874533a9bd",
+        "startOrder": 1
+       }
+      },
+      "seq": 100,
+      "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3"
+     },
+     "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3"
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "18e402c3-820c-4744-b922-e1ac454ee91a",
+     "messageSeq": 101
+    },
+    "message": {
+     "role": "toolResult",
+     "toolCallId": "call_d6348973868d4983894446c890a5f989|fc_0041ea1394417ebf016b012c4bfbf887d28f3a39356a43ab5d",
+     "toolName": "exec",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":43,\"sources\":{\"openclaw\":43,\"mcp\":0,\"client\":0},\"counterScope\":\"034a485f1b1690d3942a9e6e\",\"searchCount\":1,\"describeCount\":0,\"callCount\":2,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[{\"type\":\"text\",\"text\":\"{\\\"sessionKey\\\":\\\"agent:alice:atrium:chat:u-repro:turn-nx78g6mn4zx1v2brxssnbvgcf18jm5p9\\\",\\\"messages\\\":[{\\\"role\\\":\\\"custom\\\",\\\"customType\\\":\\\"openclaw.nested-tool.v1\\\",\\\"display\\\":true,\\\"excludeFromContext\\\":true,\\\"content\\\":[{\\\"type\\\":\\\"toolCall\\\",\\\"id\\\":\\\"tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\\\",\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\",\\\"name\\\":\\\"process\\\",\\\"arguments\\\":{\\\"action\\\":\\\"poll\\\",\\\"sessionId\\\":\\\"salty-shell\\\",\\\"timeout\\\":30000},\\\"parentToolCallId\\\":\\\"call_2f56b4e96c2244dea8c7caf0225d9440|fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd\\\",\\\"timestamp\\\":1795238783092},{\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\",\\\"scopeId\\\":\\\"4548ce35-1e4a-4364-af78-cb78f5236e99\\\",\\\"afterEntryId\\\":\\\"e32658f3-3ae1-48bc-bfb1-5e84fdc13bad\\\",\\\"startOrder\\\":6,\\\"parentToolCallId\\\":\\\"call_2f56b4e96c2244dea8c7caf0225d9440|fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd\\\",\\\"toolCallId\\\":\\\"tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\\\",\\\"toolName\\\":\\\"process\\\",\\\"isError\\\":false,\\\"startedAt\\\":1795238783092,\\\"timestamp\\\":1795238813106,\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"(no new output)\\\\n\\\\nProcess still running.\\\"}],\\\"type\\\":\\\"toolResult\\\",\\\"role\\\":\\\"toolResult\\\"}],\\\"timestamp\\\":1795238783092,\\\"idempotencyKey\\\":\\\"4548ce35-1e4a-4364-af78-cb78f5236e99:tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\\\",\\\"__openclaw\\\":{\\\"id\\\":\\\"10b58e16-9c97-4869-bd82-8fe0f8b43409\\\",\\\"idempotencyKey\\\":\\\"4548ce35-1e4a-4364-af78-cb78f5236e99:tool_call:call_2f56b4e96c2244dea8c7caf0225d9440_fc_0e9e09c0877c7873016b012b7e708487d295f1ccad2d9d52bd:process:1\\\",\\\"recordTimestampMs\\\":1795238813108,\\\"transcriptPosition\\\":{\\\"source\\\":\\\"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\\\",\\\"rawSeq\\\":135,\\\"activity\\\":{\\\"afterRawSeq\\\":129,\\\"scopeId\\\":\\\"4548ce35-1e4a-4364-af78-cb78f5236e99\\\",\\\"startOrder\\\":6}},\\\"seq\\\":88,\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\"},\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\"},{\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"toolCall\\\",\\\"id\\\":\\\"call_b19ffa93f918450996eb0177f5709cf4|fc_0e9e09c0877c7873016b012ba5092c87d2957e6d0f14f7b74d\\\",\\\"name\\\":\\\"wait\\\",\\\"arguments\\\":{\\\"runId\\\":\\\"cm_89e8e70c-afa7-4e58-a797-c45d159765c5\\\"}}],\\\"api\\\":\\\"openai-chatgpt-responses\\\",\\\"provider\\\":\\\"openai\\\",\\\"model\\\":\\\"gpt-6.1-sol\\\",\\\"stopReason\\\":\\\"toolUse\\\",\\\"timestamp\\\":1795238812247,\\\"responseId\\\":\\\"resp_0e9e09c0877c7873016b012b9c82d487d2ae485d428ea291e7\\\",\\\"responseModel\\\":\\\"gpt-6.1-sol\\\",\\\"diagnostics\\\":[{\\\"type\\\":\\\"openai_responses_terminal\\\",\\\"timestamp\\\":1795238821610,\\\"details\\\":{\\\"eventType\\\":\\\"response.completed\\\",\\\"stopReason\\\":\\\"toolUse\\\",\\\"endTurn\\\":\\\"absent\\\"}}],\\\"__openclaw\\\":{\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\",\\\"id\\\":\\\"cabc2cfb-df96-4cee-b0e9-f8d61ca559b1\\\",\\\"recordTimestampMs\\\":1795238821612,\\\"transcriptPosition\\\":{\\\"source\\\":\\\"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\\\",\\\"rawSeq\\\":136},\\\"seq\\\":89}},{\\\"role\\\":\\\"toolResult\\\",\\\"toolCallId\\\":\\\"call_b19ffa93f918450996eb0177f5709cf4|fc_0e9e09c0877c7873016b012ba5092c87d2957e6d0f14f7b74d\\\",\\\"toolName\\\":\\\"wait\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"status\\\\\\\":\\\\\\\"completed\\\\\\\",\\\\\\\"replaySafe\\\\\\\":false,\\\\\\\"telemetry\\\\\\\":{\\\\\\\"catalogSize\\\\\\\":57,\\\\\\\"sources\\\\\\\":{\\\\\\\"openclaw\\\\\\\":57,\\\\\\\"mcp\\\\\\\":0,\\\\\\\"client\\\\\\\":0},\\\\\\\"counterScope\\\\\\\":\\\\\\\"1fd9dd01a4b61794c9a78726\\\\\\\",\\\\\\\"searchCount\\\\\\\":0,\\\\\\\"describeCount\\\\\\\":0,\\\\\\\"callCount\\\\\\\":7,\\\\\\\"visibleTools\\\\\\\":[\\\\\\\"exec\\\\\\\",\\\\\\\"wait\\\\\\\"]},\\\\\\\"output\\\\\\\":[],\\\\\\\"value\\\\\\\":{\\\\\\\"status\\\\\\\":\\\\\\\"running\\\\\\\",\\\\\\\"sessionId\\\\\\\":\\\\\\\"salty-shell\\\\\\\",\\\\\\\"aggregated\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"sleep 420\\\\\\\",\\\\\\\"stdinWritable\\\\\\\":false,\\\\\\\"waitingForInput\\\\\\\":false,\\\\\\\"idleMs\\\\\\\":288147,\\\\\\\"lastOutputAt\\\\\\\":1795238524950,\\\\\\\"retryInMs\\\\\\\":60000}}\\\"}],\\\"isError\\\":false,\\\"timestamp\\\":1795238821633,\\\"__openclaw\\\":{\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\",\\\"id\\\":\\\"caeadc62-9e85-44fb-be95-0c456ee17734\\\",\\\"recordTimestampMs\\\":1795238821635,\\\"transcriptPosition\\\":{\\\"source\\\":\\\"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\\\",\\\"rawSeq\\\":137},\\\"seq\\\":90}},{\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"toolCall\\\",\\\"id\\\":\\\"call_15e74b8c4c824ca1ac31cc8014d10d66|fc_0e9e09c0877c7873016b012bab678487d280eec8c559602b1f\\\",\\\"name\\\":\\\"exec\\\",\\\"arguments\\\":{\\\"title\\\":\\\"Await shell command completion\\\",\\\"code\\\":\\\"return await process({action:\\\\\\\"poll\\\\\\\",sessionId:\\\\\\\"salty-shell\\\\\\\",timeout:30000});\\\"}}],\\\"api\\\":\\\"openai-chatgpt-responses\\\",\\\"provider\\\":\\\"openai\\\",\\\"model\\\":\\\"gpt-6.1-sol\\\",\\\"stopReason\\\":\\\"toolUse\\\",\\\"timestamp\\\":1795238821656,\\\"responseId\\\":\\\"resp_0e9e09c0877c7873016b012ba5f0b087d2a9db3633c9afe5ab\\\",\\\"responseModel\\\":\\\"gpt-6.1-sol\\\",\\\"diagnostics\\\":[{\\\"type\\\":\\\"openai_responses_terminal\\\",\\\"timestamp\\\":1795238828018,\\\"details\\\":{\\\"eventType\\\":\\\"response.completed\\\",\\\"stopReason\\\":\\\"toolUse\\\",\\\"endTurn\\\":\\\"absent\\\"}}],\\\"__openclaw\\\":{\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\",\\\"id\\\":\\\"c6a2e7a2-73eb-47d7-8aff-9a09b0fff355\\\",\\\"recordTimestampMs\\\":1795238828023,\\\"transcriptPosition\\\":{\\\"source\\\":\\\"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\\\",\\\"rawSeq\\\":139},\\\"seq\\\":91}},{\\\"role\\\":\\\"toolResult\\\",\\\"toolCallId\\\":\\\"call_15e74b8c4c824ca1ac31cc8014d10d66|fc_0e9e09c0877c7873016b012bab678487d280eec8c559602b1f\\\",\\\"toolName\\\":\\\"exec\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"status\\\\\\\":\\\\\\\"waiting\\\\\\\",\\\\\\\"runId\\\\\\\":\\\\\\\"cm_07f682a7-d3a6-4ed5-9661-a4cc2ebbd817\\\\\\\",\\\\\\\"reason\\\\\\\":\\\\\\\"pending_tools\\\\\\\",\\\\\\\"pendingToolCalls\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"bridge:callValue:1\\\\\\\",\\\\\\\"method\\\\\\\":\\\\\\\"callValue\\\\\\\"}],\\\\\\\"replaySafe\\\\\\\":false,\\\\\\\"telemetry\\\\\\\":{\\\\\\\"catalogSize\\\\\\\":57,\\\\\\\"sources\\\\\\\":{\\\\\\\"openclaw\\\\\\\":57,\\\\\\\"mcp\\\\\\\":0,\\\\\\\"client\\\\\\\":0},\\\\\\\"counterScope\\\\\\\":\\\\\\\"1fd9dd01a4b61794c9a78726\\\\\\\",\\\\\\\"searchCount\\\\\\\":0,\\\\\\\"describeCount\\\\\\\":0,\\\\\\\"callCount\\\\\\\":8,\\\\\\\"visibleTools\\\\\\\":[\\\\\\\"exec\\\\\\\",\\\\\\\"wait\\\\\\\"]},\\\\\\\"output\\\\\\\":[]}\\\"}],\\\"isError\\\":false,\\\"timestamp\\\":1795238838052,\\\"__openclaw\\\":{\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\",\\\"id\\\":\\\"d4c97d3d-06a8-419a-8177-37eba8ab23df\\\",\\\"recordTimestampMs\\\":1795238838054,\\\"transcriptPosition\\\":{\\\"source\\\":\\\"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\\\",\\\"rawSeq\\\":140},\\\"seq\\\":92}},{\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"toolCall\\\",\\\"id\\\":\\\"call_2c2ce73fd02e4a93892cea28756c1596|fc_0f756734112327e8016b012bc28a1887d29dc6645530f3bdd9\\\",\\\"name\\\":\\\"wait\\\",\\\"arguments\\\":{\\\"runId\\\":\\\"cm_07f682a7-d3a6-4ed5-9661-a4cc2ebbd817\\\"}}],\\\"api\\\":\\\"openai-chatgpt-responses\\\",\\\"provider\\\":\\\"openai\\\",\\\"model\\\":\\\"gpt-6.1-sol\\\",\\\"stopReason\\\":\\\"toolUse\\\",\\\"timestamp\\\":1795238841747,\\\"responseId\\\":\\\"resp_0f756734112327e8016b012bba345487d2a2eac50fdcce56e9\\\",\\\"responseModel\\\":\\\"gpt-6.1-sol\\\",\\\"diagnostics\\\":[{\\\"type\\\":\\\"openai_responses_terminal\\\",\\\"timestamp\\\":1795238851220,\\\"details\\\":{\\\"eventType\\\":\\\"response.completed\\\",\\\"stopReason\\\":\\\"toolUse\\\",\\\"endTurn\\\":\\\"absent\\\"}}],\\\"__openclaw\\\":{\\\"runId\\\":\\\"webchat-6893b2b33c274e6e377ed4596ff4e2302681ddc0df00bc2ba9177cb1b3ce15b7\\\",\\\"id\\\":\\\"7652f028-c4f0-4bbf-8389-b4204ae4644b\\\",\\\"recordTimestampMs\\\":1795238851224,\\\"transcriptPosition\\\":{\\\"source\\\":\\\"i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI\\\",\\\"rawSeq\\\":145},\\\"seq\\\":93}},{\\\"role\\\":\\\"toolResult\\\",\\\"toolCallId\\\":\\\"call_2c2ce73fd02e4a93892cea28756c1596|fc_0f756"
+      }
+     ],
+     "isError": false,
+     "timestamp": 1795238989358,
+     "__openclaw": {
+      "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+      "id": "18e402c3-820c-4744-b922-e1ac454ee91a",
+      "recordTimestampMs": 1795238989361,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 157
+      },
+      "seq": 101,
+      "truncated": true,
+      "reason": "display-cap"
+     }
+    }
+   },
+   {
+    "source": "chat.history delta",
+    "envelope": {
+     "messageId": "173689ef-a932-46eb-b863-4a47ef80d336",
+     "messageSeq": 102
+    },
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "thinking",
+       "thinking": "**Je vérifie la fin du redémarrage**\n\n**Je ne peux pas confirmer la fin**"
+      },
+      {
+       "type": "text",
+       "text": "Le suivi a échoué après l’interruption : la session d’exécution est introuvable. Impossible de confirmer la réussite ; je n’ai pas relancé la commande.",
+       "textSignature": "{\"v\":1,\"id\":\"msg_0041ea1394417ebf016b012c64a15087d2830050d0d8594760\",\"phase\":\"final_answer\"}"
+      }
+     ],
+     "api": "openai-chatgpt-responses",
+     "provider": "openai",
+     "model": "gpt-6.1-sol",
+     "usage": {
+      "input": 6013,
+      "output": 202,
+      "totalTokens": 31303,
+      "cacheRead": 25088,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0.012026,
+       "output": 0.00202,
+       "cacheRead": 0.0025088000000000003,
+       "cacheWrite": 0,
+       "total": 0.0165548
+      }
+     },
+     "stopReason": "stop",
+     "timestamp": 1795238989381,
+     "responseId": "resp_0041ea1394417ebf016b012c4d98fc87d2aa199f9b02d55b4f",
+     "responseModel": "gpt-6.1-sol",
+     "diagnostics": [
+      {
+       "type": "openai_responses_terminal",
+       "timestamp": 1795239012868,
+       "details": {
+        "eventType": "response.completed",
+        "stopReason": "stop",
+        "endTurn": "absent"
+       }
+      }
+     ],
+     "__openclaw": {
+      "runId": "c390ab3b-df0e-41c2-b69b-41f09c739df3",
+      "id": "173689ef-a932-46eb-b863-4a47ef80d336",
+      "recordTimestampMs": 1795239012873,
+      "transcriptPosition": {
+       "source": "i3rE0-JFdrid3ntWfODIocenOggZ4UADUaoLyMlOpOI",
+       "rawSeq": 159
+      },
+      "seq": 102
+     }
+    }
+   }
+  ]
+ }
+}

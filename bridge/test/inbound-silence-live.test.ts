@@ -522,7 +522,7 @@ describe("a silent conversation socket, through the session", () => {
       expect(finalized).toEqual([]);
       expect(s.runManager.streamGapNoted).toBe(true);
       // …and Convex is asked about the chat's bubble, at once: nothing was announced.
-      expect(asked).toEqual([["c1", null]]);
+      expect(asked).toEqual([["c1", null, null]]);
 
       const again = await reg.acquire(routing);
       expect(again).not.toBe(s);

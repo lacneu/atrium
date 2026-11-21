@@ -603,6 +603,12 @@ export class OpenClawConnection {
   get announcedRestartMs(): number | null {
     return this.shutdownNotice?.restartExpectedMs ?? null;
   }
+  /** What the gateway announced on this connection before it closed: a RESTART (its
+   *  notice gave `restartExpectedMs`), a plain STOP, or nothing. */
+  get announcedShutdown(): "restart" | "stop" | null {
+    if (this.shutdownNotice === null) return null;
+    return this.shutdownNotice.restartAnnounced ? "restart" : "stop";
+  }
   /** Inbound frames buffered but not yet consumed (drop-pressure witness). */
   get inboundQueueLen(): number {
     return this.queue.length;

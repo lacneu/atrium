@@ -154,6 +154,7 @@ import type * as lib_rbac from "../lib/rbac.js";
 import type * as lib_reasoningDisplay from "../lib/reasoningDisplay.js";
 import type * as lib_rehydrateTrace from "../lib/rehydrateTrace.js";
 import type * as lib_rehydration from "../lib/rehydration.js";
+import type * as lib_restartRecovery from "../lib/restartRecovery.js";
 import type * as lib_rowParts from "../lib/rowParts.js";
 import type * as lib_scheduled from "../lib/scheduled.js";
 import type * as lib_schemaRegistry from "../lib/schemaRegistry.js";
@@ -369,6 +370,7 @@ declare const fullApi: ApiFromModules<{
   "lib/reasoningDisplay": typeof lib_reasoningDisplay;
   "lib/rehydrateTrace": typeof lib_rehydrateTrace;
   "lib/rehydration": typeof lib_rehydration;
+  "lib/restartRecovery": typeof lib_restartRecovery;
   "lib/rowParts": typeof lib_rowParts;
   "lib/scheduled": typeof lib_scheduled;
   "lib/schemaRegistry": typeof lib_schemaRegistry;

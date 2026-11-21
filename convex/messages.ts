@@ -797,6 +797,11 @@ async function loadChatView(
           // …and the display group of a delegation chain (phase 5): consecutive bubbles
           // sharing it read as ONE answer. Absent everywhere else.
           ...(message.displayGroupId !== undefined ? { displayGroupId: message.displayGroupId } : {}),
+          // …and what is known of a turn the gateway cut (a restart, a stop) and resumed
+          // by itself: the bubble states it (lib/restartRecovery.ts). Absent everywhere else.
+          ...(message.role === "assistant" && message.interruption !== undefined
+            ? { interruption: message.interruption }
+            : {}),
           // Written by the READER — what decides who may rewrite a queued turn
           // (only its author) without handing the client anybody's user id.
           ...(message.role === "user"

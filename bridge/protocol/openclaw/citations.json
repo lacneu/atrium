@@ -811,14 +811,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1634-1645",
+      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1640-1651",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/openclaw-client.ts",
       "lines": [
         [
-          1634,
-          1645
+          1640,
+          1651
         ]
       ],
       "literals": [
@@ -3604,6 +3604,155 @@
       ],
       "literals": [
         "openclawStatusNotice !== true"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-startup-post-attach.ts:979-982",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-startup-post-attach.ts",
+      "lines": [
+        [
+          979,
+          982
+        ]
+      ],
+      "literals": [
+        "scheduleRestartAbortedMainSessionRecovery({"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:62",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
+      "lines": [
+        [
+          62,
+          62
+        ]
+      ],
+      "literals": [
+        "Your previous turn was interrupted while OpenClaw was waiting on tool/model work."
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:453",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
+      "lines": [
+        [
+          453,
+          453
+        ]
+      ],
+      "literals": [
+        "sourceTool: MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/sessions/input-provenance.ts:24",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/sessions/input-provenance.ts",
+      "lines": [
+        [
+          24,
+          24
+        ]
+      ],
+      "literals": [
+        "MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL = \"main_session_restart_recovery\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:256,440",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
+      "lines": [
+        [
+          256,
+          256
+        ],
+        [
+          440,
+          440
+        ]
+      ],
+      "literals": [
+        "randomUUID()",
+        "idempotencyKey: recoveryRunId"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:392",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
+      "lines": [
+        [
+          392,
+          392
+        ]
+      ],
+      "literals": [
+        "entry.restartRecoveryDeliverySourceRunId = sourceRunId"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/system-notice-kinds.ts:28",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "ui/src/pages/chat/system-notice-kinds.ts",
+      "lines": [
+        [
+          28,
+          28
+        ]
+      ],
+      "literals": [
+        "main_session_restart_recovery: {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-system-notice.ts:52",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "ui/src/pages/chat/chat-system-notice.ts",
+      "lines": [
+        [
+          52,
+          52
+        ]
+      ],
+      "literals": [
+        "startsTurn: true"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/lib/chat/tool-cards.ts:178",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "ui/src/lib/chat/tool-cards.ts",
+      "lines": [
+        [
+          178,
+          178
+        ]
+      ],
+      "literals": [
+        "return \"unknown\""
       ]
     }
   ]

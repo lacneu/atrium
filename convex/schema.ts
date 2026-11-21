@@ -2353,6 +2353,22 @@ export default defineSchema({
     resumeChain: v.optional(
       v.object({ at: v.number(), since: v.number(), closes: v.number() }),
     ),
+    // ASSISTANT rows of a projected conversation: what is KNOWN of a turn the gateway cut
+    // (a restart, a stop), as facts — never an error of the reader's making. `shutdown`:
+    // the gateway announced it on the turn's socket before that socket closed (the
+    // bridge's report, stuckStreams.resumeChatStreams). `recoveryRunId`: the gateway's own
+    // restart recovery resumed the turn — its entry (`provenance.sourceTool:
+    // "main_session_restart_recovery"`) follows this run's rows, and that run answers
+    // (lib/restartRecovery.ts). `unanswered`: settled from a transcript in which the run
+    // stops on a tool exchange, with no recovery (so far). The reader is told of the
+    // interruption when `recoveryRunId` is set, or `shutdown` with `unanswered`.
+    interruption: v.optional(
+      v.object({
+        shutdown: v.optional(v.union(v.literal("restart"), v.literal("stop"))),
+        recoveryRunId: v.optional(v.string()),
+        unanswered: v.optional(v.literal(true)),
+      }),
+    ),
     // ASSISTANT rows of a projected conversation (phase 5, design §14): the DISPLAY GROUP
     // this bubble belongs to — the id of the group's first message — when consecutive
     // bubbles of one delegation chain show as one (convex/lib/delegationChain.ts). A
@@ -2838,6 +2854,11 @@ export default defineSchema({
     stopReason: v.optional(v.string()),
     provenanceKind: v.optional(v.string()),
     provenanceSourceTool: v.optional(v.string()),
+    // Set by Convex (`on`) on the gateway's restart-recovery entry (a `user` row of the
+    // RECOVERY run): the run it resumes — the run of the row right before it in the
+    // transcript (lib/restartRecovery.ts; upstream keeps that link in its session store
+    // only). Absent until that row is stored.
+    recoversRunId: v.optional(v.string()),
     // A stream segment `chat.history` split out of its transcript row (same id and seq,
     // `openclawStreamFallback.source: "segment"`): keyed apart, shown before its owner.
     streamSegment: v.optional(v.boolean()),
@@ -2873,6 +2894,8 @@ export default defineSchema({
     // Projection `on` (phase 4): the user rows that STEERED into a run cut its bubble
     // into segments (CU-20) — one bounded range per run.
     .index("by_chat_steer_target", ["chatId", "steerTargetRunId", "seq"])
+    // …and the recovery entry that resumed a run, if any (one probe per projected run).
+    .index("by_chat_recovers", ["chatId", "recoversRunId"])
     // …and the rows a bubble shows, in transcript order (its text is recomposed from them).
     .index("by_message_seq", ["messageId", "seq"]),
 

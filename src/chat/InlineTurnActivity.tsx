@@ -16,6 +16,7 @@ import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
 import type { ToolActivityPart } from "./toolActivityView";
 import { activityBlock, type ActivityNode } from "./activityBlock";
+import { turnInterrupted, type TurnInterruption } from "./turnInterruptionView";
 import {
   activityLabel,
   dominantFamily,
@@ -43,11 +44,12 @@ const FAMILY_ICON: Record<ToolFamily, typeof Wrench> = {
 
 interface FlowMeta {
   status?: string;
+  interruption?: TurnInterruption;
 }
 
 /** A rows block's cards, nested under their parent (activityBlock.ts): a node's children
  *  are shown inside its card, once it is open. */
-function NodeCard({ node, settled }: { node: ActivityNode; settled: boolean }) {
+function NodeCard({ node, settled, cut }: { node: ActivityNode; settled: boolean; cut: boolean }) {
   const p = node.part;
   return (
     <ToolCard
@@ -58,9 +60,10 @@ function NodeCard({ node, settled }: { node: ActivityNode; settled: boolean }) {
       result={p.result}
       status={p.phase ? { type: p.phase } : undefined}
       turnSettled={settled}
+      turnInterrupted={cut}
       nested={
         node.children.length > 0
-          ? node.children.map((c) => <NodeCard key={c.part.toolCallId} node={c} settled={settled} />)
+          ? node.children.map((c) => <NodeCard key={c.part.toolCallId} node={c} settled={settled} cut={cut} />)
           : undefined
       }
     />
@@ -73,6 +76,12 @@ export function InlineTurnActivity(props: {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as FlowMeta | undefined)?.status,
   );
+  // The gateway cut this turn: a call it left without a result was interrupted, never
+  // "completed" (turnInterruptionView.ts).
+  const cut = useMessage((msg) => {
+    const meta = msg.metadata?.custom as FlowMeta | undefined;
+    return turnInterrupted(meta?.interruption, meta?.status);
+  });
   const [expanded, setExpanded] = useState(false);
   // Tools OFF = the CLEAN view (user decision, revising the earlier
   // always-visible plan): no activity rows at all — the working label under
@@ -128,7 +137,7 @@ export function InlineTurnActivity(props: {
       {expanded && block !== null ? (
         <div className="oc-toolact__detail">
           {block.roots.map((node) => (
-            <NodeCard key={node.part.toolCallId} node={node} settled={settled} />
+            <NodeCard key={node.part.toolCallId} node={node} settled={settled} cut={cut} />
           ))}
         </div>
       ) : expanded ? (
@@ -143,6 +152,7 @@ export function InlineTurnActivity(props: {
               result={p.result}
               status={p.phase ? { type: p.phase } : undefined}
               turnSettled={status !== undefined && status !== "streaming"}
+              turnInterrupted={cut}
             />
           ))}
         </div>

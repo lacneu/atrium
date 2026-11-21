@@ -2150,10 +2150,17 @@ describe("0.102.1 — the close of a socket is a best-effort SHORTCUT to the rec
     await w.resumeStreams("c1", 1500);
     await w.resumeStreams("c2", null);
     await w.resumeStreams("c3");
+    // The shutdown the gateway announced rides it too: a restart, a stop, or nothing.
+    await w.resumeStreams("c4", 1500, "restart");
+    await w.resumeStreams("c5", null, "stop");
+    await w.resumeStreams("c6", null, null);
     expect(bodies.filter((b) => b.op === "resumeStreams")).toEqual([
       { op: "resumeStreams", chatId: "c1", restartExpectedMs: 1500 },
       { op: "resumeStreams", chatId: "c2" },
       { op: "resumeStreams", chatId: "c3" },
+      { op: "resumeStreams", chatId: "c4", restartExpectedMs: 1500, shutdown: "restart" },
+      { op: "resumeStreams", chatId: "c5", shutdown: "stop" },
+      { op: "resumeStreams", chatId: "c6" },
     ]);
   });
 });

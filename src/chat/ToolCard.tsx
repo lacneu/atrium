@@ -45,6 +45,9 @@ type ToolCardProps = {
   /** True when the OWNING TURN reached a terminal status — a not-yet-settled
    *  tool part then renders settled instead of spinning forever. */
   turnSettled?: boolean;
+  /** True when the gateway CUT the owning turn (a restart, a stop): a call it left with no
+   *  result was interrupted — never shown as completed. */
+  turnInterrupted?: boolean;
   toolName: string;
   args?: unknown;
   argsText?: string;
@@ -66,14 +69,19 @@ type ToolCardProps = {
 // part, so the card fills in (input first, output when the tool completes)
 // without any per-turn HTTP request.
 
-function phaseClass(
+export function toolCardPhase(
   phaseRaw: unknown,
   hasResult: boolean,
   turnSettled?: boolean,
+  turnInterrupted?: boolean,
 ): string {
   const phase = typeof phaseRaw === "string" ? phaseRaw : undefined;
   if (phase === "error") return "error";
   if (hasResult || phase === "completed") return "completed";
+  // The gateway cut the turn while this call ran: its outcome is unknown (the Control UI
+  // gives such a call no outcome at all — ui/src/lib/chat/tool-cards.ts
+  // `resolveToolCardOutcome`, "unknown").
+  if (turnInterrupted) return "interrupted";
   // A tool whose completion event was lost (or an intermediate phase like
   // "accepted") must NEVER keep spinning once the TURN is settled — hours-old
   // spinners on finished replies. Settled turn -> render it settled.
@@ -90,11 +98,12 @@ export function ToolCard({
   result,
   status,
   turnSettled,
+  turnInterrupted,
   nested,
 }: ToolCardProps) {
   const hasResult = result !== undefined && result !== null;
   // assistant-ui status.type is "running" | "complete" | "incomplete" | ...
-  const phase = phaseClass(status?.type, hasResult, turnSettled);
+  const phase = toolCardPhase(status?.type, hasResult, turnSettled, turnInterrupted);
   const { inputText, preview } = toolCardDisplay({ args, argsText, inputFromTranscript });
   // Classify the result so a bare exec OUTCOME envelope (no stdout -- the gateway
   // does not transmit it; see formatToolResult) renders as a clear outcome line
@@ -127,7 +136,9 @@ export function ToolCard({
             {preview}
           </span>
         ) : null}
-        <span className="oc-tool__phase">{phase}</span>
+        <span className="oc-tool__phase">
+          {phase === "interrupted" ? m.tools_status_interrupted() : phase}
+        </span>
         <ChevronRight size={15} className="oc-tool__chevron" aria-hidden />
       </summary>
       <div className="oc-tool__body">

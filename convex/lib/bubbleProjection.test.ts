@@ -27,6 +27,7 @@ import {
   segmentOf,
   type PlanBubble,
   type PlanRow,
+  endsUnanswered,
   type ProjectionPlan,
   type ProjectionView,
   type RunFacts,
@@ -726,5 +727,77 @@ describe("the layout bounds (LAYOUT_MAX_*)", () => {
     expect(cut.files).toBe(rowsN * perRow - LAYOUT_MAX_FILES);
     expect(cut.widgets).toBe(rowsN * 5 - LAYOUT_MAX_WIDGETS);
     expect(cut.tools).toBeGreaterThan(0);
+  });
+});
+
+describe("a turn the gateway cut — `unanswered`", () => {
+  const cut = (rows: PlanRow[], over: Partial<PlanBubble> = {}, facts: Partial<RunFacts> = {}) =>
+    planProjection(
+      view({
+        runIds: ["R"],
+        rowsOfRun: new Map([["R", rows]]),
+        liveBubbleOf: new Map([[segmentKey("R", 0), "m1"]]),
+        bubbles: new Map([["m1", bubble("m1", { runIds: ["R"], shutdownNoted: true, ...over })]]),
+        runs: new Map([["R", settled({ status: "persisted", ...facts })]]),
+      }),
+    ).rewrite[0];
+  const call = (entryId: string, seq: number, over: Partial<PlanRow> = {}) =>
+    row(entryId, seq, { runId: "R", visible: false, items: [], hasBlocks: true, stopReason: "toolUse", tools: [{ toolCallId: `c${seq}`, name: "wait", status: "call" }], ...over });
+
+  test("endsUnanswered: nothing of the assistant's, or a last row that is not an answer", () => {
+    expect(endsUnanswered([])).toBe(true);
+    expect(endsUnanswered([row("a", 1, { stopReason: "toolUse" })])).toBe(true);
+    expect(endsUnanswered([row("a", 1, { stopReason: "aborted" })])).toBe(true);
+    expect(endsUnanswered([row("a", 1, { stopReason: "toolUse" }), row("b", 2, { stopReason: "stop" })])).toBe(false);
+    expect(endsUnanswered([row("b", 2, { stopReason: "stop" }), row("a", 1, { stopReason: "toolUse" })])).toBe(false);
+    expect(endsUnanswered([row("a", 1, { stopReason: "end_turn" })])).toBe(false);
+    // A last row that states no stop reason proves nothing.
+    expect(endsUnanswered([row("a", 1)])).toBe(false);
+    // A tool result after the last assistant row does not answer.
+    expect(endsUnanswered([row("a", 1, { stopReason: "toolUse" }), row("t", 2, { role: "toolresult" })])).toBe(true);
+  });
+
+  test("an announced shutdown and rows that stop on a tool call: said, the bubble settled and kept", () => {
+    const w = cut([call("a", 1)]);
+    expect(w).toMatchObject({ messageId: "m1", settle: "complete", unanswered: true });
+    expect(w?.vanish).toBeUndefined();
+  });
+  test("no shutdown was announced: nothing is said", () => {
+    expect(cut([call("a", 1)], { shutdownNoted: undefined })?.unanswered).toBeUndefined();
+  });
+  test("the run answered: nothing is said", () => {
+    expect(cut([call("a", 1), row("b", 2, { runId: "R", text: "Done.", stopReason: "stop" })])?.unanswered).toBeUndefined();
+  });
+  test("rows not all loaded: nothing is said yet", () => {
+    expect(cut([call("a", 1)], {}, { covered: false })?.unanswered).toBeUndefined();
+  });
+  test("a run that wrote nothing at all, every row loaded: said, and the bubble is not removed", () => {
+    const w = cut([], {}, { covered: false, empty: true });
+    expect(w).toMatchObject({ unanswered: true });
+    expect(w?.vanish).toBeUndefined();
+  });
+  test("already said: planning again writes nothing more", () => {
+    const rows = [call("a", 1)];
+    const first = cut(rows)!;
+    const again = planProjection(
+      view({
+        runIds: ["R"],
+        rowsOfRun: new Map([["R", rows.map((r) => ({ ...r, messageId: "m1" }))]]),
+        liveBubbleOf: new Map([[segmentKey("R", 0), "m1"]]),
+        bubbles: new Map([
+          ["m1", bubble("m1", { runIds: ["R"], status: "complete", shutdownNoted: true, unanswered: true, rows: rows.map((r) => ({ ...r, messageId: "m1" })), layoutKey: layoutKey(first.layout) })],
+        ]),
+        runs: new Map([["R", settled({ status: "persisted" })]]),
+      }),
+    );
+    expect(again.rewrite).toEqual([]);
+  });
+  test("a bubble that states an interruption is never removed for showing nothing", () => {
+    // Rows that decide and show nothing would make the bubble vanish (CU-21)…
+    const silent = [row("a", 1, { runId: "R", items: [], hasBlocks: true, stopReason: "toolUse", visible: false })];
+    expect(cut(silent, { shutdownNoted: undefined })?.vanish).toBe(true);
+    // …unless it says the turn was cut, or resumed by the gateway.
+    expect(cut(silent)?.vanish).toBeUndefined();
+    expect(cut(silent, { shutdownNoted: undefined, recovered: true })?.vanish).toBeUndefined();
   });
 });

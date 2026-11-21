@@ -108,7 +108,8 @@ describe("a connection that ends during a turn asks Convex, with what the gatewa
         kind: "gateway_restarting",
         restartExpectedMs: 1500,
       });
-      expect(asked).toEqual([["c1", 1500]]);
+      // …and WHAT it announced: Convex keeps it on the turn's bubble (`interruption`).
+      expect(asked).toEqual([["c1", 1500, "restart"]]);
       expect(finalized).toEqual([]);
       expect(session.runManager.streamGapNoted).toBe(true);
     } finally {
@@ -125,7 +126,7 @@ describe("a connection that ends during a turn asks Convex, with what the gatewa
       await until(() => session.connection.isClosed);
       await sleep(20);
       expect((session.connection as OpenClawConnection).connectionEnd?.kind).toBe("gateway_stopping");
-      expect(asked).toEqual([["c1", null]]);
+      expect(asked).toEqual([["c1", null, "stop"]]);
       expect(finalized).toEqual([]);
     } finally {
       reg.closeAll();
@@ -139,7 +140,7 @@ describe("a connection that ends during a turn asks Convex, with what the gatewa
       await until(() => session.connection.isClosed);
       await sleep(20);
       expect((session.connection as OpenClawConnection).connectionEnd?.kind).toBe("connection_closed");
-      expect(asked).toEqual([["c1", null]]);
+      expect(asked).toEqual([["c1", null, null]]);
       expect(finalized).toEqual([]);
     } finally {
       reg.closeAll();

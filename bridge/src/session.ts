@@ -535,7 +535,9 @@ class Session implements BridgeSession {
         // nothing), and the request is held until acknowledged (convex-writer).
         // …after the delay an announced restart gave: until then the gateway is down by
         // its own word (the notice precedes the close; the end is not classified yet here).
-        void writer.resumeStreams?.(chatId, connection.announcedRestartMs ?? null);
+        // …and with WHAT it announced (a restart, a stop): should the turn turn out cut,
+        // its bubble says by what — a fact of this socket, known nowhere else.
+        void writer.resumeStreams?.(chatId, connection.announcedRestartMs ?? null, connection.announcedShutdown ?? null);
       });
     }
   }

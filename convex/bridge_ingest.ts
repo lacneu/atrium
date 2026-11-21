@@ -281,7 +281,8 @@ type IngestOp =
   // (a bridge of the first passes): the instance's projected bubbles.
   // `restartExpectedMs`: the gateway announced a restart before closing, and how long it
   // said it would take — the first question waits for it.
-  | { op: "resumeStreams"; chatId?: string; restartExpectedMs?: number }
+  // `shutdown`: the gateway announced the close itself — a restart or a plain stop.
+  | { op: "resumeStreams"; chatId?: string; restartExpectedMs?: number; shutdown?: "restart" | "stop" }
   // `rec*` fields are present only while a turn is being recorded (bridge tags the
   // flush): recSessionId is the turn's recording session (Convex records only if it
   // still matches the active one), bridgeSentAt (t1) + bridgeSkew feed segment A,
@@ -1031,6 +1032,7 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(typeof expected === "number" && Number.isFinite(expected) && expected >= 0
             ? { restartExpectedMs: expected }
             : {}),
+          ...(body.shutdown === "restart" || body.shutdown === "stop" ? { shutdown: body.shutdown } : {}),
         });
       } else {
         await ctx.runMutation(internal.stuckStreams.sweepInstanceStreams, {

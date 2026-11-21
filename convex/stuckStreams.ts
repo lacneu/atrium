@@ -34,6 +34,7 @@ import { clearLiveActivity } from "./lib/liveTurnDifficulty";
 import { traceRegressionSummary } from "./lib/streamTrace";
 import { isWatchdogOrphan, STUCK_STREAM_ERROR_CODE, SWEEP_ERROR_CODE } from "./lib/streamOrphan";
 import { transcriptStoredText } from "./lib/transcriptProjection";
+import { noteInterruption } from "./lib/restartRecovery";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 
 /**
@@ -677,8 +678,11 @@ export const resumeChatStreams = internalMutation({
     instanceName: v.string(),
     chatId: v.string(),
     restartExpectedMs: v.optional(v.number()),
+    /** The gateway ANNOUNCED this close on the socket (`event:"shutdown"`): a restart
+     *  (it gave `restartExpectedMs`) or a plain stop. Absent: any other close. */
+    shutdown: v.optional(v.union(v.literal("restart"), v.literal("stop"))),
   },
-  handler: async (ctx, { instanceName, chatId, restartExpectedMs }) => {
+  handler: async (ctx, { instanceName, chatId, restartExpectedMs, shutdown }) => {
     const now = Date.now();
     const firstDelay = firstResumeAskDelayMs(restartExpectedMs);
     const id = ctx.db.normalizeId("chats", chatId);
@@ -706,6 +710,9 @@ export const resumeChatStreams = internalMutation({
       ) {
         continue;
       }
+      // The announced shutdown is a fact about the turn this socket carried, kept on its
+      // bubble: should its run turn out cut, the reader is told by what (lib/restartRecovery).
+      if (shutdown !== undefined) await noteInterruption(ctx, msg, { shutdown });
       const held = msg.resumeChain;
       if (held !== undefined && held.at > now - RESUME_LINK_GRACE_MS) {
         // A link is in charge (its question due, or in flight): this close is NOTED on

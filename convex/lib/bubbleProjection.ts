@@ -168,6 +168,12 @@ export type PlanBubble = {
   /** Closed by the stuck-stream WATCHDOG, not by a terminal (lib/streamOrphan
    *  `isWatchdogOrphan`): its runs' end settles it like a streaming bubble (0.102.1). */
   orphaned?: boolean;
+  /** What the bubble already says of a cut turn (`messages.interruption`): the gateway
+   *  announced a shutdown on its socket; its run is known to have stopped unanswered; the
+   *  gateway's recovery resumed it. */
+  shutdownNoted?: true;
+  unanswered?: true;
+  recovered?: true;
 };
 
 export type RunFacts = {
@@ -191,6 +197,8 @@ export type RunFacts = {
    *  the cursor (`gaps`), which qualifies the report. */
   gapped?: true;
   status?: RunStatus;
+  /** Every row of the run was loaded and it has NONE of its own (it wrote nothing). */
+  empty?: true;
   /** The error the gateway recorded for the run (`sessionInfo.lastRunError`, step 4). */
   errorText?: string;
 };
@@ -257,6 +265,10 @@ export type ProjectionPlan = {
     vanish?: true;
     /** An `error` bubble with no error text: the text the transcript states (step 4). */
     errorText?: string;
+    /** The gateway announced a shutdown on this turn's socket, and the transcript shows
+     *  its run stopped before an answer (`endsUnanswered`): said on the bubble, which is
+     *  then kept even with nothing else to show. */
+    unanswered?: true;
   }>;
 };
 
@@ -547,6 +559,23 @@ export function rowError(rows: readonly PlanRow[]): string | undefined {
   return found;
 }
 
+/** The stop reasons of an ANSWER (the runtime's `"stop" | "length"`, and the raw provider
+ *  value `end_turn` that passes through — packages/llm-core/src/types.ts at v2026.9.36). */
+const ANSWERED_STOP: ReadonlySet<string> = new Set(["stop", "length", "end_turn"]);
+
+/** Do a bubble's rows END before an answer — nothing of the assistant's at all, or a last
+ *  assistant row that states a stop reason which is not an answer's (`toolUse`: it was
+ *  waiting on a tool; `aborted`, `error`)? A last row that states none proves nothing. */
+export function endsUnanswered(rows: readonly PlanRow[]): boolean {
+  let last: PlanRow | undefined;
+  for (const r of rows) {
+    if (r.role !== "assistant" || r.streamSegment === true) continue;
+    if (last === undefined || r.seq > last.seq) last = r;
+  }
+  if (last === undefined) return true;
+  return last.stopReason !== undefined && !ANSWERED_STOP.has(last.stopReason);
+}
+
 /** The terminal a bubble takes when its runs are over (null: not ours to set). An error
  *  or a timeout is the row's when a row states its error text (step 4); otherwise only the
  *  live terminal has the gateway's message, and it is left to it (and to the stuck-stream
@@ -697,9 +726,18 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       const stated = rowError(rows) ?? runError(facts);
       if (stated !== undefined) write.errorText = stated;
     }
+    // A TURN THE GATEWAY CUT: it announced a shutdown on the turn's socket, and every row
+    // of the bubble's runs is known — they end before an answer. A fact, set once.
+    const rowsWhole = bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true);
+    if (bubble.shutdownNoted === true && bubble.unanswered !== true && allSettled && rowsWhole && endsUnanswered(rows)) {
+      write.unanswered = true;
+    }
+    // A bubble that states an interruption is never removed for showing nothing else.
+    const stated = bubble.recovered === true || bubble.unanswered === true || write.unanswered === true;
     // §3.3: every row the bubble showed was retracted and nothing of the transcript is left
     // in it — the text it carries exists nowhere any more.
     if (
+      !stated &&
       allSettled &&
       allCovered &&
       text === "" &&
@@ -713,7 +751,7 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
     }
     // The rows decide and show nothing (no text, no file, no card, no error): the bubble
     // goes, as an empty bubble does (CU-21) — never kept with the live text.
-    if (composable && rowsDecide && text === "" && layout.length === 0 && rowError(rows) === undefined && runError(facts) === undefined) {
+    if (!stated && composable && rowsDecide && text === "" && layout.length === 0 && rowError(rows) === undefined && runError(facts) === undefined) {
       write.vanish = true;
     }
     if (
@@ -721,7 +759,8 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       write.layout !== undefined ||
       write.settle !== undefined ||
       write.vanish === true ||
-      write.errorText !== undefined
+      write.errorText !== undefined ||
+      write.unanswered === true
     ) {
       plan.rewrite.push(write);
     }

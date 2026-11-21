@@ -86,6 +86,7 @@ import {
 } from "./lib/bubbleProjectionStore";
 import { drainNextQueued, SESSION_ACTIVE_FRESH_MS } from "./lib/outboxQueue";
 import { scheduleRegroup } from "./displayGroups";
+import { isRecoveryEntry, resolveRecovery } from "./lib/restartRecovery";
 import { displayReport } from "./messages";
 import { utf8Bytes } from "./lib/bubbleProjection";
 import {
@@ -740,6 +741,14 @@ async function upsertRows(
         });
         updated++;
       }
+    }
+    // PROJECTION `on`: the gateway's restart-recovery entry names, by its place, the run
+    // it resumes (lib/restartRecovery.ts). Read again while unresolved: the row before it
+    // may be stored by this very apply.
+    if (a.origin !== undefined && isRecoveryEntry(next) && (stored === null || stored.recoversRunId === undefined)) {
+      budget.queries += 6;
+      const entry = await ctx.db.get(rowId);
+      if (entry !== null) await resolveRecovery(ctx, a, entry);
     }
     // PROJECTION `on` (phase 5): the launches the row states, as identities — the proof a
     // delivery run joins its launcher by (lib/delegationChain.ts). Idempotent per row.

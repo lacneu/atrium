@@ -695,7 +695,11 @@ export interface ConvexWriter {
   sweepStreams?(): Promise<void>;
   /** 0.102.1 — a conversation socket closed: ask Convex to have this chat's projected
    *  bubbles still streaming re-asked of the gateway (best-effort shortcut). */
-  resumeStreams?(chatId: string, restartExpectedMs?: number | null): Promise<void>;
+  resumeStreams?(
+    chatId: string,
+    restartExpectedMs?: number | null,
+    shutdown?: "restart" | "stop" | null,
+  ): Promise<void>;
   /** inline widget descriptor -> internal.stream.addPart(kind:widget). Resolves to
    *  whether the widget LANDED on the message (Convex refuses a view this
    *  conversation does not own, widgets switched off, a stale generation). */
@@ -1129,7 +1133,7 @@ type IngestOp =
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
   | { op: "calibrate" }
   | { op: "sweepStreams" }
-  | { op: "resumeStreams"; chatId?: string; restartExpectedMs?: number }
+  | { op: "resumeStreams"; chatId?: string; restartExpectedMs?: number; shutdown?: "restart" | "stop" }
   | ({
       op: "appendDelta";
       messageId: string;
@@ -2416,12 +2420,19 @@ export class HttpConvexWriter implements ConvexWriter {
    * projected bubble still streaming), so a lost or early request costs a cycle, never a
    * bubble.
    */
-  resumeStreams(chatId: string, restartExpectedMs?: number | null): Promise<void> {
+  resumeStreams(
+    chatId: string,
+    restartExpectedMs?: number | null,
+    shutdown?: "restart" | "stop" | null,
+  ): Promise<void> {
     // An ANNOUNCED restart: Convex's first question waits for the delay the gateway gave.
+    // The announced shutdown itself is kept on the turn's bubble (an older Convex ignores
+    // the field).
     return this.doPost({
       op: "resumeStreams",
       chatId,
       ...(typeof restartExpectedMs === "number" ? { restartExpectedMs } : {}),
+      ...(shutdown === "restart" || shutdown === "stop" ? { shutdown } : {}),
     })
       .then(() => undefined)
       .catch((e) => {
