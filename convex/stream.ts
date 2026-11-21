@@ -6601,6 +6601,24 @@ export const appendLateFinal = internalMutation({
     }
     const chat = await ctx.db.get(chatId);
     if (chat === null) return null;
+    // Idempotent here too: a repeat of the call that OPENED a bubble (the bridge lost its
+    // answer and asks again, still naming none) finds that bubble — the run's, settled,
+    // holding exactly this text — instead of opening a second one.
+    const ofRun = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+      .order("desc")
+      .take(8);
+    const opened = ofRun.find(
+      (m) =>
+        m.role === "assistant" &&
+        m.status !== "streaming" &&
+        m.text === add &&
+        (boundInstanceName === undefined ||
+          m.boundInstance === undefined ||
+          m.boundInstance === boundInstanceName),
+    );
+    if (opened !== undefined) return opened._id;
     // A delivery's late final is its own bubble (§14.28): a delivery exists only on
     // OpenClaw, always projected since 0.102.0.
     const own = isDeliveryRun(runId);

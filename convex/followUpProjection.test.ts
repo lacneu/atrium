@@ -682,6 +682,26 @@ describe("the bubble writes of the projected path", () => {
       text: "only text",
       runId: "runC",
     });
+    // The answer of that call was lost: the bridge asks again, still naming no bubble.
+    const again = await t.mutation(internal.stream.appendLateFinal, {
+      chatId,
+      runId: "runC",
+      text: "only text",
+      boundInstanceName: "prod",
+    });
+    expect(again).toBe(created);
+    const ofRun = await t.run((ctx) =>
+      ctx.db.query("messages").withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", "runC")).collect(),
+    );
+    expect(ofRun).toHaveLength(1);
+    // A DIFFERENT text for the same run is another late final, and its own bubble.
+    const other = await t.mutation(internal.stream.appendLateFinal, {
+      chatId,
+      runId: "runC",
+      text: "another text",
+      boundInstanceName: "prod",
+    });
+    expect(other).not.toBe(created);
   });
 });
 
