@@ -13,7 +13,10 @@ import { taskDeliveryRunFromRunId } from "../../src/core/async-task.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { turnOpenings } from "../../scripts/lib/replay-fidelity.mjs";
 import { RunManager } from "../../src/providers/openclaw/run-manager.js";
-import { LiveTextBaselines } from "../../src/providers/openclaw/live-text-baseline.js";
+import {
+  LiveTextBaselines,
+  type LiveTextGap,
+} from "../../src/providers/openclaw/live-text-baseline.js";
 import type { GatewayFrame } from "../../src/providers/openclaw/openclaw-client.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../../src/convex-writer.js";
 
@@ -198,6 +201,12 @@ export async function replay<W extends RecordingWriter = RecordingWriter>(
   fx: Fixture,
   writer: W = new RecordingWriter() as W,
   afterFrame?: (frame: GatewayFrame, index: number) => void,
+  /** Index of ONE frame the socket never delivered. The connection sees the hole in the
+   *  envelope seq and retires its live-text baselines (openclaw-client.ts), as here. */
+  lost?: number,
+  /** What the connection re-reads when a delta arrives with no baseline (`chat.history`
+   *  → `inFlightRun`, openclaw-client.ts `onLiveTextGap`): the frame it then queues. */
+  reread?: (gap: LiveTextGap, index: number) => GatewayFrame | null,
 ): Promise<W> {
   const manager = new RunManager(`chat-${fx.header.scenario}`, fx.header.sessionKey, writer);
   const base = fx.entries.find((e) => e.receivedAt !== null)?.receivedAt ?? 0;
@@ -238,7 +247,14 @@ export async function replay<W extends RecordingWriter = RecordingWriter>(
     // The capture is the RAW wire; production restores append-only live text at the
     // connection before the run manager sees a frame (live-text-baseline.ts). Identity on
     // a capture whose deltas all carry their base (every version before 2026.9.7).
-    await manager.feed(baselines.project(fx.entries[i]!.frame as GatewayFrame).frame, now);
+    if (i === lost) {
+      baselines.invalidate();
+      continue;
+    }
+    const projected = baselines.project(fx.entries[i]!.frame as GatewayFrame);
+    await manager.feed(projected.frame, now);
+    const reRead = projected.gap !== null ? (reread?.(projected.gap, i) ?? null) : null;
+    if (reRead !== null) await manager.feed(reRead, now);
     afterFrame?.(fx.entries[i]!.frame as GatewayFrame, i);
   }
   // THE DEADLINES, after the last frame. A capture whose turn ends on a grace rather than

@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
+import { assistantAsChat } from "./helpers/chat-stream.js";
 import type {
   ConvexWriter,
   FinalizeStatus,
@@ -184,7 +185,9 @@ function frames(scenario: string): unknown[] {
   if (!s) {
     throw new Error(`unknown scenario: ${scenario}`);
   }
-  return s.frames;
+  // Text carried on the `assistant` stream only is replayed as the `chat` delta the
+  // gateway publishes beside it (the bubble's text is read from that stream alone).
+  return scenario === "lifecycle-error" ? assistantAsChat(s.frames) : s.frames;
 }
 
 /** An own-session chat delta carrying `text` (visible content: it opens the bubble). */
@@ -443,15 +446,11 @@ describe("run-manager -> convex-writer mapping", () => {
     ]);
   });
 
-  it("legacy agent deltas accumulate as appendDelta; the silence asks, never ends the turn", async () => {
+  it("assistant-stream text writes nothing; the silence asks, never ends the turn", async () => {
     const { writer, manager } = await drive("agent-assistant-delta-legacy", {
       advanceToFinalize: true,
     });
-    expect(writer.calls[0]).toEqual(["startAssistant", CHAT_ID, OWN_RUN]);
-    const deltas = writer.calls
-      .filter((c) => c[0] === "appendDelta")
-      .map((c) => (c as ["appendDelta", string, string])[2]);
-    expect(deltas).toEqual(["Hello ", "world"]);
+    expect(writer.calls.filter((c) => c[0] === "appendDelta" || c[0] === "setSnapshot")).toEqual([]);
     // The capture ends on a lifecycle `end` and no chat terminal: no grace closes the
     // turn on a timer — the transcript's fact (or the run's terminal) does.
     expect(manager.isFinalized).toBe(false);

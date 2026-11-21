@@ -14,14 +14,11 @@
 export const SNAPSHOT_SOURCES = [
   /** OpenClaw `chat` delta carrying the message so far (`message` content, not `delta`). */
   "chat_delta",
-  /** OpenClaw `chat` final carrying the message. */
+  /** OpenClaw `chat` final carrying the message (or the `message` an error or aborted
+   *  terminal carries). */
   "chat_final",
   /** OpenClaw `chat` delta with `replace: true` (ChatDeltaEventSchema.replace refresh). */
   "chat_delta_replace",
-  /** OpenClaw `agent` stream `assistant`, full `text`. */
-  "agent_assistant_text",
-  /** OpenClaw `agent` stream `assistant` with `replace: true` (text or delta refresh). */
-  "agent_assistant_replace",
   /** OpenClaw `message` tool start: the visible reply read from its args. */
   "message_tool",
   /** The empty snapshot clearing an invalidated prefix on a mid-turn compaction. */

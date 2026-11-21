@@ -27,7 +27,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { SnapshotSource } from "../src/core/snapshot-source.js";
-import { mergeChatStreamMessage } from "../src/providers/openclaw/live-text-baseline.js";
+import {
+  LiveTextBaselines,
+  mergeChatStreamMessage,
+} from "../src/providers/openclaw/live-text-baseline.js";
 import { Normalizer, type BridgeEvent } from "../src/providers/openclaw/normalizer.js";
 import { liveStableLength, sanitizeText } from "../src/providers/openclaw/sanitize.js";
 import type { GatewayFrame } from "../src/providers/openclaw/openclaw-client.js";
@@ -232,123 +235,69 @@ describe("F1 — a later item's assistant text is not the bubble", () => {
         source: e.snapshotSource,
       }));
 
-  it("hand-built: a LONGER second item does not replace the first either", () => {
-    // The guard cannot see this one: the write grows, and the first item is gone.
+  it("hand-built: no assistant frame writes the bubble — first item, later item, replace, no item", () => {
     const { n, at } = turn();
-    n.feed(assistant({ text: "Ok.", delta: "Ok.", itemId: "s:1" }), at());
-    const second = n.feed(
-      assistant({ text: "Here is the full answer.", delta: "Here is the full answer.", itemId: "s:2" }),
-      at(),
-    );
-    expect(snapshots(second)).toEqual([]);
-    expect(n.text).toBe("Ok.");
+    const ev = [
+      ...n.feed(assistant({ text: "Ok.", delta: "Ok.", itemId: "s:1" }), at()),
+      ...n.feed(assistant({ text: "Here is the full answer.", delta: "Here is the full answer.", itemId: "s:2" }), at()),
+      ...n.feed(assistant({ text: "X", delta: "", replace: true, itemId: "s:2" }), at()),
+      ...n.feed(assistant({ text: "Hi", replace: true, replaceable: true, itemId: "s:assistant" }), at()),
+      ...n.feed(assistant({ text: "Hello again" }), at()),
+      ...n.feed(assistant({ delta: " and a legacy delta" }), at()),
+    ];
+    expect(snapshots(ev)).toEqual([]);
+    expect(ev.filter((e) => e.type === "message.delta")).toEqual([]);
+    expect(n.text).toBe("");
     const whole = n.feed(chatDelta("Ok.\n\nHere is the full answer."), at());
     expect(snapshots(whole)).toEqual([
       { text: "Ok.\n\nHere is the full answer.", source: "chat_delta" },
     ]);
   });
 
-  it("hand-built: the first item keeps writing, and its own `replace` keeps its permission", () => {
+  // The `chat` text is PROJECTED for display: the gateway removes its internal runtime
+  // context from it (src/gateway/live-chat-projector.ts `stripInternalRuntimeContext`;
+  // upstream's own test: server-chat.agent-events.test.ts). The assistant stream is raw.
+  // Hand-built in the reviewer's sequence; at 42593d9e the third frame was written as is.
+  it("hand-built: text the gateway keeps out of the chat stream never reaches the bubble", () => {
     const { n, at } = turn();
+    const secret = "Visible\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nprivate runtime detail";
     const ev = [
-      ...n.feed(assistant({ text: "Hello", delta: "Hello", itemId: "s:1" }), at()),
-      ...n.feed(assistant({ text: "Hello world", delta: " world", itemId: "s:1" }), at()),
-      ...n.feed(assistant({ text: "Hi", delta: "", replace: true, itemId: "s:1" }), at()),
+      ...n.feed(assistant({ text: "Visible", itemId: "s:1" }), at()),
+      ...n.feed(chatDelta("Visible"), at()),
+      ...n.feed(assistant({ text: secret, itemId: "s:1" }), at()),
+      ...n.feed(assistant({ text: secret + ", extended", itemId: "s:1" }), at()),
+      ...n.feed({ event: "chat", payload: { sessionKey: SK, runId: RUN, state: "final" } }, at()),
     ];
-    expect(snapshots(ev)).toEqual([
-      { text: "Hello", source: "agent_assistant_text" },
-      { text: "Hello world", source: "agent_assistant_text" },
-      { text: "Hi", replace: true, source: "agent_assistant_replace" },
-    ]);
+    expect(JSON.stringify(ev.filter((e) => e.type !== "openclaw.frame"))).not.toContain("INTERNAL_CONTEXT");
+    expect(ev.find((e) => e.type === "message.final")?.text).toBe("Visible");
   });
 
-  it("hand-built: a later item's `replace` rewrites that item only — not written", () => {
+  it("hand-built: with one producer, no assistant frame can be erased, displayed over another, or lost at the final", () => {
+    // The reviewer's sequences: an assistant extension (seq 25) then a stale `replace` copy
+    // (chat seq 20); an older cumulative copy (seq 20) after a newer one (seq 25).
     const { n, at } = turn();
-    n.feed(assistant({ text: "First.", delta: "First.", itemId: "s:1" }), at());
-    const ev = n.feed(assistant({ text: "X", delta: "", replace: true, itemId: "s:2" }), at());
-    expect(snapshots(ev)).toEqual([]);
-    expect(n.text).toBe("First.");
+    const A = (text: string, seq: number) => ({
+      event: "agent",
+      payload: { sessionKey: SK, runId: RUN, seq, stream: "assistant", data: { phase: "final_answer", text, itemId: "s:1" } },
+    });
+    const C = (text: string, seq: number, extra: Record<string, unknown> = {}) =>
+      chatDelta(text, { seq, ...extra });
+    n.feed(C("The answer so far", 22), at());
+    n.feed(A("The answer so far, and more", 25), at());
+    n.feed(A("The answer", 20), at());
+    expect(n.text).toBe("The answer so far");
+    const stale = n.feed(C("The", 20, { replace: true }), at());
+    expect(snapshots(stale)).toEqual([]); // behind the text shown: not even written
+    const staleOther = n.feed(C("Else", 20, { replace: true }), at());
+    expect(snapshots(staleOther)).toEqual([{ text: "Else", source: "chat_delta_replace" }]); // undeclared
+    expect(n.text).toBe("The answer so far");
+    const final = n.feed({ event: "chat", payload: { sessionKey: SK, runId: RUN, seq: 30, state: "final" } }, at());
+    expect(final.find((e) => e.type === "message.final")?.text).toBe("The answer so far");
   });
 
-  it("hand-built: a frame without `itemId` is the run's whole text, as before", () => {
-    const { n, at } = turn();
-    const ev = [
-      ...n.feed(assistant({ text: "Hello", itemId: "s:1" }), at()),
-      ...n.feed(assistant({ text: "Hello again" }), at()),
-    ];
-    expect(snapshots(ev).map((s) => s.text)).toEqual(["Hello", "Hello again"]);
-  });
-
-  it("hand-built: each run has its own first item, and a new turn starts over", () => {
-    const { n, at } = turn();
-    n.feed(assistant({ text: "One", itemId: "a:1" }), at());
-    n.noteRunStarted("webchat-run-2", at());
-    const other = n.feed(assistant({ text: "Two", itemId: "b:1" }, "webchat-run-2"), at());
-    expect(snapshots(other).map((s) => s.text)).toEqual(["Two"]);
-    n.beginTurn(at());
-    n.noteRunStarted(RUN, at());
-    const next = n.feed(assistant({ text: "Three", itemId: "a:7" }), at());
-    expect(snapshots(next).map((s) => s.text)).toEqual(["Three"]);
-  });
-
-  it("hand-built: a steer split does not hand the bubble to the next item", () => {
-    // After a cut the run's cumulative text is stripped of the settled segment; an
-    // item-only text has no such prefix and would be taken whole.
-    const { n, at } = turn();
-    n.feed(assistant({ text: "First part.", delta: "First part.", itemId: "s:1" }), at());
-    n.splitSegment();
-    const second = n.feed(assistant({ text: "Second", delta: "Second", itemId: "s:2" }), at());
-    expect(snapshots(second)).toEqual([]);
-    const whole = n.feed(chatDelta("First part.\n\nSecond"), at());
-    expect(snapshots(whole)).toEqual([{ text: "Second", source: "chat_delta" }]);
-  });
-
-  it("hand-built: the per-run memory is bounded — a run it forgot reads as it always did", () => {
-    const { n, at } = turn();
-    n.feed(assistant({ text: "One", itemId: "a:1" }), at());
-    for (let i = 0; i < 64; i++) {
-      n.noteRunStarted(`webchat-other-${i}`, at());
-      n.feed(assistant({ text: "x", itemId: `o${i}:1` }, `webchat-other-${i}`), at());
-    }
-    const ev = n.feed(assistant({ text: "Another item", itemId: "a:2" }), at());
-    expect(snapshots(ev).map((s) => s.text)).toEqual(["Another item"]);
-  });
-
-  it("hand-built: after a compaction reset the replay's first item owns the emptied bubble", () => {
-    const { n, at } = turn();
-    n.feed(assistant({ text: "Before", itemId: "s:1" }), at());
-    n.feed(
-      {
-        event: "agent",
-        payload: {
-          runId: RUN,
-          sessionKey: SK,
-          stream: "lifecycle",
-          data: { phase: "end", livenessState: "abandoned", replayInvalid: true },
-        },
-      },
-      at(),
-    );
-    const replayed = n.feed(assistant({ text: "After", itemId: "s:4" }), at());
-    expect(snapshots(replayed).map((s) => s.text)).toEqual(["After"]);
-  });
-
-  // `mergeAssistantText`: "Only provisional stream replacements discard earlier items" —
-  // a NEW item marked `replace` and `replaceable` restarts the run's text.
-  it("hand-built: before the chat stream speaks, a `replaceable` replacement on a new item IS the whole text", () => {
-    const { n, at } = turn();
-    n.feed(assistant({ text: "Draft", delta: "Draft", itemId: "s:1" }), at());
-    const ev = n.feed(
-      assistant({ text: "Hi", replace: true, replaceable: true, itemId: "s:assistant" }),
-      at(),
-    );
-    expect(snapshots(ev)).toEqual([
-      { text: "Hi", replace: true, source: "agent_assistant_replace" },
-    ]);
-  });
 
   // Captured on the codex harness (2026.9.33): the turn's last assistant frame is such a
-  // replacement, after the chat stream wrote the same text: it is not written again.
+  // replacement, after the chat stream wrote the same text.
   it("captured: a turn ending on a `replaceable` replacement", async () => {
     const { writer } = await replayAgainstControlUi(
       asFixture("replaceableRestart", CAPTURED.replaceableRestart),
@@ -357,61 +306,6 @@ describe("F1 — a later item's assistant text is not the bubble", () => {
     // final, and the line break before it goes with it — the final's one-character shrink.
     expect(writer.refused).toEqual([{ oldLen: 104, newLen: 103, source: "chat_final" }]);
     expect(writer.history.filter((t) => t.includes("MEDIA:"))).toEqual([]);
-  });
-});
-
-describe("the chat stream is the bubble's authority once it has written it", () => {
-  const SK = "agent:main:atrium:chat:u-1:c-1";
-  const RUN = "webchat-run-1";
-  function turn(): { n: Normalizer; at: () => number } {
-    const n = new Normalizer(SK, null);
-    let now = 1000;
-    n.beginTurn(now);
-    n.noteRunStarted(RUN, now);
-    return { n, at: () => (now += 0.01) };
-  }
-  const written = (events: BridgeEvent[]) =>
-    events.filter((e) => e.type === "message.snapshot").map((e) => e.text);
-  const assistant = (text: string, seq: number, runId = RUN) => ({
-    event: "agent",
-    seq: 100 + seq * 2,
-    payload: {
-      sessionKey: SK,
-      runId,
-      seq,
-      stream: "assistant",
-      data: { phase: "final_answer", text, delta: text, itemId: "s:1" },
-    },
-  });
-  const chat = (text: string, seq: number, runId = RUN) => ({
-    event: "chat",
-    seq: 101 + seq * 2,
-    payload: {
-      sessionKey: SK,
-      runId,
-      seq,
-      state: "delta",
-      deltaText: text,
-      message: { role: "assistant", content: [{ type: "text", text }] },
-    },
-  });
-
-  it("hand-built: the assistant text writes until the chat stream does, never after", () => {
-    const { n, at } = turn();
-    expect(written(n.feed(assistant("He", 1), at()))).toEqual(["He"]);
-    expect(written(n.feed(chat("He", 1), at()))).toEqual(["He"]);
-    expect(written(n.feed(assistant("Hello, a longer view", 2), at()))).toEqual([]);
-    expect(written(n.feed(chat("Hello", 2), at()))).toEqual(["Hello"]);
-  });
-
-  it("hand-built: per run, and a new turn starts over", () => {
-    const { n, at } = turn();
-    n.feed(chat("One", 1), at());
-    n.noteRunStarted("webchat-run-2", at());
-    expect(written(n.feed(assistant("Two", 1, "webchat-run-2"), at()))).toEqual(["Two"]);
-    n.beginTurn(at());
-    n.noteRunStarted(RUN, at());
-    expect(written(n.feed(assistant("Three", 1), at()))).toEqual(["Three"]);
   });
 });
 
@@ -571,9 +465,13 @@ describe("an in-order chat rewrite the gateway does not mark", () => {
     expect(shrinkOf(n.feed(answer, at()))).toBe("declared");
   });
 
-  it("an EARLIER place on the socket (envelope seq not above the writer's) proves nothing", () => {
+  it("the envelope seq proves nothing: a run can reach the normalizer from two sockets", () => {
+    // After a hand-back (speaker-pool.ts) the owner's socket delivers its own copies, on
+    // its own envelope counter. A HIGHER envelope seq with an older run seq is such a copy.
     const { n, at } = untilCommandSnapshot();
-    expect(shrinkOf(n.feed({ ...answer, seq: 207 }, at()))).toBe("undeclared");
+    const copy = { ...answer, seq: 100_000, payload: { ...answerPayload, seq: 18 } };
+    expect(shrinkOf(n.feed(copy, at()))).toBe("undeclared");
+    expect(n.text.length).toBe(1008);
   });
 
   it("an EARLIER place in the run (payload seq not above the writer's) proves nothing", () => {
@@ -718,5 +616,306 @@ describe("the bridge's own rewrites never take text back", () => {
     expect(liveStableLength("see https://example.com/a")).toBe("see https://example.com/a".length);
     expect(liveStableLength("see /tmp/a")).toBe(4);
     expect(liveStableLength("line\nMED")).toBe(5);
+  });
+});
+
+describe("freshness: nothing at or below the run's applied chat seq shortens the bubble", () => {
+  // 2026.9.36 capture `chatReplace`: the command snapshots carry run seq 11, 13, 15, 18
+  // (44, 107, 799, 950 characters), all marked `replace`.
+  const turnFrames = CAPTURED.chatReplace;
+  const replaces = turnFrames.frames.filter((f) => {
+    const p = f.payload as Record<string, unknown>;
+    return f.event === "chat" && p.state === "delta" && p.replace === true;
+  });
+  function start(): { n: Normalizer; at: () => number } {
+    const n = new Normalizer(turnFrames.sessionKey, null);
+    let now = 1000;
+    n.beginTurn(now);
+    n.noteRunStarted(turnFrames.runId, now);
+    return { n, at: () => (now += 0.01) };
+  }
+  const snap = (events: BridgeEvent[]) => events.find((e) => e.type === "message.snapshot");
+  const declared = (events: BridgeEvent[]) => snap(events)?.replace === true;
+
+  it("captured, after a hand-back: the EARLIER `replace` copy from the other socket shortens nothing", () => {
+    const { n, at } = start();
+    const [first, , , fourth] = replaces as [GatewayFrame, GatewayFrame, GatewayFrame, GatewayFrame];
+    expect((first.payload as { seq: number }).seq).toBe(11);
+    expect((fourth.payload as { seq: number }).seq).toBe(18);
+    n.feed({ ...fourth, seq: 100 }, at());
+    expect(n.text.length).toBe(950);
+    // Run seq 11, on the other socket's counter (envelope 1001), still marked `replace`.
+    // (It is also the START of the text shown: behind, so not even written.)
+    expect(snap(n.feed({ ...first, seq: 1001 }, at()))).toBeUndefined();
+    expect(n.text.length).toBe(950);
+    const second = { ...replaces[1]!, seq: 1002 } as GatewayFrame;
+    expect((second.payload as { seq: number }).seq).toBe(13);
+    expect(snap(n.feed(second, at()))).toBeDefined();
+    expect(declared(n.feed({ ...replaces[1]!, seq: 1003, payload: { ...(replaces[1]!.payload as object), seq: 14 } }, at()))).toBe(false);
+    expect(n.text.length).toBe(950);
+    // The copy of the frame that wrote the bubble (same run seq) is no fresher.
+    const same = { ...fourth, seq: 1004, payload: { ...(fourth.payload as object), deltaText: "x", message: { role: "assistant", content: [{ type: "text", text: "x" }] } } };
+    expect(declared(n.feed(same, at()))).toBe(false);
+    // …and the next one is: run seq 19.
+    const next = { ...same, payload: { ...(same as { payload: object }).payload, seq: 19 } };
+    expect(declared(n.feed(next, at()))).toBe(true);
+  });
+
+  it("captured: a refused frame moves no reference — seq 18, then 11 (refused), then 13", () => {
+    const { n, at } = start();
+    const [first, second, , fourth] = replaces as [GatewayFrame, GatewayFrame, GatewayFrame, GatewayFrame];
+    const unmarked = (f: GatewayFrame) => {
+      const { replace: _replace, ...payload } = f.payload as Record<string, unknown>;
+      return { ...f, payload };
+    };
+    const third = replaces[2]!;
+    n.feed(fourth, at());
+    // Run seq 13 (107 characters, not the start of the text shown): written, undeclared.
+    expect(snap(n.feed(unmarked(second), at()))).toBeDefined();
+    expect(declared(n.feed(unmarked(second), at()))).toBe(false);
+    // Without the fix that refused frame became the writer, and run seq 15 its sequel.
+    expect(declared(n.feed(unmarked(third), at()))).toBe(false);
+    expect(n.text.length).toBe(950);
+    void first;
+  });
+
+  it("hand-built: a `replace` frame that carries no run seq is never fresh", () => {
+    const { n, at } = start();
+    const SK = turnFrames.sessionKey;
+    const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+    const noSeq = (text: string, extra: Record<string, unknown> = {}) => ({
+      event: "chat",
+      payload: { sessionKey: SK, runId: turnFrames.runId, state: "delta", deltaText: text, message: message(text), ...extra },
+    });
+    n.feed(noSeq("A long first answer"), at());
+    expect(declared(n.feed(noSeq("x", { replace: true }), at()))).toBe(false);
+    expect(n.text).toBe("A long first answer");
+  });
+
+  it("hand-built: a refused frame is not the writer — the next one is not its sequel", () => {
+    const { n, at } = start();
+    const SK = turnFrames.sessionKey;
+    const chat = (runId: string, text: string, seq: number) => ({
+      event: "chat",
+      payload: { sessionKey: SK, runId, seq, state: "delta", deltaText: text, message: { role: "assistant", content: [{ type: "text", text }] } },
+    });
+    n.feed(chat(turnFrames.runId, "a".repeat(100), 5), at());
+    n.noteRunStarted("webchat-second", at());
+    // Another run's text is on screen: this run's shorter one is undeclared (refused)…
+    expect(declared(n.feed(chat("webchat-second", "b".repeat(50), 1), at()))).toBe(false);
+    // …and does not become the writer its next frame could claim to follow.
+    expect(declared(n.feed(chat("webchat-second", "c".repeat(40), 2), at()))).toBe(false);
+    expect(n.text.length).toBe(100);
+  });
+
+  it("hand-built: the gateway's own `replace` mark needs no writer to follow — only freshness", () => {
+    const { n, at } = start();
+    const SK = turnFrames.sessionKey;
+    const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+    // The bubble was written by a frame that carries no order (a re-read).
+    n.feed(
+      { event: "chat", payload: { sessionKey: SK, runId: turnFrames.runId, state: "delta", deltaText: "", message: message("a long text read back") } },
+      at(),
+    );
+    const marked = {
+      event: "chat",
+      payload: { sessionKey: SK, runId: turnFrames.runId, seq: 4, state: "delta", deltaText: "short", replace: true, message: message("short") },
+    };
+    expect(declared(n.feed(marked, at()))).toBe(true);
+  });
+
+  it("hand-built: the mark belongs to the turn — a new turn starts from nothing", () => {
+    const { n, at } = start();
+    const SK = turnFrames.sessionKey;
+    const chat = (text: string, seq: number, extra: Record<string, unknown> = {}) => ({
+      event: "chat",
+      payload: { sessionKey: SK, runId: turnFrames.runId, seq, state: "delta", deltaText: text, message: { role: "assistant", content: [{ type: "text", text }] }, ...extra },
+    });
+    n.feed(chat("first turn", 50), at());
+    n.beginTurn(at());
+    n.noteRunStarted(turnFrames.runId, at());
+    n.feed(chat("a long text of the new turn", 1), at());
+    expect(declared(n.feed(chat("short", 2, { replace: true }), at()))).toBe(true);
+  });
+
+  it("hand-built: an empty retraction below the mark clears nothing", () => {
+    const { n, at } = start();
+    n.feed(replaces[3]!, at());
+    const p = replaces[0]!.payload as Record<string, unknown>;
+    const stale = {
+      ...replaces[0]!,
+      payload: { ...p, deltaText: "", message: { role: "assistant", content: [{ type: "text", text: "" }] } },
+    };
+    expect(snap(n.feed(stale, at()))).toBeUndefined();
+    expect(n.text.length).toBe(950);
+  });
+});
+
+describe("the terminal's own text", () => {
+  // Hand-built in the shapes of `emitChatTerminal` (error: `message` beside `errorMessage`
+  // when the buffer held text) and `broadcastChatFrame` (aborted: `message`). No capture
+  // holds a chat error or an aborted run with text.
+  const SK = "agent:main:atrium:chat:u-1:c-1";
+  const RUN = "webchat-run-1";
+  const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+  const delta = (text: string, seq: number, extra: Record<string, unknown> = {}) => ({
+    event: "chat",
+    payload: { sessionKey: SK, runId: RUN, seq, state: "delta", deltaText: text, message: message(text), ...extra },
+  });
+  const terminal = (state: "error" | "aborted", text: string | null, seq: number) => ({
+    event: "chat",
+    payload: {
+      sessionKey: SK,
+      runId: RUN,
+      seq,
+      state,
+      ...(state === "error" ? { errorMessage: "provider failed" } : {}),
+      ...(text === null ? {} : { message: message(text) }),
+    },
+  });
+  function turn(): { n: Normalizer; feed: (f: unknown) => BridgeEvent[] } {
+    const n = new Normalizer(SK, null);
+    let now = 1000;
+    n.beginTurn(now);
+    n.noteRunStarted(RUN, now);
+    return { n, feed: (f) => n.feed(f, (now += 0.01)) };
+  }
+  const finalOf = (events: BridgeEvent[]) => events.find((e) => e.type === "message.final")?.text;
+
+  it("an error terminal's text is the bubble's; without one, the bubble keeps what chat last wrote", () => {
+    const a = turn();
+    a.feed(delta("Half", 1));
+    expect(finalOf(a.feed(terminal("error", "Half of the answer", 2)))).toBe("Half of the answer");
+    const b = turn();
+    b.feed(delta("Half", 1));
+    expect(finalOf(b.feed(terminal("error", null, 2)))).toBe("Half");
+  });
+
+  it("a `message` that only restates the error is not the answer", () => {
+    const { feed } = turn();
+    feed(delta("Half", 1));
+    expect(finalOf(feed(terminal("error", "⚠️ Error: provider   failed", 2)))).toBe("Half");
+  });
+
+  it("an aborted terminal's text is read too", () => {
+    const { feed } = turn();
+    feed(delta("Half", 1));
+    expect(finalOf(feed(terminal("aborted", "Half of the answer", 2)))).toBe("Half of the answer");
+  });
+
+  it("a provider-logout abort (`stopReason: auth-revoked`) carries the buffered answer: it is read", () => {
+    // `abortChatRunsForProvider` cancels the pending chat flush and puts the buffer on the
+    // abort. Hand-built in that shape.
+    const { feed } = turn();
+    feed(delta("Half", 1));
+    const abort = terminal("aborted", "Half of the answer", 3);
+    const events = feed({ ...abort, payload: { ...abort.payload, stopReason: "auth-revoked" } });
+    expect(finalOf(events)).toBe("Half of the answer");
+  });
+
+  it("after a steer split, the terminal's text completes the CURRENT segment", () => {
+    // The reviewer's sequence: "First." settled at a cut, the delta for the rest is lost.
+    const { n, feed } = turn();
+    feed(delta("First.", 1));
+    n.splitSegment();
+    expect(finalOf(feed(terminal("error", "First.\n\nSecond.", 3)))).toBe("Second.");
+  });
+
+  it("after a retraction, the terminal's text still lands", () => {
+    const { n, feed } = turn();
+    feed(delta("NO", 1));
+    feed(delta("", 2, { replace: true }));
+    expect(n.text).toBe("");
+    expect(finalOf(feed(terminal("error", "The full answer", 3)))).toBe("The full answer");
+  });
+});
+
+describe("a lost chat delta is recovered the way the Control UI recovers it", () => {
+  // `chat` deltas are droppable under back-pressure (`dropIfSlow`). The frame still takes
+  // its envelope seq: the connection sees the hole, retires its baselines, and the next
+  // append-only delta — which has nothing to append to — makes it re-read the in-flight
+  // text (`chat.history` → `inFlightRun`), queued as a `chat` delta with no seq. Here the
+  // re-read answers at once with what the gateway held at that point; the real one is one
+  // request at a time, at least 2 s apart, at most 8 per run.
+  const isChatDelta = (f: GatewayFrame) =>
+    f.event === "chat" && (f.payload as { state?: unknown }).state === "delta";
+  function chatTextAt(fx: Fixture): Map<string, string>[] {
+    const baselines = new Map<string, unknown>();
+    const held = new Map<string, string>();
+    return fx.entries.map((e) => {
+      const f = e.frame as GatewayFrame;
+      if (isChatDelta(f)) {
+        const p = f.payload as Record<string, unknown>;
+        const merged = mergeChatStreamMessage(baselines.get(String(p.runId)), p);
+        if (merged !== undefined) {
+          baselines.set(String(p.runId), merged);
+          held.set(String(p.runId), messageText(merged) ?? "");
+        }
+      }
+      return new Map(held);
+    });
+  }
+  async function eachLoss(
+    fx: Fixture,
+    sample: number,
+    known: (r: Refusal) => boolean,
+  ): Promise<number> {
+    const intact = await replay(fx, new GuardedWriter());
+    expect(intact.refused.filter((r) => !known(r)), fx.header.scenario).toEqual([]);
+    const texts = chatTextAt(fx);
+    const positions = fx.entries
+      .map((e, i) => (isChatDelta(e.frame as GatewayFrame) ? i : -1))
+      .filter((i) => i >= 0);
+    const step = Math.max(1, Math.floor(positions.length / sample));
+    let tried = 0;
+    for (let k = 0; k < positions.length; k += step) {
+      tried++;
+      const w = await replay(fx, new GuardedWriter(), undefined, positions[k], (gap, index) => {
+        const text = texts[index]!.get(gap.runId);
+        return text === undefined || text === ""
+          ? null
+          : ({
+              type: "event",
+              event: "chat",
+              payload: {
+                runId: gap.runId,
+                sessionKey: gap.sessionKey,
+                state: "delta",
+                deltaText: "",
+                message: { role: "assistant", content: [{ type: "text", text }] },
+              },
+            } as GatewayFrame);
+      });
+      const where = `${fx.version}/${fx.header.scenario}, chat delta #${k} lost`;
+      expect(w.refused.filter((r) => !known(r)), where).toEqual([]);
+      // (Up to the one line break before a dropped directive: see `known`.)
+      expect(w.shown.trimEnd(), where).toBe(intact.shown.trimEnd());
+    }
+    return tried;
+  }
+
+  it("captured: every turn, one chat delta lost at each position — no refused write, same final bubble", async () => {
+    const known: Record<string, (r: Refusal) => boolean> = {
+      // The reply ends on a `MEDIA:` directive (see the `replaceable` turn above).
+      replaceableRestart: (r) => r.source === "chat_final" && r.oldLen - r.newLen === 1,
+      // THE STATED WORST CASE. When the frame lost is itself the rewrite — the answer that
+      // replaces a command snapshot — the text read back is shorter than the snapshot
+      // still shown, and a re-read carries no order: it is refused, and the bubble keeps
+      // the command snapshot until the final.
+      commandThenAnswer: (r) => r.source === "chat_delta",
+      undeclaredRewrite: (r) => r.source === "chat_delta",
+    };
+    let tried = 0;
+    for (const [name, turn] of Object.entries(CAPTURED)) {
+      if (typeof turn !== "object" || !Array.isArray((turn as CapturedTurn).frames)) continue;
+      tried += await eachLoss(asFixture(name, turn as CapturedTurn), 24, known[name] ?? (() => false));
+    }
+    expect(tried).toBeGreaterThan(40);
+  });
+
+  it("captured: the golden corpus of every version, one chat delta lost — no refused write, same final bubble", async () => {
+    let tried = 0;
+    for (const fx of loadCorpus()) tried += await eachLoss(fx, 3, () => false);
+    expect(tried).toBeGreaterThan(300);
   });
 });

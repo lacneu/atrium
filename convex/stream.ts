@@ -6621,3 +6621,42 @@ export const appendLateFinal = internalMutation({
     return created;
   },
 });
+
+/**
+ * TEXT A RUN SENT AFTER ITS BUBBLE SETTLED. A turn can close before its run's `chat`
+ * terminal — the run's definitive `lifecycle` error leaves before the gateway flushes the
+ * paced chat buffer and sends the terminal that carries it (src/gateway/server-chat.ts,
+ * `finalizeLifecycleEvent` → `emitChatTerminal`). The bridge offers that text here.
+ *
+ * It is taken ONLY as a strict extension of what this message of this run holds: the
+ * settled bubble gains its missing tail, and nothing else about it moves — no status, no
+ * error, no verdict, no part. Anything else is refused (false): a stale or rewritten view,
+ * another run's bubble, a bubble still streaming, one the transcript already recomposed
+ * from its rows (`rowLayout`: the durable rows are then the authority). A repeat finds
+ * its text already there and is refused the same way.
+ */
+export const completeSettledText = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    runId: v.string(),
+    text: v.string(),
+    ...boundArg,
+  },
+  returns: v.boolean(),
+  handler: async (ctx, { messageId, runId, text, boundInstanceName }) => {
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant") return false;
+    await assertMessageBound(ctx, message, boundInstanceName);
+    if (message.status === "streaming" || message.runId !== runId) return false;
+    if (message.rowLayout !== undefined) return false;
+    if (
+      text.length > SEGMENT_TEXT_MAX_CHARS ||
+      text.length <= message.text.length ||
+      !text.startsWith(message.text)
+    ) {
+      return false;
+    }
+    await ctx.db.patch(messageId, { text, updatedAt: Date.now() });
+    return true;
+  },
+});

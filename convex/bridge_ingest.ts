@@ -593,6 +593,7 @@ type IngestOp =
       text: string;
       sessionKey?: string | null;
     }
+  | { op: "completeSettledText"; messageId: string; runId: string; text: string }
   | {
       op: "recoverLostReply";
       chatId?: string;
@@ -1854,6 +1855,24 @@ export const ingest = httpAction(async (ctx, request) => {
         boundInstanceName,
       });
       return json({ messageId: id });
+    }
+    case "completeSettledText": {
+      if (
+        typeof body.messageId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        typeof body.text !== "string"
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const applied = await ctx.runMutation(internal.stream.completeSettledText, {
+        messageId: body.messageId as Id<"messages">,
+        runId: body.runId,
+        text: body.text,
+        boundInstanceName,
+      });
+      return json({ ok: true, applied });
     }
     case "recoverLostReply": {
       await ctx.runMutation(internal.stream.recoverLostReply, {

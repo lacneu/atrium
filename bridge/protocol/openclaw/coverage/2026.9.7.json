@@ -407,7 +407,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat collectCanvasParts: an inline widget the aborted turn had already shown is kept as a `widget` part; the aborted turn's text is still not persisted"
+          "by": "handleChat applyTerminalMessage: the buffered answer an aborted terminal carries is the bubble's text (never a shrink); when the turn closed before this terminal it completes the settled bubble as a strict extension (Normalizer.settledCompletion -> Convex completeSettledText); an inline widget the aborted turn had already shown is kept as a `widget` part (collectCanvasParts)"
         },
         "stopReason": {
           "status": "handled",
@@ -475,7 +475,7 @@
         },
         "seq": {
           "status": "handled",
-          "by": "handleChat dedup key component, and the run order of a rewrite: with the envelope seq, it proves a shorter `message` follows the frame that wrote the bubble (normalizer chatRewriteInOrder), which is what lets the bridge declare that shrink to Convex"
+          "by": "handleChat dedup key component, and the run order of the chat stream: the freshness mark no shrink may be at or below (normalizer chatFrameIsFresh), and the proof that an unmarked shorter `message` follows the frame that wrote the bubble (chatRewriteInOrder)"
         },
         "state": {
           "status": "handled",
@@ -491,10 +491,10 @@
         },
         "replace": {
           "status": "handled",
-          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex (never for a run adopted into the turn); a rewrite to the empty text clears the bubble; a bare `deltaText` marked replace takes the same path",
+          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex when the frame is fresh (run seq above every chat text applied for the run; never for a run adopted into the turn); a rewrite to the empty text clears the bubble; a bare `deltaText` marked replace takes the same path",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
-            "token": "const rewrite = !isFinal && payload.replace === true;"
+            "token": "const rewrite = payload.replace === true;"
           },
           "proof": {
             "kind": "deterministic-test",
@@ -540,7 +540,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat error-reason fallback (textFromMessage); `canvas` content parts -> `widget` events (collectCanvasParts)"
+          "by": "handleChat: with `errorMessage`, the buffered answer the terminal carries is the bubble's text unless it only restates the error (applyTerminalMessage; after an early close, Normalizer.settledCompletion); without `errorMessage`, the error-reason fallback (textFromMessage); `canvas` content parts -> `widget` events (collectCanvasParts)"
         },
         "errorMessage": {
           "status": "handled",

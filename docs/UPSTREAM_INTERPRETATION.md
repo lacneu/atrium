@@ -258,7 +258,7 @@ identical. The two broken anchors are real and are each recorded:
 **The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
 `delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
 The append path still drops any delta whose text is empty
-(`bridge/src/providers/openclaw/normalizer.ts:1961`, the `&& deltaText` guard), so
+(`bridge/src/providers/openclaw/normalizer.ts:2014`, the `&& deltaText` guard), so
 the retraction has its own branch in `handleChat`: the bubble is cleared through a
 declared empty snapshot, as the Control UI clears its stream. It is covered by a
 deterministic test in the captured shape, not measured on the bench: the catalogue
@@ -338,7 +338,7 @@ spawnedBy?, seq}`:
 | `delta` | `deltaText` (required), `replace?`, `message?` (cumulative snapshot), `usage?` | per assistant stream frame, paced at 75 ms (`LIVE_TEXT_PACING_MS`); a buffered delta is flushed just before any terminal (`server-chat.ts:889-900,1054-1060`) |
 | `final` | `message?` (may be absent), `usage?`, `stopReason?` | lifecycle `end` whose terminal outcome is `done` (`server-chat.ts:598-608,1091-1118`) |
 | `aborted` | `message?` (partial text), `errorMessage?` (tool-validation summary only), `stopReason?` | terminal outcome `cancelled`/`aborted`, or direct `broadcastChatAborted` (`chat-abort.ts:436-475`) |
-| `error` | `errorMessage?`, `errorKind?`, `errorDetail?`, `usage?`, `stopReason?`, `message?` — declared; the gateway's own error payload sets neither `message` (since 2026.8.1) nor `usage` (`server-chat.ts:1112-1124`) | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:106-111,309,1720-1739`) |
+| `error` | `errorMessage?`, `errorKind?`, `errorDetail?`, `usage?`, `stopReason?`, `message?` — declared; the gateway's own error payload never sets `usage`, and sets `message` (the run's buffered text) only when the run has an assistant-transcript idempotency key and text, from 2026.9.5 (`server-chat.ts:1112-1124`) | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:106-111,309,1720-1739`) |
 
 **`stopReason` is a free-form string at the wire level** (`Type.Optional(
 Type.String())` — no wire enum). Producers: the model runtime enum

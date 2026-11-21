@@ -92,7 +92,18 @@ const pending = (toolCallId: string, approvalId: string) =>
     host: "gateway",
     message: "<masked>",
   });
-const speaks = agent("assistant", { text: "La commande n’a pas été exécutée.", delta: "La commande n’a pas été exécutée." });
+// The reply, as the bubble reads it: the run's `chat` delta (the `assistant` stream writes no text).
+const speaks = {
+  type: "event",
+  event: "chat",
+  payload: {
+    runId: RUN,
+    sessionKey: SK,
+    state: "delta",
+    deltaText: "La commande n’a pas été exécutée.",
+    message: { role: "assistant", content: [{ type: "text", text: "La commande n’a pas été exécutée." }] },
+  },
+};
 
 function open(): { n: Normalizer; feed: (frame: unknown) => string[]; now: () => number } {
   const n = new Normalizer(SK);

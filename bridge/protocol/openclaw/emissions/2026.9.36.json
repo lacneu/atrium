@@ -282,7 +282,7 @@
       "phases": {
         "-": {
           "status": "handled",
-          "by": "normalizer assistant branch: answer text (text snapshot, else delta append); only commentary is kept out",
+          "by": "normalizer assistant branch: a sign of activity (it ends a provider back-off label); the answer's text is NOT read from this stream but from the `chat` deltas",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "if (stream === \"assistant\") {"
@@ -294,7 +294,7 @@
         },
         "<opaque>": {
           "status": "handled",
-          "by": "normalizer assistant branch reads the phase BY VALUE: commentary is kept out, any other value is answer text",
+          "by": "normalizer assistant branch reads the phase BY VALUE: commentary is counted and kept out; any other value is a sign of activity, never the bubble's text",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "const phase = isString(data.phase) ? data.phase : null;"
@@ -307,7 +307,7 @@
         },
         "commentary": {
           "status": "handled",
-          "by": "normalizer assistant branch: a preamble is progress, never the answer — kept out of the reply buffer",
+          "by": "normalizer assistant branch: a preamble is progress, never the answer — counted, and written nowhere",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "if (phase === \"commentary\") {"
@@ -320,7 +320,7 @@
         },
         "final_answer": {
           "status": "handled",
-          "by": "normalizer assistant branch: the answer text",
+          "by": "normalizer assistant branch: a sign of activity (it ends a provider back-off label); the answer's text is NOT read from this stream but from the `chat` deltas",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "if (stream === \"assistant\") {"
@@ -341,28 +341,12 @@
           "why": "the settled answer is the transcript row, read by the transcript projection; not read; no reader of it under ui/src either at this tag"
         },
         "delta": {
-          "status": "handled",
-          "by": "appended to the bubble (the legacy incremental path), and rebuilt into text per item by the live-text baseline",
-          "anchor": {
-            "file": "src/providers/openclaw/normalizer.ts",
-            "token": "this.applyVisible(delta, false, false, now, events, null);"
-          },
-          "proof": {
-            "kind": "golden-corpus",
-            "ref": "agent-request-question"
-          }
+          "status": "ignored",
+          "why": "delta: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
         },
         "itemId": {
-          "status": "handled",
-          "by": "names the item a `text` is cumulative for: the run's first item (and a frame naming none) holds the run's whole live text and is written, until the run's `chat` stream writes the bubble; a later item holds its own part and is left to the `chat` delta, which carries the items joined by the gateway. The live-text baseline restarts a delta accumulation on it too",
-          "anchor": {
-            "file": "src/providers/openclaw/normalizer.ts",
-            "token": "private assistantTextIsRunText(data: JsonObject): boolean {"
-          },
-          "proof": {
-            "kind": "golden-corpus",
-            "ref": "spawn-chain-merge"
-          }
+          "status": "ignored",
+          "why": "itemId: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
         },
         "managedMediaUrls": {
           "status": "ignored",
@@ -385,42 +369,16 @@
           }
         },
         "replace": {
-          "status": "handled",
-          "by": "a REFRESH of the item's text: when that item holds the run's whole live text, applied through the snapshot path with the shrink allowed, without locking snapshot precedence; on a later item, left to the `chat` delta like its text",
-          "anchor": {
-            "file": "src/providers/openclaw/normalizer.ts",
-            "token": "const replace = data.replace === true;"
-          },
-          "proof": {
-            "kind": "deterministic-test",
-            "ref": "bridge/test/live-text-baseline.test.ts",
-            "note": "no assistant replace frame in the 2026.9.36 corpus"
-          }
+          "status": "ignored",
+          "why": "replace: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
         },
         "replaceable": {
-          "status": "handled",
-          "by": "with `replace`, on a NEW item: the provisional stream is replaced as a whole, so that item's text is the run's whole live text (the one new item that discards the earlier ones upstream)",
-          "anchor": {
-            "file": "src/providers/openclaw/normalizer.ts",
-            "token": "(data.replace === true && data.replaceable === true)"
-          },
-          "proof": {
-            "kind": "deterministic-test",
-            "ref": "bridge/test/live-text-authority.test.ts",
-            "note": "no replaceable frame in the 2026.9.36 corpus (the embedded runtime the bench runs never marks one); the frames replayed were captured on a 2026.9.33 gateway running the codex harness (test/fixtures/live-text-frames.json, replaceableRestart)"
-          }
+          "status": "ignored",
+          "why": "replaceable: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
         },
         "text": {
-          "status": "handled",
-          "by": "the answer text, cumulative PER ITEM: written as the bubble's snapshot while its item holds the run's whole live text (the first item, a replaceable replacement, a frame naming no item) AND the run's `chat` stream has not written the bubble yet; from then on the `chat` text is the only authority and this one is an activity signal",
-          "anchor": {
-            "file": "src/providers/openclaw/normalizer.ts",
-            "token": "if (!this.assistantTextIsRunText(data)) return;"
-          },
-          "proof": {
-            "kind": "golden-corpus",
-            "ref": "spawn-chain-merge"
-          }
+          "status": "ignored",
+          "why": "text: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
         }
       }
     },
@@ -2374,20 +2332,12 @@
   },
   "rewrites": {
     "gateway:prepareAgentWirePayload:text": {
-      "status": "handled",
-      "by": "the gateway rebuilds `text` per item when the emitter sent only a delta; read like any other `text`: the bubble's snapshot while its item holds the run's whole live text, not written for a later item",
-      "anchor": {
-        "file": "src/providers/openclaw/normalizer.ts",
-        "token": "if (!this.assistantTextIsRunText(data)) return;"
-      },
-      "proof": {
-        "kind": "golden-corpus",
-        "ref": "spawn-chain-merge"
-      }
+      "status": "ignored",
+      "why": "the gateway rebuilds `text` per item when the emitter sent only a delta; the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
     },
     "gateway:mergeAgentTextPayload:delta": {
       "status": "handled",
-      "by": "a coalesced delta is one longer delta: the append path and the live-text baseline read it like any other",
+      "by": "a coalesced delta is one longer delta: the live-text baseline accumulates it per item like any other (its result is no longer written to a bubble)",
       "anchor": {
         "file": "src/providers/openclaw/live-text-baseline.ts",
         "token": "text = previous.text + delta;"

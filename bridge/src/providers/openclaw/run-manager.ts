@@ -10,7 +10,7 @@
 // One RunManager handles one OpenClaw session (one chat).
 
 import type { PresendDescribeOutcome } from "../../core/pressure-telemetry.js";
-import { Normalizer } from "./normalizer.js";
+import { Normalizer, type SettledCompletion } from "./normalizer.js";
 import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan, type RunFactWrite } from "../../core/turn-sink.js";
 import type { SessionFillSource } from "../../core/context-budget.js";
@@ -102,6 +102,12 @@ interface RunLane {
   tail: Promise<void>;
   queued: number;
 }
+
+/** A settled run's bubble (null: none) and whole visible text. */
+type SettledRecord = { messageId: string | null; text: string };
+/** What became of a completion (true: written; false: refused; null: the write failed),
+ *  and the run's record as it was when the completion was decided. */
+type SettledWrite = { applied: boolean | null; record: SettledRecord | undefined };
 
 export class RunManager {
   private readonly normalizer: Normalizer;
@@ -448,7 +454,12 @@ export class RunManager {
     if ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)) {
       return null;
     }
-    const text = visibleFinalText(f.payload?.message);
+    const add = this.lateAddition(visibleFinalText(f.payload?.message), record);
+    return add === null ? null : { runId: rid, text: add, settled: record };
+  }
+
+  /** What a late terminal text adds to a settled run's record, or null. */
+  private lateAddition(text: string, record: { text: string }): string | null {
     if (text === "") return null;
     const settled = normText(record.text);
     const add = normText(text);
@@ -459,9 +470,17 @@ export class RunManager {
     // it: only the addition joins the bubble (the reply is already there).
     if (settled !== "" && add.includes(settled)) {
       const extra = textBeyond(text, record.text);
-      return extra === "" ? null : { runId: rid, text: extra, settled: record };
+      return extra === "" ? null : extra;
     }
-    return { runId: rid, text, settled: record };
+    return text;
+  }
+
+  /** The settled run's whole visible text: the earlier segments (cut at steers) + the
+   *  last bubble's. */
+  private settledRunText(): string {
+    const earlier = this.normalizer.segmentPrefixText;
+    const last = this.sink.lastSettledBubble?.text ?? "";
+    return earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`;
   }
 
   /** A turn began and its settlement is not recorded yet (see noteIfSettled). */
@@ -475,13 +494,9 @@ export class RunManager {
   private noteIfSettled(): void {
     if (this.settleUnrecorded && !this.sink.active) {
       this.settleUnrecorded = false;
-      const b = this.sink.lastSettledBubble;
-      // The run's whole visible text: the earlier segments (cut at steers) + the last.
-      const earlier = this.normalizer.segmentPrefixText;
-      const last = b?.text ?? "";
       const record = {
-        messageId: b?.messageId ?? null,
-        text: earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`,
+        messageId: this.sink.lastSettledBubble?.messageId ?? null,
+        text: this.settledRunText(),
       };
       for (const id of this.normalizer.ownRunIds) {
         this.settledRuns.delete(id);
@@ -853,6 +868,10 @@ export class RunManager {
     this.currentSpontaneousRun =
       turnContext?.spontaneous === true ? ackRunId : null;
     this.noteIfSettled();
+    // The settled bubble takes the text it was closed without, before anything of the
+    // next turn is written (no await when nothing is held).
+    const held = this.normalizer.settledRemainder();
+    if (held !== null) await this.completeSettled(held);
     this.settleUnrecorded = true;
     this.turnEpoch++;
     this.factClock = Math.max(this.factClock, now);
@@ -964,6 +983,10 @@ export class RunManager {
     this.spontaneousReplayCopy = [];
     this.currentSpontaneousRun = null;
     this.noteIfSettled();
+    // The settled bubble takes the text it was closed without, before anything of the
+    // next turn is written (no await when nothing is held).
+    const held = this.normalizer.settledRemainder();
+    if (held !== null) await this.completeSettled(held);
     this.settleUnrecorded = true;
     this.turnEpoch++;
     this.normalizer.beginTurn(now);
@@ -1453,6 +1476,21 @@ export class RunManager {
 
   /** The turn's own pipeline for a frame (a lane hands back what it held here). */
   private async feedPipeline(frame: unknown, now: number): Promise<void> {
+    // Decided SYNCHRONOUSLY: any other frame takes no extra await before the ordered
+    // path below (G-29).
+    const completion = this.normalizer.settledCompletion(frame as never);
+    if (completion !== null) {
+      const { applied, record } = await this.completeSettled(completion);
+      if (applied === true) return;
+      // REFUSED (Convex holds a text this one does not extend — the sanitiser rewrote
+      // something already persisted): a terminal's text is never dropped, it joins the
+      // bubble as a late final does. A `final` goes on to that rule by itself.
+      if (applied === false && (await this.joinRefusedTerminal(frame, completion, record))) return;
+    } else {
+      // The gateway moved on: the bubble takes the text it was closed without.
+      const rest = this.normalizer.settledRemainder(frame as never);
+      if (rest !== null) await this.completeSettled(rest);
+    }
     const late = this.lateFinalFor(frame);
     if (late !== null) {
       const settled = late.settled;
@@ -1477,6 +1515,73 @@ export class RunManager {
       this.noteIfSettled();
     }
     await this.drainLiveRunFacts();
+  }
+
+  /**
+   * Text the run sent after the last turn settled its bubble — before that run's chat
+   * terminal (a definitive `lifecycle` error, a net): it completes that bubble
+   * (Normalizer.settledCompletion). Between turns only, and never a turn event — no
+   * status, no terminal, no phase. True: written; false: Convex refused it; null: the
+   * write failed. The normalizer is told either way: only an accepted text moves its
+   * reference, so two offers in flight settle the same whatever order they land in.
+   */
+  private async completeSettled(offer: SettledCompletion): Promise<SettledWrite> {
+    // EVERYTHING this write is about is captured NOW, before the first await: the bubble,
+    // the run's record and the run's earlier segments. A turn can begin (or resume) while
+    // the write is in flight, and the sink and the normalizer then describe that turn.
+    const bubble = this.sink.lastSettledBubble;
+    const record = this.settledRuns.get(offer.runId);
+    const earlier = this.normalizer.segmentPrefixText;
+    let applied: boolean | null = bubble === null ? false : null;
+    if (bubble !== null) {
+      try {
+        // On the chain, for order — but NOT bound to the turn that queued it
+        // (`runOrdered` drops a unit whose turn ended): this write is the SETTLED
+        // bubble's, and the next turn beginning is no reason to lose it.
+        const write = this.applyChain.then(() =>
+          this.sink.completeSettledText(bubble.messageId, offer.runId, offer.text),
+        );
+        this.applyChain = write.then(
+          () => undefined,
+          () => undefined,
+        );
+        applied = await write;
+        // The run's record follows its bubble (what a later distinct final is compared with).
+        if (applied && record !== undefined) {
+          record.text = earlier === null ? offer.text : `${earlier}\n\n${offer.text}`;
+        }
+      } catch (e) {
+        applied = null;
+        console.error("[final] a settled bubble's completion was not written (non-fatal):", errForLog(e));
+      }
+    }
+    this.normalizer.noteCompletion(offer, applied);
+    return { applied, record };
+  }
+
+  /** An `error` / `aborted` terminal whose completion Convex refused: what its text adds
+   *  to the run's bubble joins it, by the late-final rule (CU-8). True: handled here.
+   *  `record`: the run's, as it was when the completion was decided. */
+  private async joinRefusedTerminal(
+    frame: unknown,
+    offer: SettledCompletion,
+    record: SettledRecord | undefined,
+  ): Promise<boolean> {
+    const state = (frame as { payload?: { state?: unknown } }).payload?.state;
+    if (!offer.terminal || (state !== "error" && state !== "aborted")) return false;
+    if (record === undefined) return true;
+    const add = this.lateAddition(offer.text, record);
+    if (add === null) return true;
+    try {
+      const into = await this.sink.writeLateFinal(offer.runId, record.messageId, add);
+      if (into !== null) {
+        record.messageId = into;
+        record.text = record.text === "" ? add : `${record.text}\n\n${add}`;
+      }
+    } catch (e) {
+      console.error("[final] a terminal's text was not joined (non-fatal):", errForLog(e));
+    }
+    return true;
   }
 
   /** A run of the session that opens a spontaneous (deferred) turn of its own: the

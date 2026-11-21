@@ -520,6 +520,9 @@ export interface ConvexWriter {
     text: string;
     sessionKey: string | null;
   }): Promise<string | null>;
+  /** Text the run sent after its bubble settled: written only as a strict extension of
+   *  that message's text (internal.stream.completeSettledText). False: refused. */
+  completeSettledText?(args: { messageId: string; runId: string; text: string }): Promise<boolean>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
   /** The bubble the TRANSCRIPT made for a run (projection `on`, codex phase 4 pass 21):
@@ -1386,6 +1389,7 @@ type IngestOp =
       text: string;
       sessionKey: string | null;
     }
+  | { op: "completeSettledText"; messageId: string; runId: string; text: string }
   // A child's session row as read from the gateway (0.101.4).
   | {
       op: "applySubAgentRowStatus";
@@ -3061,6 +3065,15 @@ export class HttpConvexWriter implements ConvexWriter {
   }): Promise<string | null> {
     const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinal", ...args });
     return ack.messageId ?? null;
+  }
+
+  async completeSettledText(args: {
+    messageId: string;
+    runId: string;
+    text: string;
+  }): Promise<boolean> {
+    const ack = await this.post<{ applied?: boolean }>({ op: "completeSettledText", ...args });
+    return ack.applied === true;
   }
 
   async updateRunId(messageId: string, runId: string): Promise<void> {
