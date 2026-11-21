@@ -9,7 +9,11 @@
 //
 // Every test runs the whole bridge path — run manager, normalizer, sink — onto a writer
 // that applies Convex's rule (convex/stream.ts `completeSettledText`): a strict extension
-// of what that message of that run holds, or nothing.
+// of what that message of that run holds, a repeat of a text already there, or nothing.
+//
+// The completion's write is DETACHED from the frame path (RunManager `completionTail`):
+// `feed` returns before it lands. The harness's `feed` waits for the chain once its
+// frames are all read; `feedOnly` does not.
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -42,12 +46,20 @@ class Writer extends RecordingWriter {
   /** Live writes made to a bubble AFTER it settled (there must be none). */
   writesAfterSettle = 0;
   failCompletions = false;
+  /** Convex's answer to a repeat of a landed write (false: as before it was idempotent). */
+  convexAnswersRepeat = true;
   /** Completion writes that fail before anything is committed, then the backend is back. */
   transientFailures = 0;
   /** While set, a completion write does not answer (its ACK is suspended). */
   gate: Promise<void> | null = null;
-  /** Every write, in the order it was made. */
+  /** Completion writes whose ANSWER is lost after the write committed. */
+  lostAnswers = 0;
+  /** Every write of the frame path, in the order it was made. */
   readonly log: string[] = [];
+  /** The writes to settled bubbles (their own detached chain), in order. */
+  readonly completions: string[] = [];
+  /** Where each bubble's first write and each completion fell, across both paths. */
+  readonly order: string[] = [];
   /** The facts about a run written on a bubble, in order (their own detached chain). */
   readonly facts: string[] = [];
   async noteModelFallback(_c: string, d: { messageId: string | null; state: string; model: string }): Promise<string | null> {
@@ -62,6 +74,7 @@ class Writer extends RecordingWriter {
   override async startAssistant(chatId: string, runId: string | null): Promise<string> {
     const id = await super.startAssistant(chatId, runId);
     this.log.push(`start ${id} ${runId}`);
+    this.order.push(`start ${id}`);
     this.live.set(id, "");
     this.runs.set(id, runId);
     return id;
@@ -101,14 +114,18 @@ class Writer extends RecordingWriter {
       throw new Error("convex down");
     }
     const s = this.settled.get(a.messageId);
-    const applied =
-      s !== undefined &&
-      s.runId === a.runId &&
-      a.text.length > s.text.length &&
-      a.text.startsWith(s.text);
+    const mine = s !== undefined && s.runId === a.runId;
+    const extends_ = mine && a.text.length > s.text.length && a.text.startsWith(s.text);
+    // A repeat of a write that landed is answered as written (and writes nothing).
+    const applied = extends_ || (mine && this.convexAnswersRepeat && a.text === s.text);
     this.offered.push({ ...a, applied });
-    this.log.push(`complete ${a.messageId} ${JSON.stringify(a.text)} ${applied}`);
-    if (applied) s!.text = a.text;
+    this.completions.push(`complete ${a.messageId} ${JSON.stringify(a.text)} ${applied}`);
+    this.order.push(`complete ${a.messageId}`);
+    if (extends_) s!.text = a.text;
+    if (this.lostAnswers > 0) {
+      this.lostAnswers--;
+      throw new Error("answer lost");
+    }
     return applied;
   }
   readonly late: string[] = [];
@@ -182,10 +199,14 @@ function harness() {
   const writer = new Writer();
   const rm = new RunManager("c1", KEY, writer);
   let now = 1_000;
-  const feed = async (...frames: unknown[]) => {
+  const feedOnly = async (...frames: unknown[]) => {
     for (const f of frames) await rm.feed(f, (now += 0.01));
   };
-  return { writer, rm, feed, now: () => now, tick: () => (now += 1) };
+  const feed = async (...frames: unknown[]) => {
+    await feedOnly(...frames);
+    await rm.completionsIdle();
+  };
+  return { writer, rm, feed, feedOnly, now: () => now, tick: () => (now += 1) };
 }
 
 /** "Hello" shown, the turn closed on the run's definitive lifecycle error. */
@@ -200,6 +221,8 @@ async function closedOnLifecycleError() {
   );
   return h;
 }
+
+const tickFrame = () => ({ type: "event", event: "tick", payload: { ts: 1 } });
 
 const only = (w: Writer): Settled => {
   expect(w.settled.size).toBe(1);
@@ -302,12 +325,29 @@ describe("the bounds of a completion", () => {
     expect(only(h.writer).text).toBe("Hello");
   });
 
-  it("only until the next turn begins", async () => {
+  it("a turn beginning does not end the window: the run's later text lands on ITS bubble", async () => {
     const h = await closedOnLifecycleError();
     await h.rm.beginTurn(h.now(), "runB", { expectedSessionId: null });
-    await h.feed(chatDelta("runA", 3, "Hello world"), chatError("runA", 3, "x", "Hello world"));
+    await h.feed(chatDelta("runB", 1, "Second answer"));
+    await h.feed(chatDelta("runA", 3, "Hello world"), chatError("runA", 3, "x", "Hello world!"));
+    expect(h.writer.offered.map((o) => [o.messageId, o.text, o.applied])).toEqual([
+      ["msg1", "Hello world", true],
+      ["msg1", "Hello world!", true],
+    ]);
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world!");
+    // Turn B is untouched, and still open.
+    expect(h.rm.turnActive).toBe(true);
+    expect(h.writer.live.get("msg2")).toBe("Second answer");
+    expect(h.writer.writesAfterSettle).toBe(0);
+  });
+
+  it("a turn that owns the run again reads its frames itself: the old window is gone", async () => {
+    const h = await closedOnLifecycleError();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(chatDelta("runA", 4, "Hello world"));
     expect(h.writer.offered).toEqual([]);
     expect(h.writer.settled.get("msg1")!.text).toBe("Hello");
+    expect(h.writer.live.get("msg2")).toBe("Hello world");
   });
 
   it("a re-broadcast of the same frame is not a second write", async () => {
@@ -343,20 +383,35 @@ describe("the bounds of a completion", () => {
     expect(h.writer.late).toEqual([]);
   });
 
-  it("the normalizer alone: no window once a turn began, and the window is the last close's", () => {
+  it("the normalizer alone: one window PER RUN, each until its own terminal", () => {
     const n = new Normalizer(KEY);
     n.beginTurn(1);
     n.noteRunStarted("runA", 1);
     n.feed(chatDelta("runA", 1, "Hello"), 1);
     n.feed(lifecycleError("runA", 2), 1);
+    // Another turn begins, runs and closes early too: run A's window is still its own.
     n.beginTurn(2);
-    expect(n.settledCompletion(chatDelta("runA", 2, "Hello world"))).toBeNull();
-    // The next close replaces the window: run A's text is no longer accepted.
     n.noteRunStarted("runB", 2);
     n.feed(chatDelta("runB", 1, "Hi"), 2);
+    expect(n.settledCompletion(chatDelta("runA", 2, "Hello world"))).toMatchObject({ runId: "runA", text: "Hello world" });
     n.feed(lifecycleError("runB", 2), 2);
-    expect(n.settledCompletion(chatDelta("runA", 3, "Hello world"))).toBeNull();
     expect(n.settledCompletion(chatDelta("runB", 2, "Hi there"))).toMatchObject({ runId: "runB", text: "Hi there" });
+    // Each run's terminal ends its own window, and only that one.
+    expect(n.settledCompletion(chatAborted("runA", 2, "Hello world!"))).toMatchObject({ runId: "runA", text: "Hello world!" });
+    expect(n.settledCompletion(chatAborted("runA", 3, "Hello world!!"))).toBeNull();
+    expect(n.settledCompletion(chatAborted("runB", 2, "Hi there!"))).toMatchObject({ runId: "runB", text: "Hi there!" });
+  });
+
+  it("the windows are bounded: past sixteen runs still waiting for their terminal, the oldest is forgotten", () => {
+    const n = new Normalizer(KEY);
+    for (let i = 0; i < 17; i++) {
+      n.beginTurn(i);
+      n.noteRunStarted(`run${i}`, i);
+      n.feed(chatDelta(`run${i}`, 1, "Hello"), i);
+      n.feed(lifecycleError(`run${i}`, 2), i);
+    }
+    expect(n.settledCompletion(chatDelta("run0", 2, "Hello world"))).toBeNull();
+    expect(n.settledCompletion(chatDelta("run1", 2, "Hello world"))).toMatchObject({ runId: "run1" });
   });
 
   it("an error terminal with no `errorMessage` uses `message` for the reason: never read as text", async () => {
@@ -378,13 +433,6 @@ describe("the bounds of a completion", () => {
     await h.feed(chatFinal("runA", 3, "Hello world"));
     expect(only(h.writer).text).toBe("Hello world");
     expect(h.writer.late).toEqual([]);
-  });
-
-  it("a completion that is not written leaves a final to CU-8: its text is never dropped", async () => {
-    const h = await closedOnLifecycleError();
-    h.writer.failCompletions = true;
-    await h.feed(chatFinal("runA", 3, "Hello world"));
-    expect(h.writer.late).toEqual(["world"]);
   });
 
   it("a DISTINCT late final is still CU-8's: it joins the bubble, it does not complete it", async () => {
@@ -440,14 +488,157 @@ describe("the bounds of a completion", () => {
     );
     expect([...h.writer.settled.values()].map((b) => b.text)).toEqual(["First part.", "Second part."]);
     expect(h.writer.offered.map((o) => [o.messageId, o.applied])).toEqual([["msg2", true]]);
+    // The run's record is its WHOLE text, earlier segments included: a final repeating
+    // it adds nothing.
+    await h.feed(chatFinal("runA", 4, "First part.\n\nSecond part."));
+    expect(h.writer.late).toEqual([]);
+  });
+
+  /** "First part." cut at a steer, then `last` in the second segment, closed on the
+   *  run's lifecycle error. */
+  async function closedAfterSplit(last: string) {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(chatDelta("runA", 1, "First part."));
+    h.rm.noteHeldInput("sendB", "ackB", "userB");
+    await h.rm.onUserRow({ sendId: "sendB", steerTargetRunId: "runA" });
+    await h.feed(chatDelta("runA", 2, `First part.\n\n${last}`), lifecycleError("runA", 3));
+    return h;
+  }
+
+  it("the earlier segments are the WINDOW's: stripped the same once another turn has begun", async () => {
+    const h = await closedAfterSplit("Second");
+    // Another turn, cut at a steer too: its segments are its own.
+    await h.rm.beginTurn(h.tick(), "runC", { expectedSessionId: null });
+    await h.feed(chatDelta("runC", 1, "Third answer."));
+    h.rm.noteHeldInput("sendD", "ackD", "userD");
+    await h.rm.onUserRow({ sendId: "sendD", steerTargetRunId: "runC" });
+    await h.feed(chatError("runA", 3, "provider failed", "First part.\n\nSecond part."));
+    expect(h.writer.settled.get("msg2")!.text).toBe("Second part.");
+    expect(h.writer.late).toEqual([]);
+  });
+
+  it("after a steer split, a REFUSED terminal joins only what the run's whole text adds", async () => {
+    const h = await closedAfterSplit("One\r\nTwo");
+    await h.feed(chatAborted("runA", 3, "First part.\n\nOne\r\nTwo /home/node/.openclaw/media/outbound/a.txt ok"));
+    expect(h.writer.offered.map((o) => o.applied)).toEqual([false]);
+    expect(h.writer.late).toEqual(["a.txt ok"]);
   });
 });
 
-describe("part seven — a write that fails does not consume the completion", () => {
+describe("one acceptance rule for a run's chat text, before and after the close", () => {
+  const replace = (runId: string, seq: number, text: string) => ({
+    type: "event",
+    event: "chat",
+    payload: { sessionKey: KEY, runId, seq, state: "delta", replace: true, message: msg(text) },
+  });
+  /** "Hello wrong tail" at seq 10, retracted to "Hello" at seq 11. */
+  async function retracted() {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(
+      agent("runA", 9, "lifecycle", { phase: "start" }),
+      chatDelta("runA", 10, "Hello wrong tail"),
+      replace("runA", 11, "Hello"),
+    );
+    expect(h.writer.live.get("msg1")).toBe("Hello");
+    return h;
+  }
+
+  it("BEFORE the close: a copy of the retracted delta (a hand-back's queued copy) writes nothing", async () => {
+    const h = await retracted();
+    await h.feed({ ...chatDelta("runA", 10, "Hello wrong tail") });
+    expect(h.writer.live.get("msg1")).toBe("Hello");
+  });
+
+  it("AFTER the close (the reviewed sequence): the same copy does not bring the retracted text back", async () => {
+    const h = await retracted();
+    await h.feed(lifecycleError("runA", 12));
+    expect(only(h.writer).text).toBe("Hello");
+    await h.feed({ ...chatDelta("runA", 10, "Hello wrong tail") });
+    expect(h.writer.offered).toEqual([]);
+    expect(only(h.writer).text).toBe("Hello");
+    // The run's real flush and terminal still complete it.
+    await h.feed(chatDelta("runA", 12, "Hello world"), chatAborted("runA", 12, "Hello world"));
+    expect(only(h.writer).text).toBe("Hello world");
+  });
+
+  it("the freshness mark survives the close and a turn beginning: a STALE frame never seen before is refused too", async () => {
+    const h = await retracted();
+    await h.feed(lifecycleError("runA", 12));
+    await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+    // Not a repeat (never seen), at or below the run's mark: an older view of the buffer.
+    await h.feed(chatDelta("runA", 10, "Hello wrong"), chatDelta("runA", 11, "Hello wro"));
+    expect(h.writer.offered).toEqual([]);
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello");
+  });
+
+  it("a delta AT the mark is a copy; the terminal at the mark is the run's last frame and is read", async () => {
+    const h = await retracted();
+    await h.feed(lifecycleError("runA", 12), chatDelta("runA", 12, "Hello world"));
+    expect(only(h.writer).text).toBe("Hello world");
+    // Same seq as the flush that was applied: a delta there cannot be told from a copy.
+    await h.feed(chatDelta("runA", 12, "Hello world, stale"));
+    expect(only(h.writer).text).toBe("Hello world");
+    // The terminal shares the flush's seq (`emitChatTerminal`) and carries the whole text.
+    await h.feed(chatAborted("runA", 12, "Hello world."));
+    expect(only(h.writer).text).toBe("Hello world.");
+  });
+
+  it("a frame with no `seq` proves no order: it completes nothing", async () => {
+    const h = await closedOnLifecycleError();
+    await h.feed({
+      type: "event",
+      event: "chat",
+      payload: { sessionKey: KEY, runId: "runA", state: "aborted", message: msg("Hello world") },
+    });
+    expect(h.writer.offered).toEqual([]);
+  });
+
+  it("the dedupe memory survives the close: a terminal the open turn had read and set aside is still a repeat", async () => {
+    // An `aborted` while the gateway abandons the run to compact does not end the turn
+    // (the run resumes): it is read, and set aside. Its text is the abandoned attempt's.
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    const abandonedAbort = () => chatAborted("runA", 3, "The abandoned attempt");
+    await h.feed(
+      agent("runA", 0, "lifecycle", { phase: "start" }),
+      agent("runA", 1, "tool", { phase: "start", name: "exec", toolCallId: "t1" }),
+      agent("runA", 2, "lifecycle", { phase: "end", livenessState: "abandoned", replayInvalid: true }),
+      abandonedAbort(),
+    );
+    expect(h.rm.turnActive).toBe(true);
+    await h.feed(lifecycleError("runA", 4));
+    expect(only(h.writer)).toMatchObject({ status: "error", text: "" });
+    // Its copy: fresh by position (no chat text was ever applied for the run), a
+    // terminal, an extension of the empty bubble — and a frame already read.
+    await h.feed(abandonedAbort());
+    expect(h.writer.offered).toEqual([]);
+    expect(h.writer.late).toEqual([]);
+    expect(only(h.writer).text).toBe("");
+    // The window is still the run's: its real terminal completes the bubble.
+    await h.feed(chatAborted("runA", 4, "The answer"));
+    expect(only(h.writer).text).toBe("The answer");
+  });
+});
+
+describe("the completion's write: detached, kept until written, bounded", () => {
+  const traced = async (run: () => Promise<void>): Promise<string[]> => {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+    try {
+      await run();
+    } finally {
+      console.error = original;
+    }
+    return lines.filter((l) => l.includes("completion"));
+  };
+
   it.each([
     ["aborted", (text: string) => chatAborted("runA", 3, text)],
     ["error", (text: string) => chatError("runA", 3, "provider failed", text)],
-  ])("the flush fails once, the identical `%s` terminal lands the text", async (_n, terminal) => {
+  ])("the flush's write fails once, the identical `%s` terminal lands the text", async (_n, terminal) => {
     const h = await closedOnLifecycleError();
     h.writer.transientFailures = 1;
     await h.feed(chatDelta("runA", 3, "Hello world"));
@@ -457,93 +648,236 @@ describe("part seven — a write that fails does not consume the completion", ()
     expect(h.writer.late).toEqual([]);
   });
 
-  it("the terminal's own write fails: its window stays open, a re-broadcast lands the text", async () => {
+  it("the TERMINAL's write fails once: the text is kept and lands at the next frame — no second terminal", async () => {
     const h = await closedOnLifecycleError();
     h.writer.transientFailures = 1;
     await h.feed(chatAborted("runA", 3, "Hello world"));
     expect(only(h.writer).text).toBe("Hello");
-    expect(h.writer.late).toEqual([]);
-    await h.feed({ ...chatAborted("runA", 3, "Hello world") });
+    // Any frame of the connection is the opportunity; the gateway sends no terminal again.
+    await h.feed(tickFrame());
     expect(only(h.writer).text).toBe("Hello world");
+    expect(h.writer.late).toEqual([]);
+    expect(h.writer.offered.map((o) => o.applied)).toEqual([true]);
   });
 
-  it("delta and terminal in flight together: one text, whichever write lands, and no trace", async () => {
-    const errors: unknown[] = [];
-    const original = console.error;
-    console.error = (...a: unknown[]) => void errors.push(a);
+  it.each([
+    ["begins", (h: ReturnType<typeof harness>) => h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null })],
+    ["is resumed", (h: ReturnType<typeof harness>) => h.rm.resumeTurn(h.tick(), "msg9", "runB")],
+  ])("…or when the next turn %s", async (_n, open) => {
+    const h = await closedOnLifecycleError();
+    h.writer.transientFailures = 1;
+    await h.feed(chatAborted("runA", 3, "Hello world"));
+    await open(h);
+    await h.rm.completionsIdle();
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
+  });
+
+  it("the text is for the bubble the run HAD settled when it was offered, even once a later turn owned the run again", async () => {
+    // Run Z's write holds the chain; run A's completion waits behind it.
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runZ", { expectedSessionId: null });
+    await h.feed(chatDelta("runZ", 1, "Zed"), lifecycleError("runZ", 2));
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    await h.feedOnly(chatDelta("runZ", 2, "Zed said"));
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await h.feedOnly(chatDelta("runA", 1, "Hello"), lifecycleError("runA", 2), chatDelta("runA", 2, "Hello world"));
+    // The same run id, a turn of its own, settled on another bubble with the same text.
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await h.feedOnly(chatDelta("runA", 5, "Hello"), chatFinal("runA", 6, "Hello"));
+    expect(h.writer.settled.get("msg3")).toMatchObject({ status: "complete", text: "Hello" });
+    release();
+    await h.rm.completionsIdle();
+    expect(h.writer.settled.get("msg1")!.text).toBe("Zed said");
+    expect(h.writer.settled.get("msg2")!.text).toBe("Hello world");
+    expect(h.writer.settled.get("msg3")!.text).toBe("Hello");
+  });
+
+  it("what is owed is bounded by run: past the bound the oldest is dropped, and said", async () => {
+    const h = harness();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...a: unknown[]) => void warnings.push(a.map(String).join(" "));
     try {
-      for (const failures of [0, 1]) {
-        const h = await closedOnLifecycleError();
-        h.writer.transientFailures = failures;
-        // Not awaited one by one: both offers are decided before either write resolves.
-        await Promise.all([
-          h.rm.feed(chatDelta("runA", 3, "Hello world"), h.tick()),
-          h.rm.feed(chatAborted("runA", 3, "Hello world"), h.tick()),
-        ]);
-        expect(only(h.writer).text).toBe("Hello world");
-        expect(h.writer.offered.filter((o) => o.applied)).toHaveLength(1);
-        expect(h.writer.late).toEqual([]);
-        expect(h.writer.finalizes).toHaveLength(1);
-        if (failures === 0) expect(errors).toEqual([]);
+      // 34 runs close early and are owed their flushed text while the first write is held.
+      for (let i = 0; i < 34; i++) {
+        await h.rm.beginTurn(h.tick(), `run${i}`, { expectedSessionId: null });
+        await h.feedOnly(
+          chatDelta(`run${i}`, 1, "Hello"),
+          lifecycleError(`run${i}`, 2),
+          chatDelta(`run${i}`, 2, "Hello world"),
+        );
       }
+      release();
+      await h.rm.completionsIdle();
     } finally {
-      console.error = original;
+      console.warn = original;
     }
+    expect(warnings.filter((w) => w.includes("completion was dropped"))).toHaveLength(2);
+    // The oldest was the write in flight (it lands); the next oldest was never written.
+    const texts = [...h.writer.settled.values()].map((b) => b.text);
+    expect(texts.filter((t) => t === "Hello world")).toHaveLength(33);
+    expect(h.writer.settled.get("msg2")!.text).toBe("Hello");
   });
 
-  it("the normalizer's reference moves only on an accepted write, in either order of answers", () => {
-    const closed = () => {
-      const n = new Normalizer(KEY);
-      n.beginTurn(1);
-      n.noteRunStarted("runA", 1);
-      n.feed(chatDelta("runA", 1, "Hello"), 1);
-      n.feed(lifecycleError("runA", 2), 1);
-      return n;
+  it("the ANSWER is lost after the write committed: the retry is answered as written, the tail is not joined twice", async () => {
+    const h = await closedOnLifecycleError();
+    h.writer.lostAnswers = 1;
+    await h.feed(chatAborted("runA", 3, "Hello world"));
+    // Committed in Convex, unknown here.
+    expect(only(h.writer).text).toBe("Hello world");
+    await h.feed(tickFrame());
+    expect(h.writer.offered.map((o) => [o.text, o.applied])).toEqual([
+      ["Hello world", true],
+      ["Hello world", true],
+    ]);
+    expect(h.writer.late).toEqual([]);
+    expect(only(h.writer).text).toBe("Hello world");
+    // The run's record followed: a final repeating the text adds nothing.
+    await h.feed(chatFinal("runA", 4, "Hello world"));
+    expect(h.writer.late).toEqual([]);
+  });
+
+  it("THE TRAP, shown: were Convex to refuse the repeat, the same retry would join the tail a second time", async () => {
+    const h = await closedOnLifecycleError();
+    h.writer.convexAnswersRepeat = false;
+    h.writer.lostAnswers = 1;
+    await h.feed(chatAborted("runA", 3, "Hello world"), tickFrame());
+    // The bridge reads the refusal as "not in the bubble" and joins what the text adds
+    // to the record it still holds ("Hello"): the tail, a second time.
+    expect(h.writer.late).toEqual(["world"]);
+  });
+
+  it("a permanent failure is bounded and said once: three passes, then the text is dropped", async () => {
+    const h = await closedOnLifecycleError();
+    h.writer.failCompletions = true;
+    let attempts = 0;
+    const real = h.writer.completeSettledText.bind(h.writer);
+    h.writer.completeSettledText = async (a) => {
+      attempts++;
+      return real(a);
     };
-    for (const order of [[0, 1], [1, 0]] as const) {
-      const n = closed();
-      const offers = [
-        n.settledCompletion(chatDelta("runA", 3, "Hello world"))!,
-        n.settledCompletion(chatAborted("runA", 3, "Hello world"))!,
-      ];
-      expect(offers.map((o) => o?.text)).toEqual(["Hello world", "Hello world"]);
-      // The first answer accepts, the second is refused as a repeat: same end state.
-      n.noteCompletion(offers[order[0]]!, true);
-      n.noteCompletion(offers[order[1]]!, false);
-      expect(n.settledCompletion(chatAborted("runA", 4, "Hello world"))).toBeNull();
-    }
-    // Refused or failed: nothing moved, the same text is offered again.
-    const n = closed();
-    const first = n.settledCompletion(chatDelta("runA", 3, "Hello world"))!;
-    n.noteCompletion(first, null);
-    expect(n.settledCompletion(chatDelta("runA", 4, "Hello world"))).toMatchObject({ text: "Hello world" });
+    const lines = await traced(async () => {
+      await h.feed(chatAborted("runA", 3, "Hello world"));
+      for (let i = 0; i < 8; i++) await h.feed(tickFrame());
+    });
+    expect(attempts).toBe(3);
+    expect(lines).toHaveLength(3);
+    expect(lines.filter((l) => l.includes("DROPPED"))).toHaveLength(1);
+    expect(lines[2]).toContain("DROPPED");
+    expect(only(h.writer).text).toBe("Hello");
+    // Dropped for good: the backend coming back writes nothing by itself.
+    h.writer.failCompletions = false;
+    await h.feed(tickFrame());
+    expect(attempts).toBe(3);
+  });
+
+  it("`feed` keeps flowing while a completion's write is held: the next turn runs to its end", async () => {
+    const h = await closedOnLifecycleError();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    // Not the harness's waiting `feed`: these return while the write is still held.
+    await h.feedOnly(chatDelta("runA", 3, "Hello world"), chatAborted("runA", 3, "Hello world!"));
+    await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+    await h.feedOnly(chatDelta("runB", 1, "Second answer"), chatFinal("runB", 2, "Second answer"));
+    expect(h.writer.settled.get("msg2")).toMatchObject({ status: "complete", text: "Second answer" });
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello");
+    release();
+    await h.rm.completionsIdle();
+    // The latest text offered while the write was held is the one that lands.
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world!");
+    expect(h.writer.settled.get("msg2")!.text).toBe("Second answer");
+    expect(h.writer.writesAfterSettle).toBe(0);
+  });
+
+  it("delta and terminal offered together: one text, one write, and no trace", async () => {
+    const lines = await traced(async () => {
+      const h = await closedOnLifecycleError();
+      await Promise.all([
+        h.rm.feed(chatDelta("runA", 3, "Hello world"), h.tick()),
+        h.rm.feed(chatAborted("runA", 3, "Hello world"), h.tick()),
+      ]);
+      await h.rm.completionsIdle();
+      expect(only(h.writer).text).toBe("Hello world");
+      expect(h.writer.offered.map((o) => o.applied)).toEqual([true]);
+      expect(h.writer.late).toEqual([]);
+      expect(h.writer.finalizes).toHaveLength(1);
+    });
+    expect(lines).toEqual([]);
+  });
+
+  it("the normalizer's reference moves only on an accepted write", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(1);
+    n.noteRunStarted("runA", 1);
+    n.feed(chatDelta("runA", 1, "Hello"), 1);
+    n.feed(lifecycleError("runA", 2), 1);
+    const flush = n.settledCompletion(chatDelta("runA", 2, "Hello world"))!;
+    expect(flush).toMatchObject({ text: "Hello world" });
+    // Not written (failed, refused, still in flight): the terminal offers the same text.
+    const terminal = n.settledCompletion(chatAborted("runA", 2, "Hello world"))!;
+    expect(terminal).toMatchObject({ text: "Hello world" });
+
+    const m = new Normalizer(KEY);
+    m.beginTurn(1);
+    m.noteRunStarted("runA", 1);
+    m.feed(chatDelta("runA", 1, "Hello"), 1);
+    m.feed(lifecycleError("runA", 2), 1);
+    m.noteCompletionWritten(m.settledCompletion(chatDelta("runA", 2, "Hello world"))!);
+    // Written: the same text is no longer an extension.
+    expect(m.settledCompletion(chatAborted("runA", 2, "Hello world"))).toBeNull();
   });
 });
 
-describe("part eight — a turn boundary while a completion is in flight", () => {
+describe("a turn boundary while a completion is in flight", () => {
   const settle = () => new Promise((r) => setTimeout(r, 5));
   async function suspended() {
     const h = await closedOnLifecycleError();
     let release!: () => void;
     h.writer.gate = new Promise<void>((r) => (release = r));
-    const write = h.rm.feed(chatDelta("runA", 3, "Hello world"), h.tick());
+    await h.feedOnly(chatDelta("runA", 3, "Hello world"));
     await settle();
-    return { h, write, release };
+    return { h, release };
   }
 
   it.each([
     ["beginTurn", (h: ReturnType<typeof harness>) => h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null })],
     ["resumeTurn", (h: ReturnType<typeof harness>) => h.rm.resumeTurn(h.tick(), "msg9", "runB")],
-  ])("the ACK returns after %s: the run's record is the completed bubble, and a late final adds only its addition", async (_n, open) => {
-    const { h, write, release } = await suspended();
-    const opening = open(h);
-    await settle();
+  ])("the ACK returns after %s: the window and the run's record are still run A's, on the completed bubble", async (_n, open) => {
+    const { h, release } = await suspended();
+    await open(h);
     release();
-    await Promise.all([write, opening]);
+    await h.rm.completionsIdle();
     expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
+    // The run's terminal, a turn later: an exact completion of its own bubble.
     await h.feed(chatFinal("runA", 4, "Hello world more"));
-    // Compared with "Hello world", not with an emptied record: no duplicate.
+    expect(h.writer.settled.get("msg1")!.text).toBe("Hello world more");
+    expect(h.writer.late).toEqual([]);
+    // After the terminal, a later final is compared with the run's record as the
+    // completions left it — not with an emptied one: only its addition joins.
+    await h.feed(chatFinal("runA", 5, "Hello world more and more"));
+    expect(h.writer.late).toEqual(["and more"]);
+  });
+
+  it("a late final of the run arriving WHILE its completion is held is written behind it, against the completed bubble", async () => {
+    const h = await closedOnLifecycleError();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    await h.feedOnly(
+      chatDelta("runA", 3, "Hello world"),
+      chatAborted("runA", 3, "Hello world"),
+      // After the run's terminal: a final that repeats the completed text and adds to it.
+      chatFinal("runA", 4, "Hello world more"),
+    );
+    expect(h.writer.late).toEqual([]);
+    release();
+    await h.rm.completionsIdle();
+    // Compared with "Hello" (the record before the write landed) it would add "world more".
     expect(h.writer.late).toEqual(["more"]);
+    // The terminal offered the text the held write then landed: not written twice.
+    expect(h.writer.offered.map((o) => [o.text, o.applied])).toEqual([["Hello world", true]]);
     expect(h.writer.settled.get("msg1")!.text).toBe("Hello world\n\nmore");
   });
 
@@ -552,24 +886,19 @@ describe("part eight — a turn boundary while a completion is in flight", () =>
     const write = h.rm.feed(chatDelta("runA", 3, "Hello world"), h.tick());
     const opening = h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
     await Promise.all([write, opening]);
+    await h.rm.completionsIdle();
     expect(h.writer.offered.map((o) => [o.messageId, o.applied])).toEqual([["msg1", true]]);
     expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
   });
 
-  it("the next turn runs to its end behind a suspended ACK: each bubble keeps its own text", async () => {
-    const { h, write, release } = await suspended();
-    // The writes of the next turn queue behind the suspended one (one ordered chain):
-    // they are started, not awaited, and land once the ACK returns.
-    const next = (async () => {
-      await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
-      await h.feed(chatDelta("runB", 1, "Second answer"), chatFinal("runB", 2, "Second answer"));
-    })();
-    await settle();
+  it("what the sink remembers stays the next turn's bubble", async () => {
+    const { h, release } = await suspended();
+    await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+    await h.feedOnly(chatDelta("runB", 1, "Second answer"), chatFinal("runB", 2, "Second answer"));
     release();
-    await Promise.all([write, next]);
+    await h.rm.completionsIdle();
     expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
     expect(h.writer.settled.get("msg2")!.text).toBe("Second answer");
-    // What the sink remembers is still the SECOND turn's bubble.
     await h.feed(chatFinal("runB", 3, "Second answer"));
     expect(h.writer.late).toEqual([]);
   });
@@ -586,9 +915,106 @@ describe("part eight — a turn boundary while a completion is in flight", () =>
       chatAborted("runA", 2, "Hello world"),
     );
     await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await h.rm.completionsIdle();
     expect(only(h.writer)).toMatchObject({ status: "error", text: "Hello world" });
     expect(h.writer.finalizes).toHaveLength(1);
     expect(h.writer.offered.map((o) => o.applied)).toEqual([true]);
+  });
+});
+
+// THE SECOND REVIEWED SEQUENCE: a delivery (run B) waits while run A's turn closes on a
+// definitive lifecycle error; B's turn opens before A's flushed text and terminal are read.
+describe("a delivery opening its turn before the end of the settled run's answer", () => {
+  const B = "announce:v1:agent:alice:subagent:child:run-1";
+  const expectBoth = (w: Writer) => {
+    expect(w.settled.get("msg1")).toMatchObject({ runId: "runA", status: "error", text: "Hello world" });
+    expect(w.settled.get("msg2")).toMatchObject({ runId: B, status: "complete", text: "The report" });
+    expect(w.offered.map((o) => [o.messageId, o.applied])).toEqual([["msg1", true]]);
+    expect(w.late).toEqual([]);
+    expect(w.writesAfterSettle).toBe(0);
+  };
+
+  it("LIVE: B's turn is open when A's flush and terminal arrive — they still complete A's bubble", async () => {
+    const h = harness();
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(
+      chatDelta("runA", 1, "Hello"),
+      chatDelta(B, 1, "The rep"),
+      lifecycleError("runA", 2),
+    );
+    // The close delivered the waiting delivery at once: its turn is the open one.
+    expect(h.rm.turnActive).toBe(true);
+    expect(h.rm.activeRunIds).toEqual([B]);
+    await h.feed(
+      chatDelta("runA", 2, "Hello world"),
+      chatAborted("runA", 2, "Hello world"),
+      chatFinal(B, 2, "The report"),
+    );
+    expectBoth(h.writer);
+  });
+
+  it("ENTIRELY PRE-ACK: the replay reads A's whole answer before the delivery opens its turn", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    await h.feed(
+      chatDelta(B, 1, "The rep"),
+      chatDelta("runA", 1, "Hello"),
+      lifecycleError("runA", 2),
+      chatDelta("runA", 2, "Hello world"),
+      chatAborted("runA", 2, "Hello world"),
+      chatFinal(B, 2, "The report"),
+    );
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await h.rm.completionsIdle();
+    expectBoth(h.writer);
+    // Nothing began another turn between two replayed frames: A's completion was
+    // offered, and written, before B's bubble was born.
+    expect(h.writer.order).toEqual(["start msg1", "complete msg1", "start msg2"]);
+    expect(h.rm.liveWork).toBeNull();
+  });
+
+  it("PRE-ACK: a buffered run that became an input's run opens its turn after the replay, not inside it", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    // Run X is buffered as an unknown run, between run A's close and its flushed text;
+    // the ACK of a queued input then names it.
+    await h.feed(
+      chatDelta("runA", 1, "Hello"),
+      lifecycleError("runA", 2),
+      chatDelta("runX", 1, "The other answer"),
+      chatDelta("runA", 2, "Hello world"),
+      chatAborted("runA", 2, "Hello world"),
+    );
+    h.rm.noteHeldInput("sendX", "runX", "userX");
+    await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await h.rm.completionsIdle();
+    expect(h.writer.settled.get("msg1")).toMatchObject({ status: "error", text: "Hello world" });
+    expect(h.writer.live.get("msg2")).toBe("The other answer");
+    expect(h.writer.order).toEqual(["start msg1", "complete msg1", "start msg2"]);
+  });
+
+  it("PRE-ACK, a resume asked during the replay waits for its end", async () => {
+    const h = harness();
+    h.rm.armReplayBuffer();
+    await h.feed(chatDelta("runA", 1, "Hello"), lifecycleError("runA", 2), chatAborted("runA", 2, "Hello world"));
+    // The close's write is held: the replay stands between the close and the terminal.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const finalize = h.writer.finalize.bind(h.writer);
+    h.writer.finalize = async (...a) => {
+      await held;
+      return finalize(...a);
+    };
+    const opening = h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
+    await new Promise((r) => setTimeout(r, 5));
+    let resumed = false;
+    const resuming = h.rm.resumeTurn(h.tick(), "msg9", "runC").then(() => (resumed = true));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(resumed).toBe(false);
+    release();
+    await Promise.all([opening, resuming]);
+    await h.rm.completionsIdle();
+    expect(h.writer.settled.get("msg1")).toMatchObject({ status: "error", text: "Hello world" });
   });
 });
 
@@ -676,6 +1102,7 @@ describe("replay equivalence — the pre-ACK buffer and the live path write the 
     await h.feed(...frames.slice(0, cut));
     await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
     await h.feed(...frames.slice(cut));
+    await h.rm.completionsIdle();
     return h.writer;
   }
 
@@ -687,6 +1114,8 @@ describe("replay equivalence — the pre-ACK buffer and the live path write the 
     for (let cut = 1; cut <= n; cut++) {
       const split = await play(frames(), cut);
       expect(split.log, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.log);
+      // The writes to the settled bubble have their own chain, and so their own order.
+      expect(split.completions, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.completions);
       expect([...split.settled], `first ${cut} frame(s) before the ACK`).toStrictEqual([...live.settled]);
       expect(split.writesAfterSettle).toBe(0);
     }
@@ -720,6 +1149,7 @@ describe("replay equivalence — the pre-ACK buffer and the live path write the 
       await h.feed(...frames().slice(0, cut));
       await h.rm.beginTurn(h.tick(), "runA", { expectedSessionId: null });
       await h.feed(...frames().slice(cut));
+      await h.rm.completionsIdle();
       await h.rm.runFactsIdle();
       return h.writer;
     };
@@ -729,6 +1159,7 @@ describe("replay equivalence — the pre-ACK buffer and the live path write the 
     for (let cut = 1; cut <= frames().length; cut++) {
       const split = await run(cut);
       expect(split.log, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.log);
+      expect(split.completions, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.completions);
       expect(split.facts, `first ${cut} frame(s) before the ACK`).toStrictEqual(live.facts);
     }
   });
@@ -754,6 +1185,7 @@ describe("replay equivalence — the pre-ACK buffer and the live path write the 
     expect(h.rm.dispatchInFlight).toBe(true);
     release();
     await Promise.all([opening, live]);
+    await h.rm.completionsIdle();
     expect(only(h.writer)).toMatchObject({ status: "error", text: "Hello world" });
     expect(h.rm.dispatchInFlight).toBe(false);
   });
@@ -910,9 +1342,10 @@ describe("part seven — an unstable tail at the close", () => {
     expect(only(h.writer).text).toBe("The log is in /tmp/x");
   });
 
-  it("no completion ever comes: the next turn gives the bubble its whole text before it begins", async () => {
+  it("no completion ever comes: the next turn's first frame is such a frame", async () => {
     const h = await closedWith("The log is in /tmp/x");
     await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
+    await h.feed(agent("runB", 0, "lifecycle", { phase: "start" }));
     expect(h.writer.settled.get("msg1")!.text).toBe("The log is in /tmp/x");
   });
 
@@ -936,11 +1369,22 @@ describe("part seven — an unstable tail at the close", () => {
     expect(attempts).toBe(3);
   });
 
-  it("the whole text Convex refuses is offered once, not at every frame", async () => {
+  it("the whole text Convex refuses is offered once, and what it adds joins the bubble — once", async () => {
     const h = await closedWith("The log is in /tmp/x");
     only(h.writer).text = "something else";
     await h.feed(tickFrame, tickFrame, tickFrame);
     expect(h.writer.offered.map((o) => o.applied)).toEqual([false]);
+    expect(h.writer.late).toEqual(["/tmp/x"]);
+  });
+
+  it.each([
+    ["a bare error terminal (2026.9.1 / 9.2)", () => chatError("runA", 2, "provider failed")],
+    ["a terminal repeating the text (2026.9.5+)", () => chatError("runA", 2, "provider failed", `One\r\nTwo ${OUT}/a.txt ok`)],
+  ])("a REFUSED flush is joined, never left to a terminal that may carry nothing: %s", async (_n, terminal) => {
+    const h = await closedWith("One\r\nTwo");
+    await h.feed(chatDelta("runA", 2, `One\r\nTwo ${OUT}/a.txt ok`), terminal());
+    expect(h.writer.late).toEqual(["a.txt ok"]);
+    expect(only(h.writer).text).toBe("One\r\nTwo\n\na.txt ok");
   });
 
   it("a stale view shorter than the text held back is never written", async () => {
@@ -957,10 +1401,14 @@ describe("part seven — an unstable tail at the close", () => {
     expect(only(h.writer).text).toBe("The log is in /tmp/x");
   });
 
-  it("DECLARED — a rewrite of text already persisted (line ends normalised): the terminal's text joins, never lost", async () => {
+  it.each([
+    ["aborted", (text: string) => chatAborted("runA", 2, text)],
+    ["error", (text: string) => chatError("runA", 2, "provider failed", text)],
+    ["final", (text: string) => chatFinal("runA", 2, text)],
+  ])("DECLARED — a rewrite of text already persisted (line ends normalised): the `%s` terminal's text joins, never lost", async (_n, terminal) => {
     const h = await closedWith("One\r\nTwo");
     expect(only(h.writer).text).toBe("One\r\nTwo");
-    await h.feed(chatAborted("runA", 2, `One\r\nTwo ${OUT}/a.txt ok`));
+    await h.feed(terminal(`One\r\nTwo ${OUT}/a.txt ok`));
     // The sanitised text ("One\nTwo a.txt ok") does not extend "One\r\nTwo": refused, joined.
     expect(h.writer.offered.map((o) => o.applied)).toEqual([false]);
     expect(h.writer.late).toEqual(["a.txt ok"]);

@@ -272,5 +272,7 @@ export async function replay<W extends RecordingWriter = RecordingWriter>(
   if (manager.turnActive && manager.takeRecvSilence()) {
     await manager.endTurn(now, "final", null, "recv_timeout");
   }
+  // The writes to settled bubbles are detached from the frame path: let them land.
+  await manager.completionsIdle();
   return writer;
 }
