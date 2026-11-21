@@ -682,26 +682,29 @@ describe("the bubble writes of the projected path", () => {
       text: "only text",
       runId: "runC",
     });
-    // The answer of that call was lost: the bridge asks again, still naming no bubble.
-    const again = await t.mutation(internal.stream.appendLateFinal, {
-      chatId,
-      runId: "runC",
-      text: "only text",
-      boundInstanceName: "prod",
-    });
-    expect(again).toBe(created);
+  });
+
+  test("appendLateFinal: two turns re-using one run id, each left without a bubble, each get their own for the same late text", async () => {
+    // Both turns ended on NO_REPLY (no bubble), then each received the late final "Hello".
+    // Nothing in the call tells the second turn's final from a repeat of the first: a
+    // lookup by run and text returned the first turn's bubble, and the second answer
+    // never appeared in its place. A call that names no bubble opens one, every time —
+    // the bridge asks such a write once (RunManager `writeCompletion`, the CU-8 path).
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t, "on");
+    const args = { chatId, runId: "runR", text: "Hello", boundInstanceName: "prod" };
+    const first = await t.mutation(internal.stream.appendLateFinal, args);
+    const second = await t.mutation(internal.stream.appendLateFinal, args);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
     const ofRun = await t.run((ctx) =>
-      ctx.db.query("messages").withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", "runC")).collect(),
+      ctx.db.query("messages").withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", "runR")).collect(),
     );
-    expect(ofRun).toHaveLength(1);
-    // A DIFFERENT text for the same run is another late final, and its own bubble.
-    const other = await t.mutation(internal.stream.appendLateFinal, {
-      chatId,
-      runId: "runC",
-      text: "another text",
-      boundInstanceName: "prod",
-    });
-    expect(other).not.toBe(created);
+    expect(ofRun.map((m) => [m._id, m.text])).toEqual([
+      [first, "Hello"],
+      [second, "Hello"],
+    ]);
   });
 });
 
