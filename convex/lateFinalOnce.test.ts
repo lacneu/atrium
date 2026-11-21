@@ -258,12 +258,25 @@ describe("the keys kept are bounded, and go with their conversation", () => {
     expect((await t.run((ctx) => ctx.db.query("lateFinalWrites").collect())).map((r) => r.writeKey)).toEqual(["new-1"]);
   });
 
-  test("a conversation with no transcript marker keeps no key (its purge would never look for one)", async () => {
+  test("a conversation WITHOUT the transcript marker (its reads failed so far): the answer is lost, the writer asks again — ONE bubble all the same", async () => {
     const t = convexTest(schema, modules);
-    const { userId } = await seed(t);
+    const { userId, secret } = await seed(t);
     const plain = await t.run((ctx) => ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod" }));
-    const id = await t.mutation(internal.stream.appendLateFinal, { chatId: plain, runId: RUN, text: "Hello", turnSessionKey: SK, boundInstanceName: "prod", writeKey: "k" } as never);
-    expect(id).not.toBeNull();
+    const { writer, posted } = writerThrough(t, secret, ["lost-answer", "ok"]);
+    const id = await writer.appendLateFinal(lateFinal(plain, "key-1"));
+    expect(posted).toHaveLength(2);
+    const all = await bubbles(t, plain);
+    expect(all.map((m) => m.text)).toEqual(["Hello"]);
+    expect(id).toBe(String(all[0]!._id));
+    // The key was recorded with the bubble, and the conversation now says the projection
+    // wrote something for it: that mark is what its deletion reads to purge the key.
+    expect((await t.run((ctx) => ctx.db.query("lateFinalWrites").collect())).map((r) => r.writeKey)).toEqual(["key-1"]);
+    expect((await t.run((ctx) => ctx.db.get(plain)))?.transcriptSeenAt).toBeTypeOf("number");
+    vi.useFakeTimers();
+    await t.run(async (ctx) => {
+      await cascadeDeleteChat(ctx, plain);
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect(await t.run((ctx) => ctx.db.query("lateFinalWrites").collect())).toEqual([]);
   });
 

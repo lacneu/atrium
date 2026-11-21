@@ -1984,8 +1984,8 @@ export const purgeChatRowTexts = internalMutation({
         .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
         .take(500);
       for (const r of releases) await ctx.db.delete(r._id);
-      // …and the keys of its late finals' writes (same conversations only: stream.ts
-      // `appendLateFinal` records one only where the marker is).
+      // …and the keys of its late finals' writes (stream.ts `appendLateFinal` sets the
+      // marker with the first key it records).
       const lateKeys = await ctx.db
         .query("lateFinalWrites")
         .withIndex("by_chat", (q) => q.eq("chatId", chatId))

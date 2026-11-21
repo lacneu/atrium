@@ -6659,12 +6659,18 @@ export const appendLateFinal = internalMutation({
       updatedAt: now,
       finalizedAt: now,
     });
-    await ctx.db.patch(chatId, { updatedAt: now, lastAssistantAt: now });
-    // Only where the projection's marker is (`transcriptStoredText`): the chat's purge
-    // looks for these records there and nowhere else, so a conversation of another
-    // provider never pays for them. A late final exists only on a projected session,
-    // whose first read set the marker.
-    if (key !== undefined && transcriptStoredText(chat)) {
+    // EVERY keyed write that opens a bubble records its key, in this transaction: the op
+    // is retried by the bridge, and a repeat with no record would open a second bubble.
+    // The chat's purge finds these records through the projection's marker
+    // (`transcriptSeenAt` — "the projection wrote something for this conversation"), so
+    // a conversation that does not carry it yet (its transcript reads failed so far) is
+    // given it here, with the record.
+    await ctx.db.patch(chatId, {
+      updatedAt: now,
+      lastAssistantAt: now,
+      ...(key !== undefined && !transcriptStoredText(chat) ? { transcriptSeenAt: now } : {}),
+    });
+    if (key !== undefined) {
       // Remember which bubble THIS write opened — and forget the chat's keys no retry
       // can still carry (oldest first, bounded per write).
       const stale = await ctx.db

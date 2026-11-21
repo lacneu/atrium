@@ -2784,8 +2784,9 @@ export default defineSchema({
   // run id or its text — the bridge names the WRITE, and this says which bubble that
   // write opened. Ids only. Bounded: a key serves the retries of one write (seconds to
   // minutes), so the chat's keys older than `LATE_FINAL_KEY_TTL_MS` are deleted when a
-  // later one is recorded; written only for a conversation that stored transcript text,
-  // and purged with it (transcriptProjection.purgeChatRowTexts).
+  // later one is recorded. Recording one marks the conversation (`transcriptSeenAt`) in
+  // the same transaction, which is what its deletion reads to purge them
+  // (transcriptProjection.purgeChatRowTexts).
   lateFinalWrites: defineTable({
     chatId: v.id("chats"),
     writeKey: v.string(),
