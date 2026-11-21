@@ -770,6 +770,8 @@ export class TurnSink {
     runId: string,
     messageId: string | null,
     text: string,
+    /** The caller's key for THIS write, kept across its retries (convex-writer.ts). */
+    writeKey?: string,
   ): Promise<string | null> {
     return (await this.writer.appendLateFinal?.({
       chatId: this.chatId,
@@ -777,6 +779,7 @@ export class TurnSink {
       messageId,
       text,
       sessionKey: this.sessionKey ?? null,
+      ...(writeKey !== undefined ? { writeKey } : {}),
     })) ?? null;
   }
 

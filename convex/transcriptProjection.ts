@@ -1984,6 +1984,13 @@ export const purgeChatRowTexts = internalMutation({
         .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
         .take(500);
       for (const r of releases) await ctx.db.delete(r._id);
+      // …and the keys of its late finals' writes (same conversations only: stream.ts
+      // `appendLateFinal` records one only where the marker is).
+      const lateKeys = await ctx.db
+        .query("lateFinalWrites")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .take(500);
+      for (const k of lateKeys) await ctx.db.delete(k._id);
       // …and the files its rows carried, copied once (final design step 2): each record
       // goes, and its blob with it when nothing else holds it (lib/blobs).
       const moreFiles = await purgeChatFiles(ctx, chatId);
@@ -1992,6 +1999,7 @@ export const purgeChatRowTexts = internalMutation({
         admissions.length === 500 ||
         spawns.length === 500 ||
         releases.length === 500 ||
+        lateKeys.length === 500 ||
         moreFiles
       ) {
         await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, { chatId, markPurged });

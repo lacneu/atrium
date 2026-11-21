@@ -596,6 +596,19 @@ type IngestOp =
       text: string;
       sessionKey?: string | null;
     }
+  // The same write, NAMED: `writeKey` is the bridge's key for this one late final, the
+  // same across its retries — a repeat is answered with the bubble the first one opened
+  // (stream.appendLateFinal). A separate op, so that a bridge retrying it against a
+  // Convex from before it is REFUSED (unknown op) instead of opening a bubble per retry.
+  | {
+      op: "appendLateFinalKeyed";
+      chatId: string;
+      runId: string;
+      messageId?: string | null;
+      text: string;
+      sessionKey?: string | null;
+      writeKey: string;
+    }
   | { op: "completeSettledText"; messageId: string; runId: string; text: string }
   | {
       op: "recoverLostReply";
@@ -1840,13 +1853,16 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ messageId: next });
     }
-    case "appendLateFinal": {
+    case "appendLateFinal":
+    case "appendLateFinalKeyed": {
       if (
         typeof body.chatId !== "string" ||
         typeof body.runId !== "string" ||
         body.runId === "" ||
         body.runId.length > 256 ||
-        typeof body.text !== "string"
+        typeof body.text !== "string" ||
+        (body.op === "appendLateFinalKeyed" &&
+          (typeof body.writeKey !== "string" || body.writeKey === "" || body.writeKey.length > 128))
       ) {
         return json({ error: "invalid body" }, 400);
       }
@@ -1860,6 +1876,7 @@ export const ingest = httpAction(async (ctx, request) => {
         ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
           ? { turnSessionKey: body.sessionKey }
           : {}),
+        ...(body.op === "appendLateFinalKeyed" ? { writeKey: body.writeKey } : {}),
         boundInstanceName,
       });
       return json({ messageId: id });

@@ -11,7 +11,8 @@
 import { describe, expect, test, vi } from "vitest";
 import { sleep } from "./helpers/sleep.js";
 import { Readable } from "node:stream";
-import { HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
+import {
+  lateFinalAskedOnce, HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
 import {
   MEDIA_TOO_LARGE_CODE,
   type MediaFetcher,
@@ -2177,5 +2178,72 @@ describe("0.102.1 (Codex pass 2) — startAssistant states a projected turn", ()
     await w.startAssistant("c1", "r2", "k", null);
     expect(bodies[0]).toMatchObject({ op: "startAssistant", projectedTurn: true });
     expect(bodies[1]).not.toHaveProperty("projectedTurn");
+  });
+});
+
+describe("a late final is NAMED by its write (the key makes it repeatable)", () => {
+  const args = { chatId: "c1", runId: "r1", messageId: null, text: "Hello", sessionKey: "k" };
+  const scripted = (answers: Array<() => Response>) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    let n = 0;
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return answers[Math.min(n++, answers.length - 1)]!();
+    }) as unknown as typeof fetch;
+    return { w: writerWith(fetchImpl), bodies };
+  };
+  const ok = () => new Response(JSON.stringify({ messageId: "m1" }), { status: 200 });
+  const unknownOp = () => new Response(JSON.stringify({ ok: false, error: "unknown op" }), { status: 400 });
+
+  test("with a key: the keyed op, re-posted identically on a transient failure", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const { w, bodies } = scripted([() => new Response("busy", { status: 503 }), ok]);
+      const p = w.appendLateFinal({ ...args, writeKey: "key-1" });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(await p).toBe("m1");
+      expect(bodies).toEqual([
+        { op: "appendLateFinalKeyed", ...args, writeKey: "key-1" },
+        { op: "appendLateFinalKeyed", ...args, writeKey: "key-1" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  test("without a key: the unkeyed op, ONE attempt, and its failure says it was asked once", async () => {
+    const { w, bodies } = scripted([() => new Response("busy", { status: 503 })]);
+    const err = await w.appendLateFinal(args).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(bodies).toEqual([{ op: "appendLateFinal", ...args }]);
+    expect(lateFinalAskedOnce(err)).toBe(true);
+  });
+
+  test("a Convex from before the keyed op refuses it: asked once the old way, never a second unkeyed attempt", async () => {
+    const { w, bodies } = scripted([unknownOp, () => new Response("busy", { status: 503 })]);
+    const err = await w.appendLateFinal({ ...args, writeKey: "key-1" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(bodies.map((b) => [b.op, "writeKey" in b])).toEqual([
+      ["appendLateFinalKeyed", true],
+      ["appendLateFinal", false],
+    ]);
+    expect(lateFinalAskedOnce(err)).toBe(true);
+  });
+
+  test("any OTHER refusal of the keyed op is the write's own answer: no unkeyed attempt behind it", async () => {
+    const { w, bodies } = scripted([() => new Response(JSON.stringify({ error: "invalid body" }), { status: 400 })]);
+    const err = await w.appendLateFinal({ ...args, writeKey: "key-1" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(bodies).toHaveLength(1);
+    expect(err).toBeInstanceOf(Error);
+    expect(lateFinalAskedOnce(err)).toBe(false);
   });
 });

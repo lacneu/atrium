@@ -512,13 +512,16 @@ export interface ConvexWriter {
     /** The settling segment's whole text (authoritative, like a finalize's). */
     text?: string,
   ): Promise<string | null>;
-  /** PROJECTION `on` (phase 3, CU-8): a distinct late final of a settled run. */
+  /** PROJECTION `on` (phase 3, CU-8): a distinct late final of a settled run. `writeKey`
+   *  names THIS write (the same across its retries): with it the write may be asked
+   *  again — a failure it could not ask again is marked (`lateFinalAskedOnce`). */
   appendLateFinal?(args: {
     chatId: string;
     runId: string;
     messageId: string | null;
     text: string;
     sessionKey: string | null;
+    writeKey?: string | null;
   }): Promise<string | null>;
   /** Text the run sent after its bubble settled: written only as a strict extension of
    *  that message's text (internal.stream.completeSettledText). True: the message holds
@@ -1033,6 +1036,22 @@ export class ConvexIngestError extends Error {
   }
 }
 
+/**
+ * A late final whose write was asked WITHOUT a key (the caller had none, or this Convex
+ * predates the keyed op) and failed: it must not be asked again — a repeat of an unkeyed
+ * write that did land opens a second bubble. The error says so to whoever would retry.
+ */
+function markAskedOnce(err: unknown): Error {
+  const e = err instanceof Error ? err : new Error(String(err));
+  (e as { askedOnce?: true }).askedOnce = true;
+  return e;
+}
+
+/** Was this failed late-final write one that cannot be asked again (`markAskedOnce`)? */
+export function lateFinalAskedOnce(err: unknown): boolean {
+  return (err as { askedOnce?: unknown } | null)?.askedOnce === true;
+}
+
 /** What a re-hydration asks Convex for, beyond the chat and the turn to exclude. */
 export interface RehydrationRequest {
   /** The agent the history is FOR: its own replies are marked as its own, and the
@@ -1394,6 +1413,16 @@ type IngestOp =
       text: string;
       sessionKey: string | null;
     }
+  | {
+      op: "appendLateFinalKeyed";
+      chatId: string;
+      runId: string;
+      messageId: string | null;
+      text: string;
+      sessionKey: string | null;
+      /** The bridge's key for THIS write, the same across its retries. */
+      writeKey: string;
+    }
   | { op: "completeSettledText"; messageId: string; runId: string; text: string }
   // A child's session row as read from the gateway (0.101.4).
   | {
@@ -1738,6 +1767,11 @@ export class HttpConvexWriter implements ConvexWriter {
     // (RunManager `completionTail`): the back-off delays the next completion, never a
     // turn.
     "completeSettledText",
+    // A LATE FINAL, NAMED BY ITS WRITE: Convex remembers the bubble a write key opened
+    // and answers a repeat with it (convex/stream.ts `appendLateFinal`, table
+    // `lateFinalWrites`); a join into a named bubble never adds a text it already holds.
+    // The UNKEYED op stays out of this set: a repeat of it opens a second bubble.
+    "appendLateFinalKeyed",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -3094,9 +3128,28 @@ export class HttpConvexWriter implements ConvexWriter {
     messageId: string | null;
     text: string;
     sessionKey: string | null;
+    writeKey?: string | null;
   }): Promise<string | null> {
-    const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinal", ...args });
-    return ack.messageId ?? null;
+    const { writeKey, ...write } = args;
+    if (typeof writeKey === "string" && writeKey !== "") {
+      try {
+        // NAMED, so it can be asked again (IDEMPOTENT_OPS): Convex answers a repeat with
+        // the bubble the first one opened.
+        const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinalKeyed", ...write, writeKey });
+        return ack.messageId ?? null;
+      } catch (err) {
+        // A Convex from before the keyed op refuses it WHOLE (unknown op: nothing was
+        // written). The write is then asked the old way — once, since that Convex opens a
+        // bubble at every call that names none.
+        if (!(err instanceof ConvexIngestError) || err.status !== 400 || !/unknown op/.test(err.message)) throw err;
+      }
+    }
+    try {
+      const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinal", ...write });
+      return ack.messageId ?? null;
+    } catch (err) {
+      throw markAskedOnce(err);
+    }
   }
 
   async completeSettledText(args: {

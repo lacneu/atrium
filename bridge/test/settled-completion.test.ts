@@ -134,7 +134,15 @@ class Writer extends RecordingWriter {
   /** Late-final writes whose ANSWER is lost after the write committed. */
   lostLateAnswers = 0;
   failLate = false;
-  async appendLateFinal(a: { messageId: string | null; text: string }): Promise<string | null> {
+  /** Convex's write keys (`appendLateFinal`, table `lateFinalWrites`): with it, a late
+   *  final that names no bubble OPENS one, remembered by its key. Off: "no bubble" is
+   *  answered (the older tests' reading of a run that left none). */
+  opensBubbles = false;
+  readonly openedByKey = new Map<string, string>();
+  /** Every key a late-final write carried, in order. */
+  readonly lateKeys: Array<string | undefined> = [];
+  async appendLateFinal(a: { messageId: string | null; text: string; writeKey?: string | null; runId?: string }): Promise<string | null> {
+    this.lateKeys.push(a.writeKey ?? undefined);
     if (this.failLate) throw new Error("convex down");
     if (this.lateFailures > 0) {
       this.lateFailures--;
@@ -142,6 +150,22 @@ class Writer extends RecordingWriter {
     }
     this.late.push(a.text);
     this.log.push(`late ${a.messageId} ${JSON.stringify(a.text)}`);
+    if (a.messageId === null && this.opensBubbles && typeof a.writeKey === "string") {
+      let id = this.openedByKey.get(a.writeKey);
+      if (id === undefined) {
+        id = `late${this.openedByKey.size + 1}`;
+        this.openedByKey.set(a.writeKey, id);
+        this.settled.set(id, { runId: a.runId ?? null, status: "complete", text: a.text, error: null });
+      } else {
+        const held = this.settled.get(id)!;
+        if (!held.text.includes(a.text)) held.text = a.text.startsWith(held.text) ? a.text : `${held.text}\n\n${a.text}`;
+      }
+      if (this.lostLateAnswers > 0) {
+        this.lostLateAnswers--;
+        throw new Error("answer lost");
+      }
+      return id;
+    }
     const s = a.messageId === null ? undefined : this.settled.get(a.messageId);
     // Convex's rule (`appendLateFinal`): an addition the bubble already holds is not appended.
     if (s !== undefined && !s.text.includes(a.text)) s.text = s.text.trim() === "" ? a.text : `${s.text}\n\n${a.text}`;
@@ -972,19 +996,64 @@ describe("one queue per bubble: a late final stays behind the completion its bub
     expect(h.writer.settled.get("msg2")!.text).toBe("Hello world\n\nFirst late\n\nSecond late");
   });
 
-  it("a run that left NO bubble: the write that would open one is asked once, never retried", async () => {
-    // A delivery that showed nothing when a net closed its deferred turn: no bubble.
-    const RUN = "announce:v1:agent:alice:subagent:child:run-1";
+  /** A delivery that showed nothing when a net closed its deferred turn: no bubble. */
+  const RUN = "announce:v1:agent:alice:subagent:child:run-1";
+  async function noBubble() {
     const h = harness();
     await h.feed(agent(RUN, 0, "lifecycle", { phase: "start" }));
     await h.rm.endTurn(h.tick(), "final", null, "recv_timeout");
     expect(h.rm.turnActive).toBe(false);
     expect(h.writer.starts).toBe(0);
+    h.writer.opensBubbles = true;
+    return h;
+  }
+
+  it("a run that left NO bubble: the write that opens one fails, and is asked again under the SAME key until it lands", async () => {
+    const h = await noBubble();
+    h.writer.lateFailures = 2;
+    const lines = await erred(async () => {
+      await h.feed(chatAborted(RUN, 1, "Hello world"), tickFrame(), tickFrame(), tickFrame());
+    });
+    expect(h.writer.lateKeys).toHaveLength(3);
+    expect(new Set(h.writer.lateKeys).size).toBe(1);
+    expect(typeof h.writer.lateKeys[0]).toBe("string");
+    expect([...h.writer.settled.values()].map((b) => b.text)).toEqual(["Hello world"]);
+    expect(lines.filter((l) => l.includes("is not asked again"))).toEqual([]);
+    // The run's record follows the bubble that write opened: a later final joins IT.
+    await h.feed(chatFinal(RUN, 2, "And more"));
+    expect([...h.writer.settled.values()].map((b) => b.text)).toEqual(["Hello world\n\nAnd more"]);
+  });
+
+  it("…its ANSWER is lost after the bubble was opened: the repeat is given that bubble — one bubble", async () => {
+    const h = await noBubble();
+    h.writer.lostLateAnswers = 1;
+    await erred(async () => {
+      await h.feed(chatAborted(RUN, 1, "Hello world"), tickFrame());
+    });
+    expect(h.writer.lateKeys).toHaveLength(2);
+    expect(new Set(h.writer.lateKeys).size).toBe(1);
+    expect(h.writer.openedByKey.size).toBe(1);
+    expect([...h.writer.settled.values()].map((b) => b.text)).toEqual(["Hello world"]);
+  });
+
+  it("…it never lands: three passes, then dropped and said", async () => {
+    const h = await noBubble();
+    h.writer.failLate = true;
+    const lines = await erred(async () => {
+      await h.feed(chatAborted(RUN, 1, "Hello world"), tickFrame(), tickFrame(), tickFrame(), tickFrame());
+    });
+    expect(h.writer.lateKeys).toHaveLength(3);
+    expect(lines.filter((l) => l.includes("DROPPED"))).toHaveLength(1);
+    expect(h.writer.settled.size).toBe(0);
+  });
+
+  it("…on a Convex that cannot tell a repeat (the writer says the write was asked once): asked once, as before", async () => {
+    const h = await noBubble();
     let asked = 0;
     h.writer.appendLateFinal = async (a) => {
       asked++;
       expect(a.messageId).toBeNull();
-      throw new Error("convex down");
+      throw Object.assign(new Error("convex down"), { askedOnce: true });
     };
     const lines = await erred(async () => {
       await h.feed(chatAborted(RUN, 1, "Hello world"), tickFrame(), tickFrame(), tickFrame());
@@ -992,6 +1061,61 @@ describe("one queue per bubble: a late final stays behind the completion its bub
     expect(asked).toBe(1);
     expect(lines.filter((l) => l.includes("is not asked again"))).toHaveLength(1);
     expect(h.writer.offered).toEqual([]);
+  });
+
+  it("a final waiting behind a debt, its write FAILS: it stays at the head, nothing behind it passes it, and it is asked again with its own key", async () => {
+    const h = await closedOnLifecycleError();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    await h.feedOnly(chatAborted("runA", 3, "Hello world"), chatFinal("runA", 4, "First late"), chatFinal("runA", 5, "Second late"));
+    // Two passes are already due (the offer's, and the one the finals' frames asked for).
+    h.writer.lateFailures = 2;
+    const lines = await erred(async () => {
+      release();
+      await h.rm.completionsIdle();
+      // Both passes ended on the failure: the second final did NOT go in front.
+      expect(h.writer.late).toEqual([]);
+      expect(only(h.writer).text).toBe("Hello world");
+      // A third arrives meanwhile: behind the two that wait.
+      await h.feedOnly(chatFinal("runA", 6, "Third late"));
+      await h.rm.completionsIdle();
+    });
+    expect(h.writer.late).toEqual(["First late", "Second late", "Third late"]);
+    expect(only(h.writer).text).toBe("Hello world\n\nFirst late\n\nSecond late\n\nThird late");
+    // Five writes asked: the first final three times under ONE key, each other under its own.
+    expect(h.writer.lateKeys).toHaveLength(5);
+    expect(new Set(h.writer.lateKeys.slice(0, 3)).size).toBe(1);
+    expect(new Set(h.writer.lateKeys).size).toBe(3);
+    expect(lines.filter((l) => l.includes("kept, asked again at the next frame"))).toHaveLength(2);
+    // The completion was written once: a later pass does not ask for it again.
+    expect(h.writer.completions.filter((c) => c.startsWith("complete msg1"))).toHaveLength(1);
+  });
+
+  it("…it never lands: dropped after three passes, said, and the next one is then written", async () => {
+    const h = await closedOnLifecycleError();
+    let release!: () => void;
+    h.writer.gate = new Promise<void>((r) => (release = r));
+    await h.feedOnly(chatAborted("runA", 3, "Hello world"), chatFinal("runA", 4, "First late"), chatFinal("runA", 5, "Second late"));
+    h.writer.lateFailures = 3;
+    const lines = await erred(async () => {
+      release();
+      // The two passes already due fail; each later frame gives it one more.
+      await h.rm.completionsIdle();
+      await h.feed(tickFrame());
+      await h.feed(tickFrame());
+    });
+    expect(lines.filter((l) => l.includes("a late final behind a settled bubble's completion was not written") && l.includes("DROPPED"))).toHaveLength(1);
+    expect(h.writer.late).toEqual(["Second late"]);
+    expect(only(h.writer).text).toBe("Hello world\n\nSecond late");
+  });
+
+  it("two late finals of one run with the same text are two writes: each carries its own key", async () => {
+    const h = await closedOnLifecycleError();
+    await h.feed(chatAborted("runA", 3, "Hello world"));
+    await h.feed(chatFinal("runA", 4, "Late"), chatFinal("runA", 5, "Late too"));
+    expect(h.writer.lateKeys).toHaveLength(2);
+    expect(h.writer.lateKeys[0]).not.toBe(h.writer.lateKeys[1]);
+    expect(h.writer.lateKeys.every((k) => typeof k === "string" && k.length >= 32)).toBe(true);
   });
 });
 

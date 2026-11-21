@@ -6565,6 +6565,24 @@ export const noteGatewayNotice = internalMutation({
   },
 });
 
+/** How long the key of a late final's write is kept: a key serves the retries of ONE
+ *  write — the writer's own (seconds) and the bridge's later passes (the next frames). */
+export const LATE_FINAL_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+/** Expired keys deleted per recorded write (the sweep is paid by the writes themselves). */
+const LATE_FINAL_KEY_SWEEP = 16;
+/** A write key as the bridge mints it (a uuid); anything else is not a key. */
+const LATE_FINAL_KEY_MAX_CHARS = 128;
+
+/**
+ * A DISTINCT late final of a settled run (CU-8): joined to the run's bubble when the
+ * bridge names one, else a settled bubble of its own.
+ *
+ * `writeKey` (the bridge's name for THIS write, the same across its retries) makes the
+ * OPENING idempotent: the bubble a key opened is remembered (`lateFinalWrites`), and a
+ * repeat of that write is answered with it — never with another turn's bubble of the same
+ * run and text, whose write carries another key. Without a key (an older bridge) every
+ * call that names no bubble opens one, as before.
+ */
 export const appendLateFinal = internalMutation({
   args: {
     chatId: v.id("chats"),
@@ -6573,15 +6591,39 @@ export const appendLateFinal = internalMutation({
     messageId: v.optional(v.id("messages")),
     text: v.string(),
     turnSessionKey: v.optional(v.string()),
+    writeKey: v.optional(v.string()),
     ...boundArg,
   },
   returns: v.union(v.id("messages"), v.null()),
-  handler: async (ctx, { chatId, runId, messageId, text, turnSessionKey, boundInstanceName }) => {
+  handler: async (ctx, { chatId, runId, messageId, text, turnSessionKey, writeKey, boundInstanceName }) => {
     const add = text.trim().slice(0, LATE_FINAL_MAX_CHARS);
     if (add === "") return null;
     await assertChatBound(ctx, chatId, boundInstanceName);
-    const existing = messageId === undefined ? null : await ctx.db.get(messageId);
+    const key = writeKey !== undefined && writeKey !== "" && writeKey.length <= LATE_FINAL_KEY_MAX_CHARS ? writeKey : undefined;
     const now = Date.now();
+    // A REPEAT of a write that opened a bubble: that bubble is its destination.
+    const opened =
+      key === undefined
+        ? null
+        : await ctx.db
+            .query("lateFinalWrites")
+            .withIndex("by_chat_key", (q) => q.eq("chatId", chatId).eq("writeKey", key))
+            .first();
+    if (opened !== null) {
+      const bubble = await ctx.db.get(opened.messageId);
+      // Deleted since (by its reader): the write landed, and nothing is opened again.
+      if (bubble === null || bubble.chatId !== chatId || bubble.role !== "assistant") return null;
+      await assertMessageBound(ctx, bubble, boundInstanceName);
+      if (bubble.text.includes(add)) return bubble._id;
+      // A LONGER view of the text this write opened the bubble with (the bridge's debt
+      // grew between two passes) replaces it; anything else is added, as for any join.
+      await ctx.db.patch(bubble._id, {
+        text: bubble.text.trim() === "" || add.startsWith(bubble.text) ? add : `${bubble.text}\n\n${add}`,
+        updatedAt: now,
+      });
+      return bubble._id;
+    }
+    const existing = messageId === undefined ? null : await ctx.db.get(messageId);
     if (
       existing !== null &&
       existing.chatId === chatId &&
@@ -6618,6 +6660,20 @@ export const appendLateFinal = internalMutation({
       finalizedAt: now,
     });
     await ctx.db.patch(chatId, { updatedAt: now, lastAssistantAt: now });
+    // Only where the projection's marker is (`transcriptStoredText`): the chat's purge
+    // looks for these records there and nowhere else, so a conversation of another
+    // provider never pays for them. A late final exists only on a projected session,
+    // whose first read set the marker.
+    if (key !== undefined && transcriptStoredText(chat)) {
+      // Remember which bubble THIS write opened — and forget the chat's keys no retry
+      // can still carry (oldest first, bounded per write).
+      const stale = await ctx.db
+        .query("lateFinalWrites")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .take(LATE_FINAL_KEY_SWEEP);
+      for (const s of stale) if (s.createdAt < now - LATE_FINAL_KEY_TTL_MS) await ctx.db.delete(s._id);
+      await ctx.db.insert("lateFinalWrites", { chatId, writeKey: key, messageId: created, createdAt: now });
+    }
     return created;
   },
 });

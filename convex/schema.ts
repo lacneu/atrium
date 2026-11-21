@@ -2778,6 +2778,24 @@ export default defineSchema({
     releasedAt: v.number(),
   }).index("by_chat_run", ["chatId", "runId"]),
 
+  // THE BUBBLE A LATE FINAL'S WRITE OPENED, BY THE KEY OF THAT WRITE (stream.ts
+  // `appendLateFinal`). A late final of a run that left no bubble opens one, and a repeat
+  // of that write (its answer lost) cannot be told from another turn's late final by its
+  // run id or its text — the bridge names the WRITE, and this says which bubble that
+  // write opened. Ids only. Bounded: a key serves the retries of one write (seconds to
+  // minutes), so the chat's keys older than `LATE_FINAL_KEY_TTL_MS` are deleted when a
+  // later one is recorded; written only for a conversation that stored transcript text,
+  // and purged with it (transcriptProjection.purgeChatRowTexts).
+  lateFinalWrites: defineTable({
+    chatId: v.id("chats"),
+    writeKey: v.string(),
+    messageId: v.id("messages"),
+    createdAt: v.number(),
+  })
+    // The chat's keys, oldest first (creation order): the retention sweep and the purge.
+    .index("by_chat", ["chatId"])
+    .index("by_chat_key", ["chatId", "writeKey"]),
+
   runBubbles: defineTable({
     chatId: v.id("chats"),
     runId: v.string(),
