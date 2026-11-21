@@ -784,16 +784,14 @@ export class TurnSink {
    * The settled bubble's text, COMPLETED by text its run sent after the turn closed
    * (Normalizer.settledCompletion). Never a turn event: nothing is reopened, the status,
    * the error and the verdict stay as the terminal wrote them. Convex is the judge — it
-   * takes the text only as a strict extension of what that message of that run holds —
-   * and what it accepted is what this sink then remembers. False: nothing was written.
+   * takes the text only as a strict extension of what that message of that run holds.
+   * The bubble is NAMED by the caller (the run's own record, RunManager `settledRuns`):
+   * a turn may have begun since, and nothing of this sink's turn is read or moved.
+   * False: the message does not hold the text.
    */
   async completeSettledText(messageId: string, runId: string, text: string): Promise<boolean> {
     if (this.writer.completeSettledText === undefined) return false;
-    const applied = await this.writer.completeSettledText({ messageId, runId, text });
-    // The bubble is NAMED by the caller, never re-read here: a turn may have begun while
-    // the write was in flight. What this sink remembers follows only if it is still that one.
-    if (applied && this.lastSettled?.messageId === messageId) this.lastSettled.text = text;
-    return applied;
+    return await this.writer.completeSettledText({ messageId, runId, text });
   }
 
   /**

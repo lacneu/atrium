@@ -891,7 +891,7 @@ describe("a turn boundary while a completion is in flight", () => {
     expect(h.writer.settled.get("msg1")!.text).toBe("Hello world");
   });
 
-  it("what the sink remembers stays the next turn's bubble", async () => {
+  it("the next turn's own record is untouched by a completion landing behind it", async () => {
     const { h, release } = await suspended();
     await h.rm.beginTurn(h.tick(), "runB", { expectedSessionId: null });
     await h.feedOnly(chatDelta("runB", 1, "Second answer"), chatFinal("runB", 2, "Second answer"));
