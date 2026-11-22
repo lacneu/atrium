@@ -5,7 +5,7 @@
   "hermesVersion": "0.21.7",
   "gatewayVersion": "2026.9.36",
   "verdict": "GO",
-  "at": "2026-11-22T12:29:39.889Z",
+  "at": "2026-11-22T13:52:36.703Z",
   "scenarios": [
     "agent-request-approval-replay",
     "agent-request-exec-approval",
@@ -47,10 +47,10 @@
     "hermes-cron-list"
   ],
   "flags": [],
-  "atriumSha": "89181a9695191ff7557fd04be870082996f86ecb",
+  "atriumSha": "23e722e221bfff7d0bf6fc664e72b7840ea32c29",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "701abb2481a8df5089ecb31d351bfd7e9024d7b421d54d0746506f62dfe743c5"
+    "deltaSha256": "143420ef473822db43447afd3a3306b806400d4b72d2d256848dcc9dd21d054e"
   },
   "supportDigest": "1e616a9d3f0194779af22b73ecbb0fe1e447cbd779c5e42accd94c14bfcf67d7",
   "bridgeVersion": "0.103.6"

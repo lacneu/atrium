@@ -6,146 +6,146 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "agent-request-approval-replay",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "approval-wait-vs-utility-job",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "approval-wait-vs-existing-session-claim",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "utility-hold-frames",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     },
     {
       "id": "emission-check",
       "ok": true,
-      "chat": "fef7ffd0e912256c"
+      "chat": "8cc7c12df01a0590"
     }
   ],
   "verdict": "GO",
-  "at": "2026-11-22T12:29:39.889Z",
+  "at": "2026-11-22T13:52:36.703Z",
   "scenarios": [
     "agent-request-approval-replay",
     "agent-request-exec-approval",
@@ -215,7 +215,7 @@
     "emission-check": "openclaw"
   },
   "flags": [],
-  "atriumSha": "89181a9695191ff7557fd04be870082996f86ecb",
+  "atriumSha": "23e722e221bfff7d0bf6fc664e72b7840ea32c29",
   "worktree": {
     "dirty": false,
     "deltaSha256": null
