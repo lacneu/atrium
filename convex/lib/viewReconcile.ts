@@ -33,9 +33,8 @@ const ROW_PHASE = { result: "completed", error: "error" } as const;
 type ToolLike = { kind: "tool"; name: string; phase: string; toolCallId?: string };
 
 /**
- * The phase a card takes once a row has spoken of its call — THE one rule, for the view
- * (`reconcileToolParts`) and for the stored part of a settled bubble (lib/rowParts.ts
- * `syncBubbleRowParts`). A call-only row says no outcome: the live phase stands.
+ * The phase a card takes once a row has spoken of its call — the view's rule
+ * (`reconcileToolParts`). A call-only row says no outcome: the live phase stands.
  * A row's `result` only says no error was READ from it (lib tool-error: its flags and its
  * output text). A failure the live stream reported is a known fact the row's silence does
  * not undo (0.101.2 audit; the Control UI's live card keeps its activity outcome,

@@ -131,12 +131,27 @@ describe("a settled bubble's stored tool cards read their outcome from its rows"
     expect(await viewPhases(t, ids, m)).toEqual({ [EXEC]: "completed", [NESTED]: "completed" });
   });
 
-  test("a row's error closes the stored card as an error", async () => {
+  test("a row's error is shown from the row and never stored: a later read that corrects the row corrects the card", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     const m = await settledLiveBubble(t, ids.chatId);
     await apply(t, ids.chatId, [callRow, nestedRow("error"), resultRow("error"), finalRow], over);
-    expect(await storedPhases(t, m)).toEqual({ [EXEC]: "error", [NESTED]: "error" });
+    expect(await storedPhases(t, m)).toEqual({ [EXEC]: "start", [NESTED]: "start" });
+    expect(await viewPhases(t, ids, m)).toEqual({ [EXEC]: "error", [NESTED]: "error" });
+    await apply(t, ids.chatId, [nestedRow("result"), resultRow("result")], over);
+    expect(await storedPhases(t, m)).toEqual({ [EXEC]: "completed", [NESTED]: "completed" });
+    expect(await viewPhases(t, ids, m)).toEqual({ [EXEC]: "completed", [NESTED]: "completed" });
+  });
+
+  test("a card the live stream completed, its row read as an error then corrected: the card follows the row both times", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const m = await settledLiveBubble(t, ids.chatId, { exec: "completed", nested: "completed" });
+    await apply(t, ids.chatId, [callRow, nestedRow("error"), resultRow("error"), finalRow], over);
+    expect(await storedPhases(t, m)).toEqual({ [EXEC]: "completed", [NESTED]: "completed" });
+    expect(await viewPhases(t, ids, m)).toEqual({ [EXEC]: "error", [NESTED]: "error" });
+    await apply(t, ids.chatId, [nestedRow("result"), resultRow("result")], over);
+    expect(await viewPhases(t, ids, m)).toEqual({ [EXEC]: "completed", [NESTED]: "completed" });
   });
 
   test("a call no row gives a result to keeps its phase: nothing is invented", async () => {

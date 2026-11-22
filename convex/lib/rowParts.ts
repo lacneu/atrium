@@ -19,7 +19,7 @@ import { LAYOUT_MAX_FILES, LAYOUT_MAX_ROWS, LAYOUT_MAX_TOOLS, LAYOUT_MAX_WIDGETS
 import { deleteFileRowsForStorage, recordFileForPart } from "./files";
 import { segmentOfRow, steerSeqsOf } from "./transcriptProjection";
 import { partWidgetField, WIDGET_TITLE_MAX_CHARS, WIDGET_VIEW_ID_RE } from "./widgetDescriptor";
-import { hydrateToolPart, phaseFromRow, toolPayloadsOf, type ToolPayload } from "./viewReconcile";
+import { hydrateToolPart, toolPayloadsOf, type ToolPayload } from "./viewReconcile";
 
 /** Parts one bubble may hold before a derivation stops reading them: room for every part
  *  a layout can derive (`LAYOUT_MAX_*`) beside as many live ones. */
@@ -178,12 +178,15 @@ export async function syncBubbleRowParts(
   // one that has them keeps its own. Its OUTCOME is the rows' too: a card whose result
   // frame never reached the bridge (the socket was closed while the tool ran, and the sink
   // that would have closed the card at the terminal died with it) is still stored `start`
-  // on a settled bubble. The row that holds the result settles it here, under the view's
-  // own rule (`phaseFromRow`), so every reader of the stored part reads what the
-  // transcript says — as the Control UI drops its live tool stream at the run's terminal
-  // and renders the cards of the reloaded history (ui/src/pages/chat/run-lifecycle.ts
-  // `reconcileChatRunLifecycle`, ui/src/lib/chat/tool-cards.ts `extractToolCards`). A call
-  // no row gives a result to keeps its phase: nothing is invented.
+  // on a settled bubble. The row that holds the result closes it here — as the Control UI
+  // drops its live tool stream at the run's terminal and renders the cards of the reloaded
+  // history (ui/src/pages/chat/run-lifecycle.ts `reconcileChatRunLifecycle`,
+  // ui/src/lib/chat/tool-cards.ts `extractToolCards`). Only a card the live stream left
+  // OPEN, and only by a row's result: the stored phase stays what the live stream said
+  // wherever it spoke, so the view's rule (`phaseFromRow`) is always applied to a live
+  // fact. A row's `error` is therefore never stored — a later read may correct that row,
+  // and a stored error could no longer be told from one the stream reported; the view
+  // shows it from the row. A call no row gives a result to keeps its phase.
   const rowStatus = new Map<string, LayoutTool["status"]>();
   for (const row of message.rowLayout) for (const t of row.tools ?? []) rowStatus.set(t.toolCallId, t.status);
   for (const p of parts) {
@@ -194,8 +197,7 @@ export async function syncBubbleRowParts(
       if (payload !== undefined) next = hydrateToolPart(next, payload);
     }
     const status = rowStatus.get(p.part.toolCallId);
-    const phase = status === undefined ? next.phase : phaseFromRow(next.phase, status);
-    if (phase !== next.phase) next = { ...next, phase };
+    if (status === "result" && next.phase !== "completed" && next.phase !== "error") next = { ...next, phase: "completed" };
     if (next !== p.part && JSON.stringify(next) !== JSON.stringify(p.part)) await ctx.db.patch(p._id, { part: next });
   }
   await syncRowWidgets(ctx, message, chat, parts, () => order++, out, namedWidgets(message.rowLayout), true);
