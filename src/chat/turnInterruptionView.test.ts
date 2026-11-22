@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { m } from "@/paraglide/messages.js";
 import { toolCardPhase } from "./ToolCard";
-import { interruptedCalls, turnInterrupted, turnInterruptionText } from "./turnInterruptionView";
+import { blockInterrupted, interruptedCalls, turnInterrupted, turnInterruptionText } from "./turnInterruptionView";
 
 describe("turnInterruptionText", () => {
   it("restart, then the gateway's recovery (bench proof C2-3a): the restart, and that the agent resumed", () => {
@@ -62,5 +62,16 @@ describe("a tool call the interrupted turn left without a result", () => {
     expect(interruptedCalls({ shutdown: "restart", cutCallIds: ["c9"] }, "complete").size).toBe(0);
     expect(interruptedCalls({ recoveryRunId: "r", cutCallIds: ["c9"] }, "streaming").size).toBe(0);
     expect(interruptedCalls(undefined, "complete").size).toBe(0);
+  });
+  it("the block that holds it does not read as all done", () => {
+    const cut = new Set(["c9"]);
+    expect(blockInterrupted([{ toolCallId: "c1", phase: "completed" }, { toolCallId: "c9", phase: "start" }], cut)).toBe(true);
+    // A block of another group of the same bubble, without the cut call, keeps its check.
+    expect(blockInterrupted([{ toolCallId: "c1", phase: "completed" }, { toolCallId: "c4", phase: "start" }], cut)).toBe(false);
+    // A proven id whose card has a result or an outcome reads as the card does.
+    expect(blockInterrupted([{ toolCallId: "c9", phase: "start", result: { ok: true } }], cut)).toBe(false);
+    expect(blockInterrupted([{ toolCallId: "c9", phase: "completed" }], cut)).toBe(false);
+    expect(blockInterrupted([{ toolCallId: "c9", phase: "error" }], cut)).toBe(false);
+    expect(blockInterrupted([{ toolCallId: "c9", phase: "start" }], new Set())).toBe(false);
   });
 });

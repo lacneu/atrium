@@ -3,6 +3,7 @@ import { useMessage } from "@assistant-ui/react";
 import {
   BookOpen,
   Check,
+  CircleDot,
   Globe,
   LoaderCircle,
   Pencil,
@@ -16,7 +17,7 @@ import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
 import type { ToolActivityPart } from "./toolActivityView";
 import { activityBlock, type ActivityNode } from "./activityBlock";
-import { interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
+import { blockInterrupted, interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
 import {
   activityLabel,
   dominantFamily,
@@ -116,7 +117,16 @@ export function InlineTurnActivity(props: {
       {shown.length > 1 ? (
         <span className="oc-flowact__count">{shown.length}</span>
       ) : null}
-      <Check size={13} className="oc-actrow__status-icon" aria-hidden />
+      {blockInterrupted(parts, cut) ? (
+        // One call of the block was cut by the gateway: the header is not a clean "done".
+        // Same quiet glyph and word as the interrupted card (ToolCard).
+        <span className="inline-flex items-center" title={m.tools_status_interrupted()}>
+          <CircleDot size={13} className="oc-actrow__status-icon" aria-hidden />
+          <span className="sr-only">{m.tools_status_interrupted()}</span>
+        </span>
+      ) : (
+        <Check size={13} className="oc-actrow__status-icon" aria-hidden />
+      )}
     </>
   );
   return (

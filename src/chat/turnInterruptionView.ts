@@ -45,6 +45,23 @@ export function interruptedCalls(
   return new Set(turnInterrupted(interruption, status) ? (interruption?.cutCallIds ?? []) : []);
 }
 
+/** Does a block of calls hold one the cut interrupted: a proven call that has neither a
+ *  result nor an outcome of its own (the card's own reading, ToolCard `toolCardPhase`).
+ *  The block's collapsed header then cannot read as all done. */
+export function blockInterrupted(
+  parts: readonly { toolCallId?: string; phase?: string; result?: unknown }[],
+  cut: ReadonlySet<string>,
+): boolean {
+  return parts.some(
+    (p) =>
+      p.toolCallId !== undefined &&
+      cut.has(p.toolCallId) &&
+      p.phase !== "error" &&
+      p.phase !== "completed" &&
+      (p.result === undefined || p.result === null),
+  );
+}
+
 /** The sentence, or null when there is nothing to say. */
 export function turnInterruptionText(
   interruption: TurnInterruption | null | undefined,
