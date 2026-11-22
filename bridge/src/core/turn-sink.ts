@@ -1056,10 +1056,50 @@ export class TurnSink {
     }
   }
 
+  /** Serializes the plan clears of silent delivery runs. Never awaited by a frame; it
+   *  cannot reject. */
+  private planClearTail: Promise<void> = Promise.resolve();
+  private planClearsQueued = 0;
+  private static readonly MAX_QUEUED_PLAN_CLEARS = 16;
+
+  /**
+   * Hand a silent delivery run's cleared checklist to Convex OFF the frame path. The
+   * write is retried by the writer (`clearPlan` is idempotent there) for up to a minute,
+   * and this runs inside the terminal's ordered unit: awaited, it held every later frame
+   * of the socket — another run's content, an approval request — behind an annex write.
+   * Nothing orders it against the turn: it names its run, and the instant its frame was
+   * RECEIVED (captured here, before the next turn resets it) is what places it among the
+   * plans of the anchored bubble (convex/lib/planOrder.ts). One write at a time; past the
+   * bound a clear is dropped, which leaves a stale checklist until the next plan.
+   */
+  private queuePlanClear(runId: string, stamp: number | undefined): void {
+    const clear = this.writer.clearPlanPart?.bind(this.writer);
+    if (clear === undefined) return;
+    if (this.planClearsQueued >= TurnSink.MAX_QUEUED_PLAN_CLEARS) {
+      console.error(
+        `[sink] plan clear dropped: ${this.planClearsQueued} already queued (chat=${this.chatId})`,
+      );
+      return;
+    }
+    this.planClearsQueued++;
+    const chatId = this.chatId;
+    this.planClearTail = this.planClearTail
+      .then(() => clear(chatId, runId, stamp))
+      .catch((err: unknown) => {
+        console.error(
+          "plan clear on silent delivery failed (non-fatal):",
+          errForLog(err),
+        );
+      })
+      .finally(() => {
+        this.planClearsQueued--;
+      });
+  }
+
   private async settleTaskDeliveryEngagement(): Promise<void> {
     // A cleared checklist on a silent delivery run (see lastPlanEmptyThisTurn):
     // no bubble carried the empty plan, so hand it to the anchored parent
-    // run-keyed — FIRST, before either family's own settle returns. Best-effort.
+    // run-keyed — queued FIRST, before either family's own settle returns. Best-effort.
     {
       const silentRun = this.turnRunId;
       if (
@@ -1067,18 +1107,7 @@ export class TurnSink {
         typeof silentRun === "string" &&
         isDeliveryRunId(silentRun)
       ) {
-        try {
-          await this.writer.clearPlanPart?.(
-            this.chatId,
-            silentRun,
-            this.lastPlanStamp,
-          );
-        } catch (err) {
-          console.error(
-            "plan clear on silent delivery failed (non-fatal):",
-            errForLog(err),
-          );
-        }
+        this.queuePlanClear(silentRun, this.lastPlanStamp);
       }
     }
     const delivery = taskDeliveryRunFromRunId(this.turnRunId);

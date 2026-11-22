@@ -409,6 +409,53 @@ describe("turn-sink: async engagement lifecycle (captured flow)", () => {
     expect(writer.clearedPlanStamps).toEqual([5_000]);
   });
 
+  it("a plan clear whose write never answers holds no later frame", async () => {
+    // The writer retries `clearPlan` for about a minute (convex-writer.ts
+    // IDEMPOTENT_OPS). Awaited by the terminal's unit, that write held every later
+    // frame of the socket; it is an annex write, ordered by its stamp alone.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    class HeldClearWriter extends AsyncWriter {
+      override async clearPlanPart(chatId: string, runId: string, stamp?: number): Promise<void> {
+        await gate;
+        await super.clearPlanPart(chatId, runId, stamp);
+      }
+    }
+    const writer = new HeldClearWriter();
+    const manager = new RunManager("planchat7", SESSION_KEY, writer);
+    const NEXT_RUN = "image_generate:0b6f0d4e-1d0c-4d1f-9a43-0f8b5f6d7a11:ok";
+    const planFrame = (runId: string, steps: unknown[]) => ({
+      event: "agent",
+      payload: {
+        runId,
+        sessionKey: SESSION_KEY,
+        stream: "plan",
+        data: { phase: "update", title: "Plan updated", source: "openclaw", steps },
+      },
+    });
+    await manager.feed(planFrame(DELIVERY_RUN, []), 5_000);
+    const settled = await Promise.race([
+      manager.feed(chatFinal(DELIVERY_RUN), 6_000).then(() => "fed" as const),
+      new Promise<"held">((resolve) => setTimeout(() => resolve("held"), 200)),
+    ]);
+    expect(settled).toBe("fed");
+    // The silent run's own settle went on without the clear…
+    expect(writer.upserts.map((u) => u.status)).toEqual(["done"]);
+    // …and the next run's frames are read and written while it is still pending.
+    await manager.feed(planFrame(NEXT_RUN, [{ step: "Relire", status: "in_progress" }]), 7_000);
+    await manager.feed(chatFinal(NEXT_RUN), 8_000);
+    expect(writer.started).toBe(1);
+    expect(writer.planParts.map((p) => p.stamp)).toEqual([7_000]);
+    expect(writer.clearedPlans).toEqual([]);
+    // Once Convex answers, the clear lands with the instant its frame was received.
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(writer.clearedPlans).toEqual([DELIVERY_RUN]);
+    expect(writer.clearedPlanStamps).toEqual([5_000]);
+  });
+
   it("a plan BUFFERED before the bubble opens keeps its receive stamp", async () => {
     // A deferred turn holds its events until something visible opens the message;
     // the plan is then written later. It must carry the instant it ARRIVED, or a
