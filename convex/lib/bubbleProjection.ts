@@ -174,6 +174,8 @@ export type PlanBubble = {
   shutdownNoted?: true;
   unanswered?: true;
   recovered?: true;
+  /** It already says a hole lies inside its runs' rows (`interruption.holed`). */
+  holed?: true;
   /** A later segment of the run has a bubble: this one does not show the run's end, and
    *  says nothing of how it ended. */
   earlierSegment?: true;
@@ -199,6 +201,12 @@ export type RunFacts = {
    *  answer is in the newest page); no bubble is BORN from them. The hole stays recorded on
    *  the cursor (`gaps`), which qualifies the report. */
   gapped?: true;
+  /** ASKED ONLY of a turn the gateway announced a shutdown on (absent otherwise): a
+   *  coverage hole may hold the run's END — the transcript was not read without a hole
+   *  from the run's last known row up to a row that proves it over, or to the stored tail
+   *  (lib/bubbleProjectionStore.ts `endMayBeUnread`). What the stored rows end on is then
+   *  not how the run ended. */
+  endUnread?: true;
   status?: RunStatus;
   /** Every row of the run was loaded and it has NONE of its own (it wrote nothing). */
   empty?: true;
@@ -274,6 +282,11 @@ export type ProjectionPlan = {
      *  they now end on an answer (a row read later than the snapshot that settled it) —
      *  `false`, the bubble stops saying so. Absent: unchanged, or not known. */
     unanswered?: boolean;
+    /** DERIVED at every pass like `unanswered`: a recorded coverage hole lies inside the
+     *  span of a run the bubble shows (`RunFacts.gapped`) — `true`; or none does any more
+     *  — `false`. A call the bubble shows without a result is not known to have had none
+     *  while it is true. Absent: unchanged, or not known. */
+    holed?: boolean;
     /** The bubble states an interruption (`unanswered`, or a recovery the rows name — which
      *  the message itself may not say yet): never dropped for showing nothing else. */
     stated?: true;
@@ -743,12 +756,31 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       const stated = rowError(rows) ?? runError(facts);
       if (stated !== undefined) write.errorText = stated;
     }
-    // A TURN THE GATEWAY CUT: it announced a shutdown on the turn's socket, and every row
-    // of the bubble's runs is known — they end before an answer. A fact, set once.
-    const rowsWhole = bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true);
+    // A TURN THE GATEWAY CUT: it announced a shutdown on the turn's socket, and its rows
+    // end before an answer. Said only when the rows PROVE it — `rowsWhole`: for every run
+    // the bubble shows, (1) every stored row of it was loaded, with nothing of another
+    // scope among the bubble's rows; (2) no recorded coverage hole lies inside the run's
+    // span (`gapped`: its last assistant row may be in it); (3) no hole lies between its
+    // last known row and a row that proves it over, or the stored tail (`endUnread`: its
+    // answer may be in it). A wrong verdict is worse than none: with a hole in the way the
+    // bubble does not say it, and stops saying it if it did; when the hole is filled the
+    // rows are read again. Unknown for another reason (rows past a bound): left as it is.
+    const holed = facts.some((f) => f?.gapped === true || f?.endUnread === true);
+    const rowsWhole = !holed && bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true);
     if (allSettled && rowsWhole) {
       const now = bubble.shutdownNoted === true && bubble.earlierSegment !== true && endsUnanswered(rows);
       if (now !== (bubble.unanswered === true)) write.unanswered = now;
+    } else if (holed && bubble.unanswered === true) {
+      write.unanswered = false;
+    }
+    // A CALL WITHOUT A RESULT is shown as interrupted on a bubble that states a cut
+    // (src/chat/turnInterruptionView.ts `callsInterrupted`): true of the cut run's last
+    // call, false of an earlier one whose result sits in a hole inside the run's span. The
+    // bubble says such a hole exists — whether or not it states a cut yet: a recovery is
+    // told to it later, in a transaction that reads no row of the run.
+    if (bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true)) {
+      const inSpan = facts.some((f) => f?.gapped === true);
+      if (inSpan !== (bubble.holed === true)) write.holed = inSpan;
     }
     // A bubble that states an interruption is never removed for showing nothing else.
     const stated = bubble.recovered === true || (write.unanswered ?? bubble.unanswered === true);
@@ -779,7 +811,8 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       write.settle !== undefined ||
       write.vanish === true ||
       write.errorText !== undefined ||
-      write.unanswered !== undefined
+      write.unanswered !== undefined ||
+      write.holed !== undefined
     ) {
       plan.rewrite.push(write);
     }

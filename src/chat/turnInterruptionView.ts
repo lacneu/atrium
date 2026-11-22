@@ -17,6 +17,8 @@ export type TurnInterruption = {
   shutdown?: "restart" | "stop";
   recoveryRunId?: string;
   unanswered?: true;
+  /** A coverage hole lies inside the rows of a run the bubble shows. */
+  holed?: true;
 };
 
 /** Is the interruption something to SAY: the gateway resumed the turn by itself, or it
@@ -30,6 +32,16 @@ export function turnInterrupted(
   if (status === undefined || status === "streaming") return false;
   if (interruption.recoveryRunId !== undefined) return true;
   return interruption.shutdown !== undefined && interruption.unanswered === true;
+}
+
+/** Is a call the bubble shows WITHOUT a result one the cut interrupted? Only when every
+ *  row of the turn was read: with a hole inside its rows (`holed`), a missing result may
+ *  be a row never read — the call then keeps the state of any call of a settled turn. */
+export function callsInterrupted(
+  interruption: TurnInterruption | null | undefined,
+  status: string | undefined,
+): boolean {
+  return turnInterrupted(interruption, status) && interruption?.holed !== true;
 }
 
 /** The sentence, or null when there is nothing to say. */

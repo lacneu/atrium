@@ -830,3 +830,288 @@ describe("the recovery never reaches a bubble of another instance or another ses
     expect((await get(t, theirs))?.interruption).toEqual(said);
   });
 });
+
+describe("nothing is said of how a turn ended while a coverage hole may hold its end", () => {
+  const NEXT = "webchat-" + "9".repeat(64);
+  const own = projected.restart.filter((r) => r.seq <= 11);
+  const ACTIVE = { hasActiveRun: true, activeRunIds: [INTERRUPTED] };
+  /** A tail page that starts at `from`: another turn, far after what was read before. */
+  const farPage = (from: number): Row[] => [
+    { entryId: `far-user-${from}`, seq: from, role: "user", runId: NEXT, sendId: NEXT, hidden: false, visible: true },
+    { entryId: `far-answer-${from}`, seq: from + 1, role: "assistant", runId: NEXT, stopReason: "stop", hidden: false, visible: true, text: "later" },
+  ];
+  const gapsOf = (t: T, chatId: Id<"chats">) =>
+    t.run(async (ctx) =>
+      ((await ctx.db.query("transcriptCursors").collect()).find((c) => c.chatId === chatId)?.gaps ?? []).map((g) => [g.fromSeq, g.toSeq]),
+    );
+  /** The cut turn's calls as the bubble lays them out: name and status. */
+  const calls = (m: Doc<"messages"> | null) => (m?.rowLayout ?? []).flatMap((r) => r.tools ?? []).map((x) => [x.name, x.status]);
+
+  /** The reviewed case: the run's last stored row is a tool call (seq 11); the socket
+   *  closes on an announced restart; the reconnection is answered by a page that starts
+   *  at 250 with the session idle — 12–249 was never read. */
+  async function cutThenHole(t: T) {
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, own, ACTIVE);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, farPage(250), { kind: "page", ...IDLE });
+    await settle(t);
+    expect(await gapsOf(t, ids.chatId)).toEqual([[12, 249]]);
+    return { ids, cut };
+  }
+
+  test("a hole right after the run's last stored row: the turn is settled, and NOT said to have stopped unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const { cut } = await cutThenHole(t);
+    const m = (await get(t, cut))!;
+    expect(m.status).toBe("complete");
+    // The announced shutdown is a fact; that no answer was written is not known.
+    expect(m.interruption).toEqual({ shutdown: "restart" });
+    // The bubble keeps what its rows show: the call, as the transcript read so far has it.
+    expect(calls(m).at(-1)).toEqual(["wait", "call"]);
+  });
+
+  test("…the hole then gives the run's ANSWER: still nothing said, and the answer is shown", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, cut } = await cutThenHole(t);
+    await apply(t, ids.chatId, [{ entryId: "late-answer", seq: 12, role: "assistant", runId: INTERRUPTED, stopReason: "stop", hidden: false, visible: true, text: "done" }], IDLE);
+    await settle(t);
+    const m = (await get(t, cut))!;
+    expect(m.text).toBe("done");
+    // The run's rows now reach into the hole the cursor still lists (the list never
+    // shrinks): the bubble says a hole lies inside them — and nothing about how it ended.
+    expect(m.interruption).toEqual({ shutdown: "restart", holed: true });
+  });
+
+  test("…the hole then gives the gateway's RECOVERY entry right after the run's last row: the end is proven, the recovery is said", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, cut } = await cutThenHole(t);
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 11), IDLE);
+    await settle(t);
+    // The entry is told to the bubble; the cut run itself had no pass (no row of its own).
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY });
+    // Its next pass reads the entry right after its last row — no hole in between: the
+    // recorded hole (still listed, 12–249) no longer stands between the run and its end.
+    await apply(t, ids.chatId, own, IDLE);
+    await settle(t);
+    expect(await gapsOf(t, ids.chatId)).toEqual([[12, 249]]);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, unanswered: true });
+  });
+
+  test("…the recovery entry ALONE right after the run's last row, the hole right behind it: the entry proves the end", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, cut } = await cutThenHole(t);
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq === 12), { hasActiveRun: true, activeRunIds: [RECOVERY] });
+    await apply(t, ids.chatId, own, { hasActiveRun: true, activeRunIds: [RECOVERY] });
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, unanswered: true });
+  });
+
+  test("a row of ANOTHER instance stored after the run's last row proves nothing about it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, own, ACTIVE);
+    // Another bridge's row of another run, at the seq right after (stored as it would be).
+    await t.run(async (ctx) => {
+      const tail = (await ctx.db.query("transcriptRows").collect()).find((r) => r.seq === 11)!;
+      const { _id, _creationTime, ...doc } = tail;
+      await ctx.db.insert("transcriptRows", { ...doc, entryId: "theirs", seq: 12, runId: NEXT, instanceName: "other", messageId: undefined, textSig: undefined });
+    });
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, farPage(250), { kind: "page", ...IDLE });
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+  });
+
+  test("a bubble that ALREADY said it stopped unanswered stops saying it when a hole opens after its last row", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    // The run is said over by its terminal, with the rows read so far.
+    await apply(t, ids.chatId, own, { ...ACTIVE, terminals: [{ runId: INTERRUPTED, status: "aborted", at: Date.now() }] });
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", unanswered: true });
+    // The next read is a page far after: what the run wrote last may be in the hole.
+    await apply(t, ids.chatId, [...farPage(250)], { kind: "page", ...IDLE });
+    await apply(t, ids.chatId, own, IDLE);
+    await settle(t);
+    expect(await gapsOf(t, ids.chatId)).toEqual([[12, 249]]);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+  });
+
+  test("a run with NO stored row and a hole in its session: its empty bubble is not kept to say it stopped unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    await apply(t, ids.chatId, [{ entryId: "old", seq: 2, role: "assistant", runId: "webchat-earlier", stopReason: "stop", hidden: false, visible: true, text: "earlier" }], IDLE);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "stop");
+    await apply(t, ids.chatId, farPage(250), { kind: "page", ...IDLE, terminals: [{ runId: INTERRUPTED, status: "aborted", at: Date.now() }] });
+    await settle(t);
+    expect(await gapsOf(t, ids.chatId)).toEqual([[3, 249]]);
+    const m = await get(t, cut);
+    expect(m?.interruption?.unanswered).toBeUndefined();
+  });
+
+  test("a hole BEFORE the run's rows: its end is known, and it is said to have stopped unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    await apply(t, ids.chatId, [{ entryId: "old", seq: 2, role: "assistant", runId: "webchat-earlier", stopReason: "stop", hidden: false, visible: true, text: "earlier" }], IDLE);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    // The run's rows, 300 further: the page that brings them leaves 3–302 unread.
+    const shifted = own.map((r) => ({ ...r, seq: r.seq + 300 }));
+    await apply(t, ids.chatId, shifted, { kind: "page", ...ACTIVE });
+    expect(await gapsOf(t, ids.chatId)).toEqual([[3, 302]]);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, [], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", unanswered: true });
+  });
+
+  test("a hole AFTER the next run's first row: the cut run's end was read, and it is said to have stopped unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, own, ACTIVE);
+    await socketClosed(t, ids.chatId, "restart");
+    // The next turn's input and its first row follow the cut run's last row…
+    await apply(t, ids.chatId, farPage(12), { hasActiveRun: true, activeRunIds: [NEXT] });
+    // …then a page far after: the hole (14–399) is past the cut run's proven end.
+    const LATER = "webchat-" + "8".repeat(64);
+    await apply(t, ids.chatId, [{ entryId: "later", seq: 400, role: "assistant", runId: LATER, stopReason: "stop", hidden: false, visible: true, text: "much later" }], { kind: "page", ...IDLE });
+    await settle(t);
+    expect(await gapsOf(t, ids.chatId)).toEqual([[14, 399]]);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", unanswered: true });
+  });
+
+  test("an INPUT alone between the run's last row and the hole proves nothing: a queued input is stored while its run has not started", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, [...own, farPage(12)[0]!], ACTIVE);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, farPage(250), { kind: "page", ...IDLE });
+    await settle(t);
+    expect(await gapsOf(t, ids.chatId)).toEqual([[13, 249]]);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+  });
+
+  test("more holes than the cursor lists: one it dropped may be the one after the run's last row, and nothing is said", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, cut } = await cutThenHole(t);
+    // Twenty more tail pages, each leaving a hole: the list keeps the newest twenty.
+    for (let i = 1; i <= 20; i++) await apply(t, ids.chatId, farPage(250 + 100 * i), { kind: "page", ...IDLE });
+    const listed = await gapsOf(t, ids.chatId);
+    expect(listed).toHaveLength(20);
+    expect(listed[0]![0]).toBeGreaterThan(12);
+    // The cut run is read again: the hole after its last row is no longer listed.
+    await apply(t, ids.chatId, own, IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+  });
+
+  test("a hole right BEFORE the recovery entry: the entry names no run, and nothing is said", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    // The run's rows up to a tool result (seq 10): the tail of a cut turn, were it the
+    // row right before the entry. Seq 11 is never read: the page starts at the entry.
+    await apply(t, ids.chatId, own.filter((r) => r.seq <= 10), ACTIVE);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq >= 12), { kind: "page", ...IDLE });
+    await settle(t);
+    expect(await gapsOf(t, ids.chatId)).toEqual([[11, 11]]);
+    const entry = await t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).find((r) => r.seq === 12));
+    expect(entry?.recoversRunId).toBeUndefined();
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+    expect((await assistants(t, ids.chatId)).every((m) => m.interruption?.recoveryRunId === undefined)).toBe(true);
+  });
+});
+
+describe("a call shown without a result on a bubble that states a cut (the card reads `interruption`, src/chat/turnInterruptionView.ts `callsInterrupted`)", () => {
+  const own = projected.restart.filter((r) => r.seq <= 11);
+  const ACTIVE = { hasActiveRun: true, activeRunIds: [INTERRUPTED] };
+  const calls = (m: Doc<"messages"> | null) => (m?.rowLayout ?? []).flatMap((r) => r.tools ?? []).map((x) => [x.name, x.status]);
+  const toolParts = (t: T, id: Id<"messages">) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", id)).collect())
+        .flatMap((p) => (p.part.kind === "tool" ? [[p.part.name, p.part.phase]] : [])),
+    );
+
+  test("a hole INSIDE the cut run's rows, then its recovery: the recovery is said, and the bubble says its rows have a hole", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    // The first call (seq 4) is read; its result (seq 5) is in the hole a later page
+    // leaves (5–8); the run's last rows (9–11) are read, then the socket closes.
+    await apply(t, ids.chatId, own.filter((r) => r.seq <= 4), ACTIVE);
+    await apply(t, ids.chatId, own.filter((r) => r.seq >= 9), { kind: "page", ...ACTIVE });
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 11), IDLE);
+    await settle(t);
+    const m = (await get(t, cut))!;
+    expect(m.status).toBe("complete");
+    // No `unanswered` either: the run's last assistant row could be in the hole.
+    expect(m.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, holed: true });
+    // The first call has no result among the rows read — and none is known to be missing.
+    expect(calls(m)[0]![1]).toBe("call");
+  });
+
+  test("no hole: the bubble does not say so, and the cut run's last call is the one left without a result", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, projected.restart, IDLE);
+    await settle(t);
+    const m = (await get(t, cut))!;
+    expect(m.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, unanswered: true });
+    expect(calls(m).filter((c) => c[1] === "call")).toEqual([["wait", "call"]]);
+    expect((await toolParts(t, cut)).filter((p) => p[1] === "started")).toEqual([["wait", "started"]]);
+  });
+
+  test("a call seen only LIVE that the durable transcript does not hold: retracted, it leaves no card on the cut bubble", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, own, ACTIVE);
+    await apply(
+      t,
+      ids.chatId,
+      [{ entryId: "ghost-call", seq: 12, role: "assistant", runId: INTERRUPTED, stopReason: "toolUse", hidden: false, visible: false, toolCallIds: ["ghost"], blocks: [{ type: "tool", toolCallId: "ghost", name: "ghost", status: "call" }] }],
+      { kind: "live", deltaCursor: undefined },
+    );
+    await socketClosed(t, ids.chatId, "restart");
+    // The durable read holds the recovery entry at that place: the live call is retracted.
+    await apply(t, ids.chatId, projected.restart, { kind: "page", ...IDLE });
+    await settle(t);
+    const retracted = await t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).find((r) => r.entryId === "ghost-call"));
+    expect(retracted?.retracted).toBe(true);
+    const m = (await get(t, cut))!;
+    expect(m.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, unanswered: true });
+    expect(calls(m).map((c) => c[0])).not.toContain("ghost");
+    expect((await toolParts(t, cut)).map((p) => p[0])).not.toContain("ghost");
+  });
+
+  test("an EARLIER steer segment's bubble states no cut: a call it shows without its result is not read as interrupted", async () => {
+    const t = convexTest(schema, modules);
+    const STEER = "webchat-" + "c".repeat(64);
+    const ids = await seed(t, INTERRUPTED);
+    const first = await liveBubble(t, ids, INTERRUPTED);
+    // The steered input takes the place of the first call's RESULT (seq 5): the first
+    // segment ends on a call whose result is no row of it.
+    const steered = { entryId: "steer-5", seq: 5, role: "user", runId: STEER, sendId: STEER, steerTargetRunId: INTERRUPTED, hidden: false, visible: true };
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, [...own.filter((r) => r.seq !== 5), steered, ...projected.restart.filter((r) => r.seq > 11)], IDLE);
+    await settle(t);
+    const m = (await get(t, first))!;
+    expect(calls(m).filter((c) => c[1] === "call")).toHaveLength(1);
+    // Neither `unanswered` nor the recovery: both are said by the run's LAST bubble.
+    expect(m.interruption?.unanswered).toBeUndefined();
+    expect(m.interruption?.recoveryRunId).toBeUndefined();
+    const last = (await assistants(t, ids.chatId)).find((b) => b.runId === INTERRUPTED && b.runSegment === 1)!;
+    expect(last.interruption?.recoveryRunId).toBe(RECOVERY);
+  });
+});

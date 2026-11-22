@@ -260,7 +260,7 @@ export interface ConvexMessageView {
   /** ASSISTANT rows, projection `on`: what is known of a turn the gateway cut — the
    *  shutdown it announced on the turn's socket, its own recovery run, a transcript that
    *  stops before an answer (src/chat/turnInterruptionView.ts decides what is said). */
-  interruption?: { shutdown?: "restart" | "stop"; recoveryRunId?: string; unanswered?: true };
+  interruption?: { shutdown?: "restart" | "stop"; recoveryRunId?: string; unanswered?: true; holed?: true };
   /** ASSISTANT rows, projection `on` (final design step 3): the transcript rows the
    *  bubble shows, in display order — each row's span of `text`, its files, its tool
    *  cards. Absent on a bubble the rows never composed (text + parts rendering). */

@@ -19,6 +19,7 @@ import { isRecoveryEntry, noteInterruption, noteRecoveredRun, recoveryOf, resolv
 import { syncBubbleRowParts } from "./rowParts";
 import { maskCredentialId } from "./chatRenderState";
 import {
+  countedRows,
   layoutKey,
   planProjection,
   segmentKey,
@@ -55,6 +56,8 @@ export type ProjectionScope = {
   instanceName: string;
   floorSeq: number;
   gaps: readonly Gap[];
+  /** Holes the cursor no longer lists (it keeps the newest): each lies below every kept one. */
+  gapsDropped: number;
 };
 
 export function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
@@ -302,23 +305,91 @@ function overlapsGap(gaps: readonly Gap[], first: number, last: number): boolean
   return gaps.some((g) => g.fromSeq <= last && g.toSeq >= first);
 }
 
+/** May a seq of [first, last] be one NO read returned — inside a hole the cursor lists, or
+ *  below every listed one when older holes were dropped from the list (unknown, so: yes)? */
+function mayBeUnread(scope: ProjectionScope, first: number, last: number): boolean {
+  if (overlapsGap(scope.gaps, first, last)) return true;
+  return scope.gapsDropped > 0 && first < Math.min(...scope.gaps.map((g) => g.fromSeq));
+}
+
+/** Rows read past a run's last known row to find the one that proves it over. */
+const END_PROOF_ROWS = 8;
+
+/**
+ * Does a row stored AFTER a run's last one prove that run wrote nothing more? A row
+ * another run PRODUCED does (a session's turns are written one after the other), and so
+ * does the gateway's recovery entry (it is written for a turn that is no longer running —
+ * lib/restartRecovery.ts). An input row does not: a steered input lands in the run while
+ * it works, and a queued or held one is stored under its own send before any run of that
+ * id exists (`resumedRunFromRow`). Nor does a row that names no run of its own.
+ */
+function provesRunOver(row: Doc<"transcriptRows">, runId: string): boolean {
+  if (isRecoveryEntry(row)) return row.runId !== runId;
+  if (row.role.toLowerCase() === "user") return false;
+  return row.runId !== undefined && row.runId !== runId && row.presentationOwner !== true;
+}
+
+/**
+ * MAY A HOLE HOLD THE RUN'S END? True unless the transcript was read WITHOUT a hole from
+ * the run's last known row up to a row that proves the run over (`provesRunOver`) or, when
+ * no such row is stored, up to the stored tail. A hole is what the cursor recorded
+ * (`gaps`): a seq with no row inside one. A hole a later read filled stops counting — the
+ * rows are read, the list is not trusted to shrink (it never does).
+ *
+ * Free when no listed hole lies above the run's last row (every session that never had a
+ * `reset`, and every run born after the last one). Otherwise ONE index range of at most
+ * `END_PROOF_ROWS` rows (no text), charged to the shared budget; a proof not found within
+ * them is no proof. A run with no row at all can have its rows in any hole.
+ */
+async function endMayBeUnread(
+  ctx: MutationCtx,
+  scope: ProjectionScope,
+  run: Doc<"transcriptRuns">,
+  budget: Budget,
+): Promise<boolean> {
+  const last = run.lastSeq;
+  if (last === undefined) return scope.gaps.length > 0 || scope.gapsDropped > 0;
+  if (!mayBeUnread(scope, last + 1, Number.MAX_SAFE_INTEGER)) return false;
+  const after = await readBounded(
+    ctx.db
+      .query("transcriptRows")
+      .withIndex("by_chat_session_seq", (q) =>
+        q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", scope.sessionId).gt("seq", last),
+      ),
+    END_PROOF_ROWS,
+    budget,
+  );
+  let read = last;
+  for (const row of countedRows(after.docs)) {
+    if (row.instanceName !== scope.instanceName) continue;
+    if (row.seq > read + 1 && mayBeUnread(scope, read + 1, row.seq - 1)) return true;
+    if (provesRunOver(row, run.runId)) return false;
+    read = row.seq;
+  }
+  return !after.complete || mayBeUnread(scope, read + 1, Number.MAX_SAFE_INTEGER);
+}
+
 async function runFacts(
   ctx: MutationCtx,
   scope: ProjectionScope,
   runId: string,
   complete: boolean,
   budget: Budget,
+  /** A bubble of this pass carries an announced shutdown: how its runs ENDED is asked. */
+  askEnd: boolean,
 ): Promise<RunFacts | undefined> {
   const run = await runOf(ctx, scope, runId, budget);
   if (run === null) return undefined;
   const covered = complete && run.firstSeq !== undefined && run.lastSeq !== undefined;
   const belowFloor = covered && run.firstSeq! <= scope.floorSeq;
   const gapped = covered && overlapsGap(scope.gaps, run.firstSeq!, run.lastSeq!);
+  const endUnread = askEnd && complete && (await endMayBeUnread(ctx, scope, run, budget));
   return {
     settled: run.settledAt !== undefined,
     covered,
     ...(belowFloor ? { belowFloor: true as const } : {}),
     ...(gapped ? { gapped: true as const } : {}),
+    ...(endUnread ? { endUnread: true as const } : {}),
     status: run.status as RunStatus,
     ...(complete && run.firstSeq === undefined ? { empty: true as const } : {}),
     ...(run.errorText !== undefined ? { errorText: run.errorText } : {}),
@@ -549,6 +620,9 @@ async function projectRun(
     progress.segments++;
   }
   const facts = new Map<string, RunFacts>();
+  // Only a turn the gateway announced a shutdown on is asked how it ended: no other pass
+  // reads a row for it.
+  const askEnd = [...bubbles.values()].some((b) => b.shutdownNoted === true);
   for (const id of runsToKnow) {
     if (id === "\u0000unbounded") continue;
     const f = await runFacts(
@@ -557,6 +631,7 @@ async function projectRun(
       id,
       id === runId ? complete && textsComplete && cutsComplete : await mergedRunKnown(ctx, scope, id, budget),
       budget,
+      askEnd,
     );
     if (f !== undefined) facts.set(id, f);
   }
@@ -743,6 +818,7 @@ async function loadBubble(
     ...(message.interruption?.shutdown !== undefined ? { shutdownNoted: true as const } : {}),
     ...(message.interruption?.unanswered === true ? { unanswered: true as const } : {}),
     ...(message.interruption?.recoveryRunId !== undefined ? { recovered: true as const } : {}),
+    ...(message.interruption?.holed === true ? { holed: true as const } : {}),
   });
 }
 
@@ -865,7 +941,12 @@ async function executePlan(
     }
     // The run stopped unanswered after an announced shutdown: said on the bubble, BEFORE
     // it is settled — a bubble that states it is not dropped for being empty.
-    if (w.unanswered !== undefined) await noteInterruption(ctx, message, { unanswered: w.unanswered });
+    if (w.unanswered !== undefined || w.holed !== undefined) {
+      await noteInterruption(ctx, message, {
+        ...(w.unanswered !== undefined ? { unanswered: w.unanswered } : {}),
+        ...(w.holed !== undefined ? { holed: w.holed } : {}),
+      });
+    }
     const stated = w.stated === true || (w.unanswered ?? message.interruption?.unanswered === true) || message.interruption?.recoveryRunId !== undefined;
     // An error bubble whose terminal carried no text: the error the transcript states.
     if (w.errorText !== undefined && message.status === "error" && message.error === undefined) {

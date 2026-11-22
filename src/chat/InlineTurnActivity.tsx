@@ -16,7 +16,7 @@ import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
 import type { ToolActivityPart } from "./toolActivityView";
 import { activityBlock, type ActivityNode } from "./activityBlock";
-import { turnInterrupted, type TurnInterruption } from "./turnInterruptionView";
+import { callsInterrupted, type TurnInterruption } from "./turnInterruptionView";
 import {
   activityLabel,
   dominantFamily,
@@ -80,7 +80,7 @@ export function InlineTurnActivity(props: {
   // "completed" (turnInterruptionView.ts).
   const cut = useMessage((msg) => {
     const meta = msg.metadata?.custom as FlowMeta | undefined;
-    return turnInterrupted(meta?.interruption, meta?.status);
+    return callsInterrupted(meta?.interruption, meta?.status);
   });
   const [expanded, setExpanded] = useState(false);
   // Tools OFF = the CLEAN view (user decision, revising the earlier

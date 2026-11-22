@@ -53,10 +53,10 @@ export function isRecoveryEntry(row: { role: string; provenanceKind?: string; pr
 export type Interruption = NonNullable<Doc<"messages">["interruption"]>;
 
 /** What changes in what a bubble says of a cut turn. `shutdown: null`,
- *  `recoveryRunId: null` and `unanswered: false` REMOVE the fact: `unanswered` and
- *  `recoveryRunId` are derived from the rows at every projection pass, and an announced
- *  shutdown stops being a fact about a turn that resumed live. */
-export type InterruptionChange = { shutdown?: "restart" | "stop" | null; recoveryRunId?: string | null; unanswered?: boolean };
+ *  `recoveryRunId: null`, `unanswered: false` and `holed: false` REMOVE the fact:
+ *  `unanswered`, `holed` and `recoveryRunId` are derived from the rows at every projection
+ *  pass, and an announced shutdown stops being a fact about a turn that resumed live. */
+export type InterruptionChange = { shutdown?: "restart" | "stop" | null; recoveryRunId?: string | null; unanswered?: boolean; holed?: boolean };
 
 /** Apply a change to a bubble's interruption; returns whether it changed. */
 export async function noteInterruption(
@@ -68,11 +68,13 @@ export async function noteInterruption(
   const shutdown = change.shutdown === undefined ? prev.shutdown : (change.shutdown ?? undefined);
   const recoveryRunId = change.recoveryRunId === undefined ? prev.recoveryRunId : (change.recoveryRunId ?? undefined);
   const unanswered = change.unanswered === undefined ? prev.unanswered : change.unanswered ? (true as const) : undefined;
-  if (prev.shutdown === shutdown && prev.recoveryRunId === recoveryRunId && prev.unanswered === unanswered) return false;
+  const holed = change.holed === undefined ? prev.holed : change.holed ? (true as const) : undefined;
+  if (prev.shutdown === shutdown && prev.recoveryRunId === recoveryRunId && prev.unanswered === unanswered && prev.holed === holed) return false;
   const next: Interruption = {
     ...(shutdown !== undefined ? { shutdown } : {}),
     ...(recoveryRunId !== undefined ? { recoveryRunId } : {}),
     ...(unanswered === true ? { unanswered } : {}),
+    ...(holed === true ? { holed } : {}),
   };
   await ctx.db.patch(message._id, { interruption: Object.keys(next).length > 0 ? next : undefined });
   return true;

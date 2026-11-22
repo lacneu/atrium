@@ -2363,11 +2363,15 @@ export default defineSchema({
     // — DERIVED at every projection pass, removed when a later row answers. `shutdown`
     // is removed when the turn resumes live. The reader is told of the
     // interruption when `recoveryRunId` is set, or `shutdown` with `unanswered`.
+    // `holed`: a recorded coverage hole lies inside the span of a run the bubble shows —
+    // DERIVED at every projection pass too; a call it shows without a result is then not
+    // known to have had none, and is never shown as interrupted.
     interruption: v.optional(
       v.object({
         shutdown: v.optional(v.union(v.literal("restart"), v.literal("stop"))),
         recoveryRunId: v.optional(v.string()),
         unanswered: v.optional(v.literal(true)),
+        holed: v.optional(v.literal(true)),
       }),
     ),
     // ASSISTANT rows of a projected conversation (phase 5, design §14): the DISPLAY GROUP

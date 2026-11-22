@@ -2092,7 +2092,7 @@ describe("pass 6 D (unit) — the projection honours the budget the transaction 
       spent.bytes = PROJECTION_BYTE_BUDGET + 1;
       return projectBubbles(
         ctx,
-        { chatId: ids.chatId, sessionKey: SK, sessionId: "s-1", instanceName: "prod", floorSeq: 0, gaps: [] },
+        { chatId: ids.chatId, sessionKey: SK, sessionId: "s-1", instanceName: "prod", floorSeq: 0, gaps: [], gapsDropped: 0 },
         ["sendA"],
         undefined,
         spent,

@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { m } from "@/paraglide/messages.js";
 import { toolCardPhase } from "./ToolCard";
-import { turnInterrupted, turnInterruptionText } from "./turnInterruptionView";
+import { callsInterrupted, turnInterrupted, turnInterruptionText } from "./turnInterruptionView";
 
 describe("turnInterruptionText", () => {
   it("restart, then the gateway's recovery (bench proof C2-3a): the restart, and that the agent resumed", () => {
@@ -56,5 +56,21 @@ describe("a tool call the interrupted turn left without a result", () => {
     expect(toolCardPhase("completed", true, true, true)).toBe("completed");
     expect(toolCardPhase("started", true, true, true)).toBe("completed");
     expect(toolCardPhase("error", false, true, true)).toBe("error");
+  });
+  it("is interrupted only on a bubble that states the cut, once settled", () => {
+    expect(callsInterrupted({ shutdown: "restart", unanswered: true }, "complete")).toBe(true);
+    expect(callsInterrupted({ recoveryRunId: "r" }, "complete")).toBe(true);
+    // An announced shutdown alone (an earlier steer segment's bubble, or a turn whose end
+    // is not known) states no cut: its calls read as any settled turn's.
+    expect(callsInterrupted({ shutdown: "restart" }, "complete")).toBe(false);
+    expect(callsInterrupted(undefined, "complete")).toBe(false);
+    expect(callsInterrupted({ recoveryRunId: "r" }, "streaming")).toBe(false);
+  });
+  it("is NOT called interrupted when a hole lies inside the turn's rows: its result may be a row never read", () => {
+    expect(callsInterrupted({ shutdown: "restart", recoveryRunId: "r", holed: true }, "complete")).toBe(false);
+    expect(callsInterrupted({ shutdown: "stop", unanswered: true, holed: true }, "aborted")).toBe(false);
+    // The notice itself stands: the recovery is a fact of its own.
+    expect(turnInterrupted({ recoveryRunId: "r", holed: true }, "complete")).toBe(true);
+    expect(turnInterrupted({ holed: true }, "complete")).toBe(false);
   });
 });
