@@ -15,7 +15,7 @@ import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { isDeliveryRun } from "./deliveryRuns";
 import { bubbleInScope, type BubbleScope } from "./projectedRuns";
 import { isWatchdogOrphan } from "./streamOrphan";
-import { isRecoveryEntry, noteRecoveredRun, recoveryFactsOf, resolveRecovery, sameCalls } from "./restartRecovery";
+import { isRecoveryEntry, noteRecoveredRun, recoveryFactsOf, resolveEntryAfterRun, resolveRecovery, sameCalls } from "./restartRecovery";
 import { syncBubbleRowParts } from "./rowParts";
 import { maskCredentialId } from "./chatRenderState";
 import {
@@ -566,7 +566,11 @@ async function projectRun(
   // recovery is read at EVERY pass — one index range, empty for a run no entry names. A recovered run's last bubble is never dropped for being empty.
   const entry = rows.find((d) => isRecoveryEntry(d) && d.recoversRunId === undefined);
   if (entry !== undefined) await resolveRecovery(ctx, scope, entry, budget);
-  const recoveredBy = await recoveryFactsOf(ctx, scope, runId, budget);
+  let recoveredBy = await recoveryFactsOf(ctx, scope, runId, budget);
+  // An entry stored before this run's last row was: it names the run from now on.
+  if (recoveredBy === null && complete && (await resolveEntryAfterRun(ctx, scope, runId, rows, budget))) {
+    recoveredBy = await recoveryFactsOf(ctx, scope, runId, budget);
+  }
   // The run's END is on ONE bubble — its last segment's, else the nearest earlier one
   // that has a bubble: the recovery is said there, and on no earlier segment's bubble.
   // (A later segment whose rows a reader sees gets its bubble from this very pass.)

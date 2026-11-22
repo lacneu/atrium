@@ -165,19 +165,41 @@ const charge = (meter: RecoveryMeter, docs: readonly unknown[]): void => {
   for (const d of docs) meter.bytes += JSON.stringify(d).length;
 };
 
-/** The run the rows say `entry` resumes, read NOW — never what was remembered. Rows only. */
-async function derivedResumedRun(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">, meter: RecoveryMeter): Promise<string | null> {
-  if (!isRecoveryEntry(entry) || entry.runId === undefined || entry.retracted === true || entry.instanceName !== scope.instanceName) return null;
+/** Stored rows read before a recovery entry: enough to pass the stream segments of the
+ *  row right before it, and to find the calls the cut left open. */
+const ROWS_BEFORE_ENTRY = 16;
+
+/**
+ * THE TRANSCRIPT'S ROWS BEFORE A RECOVERY ENTRY, newest first — the ONE reading of "the
+ * row at seq N" for this feature. Two kinds of stored row are not transcript rows:
+ *  - a row a covering durable read retracted (`countedRows`);
+ *  - a STREAM SEGMENT: `chat.history` splits the commentary text of an assistant row into
+ *    a message of its own, with the row's id and the row's `seq` (bridge
+ *    transcript-rows.ts `streamSegmentEntryId`). It is a display copy of part of its row:
+ *    it carries the text only — no stop reason, no tool call (captured on 2026.9.36: the
+ *    row is `[thinking, toolCall]`, `stopReason: "toolUse"`; its segment is `[text]`, no
+ *    stop reason). How the turn was cut is read from the row, never from its segment —
+ *    and a segment whose row is not stored yet stands for nothing: the seq is then one
+ *    that no row holds, and nothing is concluded across it.
+ * One index range of at most `ROWS_BEFORE_ENTRY` rows (no text), charged to `meter`.
+ */
+async function rowsBeforeEntry(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">, meter: RecoveryMeter): Promise<Doc<"transcriptRows">[]> {
   const before = await ctx.db
     .query("transcriptRows")
     .withIndex("by_chat_session_seq", (q) =>
       q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", entry.sessionId).lt("seq", entry.seq),
     )
     .order("desc")
-    .take(4);
+    .take(ROWS_BEFORE_ENTRY);
   charge(meter, before);
+  return countedRows(before).filter((row) => row.streamSegment !== true);
+}
+
+/** The run the rows say `entry` resumes, read NOW — never what was remembered. Rows only. */
+async function derivedResumedRun(ctx: MutationCtx, scope: Scope, entry: Doc<"transcriptRows">, meter: RecoveryMeter): Promise<string | null> {
+  if (!isRecoveryEntry(entry) || entry.runId === undefined || entry.retracted === true || entry.instanceName !== scope.instanceName) return null;
   // The row RIGHT before the entry, and only it: a hole would name an older run.
-  const prev = countedRows(before)[0];
+  const prev = (await rowsBeforeEntry(ctx, scope, entry, meter))[0];
   if (prev === undefined || prev.seq !== entry.seq - 1 || prev.instanceName !== scope.instanceName) return null;
   const named = resumedRunFromRow(prev);
   if (named === null || named.runId === entry.runId) return null;
@@ -246,8 +268,6 @@ export async function resolveRecovery(
   return resumed;
 }
 
-/** Rows read right before a recovery entry to find the calls the cut left open. */
-const CUT_WALK_ROWS = 16;
 /** Call ids a bubble keeps (a turn's last assistant row rarely issues more than a few). */
 const MAX_CUT_CALLS = 16;
 
@@ -261,7 +281,7 @@ const MAX_CUT_CALLS = 16;
  * proves nothing and marks nothing: a missing seq (a row never read, or retracted), a row
  * of another run or identity (an input, a mirror of a `message` send, a row that names no
  * run), an assistant row that did not stop on a call, or no assistant row within
- * `CUT_WALK_ROWS` rows. No coverage hole is reasoned about: a hole is a missing seq.
+ * `ROWS_BEFORE_ENTRY` stored rows (`rowsBeforeEntry`: the same rows the resolution reads). No coverage hole is reasoned about: a hole is a missing seq.
  * One index range, charged to the caller's meter — read only for a run an entry names.
  */
 async function cutCallsBefore(
@@ -271,24 +291,15 @@ async function cutCallsBefore(
   runId: string,
   meter: RecoveryMeter,
 ): Promise<string[]> {
-  const before = await ctx.db
-    .query("transcriptRows")
-    .withIndex("by_chat_session_seq", (q) =>
-      q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", entry.sessionId).lt("seq", entry.seq),
-    )
-    .order("desc")
-    .take(CUT_WALK_ROWS);
-  charge(meter, before);
   const answered = new Set<string>();
   let at = entry.seq;
-  for (const row of countedRows(before)) {
-    // The same seq again is a stream segment of the row just met; one less is the next row.
-    if (row.seq !== at && row.seq !== at - 1) return [];
+  for (const row of await rowsBeforeEntry(ctx, scope, entry, meter)) {
+    if (row.seq !== at - 1) return [];
     at = row.seq;
     if (row.instanceName !== scope.instanceName || row.runId !== runId || row.presentationOwner === true) return [];
     const role = row.role.toLowerCase();
     if (role === "toolresult") for (const id of row.toolCallIds ?? []) answered.add(id);
-    if (role !== "assistant" || row.streamSegment === true) continue;
+    if (role !== "assistant") continue;
     if (row.stopReason !== "toolUse") return [];
     return (row.toolCallIds ?? []).filter((id) => !answered.has(id)).slice(0, MAX_CUT_CALLS);
   }
@@ -321,6 +332,40 @@ export async function recoveryFactsOf(ctx: MutationCtx, scope: Scope, runId: str
 /** The recovery run that resumed `runId` (null: none, or more than one). */
 export async function recoveryOf(ctx: MutationCtx, scope: Scope, runId: string, meter: RecoveryMeter): Promise<string | null> {
   return (await recoveryFactsOf(ctx, scope, runId, meter))?.recoveryRunId ?? null;
+}
+
+/**
+ * AN ENTRY STORED BEFORE THE ROW IT FOLLOWS names no run (`recoversRunId` absent), and no
+ * index finds it from the run it will name. It is read again when its own run is
+ * projected; when the row before it arrives later still — after the recovery run's last
+ * pass — the pass of the run that row belongs to finds it here: the stored row right
+ * after that run's last transcript row. Asked ONLY of a run whose last row is the tail of
+ * a turn that was cut (`resumedRunFromRow`): a run that ended on an answer is named by no
+ * entry, and costs nothing. One index range of rows, charged. Returns whether an entry
+ * now names `runId`.
+ */
+export async function resolveEntryAfterRun(
+  ctx: MutationCtx,
+  scope: Scope & { sessionId: string },
+  runId: string,
+  rows: readonly Doc<"transcriptRows">[],
+  meter: RecoveryMeter,
+): Promise<boolean> {
+  let tail: Doc<"transcriptRows"> | undefined;
+  for (const row of countedRows(rows)) {
+    if (row.streamSegment === true || row.sessionId !== scope.sessionId) continue;
+    if (tail === undefined || row.seq > tail.seq) tail = row;
+  }
+  if (tail === undefined || resumedRunFromRow(tail) === null) return false;
+  const next = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_session_seq", (q) =>
+      q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", scope.sessionId).eq("seq", tail.seq + 1),
+    )
+    .take(4);
+  charge(meter, next);
+  const entry = next.find((row) => isRecoveryEntry(row) && row.recoversRunId === undefined && row.retracted !== true);
+  return entry !== undefined && (await resolveRecovery(ctx, scope, entry, meter)) === runId;
 }
 
 /** Ask for the bubble of `runId` to say that `recoveryRunId` resumed it. */

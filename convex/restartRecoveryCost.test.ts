@@ -13,7 +13,7 @@ import { TransactionMetricsTracker } from "convex-test/dist/transactionMetrics.j
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { recoveryFactsOf, recoveryOf } from "./lib/restartRecovery";
+import { recoveryFactsOf, recoveryOf, resolveEntryAfterRun } from "./lib/restartRecovery";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -187,5 +187,31 @@ describe("a run a recovery entry names", () => {
     // Rows only: the entry, then twice the one row stored before it.
     expect(counts.reads).toBe(3);
     expect(meter.bytes).toBeLessThan(4096);
+  });
+});
+
+describe("looking for an entry stored before the row it follows (`resolveEntryAfterRun`)", () => {
+  const after = async (stopReason: string) => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, 1, 10);
+    await apply(t, ids.chatId, [{ entryId: "a-1", seq: 1, role: "assistant", runId: run(0), stopReason, hidden: false, visible: stopReason === "stop", toolCallIds: stopReason === "stop" ? undefined : ["call-0"] }], {
+      hasActiveRun: false,
+      activeRunIds: [],
+    });
+    const meter = { queries: 0, bytes: 0 };
+    const found = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("transcriptRows").collect();
+      counts.reads = counts.ranges = counts.bytesRead = 0;
+      return resolveEntryAfterRun(ctx, { chatId: ids.chatId, sessionKey: SK, instanceName: "prod", sessionId: "s-1" }, run(0), rows, meter);
+    });
+    return { found, ranges: counts.ranges, reads: counts.reads, meter };
+  };
+
+  test("a run that ended on an ANSWER is asked nothing: no index range, no read", async () => {
+    expect(await after("stop")).toEqual({ found: false, ranges: 0, reads: 0, meter: { queries: 0, bytes: 0 } });
+  });
+
+  test("a run whose last row is the tail of a cut turn: one index range, empty when no entry follows", async () => {
+    expect(await after("toolUse")).toEqual({ found: false, ranges: 1, reads: 0, meter: { queries: 1, bytes: 0 } });
   });
 });

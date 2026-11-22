@@ -1017,3 +1017,116 @@ describe("the calls the cut left without a result are PROVEN by the rows right b
     expect((await get(t, cut))?.interruption).toBeUndefined();
   });
 });
+
+describe("a stream segment is a display copy of part of its row: the row right before the entry is the TRANSCRIPT's row at that seq", () => {
+  const own = projected.restart.filter((r) => r.seq <= 11);
+  const after = projected.restart.filter((r) => r.seq >= 12);
+  const last = own.find((r) => r.seq === 11)!;
+  const callId = (last.toolCallIds as string[])[0]!;
+  /** What `chat.history` splits out of an assistant row's commentary (captured on
+   *  2026.9.36): the row's id and seq, the text only — no stop reason, no tool call. */
+  const segmentOf = (row: Row, runId = row.runId): Row => ({
+    entryId: `${row.entryId}:segment:k1`,
+    seq: row.seq,
+    role: "assistant",
+    runId,
+    streamSegment: true,
+    segmentOrder: 0,
+    commentary: true,
+    hidden: false,
+    visible: true,
+    text: "Let me wait for it.",
+  });
+
+  test("a segment of the cut turn's LAST row, stored after it: the recovery resolves from the row, and the row's call is marked", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    // The row first (as its live `session.message` brings it), its segment after (the read).
+    await apply(t, ids.chatId, [...own, segmentOf(last), ...after], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, cutCallIds: [callId] });
+  });
+
+  test("…stored BEFORE its row (the order `chat.history` lists them): the same", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, [...own.filter((r) => r.seq <= 10), segmentOf(last), last, ...after], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ recoveryRunId: RECOVERY, cutCallIds: [callId] });
+  });
+
+  test("ONLY the segment is stored at the seq before the entry: nothing is resolved — until the row itself is read", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, [...own.filter((r) => r.seq <= 10), segmentOf(last), after[0]!], { hasActiveRun: true, activeRunIds: [RECOVERY] });
+    await settle(t);
+    const entry = () => t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).find((r) => r.seq === 12)?.recoversRunId ?? null);
+    expect(await entry()).toBeNull();
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+    // The row is read: the pass of its run finds the entry stored right after it.
+    await apply(t, ids.chatId, [last], { hasActiveRun: true, activeRunIds: [RECOVERY] });
+    await apply(t, ids.chatId, after.slice(1), IDLE);
+    await settle(t);
+    expect(await entry()).toBe(INTERRUPTED);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, cutCallIds: [callId] });
+  });
+
+  test("a segment of ANOTHER run alone at the seq before the entry: nothing is resolved", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    const OTHER = "webchat-" + "7".repeat(64);
+    const theirs = segmentOf({ entryId: "their-row", seq: 12, role: "assistant", runId: OTHER }, OTHER);
+    await apply(t, ids.chatId, [...own, theirs, ...after.map((r) => ({ ...r, seq: r.seq + 1 }))], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+    expect((await assistants(t, ids.chatId)).every((b) => b.interruption?.recoveryRunId === undefined)).toBe(true);
+  });
+
+  test("a segment INSIDE the rows before the entry (on the row that issued the calls) does not stop the proof", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    // 9: the call; its segment stored after it; 10: the call's result; then the entry at 11.
+    const nine = own.find((r) => r.seq === 9)!;
+    const second = "call_second|fc_second";
+    await apply(t, ids.chatId, [...own.filter((r) => r.seq <= 8), { ...nine, toolCallIds: [(nine.toolCallIds as string[])[0]!, second] }, segmentOf(nine), own.find((r) => r.seq === 10)!, ...after.map((r) => ({ ...r, seq: r.seq - 1 }))], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ recoveryRunId: RECOVERY, cutCallIds: [second] });
+  });
+
+  test("the row arrives only AFTER the recovery run was projected for the last time", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, [...own.filter((r) => r.seq <= 10), segmentOf(last), ...after], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+    await apply(t, ids.chatId, [last], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart", recoveryRunId: RECOVERY, cutCallIds: [callId] });
+  });
+
+  test("…and when that run wrote nothing a reader sees, its empty bubble is kept by the very pass that finds the entry", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    // The turn's input (3), then the entry (5) and the recovery's answer (6): seq 4, the
+    // row the shutdown aborted with nothing written, is not read yet.
+    const tail = [after[0]!, after.at(-1)!].map((r, i) => ({ ...r, seq: 5 + i }));
+    await apply(t, ids.chatId, [projected.restart.find((r) => r.seq === 3)!, ...tail], { hasActiveRun: true, activeRunIds: [INTERRUPTED] });
+    await settle(t);
+    expect((await get(t, cut))?.status).toBe("streaming");
+    await apply(t, ids.chatId, [{ entryId: "aborted-4", seq: 4, role: "assistant", runId: INTERRUPTED, stopReason: "aborted", hidden: false, visible: false }], IDLE);
+    await settle(t);
+    expect(await get(t, cut)).toMatchObject({ status: "complete", text: "", interruption: { shutdown: "restart", recoveryRunId: RECOVERY } });
+  });
+});
