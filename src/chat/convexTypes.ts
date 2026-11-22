@@ -258,9 +258,9 @@ export interface ConvexMessageView {
    *  consecutive bubbles sharing it read as one answer (src/chat/displayGroups.ts). */
   displayGroupId?: string;
   /** ASSISTANT rows, projection `on`: what is known of a turn the gateway cut — the
-   *  shutdown it announced on the turn's socket, its own recovery run, a transcript that
-   *  stops before an answer (src/chat/turnInterruptionView.ts decides what is said). */
-  interruption?: { shutdown?: "restart" | "stop"; recoveryRunId?: string; unanswered?: true; holed?: true };
+   *  shutdown it announced on the turn's socket, its own recovery run, the calls the cut
+   *  left without a result (src/chat/turnInterruptionView.ts decides what is said). */
+  interruption?: { shutdown?: "restart" | "stop"; recoveryRunId?: string; cutCallIds?: string[] };
   /** ASSISTANT rows, projection `on` (final design step 3): the transcript rows the
    *  bubble shows, in display order — each row's span of `text`, its files, its tool
    *  cards. Absent on a bubble the rows never composed (text + parts rendering). */

@@ -168,17 +168,9 @@ export type PlanBubble = {
   /** Closed by the stuck-stream WATCHDOG, not by a terminal (lib/streamOrphan
    *  `isWatchdogOrphan`): its runs' end settles it like a streaming bubble (0.102.1). */
   orphaned?: boolean;
-  /** What the bubble already says of a cut turn (`messages.interruption`): the gateway
-   *  announced a shutdown on its socket; its run is known to have stopped unanswered; the
-   *  gateway's recovery resumed it. */
-  shutdownNoted?: true;
-  unanswered?: true;
+  /** The gateway's own recovery resumed this bubble's run (`interruption.recoveryRunId`,
+   *  or the rows read by this pass name it): never removed for showing nothing else. */
   recovered?: true;
-  /** It already says a hole lies inside its runs' rows (`interruption.holed`). */
-  holed?: true;
-  /** A later segment of the run has a bubble: this one does not show the run's end, and
-   *  says nothing of how it ended. */
-  earlierSegment?: true;
 };
 
 export type RunFacts = {
@@ -201,12 +193,6 @@ export type RunFacts = {
    *  answer is in the newest page); no bubble is BORN from them. The hole stays recorded on
    *  the cursor (`gaps`), which qualifies the report. */
   gapped?: true;
-  /** ASKED ONLY of a turn the gateway announced a shutdown on (absent otherwise): a
-   *  coverage hole may hold the run's END — the transcript was not read without a hole
-   *  from the run's last known row up to a row that proves it over, or to the stored tail
-   *  (lib/bubbleProjectionStore.ts `endMayBeUnread`). What the stored rows end on is then
-   *  not how the run ended. */
-  endUnread?: true;
   status?: RunStatus;
   /** Every row of the run was loaded and it has NONE of its own (it wrote nothing). */
   empty?: true;
@@ -276,19 +262,8 @@ export type ProjectionPlan = {
     vanish?: true;
     /** An `error` bubble with no error text: the text the transcript states (step 4). */
     errorText?: string;
-    /** DERIVED at every pass, never latched: the gateway announced a shutdown on this
-     *  turn's socket and its rows, all known, stop before an answer (`endsUnanswered`) —
-     *  `true`, said on the bubble, which is then kept even with nothing else to show; or
-     *  they now end on an answer (a row read later than the snapshot that settled it) —
-     *  `false`, the bubble stops saying so. Absent: unchanged, or not known. */
-    unanswered?: boolean;
-    /** DERIVED at every pass like `unanswered`: a recorded coverage hole lies inside the
-     *  span of a run the bubble shows (`RunFacts.gapped`) — `true`; or none does any more
-     *  — `false`. A call the bubble shows without a result is not known to have had none
-     *  while it is true. Absent: unchanged, or not known. */
-    holed?: boolean;
-    /** The bubble states an interruption (`unanswered`, or a recovery the rows name — which
-     *  the message itself may not say yet): never dropped for showing nothing else. */
+    /** The gateway's recovery resumed the bubble's run (the rows name it — the message
+     *  itself may not say it yet): never dropped for showing nothing else. */
     stated?: true;
   }>;
 };
@@ -581,29 +556,10 @@ export function rowError(rows: readonly PlanRow[]): string | undefined {
 }
 
 /** The rows that COUNT: a row a covering durable read retracted is not in the transcript
- *  (never rendered) and decides nothing — neither what a turn ended on nor what precedes
- *  a recovery entry (lib/restartRecovery.ts). */
+ *  (never rendered) and decides nothing of what precedes a recovery entry
+ *  (lib/restartRecovery.ts). */
 export function countedRows<T extends { retracted?: boolean }>(rows: readonly T[]): T[] {
   return rows.filter((r) => r.retracted !== true);
-}
-
-/** The stop reasons of an ANSWER (the runtime's `"stop" | "length"`, and the raw provider
- *  value `end_turn` that passes through — packages/llm-core/src/types.ts at v2026.9.36). */
-const ANSWERED_STOP: ReadonlySet<string> = new Set(["stop", "length", "end_turn"]);
-
-/** Do a bubble's rows END before an answer — nothing of the assistant's at all, or a last
- *  assistant row that states a stop reason which is not an answer's (`toolUse`: it was
- *  waiting on a tool; `aborted`, `error`)? A last row that states none proves nothing.
- *  Retracted rows do not count (`countedRows`): an `aborted` row seen live and gone from
- *  the durable transcript is not how the turn ended, nor is a retracted answer one. */
-export function endsUnanswered(rows: readonly PlanRow[]): boolean {
-  let last: PlanRow | undefined;
-  for (const r of countedRows(rows)) {
-    if (r.role !== "assistant" || r.streamSegment === true) continue;
-    if (last === undefined || r.seq > last.seq) last = r;
-  }
-  if (last === undefined) return true;
-  return last.stopReason !== undefined && !ANSWERED_STOP.has(last.stopReason);
 }
 
 /** The terminal a bubble takes when its runs are over (null: not ours to set). An error
@@ -756,34 +712,9 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       const stated = rowError(rows) ?? runError(facts);
       if (stated !== undefined) write.errorText = stated;
     }
-    // A TURN THE GATEWAY CUT: it announced a shutdown on the turn's socket, and its rows
-    // end before an answer. Said only when the rows PROVE it — `rowsWhole`: for every run
-    // the bubble shows, (1) every stored row of it was loaded, with nothing of another
-    // scope among the bubble's rows; (2) no recorded coverage hole lies inside the run's
-    // span (`gapped`: its last assistant row may be in it); (3) no hole lies between its
-    // last known row and a row that proves it over, or the stored tail (`endUnread`: its
-    // answer may be in it). A wrong verdict is worse than none: with a hole in the way the
-    // bubble does not say it, and stops saying it if it did; when the hole is filled the
-    // rows are read again. Unknown for another reason (rows past a bound): left as it is.
-    const holed = facts.some((f) => f?.gapped === true || f?.endUnread === true);
-    const rowsWhole = !holed && bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true);
-    if (allSettled && rowsWhole) {
-      const now = bubble.shutdownNoted === true && bubble.earlierSegment !== true && endsUnanswered(rows);
-      if (now !== (bubble.unanswered === true)) write.unanswered = now;
-    } else if (holed && bubble.unanswered === true) {
-      write.unanswered = false;
-    }
-    // A CALL WITHOUT A RESULT is shown as interrupted on a bubble that states a cut
-    // (src/chat/turnInterruptionView.ts `callsInterrupted`): true of the cut run's last
-    // call, false of an earlier one whose result sits in a hole inside the run's span. The
-    // bubble says such a hole exists — whether or not it states a cut yet: a recovery is
-    // told to it later, in a transaction that reads no row of the run.
-    if (bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true)) {
-      const inSpan = facts.some((f) => f?.gapped === true);
-      if (inSpan !== (bubble.holed === true)) write.holed = inSpan;
-    }
-    // A bubble that states an interruption is never removed for showing nothing else.
-    const stated = bubble.recovered === true || (write.unanswered ?? bubble.unanswered === true);
+    // A bubble whose run the gateway's recovery resumed is never removed for showing
+    // nothing else: it is where the interruption is said.
+    const stated = bubble.recovered === true;
     if (stated) write.stated = true;
     // §3.3: every row the bubble showed was retracted and nothing of the transcript is left
     // in it — the text it carries exists nowhere any more.
@@ -810,9 +741,7 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       write.layout !== undefined ||
       write.settle !== undefined ||
       write.vanish === true ||
-      write.errorText !== undefined ||
-      write.unanswered !== undefined ||
-      write.holed !== undefined
+      write.errorText !== undefined
     ) {
       plan.rewrite.push(write);
     }

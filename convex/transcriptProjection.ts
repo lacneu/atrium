@@ -1172,7 +1172,6 @@ export const continueSettlement = internalMutation({
         instanceName: args.instanceName,
         floorSeq: cursor.floorSeq,
         gaps: cursor.gaps ?? [],
-        gapsDropped: cursor.gapsDropped ?? 0,
       },
       res.runs,
     );
@@ -1716,7 +1715,6 @@ export const continueProjection = internalMutation({
         instanceName: args.instanceName,
         floorSeq: cursor.floorSeq,
         gaps: cursor.gaps ?? [],
-        gapsDropped: cursor.gapsDropped ?? 0,
       },
       args.runIds,
       args.resume,
@@ -2167,7 +2165,6 @@ export const continueUserRows = internalMutation({
         instanceName: args.instanceName,
         floorSeq: 0,
         gaps: [],
-        gapsDropped: 0,
       },
       toAssign,
       budget,
@@ -2538,7 +2535,6 @@ async function applyTranscriptImpl(
             instanceName: args.boundInstanceName,
             floorSeq: cursor.floorSeq,
             gaps: cursor.gaps ?? [],
-            gapsDropped: cursor.gapsDropped ?? 0,
           },
           res.textedRuns,
           undefined,
@@ -2595,7 +2591,6 @@ async function applyTranscriptImpl(
           instanceName: args.boundInstanceName,
           floorSeq: cursor.floorSeq,
           gaps: cursor.gaps ?? [],
-          gapsDropped: cursor.gapsDropped ?? 0,
         };
         const assignLeft = await assignUserRows(ctx, scope, rows, budget);
         await continueUserRowsLater(ctx, scope, custodyLeft, assignLeft);
@@ -2966,7 +2961,6 @@ async function applyTranscriptImpl(
         instanceName: args.boundInstanceName,
         floorSeq,
         gaps,
-        gapsDropped,
       };
       await continueUserRowsLater(ctx, scope, [], await assignUserRows(ctx, scope, rows, budget));
       await projectAll(ctx, scope, [...seqByRun.keys(), ...terminalRuns, ...settledRuns, ...retracted.runs], undefined, budget);

@@ -2359,19 +2359,17 @@ export default defineSchema({
     // bridge's report, stuckStreams.resumeChatStreams). `recoveryRunId`: the gateway's own
     // restart recovery resumed the turn — its entry (`provenance.sourceTool:
     // "main_session_restart_recovery"`) follows this run's rows, and that run answers
-    // (lib/restartRecovery.ts). `unanswered`: its rows, all known, stop before an answer
-    // — DERIVED at every projection pass, removed when a later row answers. `shutdown`
-    // is removed when the turn resumes live. The reader is told of the
-    // interruption when `recoveryRunId` is set, or `shutdown` with `unanswered`.
-    // `holed`: a recorded coverage hole lies inside the span of a run the bubble shows —
-    // DERIVED at every projection pass too; a call it shows without a result is then not
-    // known to have had none, and is never shown as interrupted.
+    // (lib/restartRecovery.ts), read from the rows at every projection pass.
+    // `cutCallIds`: the tool calls the cut left without a result, proven by the rows
+    // right before the entry (`cutCallsBefore`) — set and removed with `recoveryRunId`.
+    // `shutdown` is removed when the turn resumes live. The reader is told of the
+    // interruption when `recoveryRunId` is set, and only then: `shutdown` chooses the
+    // words (a restart, a stop), it never states an interruption by itself.
     interruption: v.optional(
       v.object({
         shutdown: v.optional(v.union(v.literal("restart"), v.literal("stop"))),
         recoveryRunId: v.optional(v.string()),
-        unanswered: v.optional(v.literal(true)),
-        holed: v.optional(v.literal(true)),
+        cutCallIds: v.optional(v.array(v.string())),
       }),
     ),
     // ASSISTANT rows of a projected conversation (phase 5, design §14): the DISPLAY GROUP

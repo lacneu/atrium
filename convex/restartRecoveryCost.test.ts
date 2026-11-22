@@ -13,7 +13,7 @@ import { TransactionMetricsTracker } from "convex-test/dist/transactionMetrics.j
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { recoveryOf } from "./lib/restartRecovery";
+import { recoveryFactsOf, recoveryOf } from "./lib/restartRecovery";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -171,49 +171,21 @@ describe("a conversation with no recovery entry", () => {
   });
 });
 
-describe("asking how a cut turn ENDED (lib/bubbleProjectionStore.ts `endMayBeUnread`)", () => {
-  const cutRow = { entryId: "cut-0", seq: 1, role: "assistant", runId: run(0), stopReason: "toolUse", hidden: false, visible: false, toolCallIds: ["call-0"] };
-  const NEXT = run(7);
-  /** The index ranges of one more pass over the cut run, in a conversation where a tail
-   *  page did or did not leave a hole after its last row, and whose bubble does or does
-   *  not carry an announced shutdown. */
-  const pass = async (o: { hole: boolean; shutdown: boolean }) => {
+describe("a run a recovery entry names", () => {
+  test("its interrupted calls cost ONE more index range of rows, the few right before the entry — and no message", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seed(t, 1, 10);
-    await apply(t, ids.chatId, [cutRow], { kind: "delta", hasActiveRun: false, activeRunIds: [] });
-    // Another turn's rows: right after (no hole), or far after (2–49 never read).
-    const from = o.hole ? 50 : 2;
-    await apply(
-      t,
-      ids.chatId,
-      [
-        { entryId: "n-u", seq: from, role: "user", runId: NEXT, sendId: NEXT, hidden: false, visible: true },
-        { entryId: "n-a", seq: from + 1, role: "assistant", runId: NEXT, stopReason: "stop", hidden: false, visible: true },
-      ],
-      { hasActiveRun: false, activeRunIds: [] },
-    );
-    if (o.shutdown) await t.run((ctx) => ctx.db.patch(ids.bubbles[0]!, { interruption: { shutdown: "restart" as const } }));
-    // A first pass writes what it derives; the second is the one measured.
-    await apply(t, ids.chatId, [cutRow], { kind: "delta", hasActiveRun: false, activeRunIds: [] });
+    const ids = await seed(t, 1, BIG);
+    await apply(t, ids.chatId, cutThenRecovered(0), { hasActiveRun: true, activeRunIds: [run(0), recovery(0)] });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const meter = { queries: 0, bytes: 0 };
     counts.reads = counts.ranges = counts.bytesRead = 0;
-    await apply(t, ids.chatId, [cutRow], { kind: "delta", hasActiveRun: false, activeRunIds: [] });
-    const said = (await t.run((ctx) => ctx.db.get(ids.bubbles[0]!)))?.interruption;
-    return { ranges: counts.ranges, reads: counts.reads, said };
-  };
-
-  test("costs nothing without an announced shutdown, and nothing without a hole above the run; with both, one index range of a few rows", async () => {
-    const plain = await pass({ hole: false, shutdown: false });
-    const shutdownOnly = await pass({ hole: false, shutdown: true });
-    const holeOnly = await pass({ hole: true, shutdown: false });
-    const both = await pass({ hole: true, shutdown: true });
-    expect(shutdownOnly.said).toEqual({ shutdown: "restart", unanswered: true });
-    expect(both.said).toEqual({ shutdown: "restart" });
-    expect(holeOnly.said).toBeUndefined();
-    expect({ ranges: shutdownOnly.ranges, reads: shutdownOnly.reads }).toEqual({ ranges: plain.ranges, reads: plain.reads });
-    expect({ ranges: holeOnly.ranges, reads: holeOnly.reads }).toEqual({ ranges: plain.ranges, reads: plain.reads });
-    expect(both.ranges).toBe(plain.ranges + 1);
-    // The rows stored past the run's last one, at most eight: here the far page's two.
-    expect(both.reads).toBe(plain.reads + 2);
+    const facts = await t.run((ctx) => recoveryFactsOf(ctx, { chatId: ids.chatId, sessionKey: SK, instanceName: "prod" }, run(0), meter));
+    expect(facts).toEqual({ recoveryRunId: recovery(0), cutCallIds: ["call-0"] });
+    // The entries that name the run, the row before the entry (read again), the walk.
+    expect(counts.ranges).toBe(3);
+    expect(meter.queries).toBe(3);
+    // Rows only: the entry, then twice the one row stored before it.
+    expect(counts.reads).toBe(3);
+    expect(meter.bytes).toBeLessThan(4096);
   });
 });

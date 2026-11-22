@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
 import {
   BookOpen,
@@ -16,7 +16,7 @@ import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
 import type { ToolActivityPart } from "./toolActivityView";
 import { activityBlock, type ActivityNode } from "./activityBlock";
-import { callsInterrupted, type TurnInterruption } from "./turnInterruptionView";
+import { interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
 import {
   activityLabel,
   dominantFamily,
@@ -49,7 +49,7 @@ interface FlowMeta {
 
 /** A rows block's cards, nested under their parent (activityBlock.ts): a node's children
  *  are shown inside its card, once it is open. */
-function NodeCard({ node, settled, cut }: { node: ActivityNode; settled: boolean; cut: boolean }) {
+function NodeCard({ node, settled, cut }: { node: ActivityNode; settled: boolean; cut: ReadonlySet<string> }) {
   const p = node.part;
   return (
     <ToolCard
@@ -60,7 +60,7 @@ function NodeCard({ node, settled, cut }: { node: ActivityNode; settled: boolean
       result={p.result}
       status={p.phase ? { type: p.phase } : undefined}
       turnSettled={settled}
-      turnInterrupted={cut}
+      turnInterrupted={p.toolCallId !== undefined && cut.has(p.toolCallId)}
       nested={
         node.children.length > 0
           ? node.children.map((c) => <NodeCard key={c.part.toolCallId} node={c} settled={settled} cut={cut} />)
@@ -76,12 +76,14 @@ export function InlineTurnActivity(props: {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as FlowMeta | undefined)?.status,
   );
-  // The gateway cut this turn: a call it left without a result was interrupted, never
-  // "completed" (turnInterruptionView.ts).
-  const cut = useMessage((msg) => {
+  // The gateway cut this turn: the calls it is PROVEN to have left without a result were
+  // interrupted, never "completed" (turnInterruptionView.ts). Selected as one string: a
+  // selector must return a stable value.
+  const cutKey = useMessage((msg) => {
     const meta = msg.metadata?.custom as FlowMeta | undefined;
-    return callsInterrupted(meta?.interruption, meta?.status);
+    return [...interruptedCalls(meta?.interruption, meta?.status)].join("\u0000");
   });
+  const cut = useMemo(() => new Set(cutKey === "" ? [] : cutKey.split("\u0000")), [cutKey]);
   const [expanded, setExpanded] = useState(false);
   // Tools OFF = the CLEAN view (user decision, revising the earlier
   // always-visible plan): no activity rows at all — the working label under
@@ -152,7 +154,7 @@ export function InlineTurnActivity(props: {
               result={p.result}
               status={p.phase ? { type: p.phase } : undefined}
               turnSettled={status !== undefined && status !== "streaming"}
-              turnInterrupted={cut}
+              turnInterrupted={p.toolCallId !== undefined && cut.has(p.toolCallId)}
             />
           ))}
         </div>

@@ -2119,8 +2119,6 @@
   "turn_interrupted_restart_recovered": "The gateway announced a restart and cut this turn. Once it was back, the agent resumed the turn on its own: its continuation follows.",
   "turn_interrupted_stop_recovered": "The gateway announced that it was stopping and cut this turn. Once it was back, the agent resumed the turn on its own: its continuation follows.",
   "turn_interrupted_recovered": "The gateway interrupted this turn, then the agent resumed it on its own: its continuation follows.",
-  "turn_interrupted_restart": "The gateway announced a restart and cut this turn: the agent's work stops here, with no answer written.",
-  "turn_interrupted_stop": "The gateway announced that it was stopping and cut this turn: the agent's work stops here, with no answer written.",
   "tools_status_interrupted": "interrupted",
   "lightbox_fit": "Fit to screen",
   "lightbox_actual_size": "Actual size",

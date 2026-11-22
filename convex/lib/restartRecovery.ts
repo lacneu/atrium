@@ -29,6 +29,13 @@
 // (`recoveryOf`): an entry a covering read retracted, or whose preceding row was, stops
 // stating it. (Rows are deleted only with their conversation.) Only rows are read there;
 // the bubble is told in a transaction of its own (`tellLater`).
+//
+// ONE SOURCE. A bubble states an interruption only through a resolved recovery entry.
+// The shutdown the bridge reports (`interruption.shutdown`) chooses the words, never the
+// fact; nothing is inferred from where the stored rows of a turn happen to stop — a turn
+// the gateway cut and never resumed says nothing, as before this feature. The calls the
+// cut left without a result (`interruption.cutCallIds`) come from the same place: the
+// rows that follow one another right up to the entry (`cutCallsBefore`).
 
 import type { Doc, Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
@@ -52,11 +59,19 @@ export function isRecoveryEntry(row: { role: string; provenanceKind?: string; pr
 
 export type Interruption = NonNullable<Doc<"messages">["interruption"]>;
 
-/** What changes in what a bubble says of a cut turn. `shutdown: null`,
- *  `recoveryRunId: null`, `unanswered: false` and `holed: false` REMOVE the fact:
- *  `unanswered`, `holed` and `recoveryRunId` are derived from the rows at every projection
- *  pass, and an announced shutdown stops being a fact about a turn that resumed live. */
-export type InterruptionChange = { shutdown?: "restart" | "stop" | null; recoveryRunId?: string | null; unanswered?: boolean; holed?: boolean };
+/** What changes in what a bubble says of a cut turn. `shutdown: null` and
+ *  `recoveryRunId: null` REMOVE the fact: the recovery is derived from the rows at every
+ *  projection pass, and an announced shutdown stops being a fact about a turn that
+ *  resumed live. `cutCallIds` belongs to the recovery: it is replaced with it, and gone
+ *  with it. */
+export type InterruptionChange = { shutdown?: "restart" | "stop" | null; recoveryRunId?: string | null; cutCallIds?: readonly string[] };
+
+/** The same call ids, in the same order (absent and empty are the same). */
+export function sameCalls(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const x = a ?? [];
+  const y = b ?? [];
+  return x.length === y.length && x.every((id, i) => id === y[i]);
+}
 
 /** Apply a change to a bubble's interruption; returns whether it changed. */
 export async function noteInterruption(
@@ -67,14 +82,12 @@ export async function noteInterruption(
   const prev = message.interruption ?? {};
   const shutdown = change.shutdown === undefined ? prev.shutdown : (change.shutdown ?? undefined);
   const recoveryRunId = change.recoveryRunId === undefined ? prev.recoveryRunId : (change.recoveryRunId ?? undefined);
-  const unanswered = change.unanswered === undefined ? prev.unanswered : change.unanswered ? (true as const) : undefined;
-  const holed = change.holed === undefined ? prev.holed : change.holed ? (true as const) : undefined;
-  if (prev.shutdown === shutdown && prev.recoveryRunId === recoveryRunId && prev.unanswered === unanswered && prev.holed === holed) return false;
+  const cutCallIds = recoveryRunId === undefined ? [] : [...(change.cutCallIds ?? prev.cutCallIds ?? [])];
+  if (prev.shutdown === shutdown && prev.recoveryRunId === recoveryRunId && sameCalls(prev.cutCallIds, cutCallIds)) return false;
   const next: Interruption = {
     ...(shutdown !== undefined ? { shutdown } : {}),
     ...(recoveryRunId !== undefined ? { recoveryRunId } : {}),
-    ...(unanswered === true ? { unanswered } : {}),
-    ...(holed === true ? { holed } : {}),
+    ...(cutCallIds.length > 0 ? { cutCallIds } : {}),
   };
   await ctx.db.patch(message._id, { interruption: Object.keys(next).length > 0 ? next : undefined });
   return true;
@@ -233,21 +246,81 @@ export async function resolveRecovery(
   return resumed;
 }
 
-/** The recovery run that resumed `runId`, by the entries that name it — each read again
- *  from the rows (null: none, or more than one — never a guess). Rows only: for a run no
- *  entry names, ONE index range that returns nothing. */
-export async function recoveryOf(ctx: MutationCtx, scope: Scope, runId: string, meter: RecoveryMeter): Promise<string | null> {
+/** Rows read right before a recovery entry to find the calls the cut left open. */
+const CUT_WALK_ROWS = 16;
+/** Call ids a bubble keeps (a turn's last assistant row rarely issues more than a few). */
+const MAX_CUT_CALLS = 16;
+
+/**
+ * THE CALLS THE CUT LEFT WITHOUT A RESULT, proven by contiguity and by nothing else: from
+ * the row right before the recovery entry, walk BACK over rows whose seqs follow one
+ * another with no step missing, all of the resumed run, up to the nearest assistant row.
+ * If that row stopped on a tool call (`stopReason: "toolUse"`), its calls for which no
+ * result row was met on the way are the interrupted ones — every row between that call
+ * and the entry was read, so a result that existed would be among them. Anything else
+ * proves nothing and marks nothing: a missing seq (a row never read, or retracted), a row
+ * of another run or identity (an input, a mirror of a `message` send, a row that names no
+ * run), an assistant row that did not stop on a call, or no assistant row within
+ * `CUT_WALK_ROWS` rows. No coverage hole is reasoned about: a hole is a missing seq.
+ * One index range, charged to the caller's meter — read only for a run an entry names.
+ */
+async function cutCallsBefore(
+  ctx: MutationCtx,
+  scope: Scope,
+  entry: Doc<"transcriptRows">,
+  runId: string,
+  meter: RecoveryMeter,
+): Promise<string[]> {
+  const before = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_session_seq", (q) =>
+      q.eq("chatId", scope.chatId).eq("sessionKey", scope.sessionKey).eq("sessionId", entry.sessionId).lt("seq", entry.seq),
+    )
+    .order("desc")
+    .take(CUT_WALK_ROWS);
+  charge(meter, before);
+  const answered = new Set<string>();
+  let at = entry.seq;
+  for (const row of countedRows(before)) {
+    // The same seq again is a stream segment of the row just met; one less is the next row.
+    if (row.seq !== at && row.seq !== at - 1) return [];
+    at = row.seq;
+    if (row.instanceName !== scope.instanceName || row.runId !== runId || row.presentationOwner === true) return [];
+    const role = row.role.toLowerCase();
+    if (role === "toolresult") for (const id of row.toolCallIds ?? []) answered.add(id);
+    if (role !== "assistant" || row.streamSegment === true) continue;
+    if (row.stopReason !== "toolUse") return [];
+    return (row.toolCallIds ?? []).filter((id) => !answered.has(id)).slice(0, MAX_CUT_CALLS);
+  }
+  return [];
+}
+
+/** What the rows say of the recovery of `runId`: the recovery run, and the calls the cut
+ *  left without a result. */
+export type RecoveryFacts = { recoveryRunId: string; cutCallIds: string[] };
+
+/** The recovery of `runId`, by the entries that name it — each read again from the rows
+ *  (null: none, or more than one — never a guess). Rows only: for a run no entry names,
+ *  ONE index range that returns nothing. */
+export async function recoveryFactsOf(ctx: MutationCtx, scope: Scope, runId: string, meter: RecoveryMeter): Promise<RecoveryFacts | null> {
   const named = await ctx.db
     .query("transcriptRows")
     .withIndex("by_chat_recovers", (q) => q.eq("chatId", scope.chatId).eq("recoversRunId", runId))
     .take(3);
   charge(meter, named);
-  const runs = new Set<string>();
+  const entries = new Map<string, Doc<"transcriptRows">>();
   for (const e of named) {
     if (e.sessionKey !== scope.sessionKey || e.instanceName !== scope.instanceName) continue;
-    if ((await rederiveRecovery(ctx, scope, e, meter)) === runId && e.runId !== undefined) runs.add(e.runId);
+    if ((await rederiveRecovery(ctx, scope, e, meter)) === runId && e.runId !== undefined) entries.set(e.runId, e);
   }
-  return runs.size === 1 ? [...runs][0]! : null;
+  if (entries.size !== 1) return null;
+  const [recoveryRunId, entry] = [...entries][0]!;
+  return { recoveryRunId, cutCallIds: await cutCallsBefore(ctx, scope, entry, runId, meter) };
+}
+
+/** The recovery run that resumed `runId` (null: none, or more than one). */
+export async function recoveryOf(ctx: MutationCtx, scope: Scope, runId: string, meter: RecoveryMeter): Promise<string | null> {
+  return (await recoveryFactsOf(ctx, scope, runId, meter))?.recoveryRunId ?? null;
 }
 
 /** Ask for the bubble of `runId` to say that `recoveryRunId` resumed it. */
@@ -277,10 +350,11 @@ export async function tellRecoveredBubble(
   withdraw?: string,
   below?: number,
 ): Promise<void> {
-  const by = await recoveryOf(ctx, scope, runId, { queries: 0, bytes: 0 });
+  const facts = await recoveryFactsOf(ctx, scope, runId, { queries: 0, bytes: 0 });
+  const by = facts?.recoveryRunId ?? null;
   const bubble = await lastBubbleOf(ctx, scope, runId);
   if (below === undefined && bubble !== null && bubble.role === "assistant") {
-    if (by !== null) await noteInterruption(ctx, bubble, { recoveryRunId: by });
+    if (facts !== null) await noteInterruption(ctx, bubble, { recoveryRunId: facts.recoveryRunId, cutCallIds: facts.cutCallIds });
     // What the entry made this bubble say, and only that.
     else if (withdraw !== undefined && bubble.interruption?.recoveryRunId === withdraw) await noteInterruption(ctx, bubble, { recoveryRunId: null });
   }
