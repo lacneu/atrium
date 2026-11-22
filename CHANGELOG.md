@@ -101,6 +101,14 @@ once the bridge image is deployed.
   before sending. Every provider retry the gateway reports shows "Provider busy, retrying…",
   with its attempt count when the gateway gives one. An approval nobody can be asked for no
   longer holds the turn as "awaiting approval".
+- **A checklist closed by Atrium no longer hides the plan that follows it.** Present since
+  0.100.0: once the last sub-agent of a delegation finished, the checklist Atrium closed on its
+  own was dated in the wrong unit and stayed in view over any plan a later run published in the
+  same bubble.
+- **A tool card whose result passed while the connection was closed is recorded as completed.**
+  The conversation already showed it correctly; feedback reports, diagnostics and exports read
+  it as still running. Bubbles composed before this release are corrected the next time they
+  are composed.
 - **A media delivery no longer marks the turns that follow it.** After a turn that delivered
   generated media, every later turn of the conversation was treated as one too: a retryable
   provider failure was shown as a non-retryable one, and was not retried.
