@@ -1,29 +1,5 @@
 # Changelog
 
-## [0.104.0]` n'existe ; le numéro a toutefois été évoqué dans d'anciennes notes pour un autre lot (affichage du raisonnement, `release-0.104.0.md`) — à confirmer.
-
-## Ce que je n'ai pas pu établir
-
-1. **Verdict final du banc `trames-suite`** : le dernier GO 32/32 (22/11, run `12-06-56`) porte sur les fonctions Convex de `96666c17`, antérieures aux revues 4 à 7 (`89181a96` … `23e722e2`). La place du verdict final est le jeton `the full catalogue passed again on 2026-11-22 (GO 32/32) on this release's final bridge and Convex functions. A turn cut by a restart, one cut by a stop, one steered and then cut, and one cut right after a work note were each replayed live there and settled as described below, and the interrupted bubble was checked on screen. What only automated tests cover is listed under the known limits.`, laissé tel quel.
-2. **Aucun rendu vu à l'écran** (avis d'interruption, carte « interrompu », marqueur de repli, ligne d'avis, refus dans le composeur) : prouvés par des tests du front et des lignes Convex, pas par une capture. Les notes décrivent ce que le code affiche.
-3. **Preuves live du tour interrompu** (redémarrage, arrêt, pilotage puis redémarrage) : faites sur `96666c17`, quand l'inférence « arrêté sans réponse » existait encore. L'état final (§18-19 : avis seulement si la passerelle a repris le tour) n'est pas rejoué en direct.
-4. **Retour arrière de Convex** : aucun rapport ne l'établit par un essai. La phrase « ne pas redéployer Convex 0.103.6 » repose sur la règle générale (un schéma ancien refuse les documents portant les champs nouveaux), illustrée par le §18.7 du rapport suite, et sur le précédent 0.103.5. À relire ; à retirer si vous préférez ne dire que l'établi.
-5. **Ordre front / Convex** : ce que fait un front 0.103.6 devant les parts `model_fallback` / `gateway_notice` n'est établi nulle part. J'ai écrit « le front avec Convex », sans plus. Fichier à vérifier : `src/chat/convertMessage.ts` à `42593d9e` (traitement d'un `kind` inconnu).
-6. **Pont neuf sur Convex 0.103.6, `resumeStreams`** : « les champs en trop sont ignorés » est vrai à la lecture du code (`convex/bridge_ingest.ts` à `42593d9e` ne lit que `chatId`), mais « non vérifié en direct » selon le rapport d'intégration §15.5.
-7. **Fréquence de la fuite de contexte interne** : non mesurée ; la note le dit. Le défaut est confirmé par rejeu sur le code de `42593d9e` (rapport trames-2 §21), pas par une observation en production.
-8. **Non exercés en direct** (prouvés par tests seulement) : ligne d'avis hors repli, complétion d'une bulle close sur erreur, final tardif à clé, plusieurs envois `message` dans le tour du parent (capture rejouée), refus dans le composeur, cause de compaction du garde. La ligne de validation ne les revendique pas.
-
-## Puces dont je suis moins sûr
-
-- **« tens of seconds instead of five minutes »** : mesures du banc local (17 à 21 s après un redémarrage ; 32 à 46 s après le retour d'un arrêt ; 1 s après un dégel). Chiffres d'un banc, pas une garantie — formulé « on the bench ».
-- **Reprises fournisseur (« Provider busy, retrying… »)** : j'ai écrit que chaque reprise annoncée par `run_status` l'affiche. À vérifier dans `bridge/src/providers/openclaw/normalizer.ts` (branche `run_status` / `retrying`) si vous voulez nommer ce qui l'affichait déjà avant.
-- **Fichier outil en `shared-fs` au-dessus du plafond « part par référence »** : pris du rapport 3a (`convex/lib/mediaTransport.ts`), diff non relu ligne à ligne.
-- **Avis de la passerelle « chemins serveur retirés, 8 par bulle, 2 000 caractères »** : pris du rapport 3b ; `bridge/src/providers/openclaw/sanitize.ts` et `convex/stream.ts` (`noteGatewayNotice`) pour confirmer les bornes.
-- **Détection d'une connexion morte « 75 à 105 s »** : valeur finale du rapport 3a (§12.3, §13.3) ; mesuré 77 à 102 s au banc.
-- Écarté volontairement comme détail d'implémentation : rejeu d'avant l'ACK (dit en une demi-phrase), écritures hors du chemin des trames, registres de couverture, `framesLost` (dit en une puce d'observabilité), `docs/UPSTREAM_INTERPRETATION.md`.
-
----
-
 ## [0.104.0] — The reply's live text comes from the gateway's chat stream, and a turn cut by a restart says so
 
 Feature and reliability release, with one privacy fix. The bridge, the Convex functions and the
