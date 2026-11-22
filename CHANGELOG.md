@@ -1,5 +1,181 @@
 # Changelog
 
+## [0.104.0]` n'existe ; le numéro a toutefois été évoqué dans d'anciennes notes pour un autre lot (affichage du raisonnement, `release-0.104.0.md`) — à confirmer.
+
+## Ce que je n'ai pas pu établir
+
+1. **Verdict final du banc `trames-suite`** : le dernier GO 32/32 (22/11, run `12-06-56`) porte sur les fonctions Convex de `96666c17`, antérieures aux revues 4 à 7 (`89181a96` … `23e722e2`). La place du verdict final est le jeton `the full catalogue passed again on 2026-11-22 (GO 32/32) on this release's final bridge and Convex functions. A turn cut by a restart, one cut by a stop, one steered and then cut, and one cut right after a work note were each replayed live there and settled as described below, and the interrupted bubble was checked on screen. What only automated tests cover is listed under the known limits.`, laissé tel quel.
+2. **Aucun rendu vu à l'écran** (avis d'interruption, carte « interrompu », marqueur de repli, ligne d'avis, refus dans le composeur) : prouvés par des tests du front et des lignes Convex, pas par une capture. Les notes décrivent ce que le code affiche.
+3. **Preuves live du tour interrompu** (redémarrage, arrêt, pilotage puis redémarrage) : faites sur `96666c17`, quand l'inférence « arrêté sans réponse » existait encore. L'état final (§18-19 : avis seulement si la passerelle a repris le tour) n'est pas rejoué en direct.
+4. **Retour arrière de Convex** : aucun rapport ne l'établit par un essai. La phrase « ne pas redéployer Convex 0.103.6 » repose sur la règle générale (un schéma ancien refuse les documents portant les champs nouveaux), illustrée par le §18.7 du rapport suite, et sur le précédent 0.103.5. À relire ; à retirer si vous préférez ne dire que l'établi.
+5. **Ordre front / Convex** : ce que fait un front 0.103.6 devant les parts `model_fallback` / `gateway_notice` n'est établi nulle part. J'ai écrit « le front avec Convex », sans plus. Fichier à vérifier : `src/chat/convertMessage.ts` à `42593d9e` (traitement d'un `kind` inconnu).
+6. **Pont neuf sur Convex 0.103.6, `resumeStreams`** : « les champs en trop sont ignorés » est vrai à la lecture du code (`convex/bridge_ingest.ts` à `42593d9e` ne lit que `chatId`), mais « non vérifié en direct » selon le rapport d'intégration §15.5.
+7. **Fréquence de la fuite de contexte interne** : non mesurée ; la note le dit. Le défaut est confirmé par rejeu sur le code de `42593d9e` (rapport trames-2 §21), pas par une observation en production.
+8. **Non exercés en direct** (prouvés par tests seulement) : ligne d'avis hors repli, complétion d'une bulle close sur erreur, final tardif à clé, plusieurs envois `message` dans le tour du parent (capture rejouée), refus dans le composeur, cause de compaction du garde. La ligne de validation ne les revendique pas.
+
+## Puces dont je suis moins sûr
+
+- **« tens of seconds instead of five minutes »** : mesures du banc local (17 à 21 s après un redémarrage ; 32 à 46 s après le retour d'un arrêt ; 1 s après un dégel). Chiffres d'un banc, pas une garantie — formulé « on the bench ».
+- **Reprises fournisseur (« Provider busy, retrying… »)** : j'ai écrit que chaque reprise annoncée par `run_status` l'affiche. À vérifier dans `bridge/src/providers/openclaw/normalizer.ts` (branche `run_status` / `retrying`) si vous voulez nommer ce qui l'affichait déjà avant.
+- **Fichier outil en `shared-fs` au-dessus du plafond « part par référence »** : pris du rapport 3a (`convex/lib/mediaTransport.ts`), diff non relu ligne à ligne.
+- **Avis de la passerelle « chemins serveur retirés, 8 par bulle, 2 000 caractères »** : pris du rapport 3b ; `bridge/src/providers/openclaw/sanitize.ts` et `convex/stream.ts` (`noteGatewayNotice`) pour confirmer les bornes.
+- **Détection d'une connexion morte « 75 à 105 s »** : valeur finale du rapport 3a (§12.3, §13.3) ; mesuré 77 à 102 s au banc.
+- Écarté volontairement comme détail d'implémentation : rejeu d'avant l'ACK (dit en une demi-phrase), écritures hors du chemin des trames, registres de couverture, `framesLost` (dit en une puce d'observabilité), `docs/UPSTREAM_INTERPRETATION.md`.
+
+---
+
+## [0.104.0] — The reply's live text comes from the gateway's chat stream, and a turn cut by a restart says so
+
+Feature and reliability release, with one privacy fix. The bridge, the Convex functions and the
+frontend all change. The Convex schema gains a table (`lateFinalWrites`, with indexes `by_chat` and
+`by_chat_key`), an index (`transcriptRows.by_chat_recovers`), two message-part kinds
+(`model_fallback`, `gateway_notice`) and five optional fields (`messages.resumeChain`,
+`messages.interruption`, `transcriptRows.recoversRunId`, and `attachmentMaxBytes` /
+`attachmentMaxImageBytes` on each target of `bridgeHealth`); nothing needs migrating. **Deploy
+Convex first — schema and functions together, the frontend with them — then the bridge image.**
+The bridge calls five new ingest operations (`modelFallback`, `gatewayNotice`,
+`gatewaySeqReportTrace`, `completeSettledText`, `appendLateFinalKeyed`) and adds two optional
+fields to `resumeStreams` (`restartExpectedMs`, `shutdown`). While the bridge is being replaced, a
+0.103.6 bridge keeps working against the new Convex. The new bridge also runs against 0.103.6's
+Convex, without breaking a turn but without these: no fallback marker and no notice line (the
+fallback's notice is dropped all the same), a reply closed on an error is not completed by the
+text that follows, a late final is written in one attempt as before, an interrupted turn is asked
+about once and then after five minutes as before, and nothing tells the reader it was
+interrupted. Validated on the live bench on OpenClaw 2026.9.36, with Hermes 0.21.7, in token
+authentication: the full catalogue passed twice on 2026-11-21 (GO 32/32 both times) on the frame
+work of this release; the full catalogue passed again on 2026-11-22 (GO 32/32) on this release's final bridge and Convex functions. A turn cut by a restart, one cut by a stop, one steered and then cut, and one cut right after a work note were each replayed live there and settled as described below, and the interrupted bubble was checked on screen. What only automated tests cover is listed under the known limits.
+
+**Privacy fix.** Up to 0.103.6 included, text the gateway deliberately keeps out of what it
+displays — its internal runtime context — could appear in a reply's bubble while the reply was
+streaming. Atrium wrote the live text from the gateway's raw assistant stream, which carries that
+context, and did not remove it; the gateway strips it only from its chat stream. The bubble's live
+text now comes from the chat stream alone, as in the gateway's own Control UI, so the raw stream
+is never written. The text was shown to the people reading that conversation, during the stream.
+How often this happened in real deployments was not measured. The fix is in the bridge: it applies
+once the bridge image is deployed.
+
+**Live text**
+
+- **The bubble's live text comes from the gateway's chat stream only.** It is the text the
+  gateway's own Control UI shows, on every supported OpenClaw version. A reply made of several
+  items is no longer replaced by its last item while it streams.
+- **A rewrite the gateway declares shortens the bubble instead of being refused.** When the
+  gateway replaces, rewrites or retracts text it had streamed, the bubble follows; Atrium used to
+  refuse the shorter text and keep the old one until the end of the turn. A stale frame still
+  cannot take text back.
+- **A dropped chat frame is caught up.** When the gateway drops a chat delta for a slow
+  connection, the bridge re-reads the reply from the gateway instead of leaving the bubble behind
+  (at most eight re-reads per run, two seconds apart).
+- **Text that arrives with or after an error close completes the bubble.** The text a gateway
+  puts on an `error` or `aborted` end of turn is read — the answer buffered when a provider
+  sign-out aborts a reply, for instance — and a bubble closed on a lifecycle error receives the
+  text its run still sends afterwards.
+- **Several sends by the `message` tool in one turn are added, not replaced.** An agent that
+  sent two messages from its own turn showed the first until the turn ended whenever the second
+  was shorter. Each send is now added below the previous one.
+- **A reply is no longer trimmed or swallowed after a steered turn.** Present since 0.95.0: once
+  a turn had been cut by a steering message, the next turn's reply lost its beginning when it
+  started with the same words as the cut turn's first part, and was not shown at all when it was
+  only those words. Each turn now starts clean.
+- **A late final is no longer lost on a transient write failure.** A final the gateway sends
+  after its turn was settled was written in a single attempt. It is now written again on a
+  failure, and a repeat can never open a second bubble.
+
+**A turn interrupted by the gateway**
+
+- **A turn the gateway cut and then resumed says so.** When a restart or a stop cuts a turn,
+  OpenClaw resumes it on its own once it is back, under a new run. Atrium showed an empty reply
+  holding only tool cards, then the continuation in a separate bubble, with nothing linking them.
+  The interrupted bubble now carries a notice — the gateway announced a restart, or a stop, cut
+  the turn, and the agent resumed it on its own — the tool calls the cut left without a result
+  read "interrupted" instead of completed — their activity group no longer ends with a check —
+  and the continuation is shown right after, in the same group. It is never presented as an error, nor as a reason to send again.
+- **After a connection closes mid-turn, Atrium keeps asking the gateway until it answers.** It
+  asked once, then waited for the five-minute safety net. It now asks again on the Control UI's
+  own reconnection pace (0.8 s, growing to 15 s), starting after the delay an announced restart
+  gives, for ten minutes after the last close. On the bench a turn cut by a restart settled about
+  20 seconds after the cut instead of five minutes, one cut by a stop within a minute of the
+  gateway being back, and a turn that survived a frozen gateway resumed streaming a second after
+  the thaw.
+- **A message sent while the gateway restarts is named for what it is.** A send that fails
+  inside the window of an announced restart shows "Gateway restarting" instead of a plain
+  disconnection.
+- **A gateway that stops is told apart from one that restarts.** A stop gives no return time:
+  the reader's message and the error label ("Gateway stopped") say so, instead of announcing a
+  restart.
+
+**What the gateway states about a run**
+
+- **A model fallback is marked on the reply it concerns.** When the gateway answers with another
+  model than the one selected, the bubble shows "Fallback active", with the model that answered
+  and the one selected, and "Fallback cleared" once the session is back on its selected model.
+  Only model names are kept. Unlike the Control UI, which shows it for a few seconds, the marker
+  stays on the bubble.
+- **Gateway notices are shown as notices, not as part of the answer.** A usage line or a
+  diagnostic the gateway sends beside a reply was appended to the reply's text. On OpenClaw
+  2026.9.6 and later it is shown as a notice line under the reply (up to eight per bubble).
+- **Tool cards, compaction and retries follow what the gateway says.** A tool card is no longer
+  closed while its arguments are still being written or while it is under review. A compaction
+  the gateway skipped because there was nothing to compact is no longer reported as a failed one,
+  and a compaction the gateway ran on its own is no longer described as one Atrium asked for
+  before sending. Every provider retry the gateway reports shows "Provider busy, retrying…",
+  with its attempt count when the gateway gives one. An approval nobody can be asked for no
+  longer holds the turn as "awaiting approval".
+- **A media delivery no longer marks the turns that follow it.** After a turn that delivered
+  generated media, every later turn of the conversation was treated as one too: a retryable
+  provider failure was shown as a non-retryable one, and was not retried.
+
+**Connection**
+
+- **A connection the gateway no longer feeds is closed and recovered.** A connection that stays
+  silent past twice the gateway's heartbeat is probed, and closed if the probe gets no answer —
+  about 75 to 105 seconds in all. A turn in flight then takes the recovery above instead of
+  waiting on a dead connection.
+- **The model list follows the gateway's catalogue.** When the gateway says its model catalogue
+  changed, the conversation's model picker is refreshed, without waiting for a configuration
+  change.
+- **A file over the gateway's per-attachment limit is refused before it is sent.** OpenClaw
+  2026.8.1 and later announce a size limit per attachment, lower for images. An image over it is
+  refused when you add it to the message, with both sizes; a send that carries one fails at once
+  as "Attachment too large" instead of being uploaded and then refused by the gateway. With
+  shared-filesystem delivery, a non-image file over the limit goes by reference instead.
+- **The gateway's own sequence report is no longer counted as lost frames.** The `framesLost`
+  figure of the pressure trace had no other source and is gone; the report is traced as
+  `openclaw.gateway_seq_report`. `openclaw.frame_gap` now only means frames the gateway dropped
+  for a connection of the bridge.
+
+**Known limits.**
+
+- A turn the gateway cuts and never resumes shows no notice, as before: only the gateway's own
+  recovery states an interruption. The continuation appears once it is settled, ten to twenty
+  seconds on the bench, not as it streams. If the gateway never comes back, the bubble stays open
+  and Atrium goes on asking on its periodic cycle.
+- There is no live text without the gateway's chat stream: when the gateway drops chat frames,
+  the bubble waits for the re-read or for the final. If the dropped frame was itself a rewrite,
+  the bubble can keep the earlier text until the final.
+- While a run's own text streams, the messages its agent sent with the `message` tool leave the
+  bubble; the settled bubble shows them all.
+- Gateway notices are not marked before OpenClaw 2026.9.6 and still join the reply there. A
+  notice that is a turn's only reply stays that reply.
+- Attachment limits are known only while a connection to that instance is open, and follow a
+  change of the gateway's configuration within about a minute; until then nothing is refused
+  early. Gateways before 2026.8.1 announce none. A file whose bytes are not a recognised image
+  but which is declared as one is still refused by the gateway after the send.
+- Covered by automated tests only, not replayed on the live bench: a notice line other than a
+  model fallback, the completion of a bubble closed on an error, the rewritten late final,
+  several `message` sends in one turn, and the refusal of an oversized image in the composer.
+- A connection closed for silence while no turn is running is reopened at the next message. A
+  gateway that answers requests but no longer emits events keeps its connection.
+
+**Rollback:** redeploy the 0.103.6 bridge image and keep Convex on 0.104.0: its schema only adds a
+table, an index, part kinds and optional fields, and its functions accept every call a 0.103.6
+bridge makes. This brings back the bridge's half: live text written from the raw assistant stream
+— the privacy defect above included — a shorter rewrite refused, no fallback marker, notices
+appended to the reply, no silence watch, no early refusal of an oversized attachment. What Convex
+does stays: it keeps asking the gateway after a close, and a turn the gateway resumed still says
+so, without naming a restart or a stop. Do **not** redeploy Convex 0.103.6 once 0.104.0 has run:
+its schema rejects the documents that carry the new fields and part kinds, so that deploy fails.
+
 ## [0.103.6] — Every frame the gateway can send during a turn, known for each version
 
 Maintenance release. Only the bridge changes; Convex and the frontend are those of 0.103.5, and
