@@ -198,8 +198,40 @@ describe("a late final that JOINS a bubble", () => {
     const { writer } = writerThrough(t, secret, ["lost-answer", "ok"]);
     expect(await settled(writer.appendLateFinal(lateFinal(chatId, "key-1", "And more.", String(into))))).toBe(String(into));
     expect((await bubbles(t, chatId)).map((m) => m.text)).toEqual(["Reply.\n\nAnd more."]);
-    // No key is kept for a join: the bubble's own text is the proof.
-    expect(await t.run((ctx) => ctx.db.query("lateFinalWrites").collect())).toEqual([]);
+    // The join's key is kept with the bubble it wrote into, once (the repeat adds none).
+    expect((await t.run((ctx) => ctx.db.query("lateFinalWrites").collect())).map((r) => [r.writeKey, String(r.messageId)])).toEqual([["key-1", String(into)]]);
+  });
+
+  test("its answer is lost, its reader DELETES the bubble, the writer asks again: nothing is recreated", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId, secret } = await seed(t);
+    const into = await t.run((ctx) =>
+      ctx.db.insert("messages", { chatId, userId, role: "assistant" as const, status: "complete" as const, text: "Reply.", runId: RUN, boundInstance: "prod", updatedAt: 1 }),
+    );
+    // The write commits, its answer is lost; the bubble is deleted before the retry.
+    const { writer, posted } = writerThrough(t, secret, ["lost-answer", "ok"]);
+    const real = writer as unknown as { doPost: (body: unknown) => Promise<unknown> };
+    const post = real.doPost.bind(writer);
+    let attempts = 0;
+    real.doPost = async (body) => {
+      if (attempts++ === 1) await t.run((ctx) => ctx.db.delete(into));
+      return post(body);
+    };
+    expect(await settled(writer.appendLateFinal(lateFinal(chatId, "key-1", "And more.", String(into))))).toBeNull();
+    expect(posted).toHaveLength(2);
+    expect(await bubbles(t, chatId)).toEqual([]);
+  });
+
+  test("a join in a conversation WITHOUT the transcript marker gives it the marker: its key goes with the conversation", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seed(t);
+    await t.run((ctx) => ctx.db.patch(chatId, { transcriptSeenAt: undefined }));
+    const into = await t.run((ctx) =>
+      ctx.db.insert("messages", { chatId, userId, role: "assistant" as const, status: "complete" as const, text: "Reply.", runId: RUN, boundInstance: "prod", updatedAt: 1 }),
+    );
+    await t.mutation(internal.stream.appendLateFinal, { chatId, runId: RUN, messageId: into, text: "And more.", turnSessionKey: SK, boundInstanceName: "prod", writeKey: "key-1" } as never);
+    expect((await t.run((ctx) => ctx.db.get(chatId)))?.transcriptSeenAt).toBeDefined();
+    expect(await t.run((ctx) => ctx.db.query("lateFinalWrites").collect())).toHaveLength(1);
   });
 });
 

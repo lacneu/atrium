@@ -6574,6 +6574,33 @@ const LATE_FINAL_KEY_SWEEP = 16;
 const LATE_FINAL_KEY_MAX_CHARS = 128;
 
 /**
+ * EVERY keyed late final records its key with the bubble it wrote into — opened or joined
+ * — in its own transaction: the op is retried by the bridge, and a repeat with no record
+ * would act a second time (a second bubble; or, the joined bubble deleted meanwhile, a
+ * bubble for a text its reader removed). The chat's purge finds these records through the
+ * projection's marker (`transcriptSeenAt` — "the projection wrote something for this
+ * conversation"), so a conversation that does not carry it yet (its transcript reads
+ * failed so far) is given it here, with the record. The chat's keys no retry can still
+ * carry are forgotten on the way (oldest first, bounded per write).
+ */
+async function recordLateFinalKey(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+  chatId: Id<"chats">,
+  key: string,
+  messageId: Id<"messages">,
+  now: number,
+): Promise<void> {
+  if (chat !== null && !transcriptStoredText(chat)) await ctx.db.patch(chatId, { transcriptSeenAt: now });
+  const stale = await ctx.db
+    .query("lateFinalWrites")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .take(LATE_FINAL_KEY_SWEEP);
+  for (const s of stale) if (s.createdAt < now - LATE_FINAL_KEY_TTL_MS) await ctx.db.delete(s._id);
+  await ctx.db.insert("lateFinalWrites", { chatId, writeKey: key, messageId, createdAt: now });
+}
+
+/**
  * A DISTINCT late final of a settled run (CU-8): joined to the run's bubble when the
  * bridge names one, else a settled bubble of its own.
  *
@@ -6633,6 +6660,10 @@ export const appendLateFinal = internalMutation({
       // The bubble's OWN bridge only: in a conversation several instances serve, the
       // chat check alone would let bridge A write into a bubble bridge B settled.
       await assertMessageBound(ctx, existing, boundInstanceName);
+      // A keyed JOIN records its key too, with its outcome: its answer can be lost and the
+      // bubble deleted before the bridge asks again — the repeat is then answered from
+      // the record (nothing), never by opening a bubble for a text that was already shown.
+      if (key !== undefined) await recordLateFinalKey(ctx, await ctx.db.get(chatId), chatId, key, existing._id, now);
       // Idempotent: a retransmit of the same final finds its text already there.
       if (existing.text.includes(add)) return existing._id;
       await ctx.db.patch(existing._id, {
@@ -6659,27 +6690,8 @@ export const appendLateFinal = internalMutation({
       updatedAt: now,
       finalizedAt: now,
     });
-    // EVERY keyed write that opens a bubble records its key, in this transaction: the op
-    // is retried by the bridge, and a repeat with no record would open a second bubble.
-    // The chat's purge finds these records through the projection's marker
-    // (`transcriptSeenAt` — "the projection wrote something for this conversation"), so
-    // a conversation that does not carry it yet (its transcript reads failed so far) is
-    // given it here, with the record.
-    await ctx.db.patch(chatId, {
-      updatedAt: now,
-      lastAssistantAt: now,
-      ...(key !== undefined && !transcriptStoredText(chat) ? { transcriptSeenAt: now } : {}),
-    });
-    if (key !== undefined) {
-      // Remember which bubble THIS write opened — and forget the chat's keys no retry
-      // can still carry (oldest first, bounded per write).
-      const stale = await ctx.db
-        .query("lateFinalWrites")
-        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
-        .take(LATE_FINAL_KEY_SWEEP);
-      for (const s of stale) if (s.createdAt < now - LATE_FINAL_KEY_TTL_MS) await ctx.db.delete(s._id);
-      await ctx.db.insert("lateFinalWrites", { chatId, writeKey: key, messageId: created, createdAt: now });
-    }
+    await ctx.db.patch(chatId, { updatedAt: now, lastAssistantAt: now });
+    if (key !== undefined) await recordLateFinalKey(ctx, chat, chatId, key, created, now);
     return created;
   },
 });
