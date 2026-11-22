@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { currentPlanIndex } from "./lib/planOrder";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -375,6 +376,32 @@ describe("an estimated plan settles once the pipeline is provably idle", () => {
     // The progression was INFERRED and keeps saying so — settling it does not
     // promote a guess into a fact.
     expect((settled as { estimated?: boolean }).estimated).toBe(true);
+  });
+
+  test("a plan published AFTER the estimate was closed is the plan in view", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedPlanMessage(t, { estimated: true });
+    const planStamp = Date.now() / 1000 - 60;
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("messageParts").collect()).find((r) => r.messageId === messageId)!;
+      await ctx.db.patch(row._id, { part: { ...row.part, stamp: planStamp } as typeof row.part });
+    });
+    await t.mutation(internal.subAgents.upsertSubAgent, { chatId, childSessionKey: CHILD, status: "running" as const });
+    await t.mutation(internal.subAgents.upsertSubAgent, { chatId, childSessionKey: CHILD, status: "done" as const });
+    const closed = await planParts(t, messageId);
+    // The closed checklist is in view, dated as the plan it closes (seconds, never ms).
+    expect(currentPlanIndex(closed as { stamp?: number }[])).toBe(closed.length - 1);
+    expect((closed[closed.length - 1] as { stamp?: number }).stamp).toBe(planStamp);
+    // A later run publishes its own plan, stamped by the bridge in seconds.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: closed.length,
+        part: { kind: "plan" as const, steps: [{ step: "Nouveau plan", status: "in_progress" as const }], stamp: Date.now() / 1000 },
+      });
+    });
+    const after = await planParts(t, messageId);
+    expect(currentPlanIndex(after as { stamp?: number }[])).toBe(after.length - 1);
   });
 
   test("a plan the AGENT published itself is never rewritten", async () => {
