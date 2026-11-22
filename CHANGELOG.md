@@ -19,7 +19,11 @@ text that follows, a late final is written in one attempt as before, an interrup
 about once and then after five minutes as before, and nothing tells the reader it was
 interrupted. Validated on the live bench on OpenClaw 2026.9.36, with Hermes 0.21.7, in token
 authentication: the full catalogue passed twice on 2026-11-21 (GO 32/32 both times) on the frame
-work of this release; the full catalogue passed again on 2026-11-22 (GO 32/32) on this release's final bridge and Convex functions. A turn cut by a restart, one cut by a stop, one steered and then cut, and one cut right after a work note were each replayed live there and settled as described below, and the interrupted bubble was checked on screen. What only automated tests cover is listed under the known limits.
+work of this release; the full catalogue passed again on 2026-11-22 (GO 32/32) on this release's
+final bridge and Convex functions. A turn cut by a restart, one cut by a stop, one steered and then
+cut, and one cut right after a work note were each replayed live there and settled as described
+below, and the interrupted bubble was checked on screen. What only automated tests cover is listed
+under the known limits.
 
 **Privacy fix.** Up to 0.103.6 included, text the gateway deliberately keeps out of what it
 displays — its internal runtime context — could appear in a reply's bubble while the reply was
