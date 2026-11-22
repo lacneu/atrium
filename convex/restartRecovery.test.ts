@@ -744,3 +744,89 @@ describe("the recovery's bubble is placed after the LAST bubble of the turn it r
     expect(await order(t, ids.chatId)).toEqual(["segment 0", "segment 1", "recovery"]);
   });
 });
+
+// A RUN ID IS A GATEWAY'S CHOICE. In a conversation several instances serve, or several
+// sessions of one, another one's bubble can carry the very id of the run recovered here:
+// nothing of the recovery — told, cleared, grouped — reaches it.
+describe("the recovery never reaches a bubble of another instance or another session that carries the same run id", () => {
+  /** A settled bubble of the SAME run id, bound to `instance` in session `sessionKey`. */
+  const foreign = (t: T, ids: { chatId: Id<"chats">; userId: Id<"users"> }, instance: string, sessionKey: string, interruption?: Doc<"messages">["interruption"]) =>
+    t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId: ids.chatId,
+        userId: ids.userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "theirs",
+        runId: INTERRUPTED,
+        turnSessionKey: sessionKey,
+        boundInstance: instance,
+        projectedTurn: true,
+        ...(interruption !== undefined ? { interruption } : {}),
+        updatedAt: Date.now(),
+      }),
+    );
+  const OTHER_SK = "agent:alice:atrium:chat:u-repro:turn-another";
+
+  test("TOLD and GROUPED: only this instance's, this session's bubble", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const theirs = await foreign(t, ids, "other", SK);
+    const elsewhere = await foreign(t, ids, "prod", OTHER_SK);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, projected.restart, IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption?.recoveryRunId).toBe(RECOVERY);
+    expect((await get(t, cut))?.displayGroupId).toBe(String(cut));
+    for (const id of [theirs, elsewhere]) {
+      const m = (await get(t, id))!;
+      expect(m.interruption).toBeUndefined();
+      expect(m.displayGroupId).toBeUndefined();
+      expect(m.text).toBe("theirs");
+    }
+  });
+
+  test("CLEARED: a withdrawal takes the fact from this scope's bubbles and leaves theirs saying what they say", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const said = { recoveryRunId: RECOVERY };
+    const theirs = await foreign(t, ids, "other", SK, said);
+    const elsewhere = await foreign(t, ids, "prod", OTHER_SK, said);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    const mine = await foreign(t, ids, "prod", SK, said);
+    await t.run((ctx) => ctx.db.patch(cut, { interruption: said }));
+    await t.mutation(internal.transcriptProjection.noteRunRecovery, { chatId: ids.chatId, sessionKey: SK, instanceName: "prod", runId: INTERRUPTED, withdraw: RECOVERY });
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toBeUndefined();
+    expect((await get(t, mine))?.interruption).toBeUndefined();
+    expect((await get(t, theirs))?.interruption).toEqual(said);
+    expect((await get(t, elsewhere))?.interruption).toEqual(said);
+  });
+
+  test("…and through a run's recorded bubble (`runBubbles`) too", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const said = { recoveryRunId: RECOVERY };
+    const MERGED = "webchat-" + "7".repeat(64);
+    // Another instance's bubble of another run, recorded as where this run id wrote.
+    const theirs = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("messages", {
+        chatId: ids.chatId,
+        userId: ids.userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "theirs",
+        runId: MERGED,
+        turnSessionKey: SK,
+        boundInstance: "other",
+        interruption: said,
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("runBubbles", { chatId: ids.chatId, runId: INTERRUPTED, messageId: id, createdAt: 1 });
+      return id;
+    });
+    await t.mutation(internal.transcriptProjection.noteRunRecovery, { chatId: ids.chatId, sessionKey: SK, instanceName: "prod", runId: INTERRUPTED, withdraw: RECOVERY });
+    await settle(t);
+    expect((await get(t, theirs))?.interruption).toEqual(said);
+  });
+});

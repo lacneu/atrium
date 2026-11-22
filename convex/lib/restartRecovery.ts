@@ -34,7 +34,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import type { MutationCtx } from "../_generated/server";
 import { countedRows } from "./bubbleProjection";
-import { liveBubbleFor } from "./projectedRuns";
+import { bubbleInScope, liveBubbleFor } from "./projectedRuns";
 import { steerSeqsOf } from "./transcriptProjection";
 
 /** Upstream `MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL` (src/sessions/input-provenance.ts). */
@@ -284,9 +284,14 @@ export async function tellRecoveredBubble(
   }
   // A bubble of ANOTHER run that shows this run's first segment (a merged delivery) may
   // state that other run's recovery: only what this run's entries said is taken from it.
+  // IN SCOPE ONLY, like the bubble that is told: a run id is a gateway's choice, and in a
+  // conversation several instances (or sessions) serve, another one's bubble can carry
+  // the same id — what it says of ITS recovery is not this bridge's to remove.
+  const inScope = { instanceName: scope.instanceName, sessionKey: scope.sessionKey };
   const stale = (m: Doc<"messages">): boolean =>
     m._id !== bubble?._id &&
     m.role === "assistant" &&
+    bubbleInScope(m, inScope) &&
     m.interruption?.recoveryRunId !== undefined &&
     (m.runId === runId || m.interruption.recoveryRunId === by || m.interruption.recoveryRunId === withdraw);
   if (below === undefined) {

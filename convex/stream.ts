@@ -6641,6 +6641,8 @@ export const appendLateFinal = internalMutation({
       // Deleted since (by its reader): the write landed, and nothing is opened again.
       if (bubble === null || bubble.chatId !== chatId || bubble.role !== "assistant") return null;
       await assertMessageBound(ctx, bubble, boundInstanceName);
+      // …and its own session's only: a key answers the session that recorded it.
+      if (!bubbleInScope(bubble, { sessionKey: turnSessionKey })) return null;
       if (bubble.text.includes(add)) return bubble._id;
       // A LONGER view of the text this write opened the bubble with (the bridge's debt
       // grew between two passes) replaces it; anything else is added, as for any join.
@@ -6660,6 +6662,9 @@ export const appendLateFinal = internalMutation({
       // The bubble's OWN bridge only: in a conversation several instances serve, the
       // chat check alone would let bridge A write into a bubble bridge B settled.
       await assertMessageBound(ctx, existing, boundInstanceName);
+      // …and its own session only: a bubble another session of this gateway settled is
+      // not joined, whatever id the bridge names (nothing is written).
+      if (!bubbleInScope(existing, { sessionKey: turnSessionKey })) return null;
       // A keyed JOIN records its key too, with its outcome: its answer can be lost and the
       // bubble deleted before the bridge asks again — the repeat is then answered from
       // the record (nothing), never by opening a bubble for a text that was already shown.

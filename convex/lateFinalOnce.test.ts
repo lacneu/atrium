@@ -235,6 +235,50 @@ describe("a late final that JOINS a bubble", () => {
   });
 });
 
+describe("a key and a bubble id answer their own instance and their own session only", () => {
+  const settledBubble = (t: T, chatId: Id<"chats">, userId: Id<"users">, boundInstance: string, turnSessionKey: string) =>
+    t.run((ctx) =>
+      ctx.db.insert("messages", { chatId, userId, role: "assistant" as const, status: "complete" as const, text: "Reply.", runId: RUN, boundInstance, turnSessionKey, updatedAt: 1 }),
+    );
+  const keyed = (t: T, chatId: Id<"chats">, args: Record<string, unknown>) =>
+    t.mutation(internal.stream.appendLateFinal, { chatId, runId: RUN, text: "And more.", turnSessionKey: SK, boundInstanceName: "prod", writeKey: "key-1", ...args } as never);
+
+  test("a JOIN into a bubble of ANOTHER session of this gateway is refused: nothing written, nothing recorded, nothing opened", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seed(t);
+    const elsewhere = await settledBubble(t, chatId, userId, "prod", "agent:alice:atrium:chat:u:another");
+    expect(await keyed(t, chatId, { messageId: elsewhere })).toBeNull();
+    expect((await bubbles(t, chatId)).map((m) => m.text)).toEqual(["Reply."]);
+    expect(await t.run((ctx) => ctx.db.query("lateFinalWrites").collect())).toEqual([]);
+  });
+
+  test("a JOIN into a bubble of ANOTHER instance is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seed(t);
+    const theirs = await settledBubble(t, chatId, userId, "other", SK);
+    await expect(keyed(t, chatId, { messageId: theirs })).rejects.toThrow();
+    expect((await bubbles(t, chatId)).map((m) => m.text)).toEqual(["Reply."]);
+  });
+
+  test("a KEY recorded by one session is not answered to another: its bubble is neither returned nor written", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seed(t);
+    const into = await settledBubble(t, chatId, userId, "prod", SK);
+    expect(await keyed(t, chatId, { messageId: into })).toBe(into);
+    expect(await keyed(t, chatId, { text: "Something else.", turnSessionKey: "agent:alice:atrium:chat:u:another" })).toBeNull();
+    expect((await bubbles(t, chatId)).map((m) => m.text)).toEqual(["Reply.\n\nAnd more."]);
+  });
+
+  test("a KEY whose bubble belongs to ANOTHER instance is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seed(t);
+    const theirs = await settledBubble(t, chatId, userId, "other", SK);
+    await t.run((ctx) => ctx.db.insert("lateFinalWrites", { chatId, writeKey: "key-1", messageId: theirs, createdAt: Date.now() }));
+    await expect(keyed(t, chatId, { text: "Something else." })).rejects.toThrow();
+    expect((await bubbles(t, chatId)).map((m) => m.text)).toEqual(["Reply."]);
+  });
+});
+
 describe("mixed deployments", () => {
   test("an OLDER bridge (no key): today's behaviour — each call opens a bubble, nothing is remembered", async () => {
     const t = convexTest(schema, modules);
