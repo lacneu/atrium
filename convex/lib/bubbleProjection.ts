@@ -174,6 +174,9 @@ export type PlanBubble = {
   shutdownNoted?: true;
   unanswered?: true;
   recovered?: true;
+  /** A later segment of the run has a bubble: this one does not show the run's end, and
+   *  says nothing of how it ended. */
+  earlierSegment?: true;
 };
 
 export type RunFacts = {
@@ -744,7 +747,7 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
     // of the bubble's runs is known — they end before an answer. A fact, set once.
     const rowsWhole = bubble.uncovered !== true && facts.every((f) => f?.covered === true || f?.empty === true);
     if (allSettled && rowsWhole) {
-      const now = bubble.shutdownNoted === true && endsUnanswered(rows);
+      const now = bubble.shutdownNoted === true && bubble.earlierSegment !== true && endsUnanswered(rows);
       if (now !== (bubble.unanswered === true)) write.unanswered = now;
     }
     // A bubble that states an interruption is never removed for showing nothing else.

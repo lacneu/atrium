@@ -568,14 +568,25 @@ async function projectRun(
   const entry = rows.find((d) => isRecoveryEntry(d) && d.recoversRunId === undefined);
   if (entry !== undefined) await resolveRecovery(ctx, scope, entry, budget);
   const recoveredBy = await recoveryOf(ctx, scope, runId, budget);
-  if (recoveredBy !== null) {
-    for (let k = segments.length - 1; k >= 0; k--) {
-      const id = liveBubbleOf.get(segmentKey(runId, segments[k]!));
-      const last = id === undefined ? undefined : bubbles.get(id);
-      if (id === undefined || last === undefined) continue;
-      bubbles.set(id, { ...last, recovered: true });
-      break;
+  // The run's END is on ONE bubble — its last segment's, else the nearest earlier one
+  // that has a bubble: what is said of a cut turn (`unanswered`, a recovery) is said
+  // there, and a bubble of an earlier segment says neither.
+  // (A later segment whose rows a reader sees gets its bubble from this very pass.)
+  let lastId: string | undefined;
+  let later = false;
+  for (let k = segments.length - 1; k >= 0; k--) {
+    const id = liveBubbleOf.get(segmentKey(runId, segments[k]!));
+    const held = id === undefined ? undefined : bubbles.get(id);
+    if (id === undefined || held === undefined) {
+      later ||= own.some((d) => d.visible && segmentOf(d.seq, steers) === segments[k]);
+      continue;
     }
+    if (id === lastId) continue;
+    if (lastId === undefined && !later) {
+      lastId = id;
+      if (recoveredBy !== null) bubbles.set(id, { ...held, recovered: true });
+    } else bubbles.set(id, { ...held, earlierSegment: true });
+    later = true;
   }
   const plan: ProjectionPlan = planProjection({
     floorSeq: scope.floorSeq,
@@ -589,7 +600,9 @@ async function projectRun(
   await executePlan(ctx, scope, chat, plan, result, budget);
   // THE GATEWAY'S OWN RECOVERY: said on the bubble in a transaction of its own (the
   // bubble's text is not this pass's to read twice) unless a bubble loaded here says it.
-  if (recoveredBy !== null && ![...budget.messages.values()].some((m) => m?.interruption?.recoveryRunId === recoveredBy)) {
+  // The fact lives on ONE bubble of the run, its last: a steer cut received after an
+  // earlier one was told moves it (the telling clears the run's other bubbles).
+  if (recoveredBy !== null && (lastId === undefined || budget.messages.get(lastId)?.interruption?.recoveryRunId !== recoveredBy)) {
     await noteRecoveredRun(ctx, scope, runId);
   }
   // A deleted segment's rows are rattached to the deleted bubble (never placed again).
@@ -767,7 +780,7 @@ async function executePlan(
   // its place: two consecutive answers are placed one after the other by `seq`, never on
   // the same anchor with a tie broken by creation order (codex phase 4 pass 1).
   for (const c of [...plan.create].sort((a, b) => a.firstSeq - b.firstSeq)) {
-    const orderTime = await placeBetween(ctx, scope, c.firstSeq, budget);
+    const orderTime = await placeBetween(ctx, scope, c.firstSeq, c.runId, budget);
     const before = orderTime.before;
     // A delivery run's bubble, born (or born again) from its rows, carries the delivery's
     // identity like the one the live door opens (§14.28) — its replay finds it.
@@ -923,10 +936,11 @@ async function placeBetween(
   ctx: MutationCtx,
   scope: ProjectionScope,
   seq: number,
+  runId: string,
   budget: Budget,
 ): Promise<{ before: Doc<"messages"> | null; at?: number }> {
-  const before = await neighbourBubble(ctx, scope, seq, "desc", budget);
-  const after = await neighbourBubble(ctx, scope, seq, "asc", budget);
+  const before = await neighbourBubble(ctx, scope, seq, "desc", runId, budget);
+  const after = await neighbourBubble(ctx, scope, seq, "asc", runId, budget);
   const lo = before === null ? null : effectiveOrder(before);
   // A queued message's sentinel says nothing about where it will be sent.
   const hiRaw = after === null ? null : effectiveOrder(after);
@@ -948,6 +962,8 @@ async function neighbourBubble(
   scope: ProjectionScope,
   seq: number,
   direction: "asc" | "desc",
+  /** The run whose bubble is being placed. */
+  ownRunId: string,
   budget: Budget,
 ): Promise<Doc<"messages"> | null> {
   let seen = 0;
@@ -966,6 +982,11 @@ async function neighbourBubble(
     if (r.messageId === undefined) {
       // One lookup per run met (its rows are consecutive).
       if (r.runId === undefined || r.role.toLowerCase() === "user" || openRuns.has(r.runId)) continue;
+      // The born bubble's OWN rows that follow it are not a neighbour AFTER it: the open
+      // bubble of its run is an EARLIER segment's (a segment born after the bubble that
+      // follows the run — the gateway's recovery — took that earlier bubble for its later
+      // neighbour, and was placed on the recovery's own slot, after it).
+      if (direction === "asc" && r.runId === ownRunId) continue;
       openRuns.add(r.runId);
       const live = await openBubbleOfRun(ctx, scope, r.runId, direction, budget);
       if (live !== null) return live;
@@ -978,7 +999,8 @@ async function neighbourBubble(
 }
 
 /** The bubble a run that is not placed yet writes into, in scope: its latest segment's
- *  for a neighbour BEFORE, its first for one AFTER. Bounded (a run has a few segments). */
+ *  for a neighbour BEFORE, its first for one AFTER. Bounded: eight bubbles from that end,
+ *  charged (beyond eight out of scope there, none is found and the search goes on). */
 async function openBubbleOfRun(
   ctx: MutationCtx,
   scope: ProjectionScope,
@@ -986,15 +1008,18 @@ async function openBubbleOfRun(
   direction: "asc" | "desc",
   budget: Budget,
 ): Promise<Doc<"messages"> | null> {
+  // Read FROM THE END that is asked for: the first eight of the ascending index hid the
+  // last segments of a run of more than eight, and the bubble that follows the run was
+  // placed in the middle of it.
   const own = await readBounded(
-    ctx.db.query("messages").withIndex("by_chat_run_segment", (q) => q.eq("chatId", scope.chatId).eq("runId", runId)),
+    ctx.db
+      .query("messages")
+      .withIndex("by_chat_run_segment", (q) => q.eq("chatId", scope.chatId).eq("runId", runId))
+      .order(direction),
     8,
     budget,
   );
-  const inScope = own.docs
-    .filter((m) => m.role === "assistant" && bubbleInScope(m, { instanceName: scope.instanceName, sessionKey: scope.sessionKey }))
-    .sort((a, b) => (a.runSegment ?? 0) - (b.runSegment ?? 0));
-  return (direction === "desc" ? inScope.at(-1) : inScope[0]) ?? null;
+  return own.docs.find((m) => m.role === "assistant" && bubbleInScope(m, { instanceName: scope.instanceName, sessionKey: scope.sessionKey })) ?? null;
 }
 
 /** The user bubble of a send (`messages.by_chat_send_id`), read once per transaction and

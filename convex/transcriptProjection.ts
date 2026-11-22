@@ -1679,10 +1679,11 @@ export const noteRunRecovery = internalMutation({
     instanceName: v.string(),
     runId: v.string(),
     withdraw: v.optional(v.string()),
+    below: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { chatId, sessionKey, instanceName, runId, withdraw }) => {
-    await tellRecoveredBubble(ctx, { chatId, sessionKey, instanceName }, runId, withdraw);
+  handler: async (ctx, { chatId, sessionKey, instanceName, runId, withdraw, below }) => {
+    await tellRecoveredBubble(ctx, { chatId, sessionKey, instanceName }, runId, withdraw, below);
     return null;
   },
 });

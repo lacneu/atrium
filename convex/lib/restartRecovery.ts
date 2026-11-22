@@ -253,16 +253,70 @@ export async function noteRecoveredRun(ctx: MutationCtx, scope: Scope, runId: st
   await tellLater(ctx, scope, runId);
 }
 
+/** Bubbles of one run read per transaction when its earlier segments are cleared: a
+ *  message is read whole, and eight of the largest stay far under the read limit. A run
+ *  with more segments continues in the next transaction. */
+const RECOVERY_CLEAR_PAGE = 8;
+
 /**
  * The scheduled half (`transcriptProjection.noteRunRecovery`): what the rows say NOW of
- * the recovery of `runId`, said on the bubble that shows its end — or withdrawn from it.
- * Its own transaction: this run's rows and bubbles, nothing else.
+ * the recovery of `runId`, on EXACTLY ONE bubble of that run — the one that shows its end
+ * (its last steer segment's, where the cut is read) — and on no other: a steer cut
+ * received after the bubble was told moves the run's end to a later bubble, and the
+ * earlier one must stop saying it, whether the fact is then said again or withdrawn.
+ * Every call places the fact and clears the run's other bubbles, newest first,
+ * `RECOVERY_CLEAR_PAGE` per transaction (`below`: the continuation). Its own
+ * transactions: this run's rows and bubbles, nothing else.
  */
-export async function tellRecoveredBubble(ctx: MutationCtx, scope: Scope, runId: string, withdraw?: string): Promise<void> {
+export async function tellRecoveredBubble(
+  ctx: MutationCtx,
+  scope: Scope,
+  runId: string,
+  withdraw?: string,
+  below?: number,
+): Promise<void> {
   const by = await recoveryOf(ctx, scope, runId, { queries: 0, bytes: 0 });
   const bubble = await lastBubbleOf(ctx, scope, runId);
-  if (bubble === null || bubble.role !== "assistant") return;
-  if (by !== null) await noteInterruption(ctx, bubble, { recoveryRunId: by });
-  // What the entry made this bubble say, and only that.
-  else if (withdraw !== undefined && bubble.interruption?.recoveryRunId === withdraw) await noteInterruption(ctx, bubble, { recoveryRunId: null });
+  if (below === undefined && bubble !== null && bubble.role === "assistant") {
+    if (by !== null) await noteInterruption(ctx, bubble, { recoveryRunId: by });
+    // What the entry made this bubble say, and only that.
+    else if (withdraw !== undefined && bubble.interruption?.recoveryRunId === withdraw) await noteInterruption(ctx, bubble, { recoveryRunId: null });
+  }
+  // A bubble of ANOTHER run that shows this run's first segment (a merged delivery) may
+  // state that other run's recovery: only what this run's entries said is taken from it.
+  const stale = (m: Doc<"messages">): boolean =>
+    m._id !== bubble?._id &&
+    m.role === "assistant" &&
+    m.interruption?.recoveryRunId !== undefined &&
+    (m.runId === runId || m.interruption.recoveryRunId === by || m.interruption.recoveryRunId === withdraw);
+  if (below === undefined) {
+    const recorded = await ctx.db
+      .query("runBubbles")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", scope.chatId).eq("runId", runId))
+      .take(4);
+    for (const r of recorded) {
+      const m = await ctx.db.get(r.messageId);
+      if (m !== null && m.chatId === scope.chatId && stale(m)) await noteInterruption(ctx, m, { recoveryRunId: null });
+    }
+  }
+  const page = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_run_segment", (q) => {
+      const own = q.eq("chatId", scope.chatId).eq("runId", runId);
+      return below === undefined ? own : own.lt("runSegment", below);
+    })
+    .order("desc")
+    .take(RECOVERY_CLEAR_PAGE);
+  for (const m of page) if (stale(m)) await noteInterruption(ctx, m, { recoveryRunId: null });
+  const next = page.at(-1)?.runSegment;
+  if (page.length === RECOVERY_CLEAR_PAGE && next !== undefined) {
+    await ctx.scheduler.runAfter(0, internal.transcriptProjection.noteRunRecovery, {
+      chatId: scope.chatId,
+      sessionKey: scope.sessionKey,
+      instanceName: scope.instanceName,
+      runId,
+      ...(withdraw !== undefined ? { withdraw } : {}),
+      below: next,
+    });
+  }
 }

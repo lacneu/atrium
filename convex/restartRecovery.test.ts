@@ -602,3 +602,145 @@ describe("what a bubble says of its recovery is read from the rows at every pass
     expect((await rowsWith(t)).map((r) => r.recoversRunId)).toEqual([INTERRUPTED]);
   });
 });
+
+describe("the recovery of a run is said on ONE bubble of that run: the one that shows its end", () => {
+  const STEER = "webchat-" + "c".repeat(64);
+  /** The interrupted run's rows without seq 9, whose place a steered input holds. */
+  const withoutNine = projected.restart.filter((r) => r.seq <= 11 && r.seq !== 9);
+  const steerRow = { entryId: "steer-9", seq: 9, role: "user", runId: STEER, sendId: STEER, steerTargetRunId: INTERRUPTED, hidden: false, visible: true };
+  const saying = async (t: T, chatId: Id<"chats">) =>
+    (await assistants(t, chatId)).filter((m) => m.runId === INTERRUPTED).map((m) => [m.runSegment ?? 0, m.interruption?.recoveryRunId ?? null]);
+
+  test("a steer cut received AFTER the bubble was told: the fact moves to the last segment's bubble, the first stops saying it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    // The run is not known over yet: its rows are not placed, its one bubble is told.
+    await apply(t, ids.chatId, [...withoutNine, ...projected.restart.filter((r) => r.seq === 12)], { hasActiveRun: true, activeRunIds: [INTERRUPTED, RECOVERY] });
+    await settle(t);
+    expect((await get(t, cut))?.interruption?.recoveryRunId).toBe(RECOVERY);
+    // The steered input is read, and the run is over: its rows after the cut make a bubble.
+    await apply(t, ids.chatId, [steerRow, ...projected.restart.filter((r) => r.seq === 10 || r.seq === 11)], { hasActiveRun: true, activeRunIds: [RECOVERY] });
+    await settle(t);
+    expect((await saying(t, ids.chatId)).sort()).toEqual([
+      [0, null],
+      [1, RECOVERY],
+    ]);
+  });
+
+  test("…then the entry is retracted: no bubble of the run says it any more", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await apply(t, ids.chatId, withoutNine, { hasActiveRun: true, activeRunIds: [INTERRUPTED, RECOVERY] });
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq === 12), { kind: "live", deltaCursor: undefined });
+    await settle(t);
+    expect((await get(t, cut))?.interruption?.recoveryRunId).toBe(RECOVERY);
+    // The cut and the retraction arrive together: the first bubble was the one told.
+    const OTHER = "webchat-" + "f".repeat(64);
+    await apply(t, ids.chatId, [steerRow, ...projected.restart.filter((r) => r.seq === 10 || r.seq === 11), { entryId: "other-12", seq: 12, role: "user", runId: OTHER, sendId: OTHER, hidden: false, visible: true }], {
+      hasActiveRun: true,
+      activeRunIds: [OTHER],
+    });
+    await settle(t);
+    expect((await saying(t, ids.chatId)).sort()).toEqual([
+      [0, null],
+      [1, null],
+    ]);
+  });
+
+  test("`unanswered` too is said by the last segment's bubble only", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const cut = await liveBubble(t, ids, INTERRUPTED);
+    await socketClosed(t, ids.chatId, "restart");
+    await apply(t, ids.chatId, [...withoutNine, steerRow], IDLE);
+    await settle(t);
+    expect((await get(t, cut))?.interruption).toEqual({ shutdown: "restart" });
+  });
+});
+
+describe("the recovery's bubble is placed after the LAST bubble of the turn it resumes", () => {
+  /** Ten bubbles of the interrupted run, one per steer segment, the last still open. */
+  async function tenSegments(t: T, ids: { chatId: Id<"chats">; userId: Id<"users"> }) {
+    const first = await liveBubble(t, ids, INTERRUPTED);
+    await t.run((ctx) => ctx.db.patch(first, { status: "complete" as const }));
+    const made: Array<Id<"messages">> = [first];
+    for (let k = 1; k <= 9; k++) {
+      // Each segment is born well after the one before (a real turn's are seconds apart).
+      vi.advanceTimersByTime(1_000);
+      made.push(
+        await t.run((ctx) =>
+          ctx.db.insert("messages", {
+            chatId: ids.chatId,
+            userId: ids.userId,
+            role: "assistant" as const,
+            status: k === 9 ? ("streaming" as const) : ("complete" as const),
+            text: `segment ${k}`,
+            runId: INTERRUPTED,
+            runSegment: k,
+            turnSessionKey: SK,
+            boundInstance: "prod",
+            projectedTurn: true,
+            updatedAt: Date.now(),
+          }),
+        ),
+      );
+    }
+    return made;
+  }
+  const order = async (t: T, chatId: Id<"chats">) =>
+    (await t.run((ctx) => ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect()))
+      .filter((m) => m.role === "assistant")
+      .sort(compareOrder)
+      .map((m) => (m.runId === RECOVERY ? "recovery" : `segment ${m.runSegment ?? 0}`));
+
+  test("the recovery ends before the interrupted turn of TEN segments is known over: its bubble comes after the tenth, not in the middle", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    await tenSegments(t, ids);
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq <= 12), { hasActiveRun: true, activeRunIds: [INTERRUPTED, RECOVERY] });
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 12), { hasActiveRun: true, activeRunIds: [INTERRUPTED] });
+    await settle(t);
+    const shown = await order(t, ids.chatId);
+    expect(shown.at(-1)).toBe("recovery");
+    expect(shown.slice(0, -1)).toEqual(Array.from({ length: 10 }, (_, k) => `segment ${k}`));
+  });
+
+  test("a run of TEN bubbles that all say a recovery no row states: every one is cleared, eight per transaction", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    const made = await tenSegments(t, ids);
+    await t.run(async (ctx) => {
+      for (const id of made) await ctx.db.patch(id, { interruption: { recoveryRunId: RECOVERY } });
+    });
+    await t.mutation(internal.transcriptProjection.noteRunRecovery, { chatId: ids.chatId, sessionKey: SK, instanceName: "prod", runId: INTERRUPTED, withdraw: RECOVERY });
+    // The first transaction reaches the bubble that shows the run's end (no steer row is
+    // stored here: its first) and the eight newest; the continuation reaches the rest.
+    expect((await assistants(t, ids.chatId)).filter((m) => m.interruption !== undefined).map((m) => m.runSegment)).toEqual([1]);
+    await settle(t);
+    expect((await assistants(t, ids.chatId)).filter((m) => m.interruption !== undefined)).toEqual([]);
+  });
+
+  test("a segment of the interrupted run whose bubble is BORN after the recovery's still comes before it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, INTERRUPTED);
+    await liveBubble(t, ids, INTERRUPTED);
+    const STEER = "webchat-" + "c".repeat(64);
+    const withoutNine = projected.restart.filter((r) => r.seq <= 11 && r.seq !== 9);
+    // The recovery answers while the interrupted run is not known over.
+    await apply(t, ids.chatId, [...withoutNine, ...projected.restart.filter((r) => r.seq === 12)], { hasActiveRun: true, activeRunIds: [INTERRUPTED, RECOVERY] });
+    await apply(t, ids.chatId, projected.restart.filter((r) => r.seq > 12), { hasActiveRun: true, activeRunIds: [INTERRUPTED] });
+    await settle(t);
+    expect(await order(t, ids.chatId)).toEqual(["segment 0", "recovery"]);
+    // Then the steered input is read and the run is over: its second segment is born.
+    await apply(
+      t,
+      ids.chatId,
+      [{ entryId: "steer-9", seq: 9, role: "user", runId: STEER, sendId: STEER, steerTargetRunId: INTERRUPTED, hidden: false, visible: true }, ...projected.restart.filter((r) => r.seq === 10 || r.seq === 11)],
+      IDLE,
+    );
+    await settle(t);
+    expect(await order(t, ids.chatId)).toEqual(["segment 0", "segment 1", "recovery"]);
+  });
+});
