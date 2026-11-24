@@ -431,6 +431,13 @@ describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
     expect(a.suggestedAction).toMatch(/does not process the message as a turn/);
     expect(a.suggestedAction).toMatch(/MAY still have received its text as context only/);
     expect(a.suggestedAction).toMatch(/resends/);
+    // The outbox row is not read here, so neither of its two possible states is asserted:
+    // `sent` after the ack, still `pending` after a `/send` timeout (convex/bridge.ts
+    // leaves it for the reconciler). Both are named as possible, none as found.
+    expect(a.suggestedAction).not.toMatch(/the outbox row is `sent`/);
+    expect(a.suggestedAction).toMatch(/did NOT read the outbox row/);
+    expect(a.suggestedAction).toMatch(/`sent` when the gateway's ack reached the bridge/);
+    expect(a.suggestedAction).toMatch(/still be `pending` when the bridge's `\/send` timed out/);
   });
 
   test("priority: a failed MAIN turn beats a recent sub-agent failure", () => {
