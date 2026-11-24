@@ -6,146 +6,146 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "agent-request-approval-replay",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "approval-wait-vs-utility-job",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "approval-wait-vs-existing-session-claim",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "utility-hold-frames",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     },
     {
       "id": "emission-check",
       "ok": true,
-      "chat": "8cc7c12df01a0590"
+      "chat": "0b2ddd6b827bae7e"
     }
   ],
   "verdict": "GO",
-  "at": "2026-11-22T13:52:36.703Z",
+  "at": "2026-11-24T17:36:26.155Z",
   "scenarios": [
     "agent-request-approval-replay",
     "agent-request-exec-approval",
@@ -215,13 +215,13 @@
     "emission-check": "openclaw"
   },
   "flags": [],
-  "atriumSha": "23e722e221bfff7d0bf6fc664e72b7840ea32c29",
+  "atriumSha": "3cfed2b2abe112688bab47636ce4d8ba3238e7fb",
   "worktree": {
     "dirty": false,
     "deltaSha256": null
   },
-  "supportDigest": "1e616a9d3f0194779af22b73ecbb0fe1e447cbd779c5e42accd94c14bfcf67d7",
+  "supportDigest": "644b11f72cd6fd507714841d280a064dd18a255466f73e4ddfe3220507705ab3",
   "authMode": "token",
-  "bridgeVersion": "0.103.6",
+  "bridgeVersion": "0.104.0",
   "vendoredSha256": "d326866980554b03ae372878cc8d4d6a098387da5b27edd26155cf2365c2cf95"
 }

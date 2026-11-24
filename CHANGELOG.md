@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.104.4] — A child agent's status updates no longer refuse one another
+
+Reliability release for delegated work. No schema change, nothing to migrate. **Deploy the
+Convex functions before the bridge**: the bridge uses a new ingest operation
+(`upsertSubAgentBatch`). A bridge that meets functions without it falls back to the previous
+one-by-one writes, so the other order degrades instead of failing.
+
+- **Updates about the same child agent are no longer refused under load.** While a child agent
+  worked, the bridge sent each of its status updates as a separate write to the same row, several
+  at once; the database refused the ones that collided, and the row could lag or miss a step.
+  The bridge now keeps one write in flight per child. What arrives meanwhile waits in order and
+  goes out as a single ordered batch, applied in one transaction.
+- **A child's final status is never overtaken.** A batch stops at the first update that ends the
+  child's run; the bridge sends what follows one by one, in order.
+- **A stalled write no longer holds the others.** Every write from the bridge to Convex is
+  bounded in time for the whole exchange, and a batch answered without a count of what was
+  applied is treated as failed and retried.
+- **A bridge that stops finishes its pending child updates first**, within its five-second
+  limit, instead of leaving the last ones unsent.
+- **The card for a message the gateway dropped says only what is established.** When the
+  gateway accepts a message sent during a turn and then never hands it to the agent, the card
+  and the diagnosis no longer claim that later turns never read it.
+
+**Known limits.** A dropped message is still not resent automatically; resend it by hand. One
+other writer of the same row (the status read back from the gateway) does not go through the
+queue.
+
 ## [0.104.3] — Reasoning is read as it comes into view
 
 Frontend release: only the interface changes. Nothing to migrate; the bridge and the Convex

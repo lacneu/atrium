@@ -909,6 +909,14 @@ export interface ConvexWriter {
    */
   upsertSubAgent(record: SubAgentRecord): Promise<void>;
   /**
+   * Resolves once no sub-agent row write is in flight or waiting (the process
+   * shutdown). Optional: a writer that sends each record at once has nothing to drain.
+   */
+  drainSubAgentWrites?(): Promise<void>;
+  /** How many children have a sub-agent row write in flight or waiting (the shutdown
+   *  re-checks it once a drain has ended). */
+  readonly pendingSubAgentChildren?: number;
+  /**
    * A child's session row as read from the gateway (0.101.4) — the status source once
    * present. Optional: a writer without it leaves the status to the frames.
    */
@@ -1010,6 +1018,49 @@ export interface SessionRosterReport {
   owner: string;
   observedAt: number;
 }
+
+/** What a record carries on the wire beside its two keys — the same fields for the
+ *  single op and for each record of a batch. */
+function subAgentRecordFields(record: SubAgentRecord) {
+  return {
+    parentMessageId: record.parentMessageId ?? null,
+    anchorExact: record.anchorExact,
+    kind: record.kind,
+    bornOfRun: record.bornOfRun,
+    ...(record.startRunId !== undefined ? { startRunId: record.startRunId } : {}),
+    ...(record.childRunId !== undefined ? { childRunId: record.childRunId } : {}),
+    ...(record.runTimeoutSeconds !== undefined
+      ? { runTimeoutSeconds: record.runTimeoutSeconds }
+      : {}),
+    taskName: record.taskName,
+    declaredTimeoutMs: record.declaredTimeoutMs,
+    status: record.status,
+    ...(record.providerStatus !== undefined
+      ? { providerStatus: record.providerStatus }
+      : {}),
+    ...(record.rollup !== undefined ? { rollup: record.rollup } : {}),
+    resultText: record.resultText,
+    phase: record.phase,
+    errorMessage: record.errorMessage,
+    ...(record.errorCode !== undefined ? { errorCode: record.errorCode } : {}),
+    tools: record.tools,
+    sessionMeta: record.sessionMeta,
+    telemetry: record.telemetry,
+  };
+}
+
+/** One record of a child waiting to be written, and the caller that waits for it. */
+interface QueuedSubAgentWrite {
+  record: SubAgentRecord;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+  /** Sent in a batch that Convex stopped before this record: it goes alone next. */
+  alone?: true;
+}
+
+/** The most records one batch carries — Convex's own bound (convex/subAgents.ts
+ *  `MAX_SUBAGENT_BATCH_RECORDS`), which refuses a larger one whole. */
+export const SUBAGENT_BATCH_MAX_RECORDS = 64;
 
 /**
  * CONVEX refused (or never answered) a write the bridge made while processing a frame.
@@ -1461,6 +1512,14 @@ type IngestOp =
       sessionMeta?: SubAgentSessionMeta;
       telemetry?: SubAgentTelemetry;
     }
+  // Several records of ONE child of ONE chat, in the order received: Convex applies the
+  // single upsert to each, in one transaction, and answers how many it wrote.
+  | {
+      op: "upsertSubAgentBatch";
+      chatId: string;
+      childSessionKey: string;
+      records: Array<Record<string, unknown>>;
+    }
   // Per-tool DETAIL (args + result) for a sub-agent call -> its own table. Keyed by
   // (childSessionKey, toolCallId). In-app user data; server-paths stripped.
   | {
@@ -1690,6 +1749,14 @@ export class HttpConvexWriter implements ConvexWriter {
   // messageId; message-less ops (startAssistant/getUploadUrl/getRehydrationContext)
   // run independently. Entries are evicted on finalize so the map stays bounded.
   private chains = new Map<string, Promise<unknown>>();
+  // The children with a sub-agent row write in flight (see upsertSubAgent), and the
+  // records of each that arrived meanwhile, in order. Keyed by childSessionKey — the key
+  // Convex resolves the row by — and shared by every session of this writer's instance,
+  // so two sockets of one conversation meet here.
+  private subAgentLanes = new Map<string, QueuedSubAgentWrite[]>();
+  // An older Convex answered "unknown op" to a batch: records go one at a time from then on.
+  private subAgentBatchUnsupported = false;
+  private subAgentIdleWaiters: Array<() => void> = [];
 
   // Delivery recorder (convex/deliveryTiming.ts). Learned ONCE per turn from the
   // startAssistant ack — so the per-delta hot path stays free when not recording.
@@ -1917,25 +1984,58 @@ export class HttpConvexWriter implements ConvexWriter {
     // Bridge-level deadline: a slow/hung Convex backend must time out + throw (the
     // chain then self-heals) rather than wedge the writer — and the consume loop
     // awaiting it — forever. Mirrors the gateway-http-media-fetcher abort pattern.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
-    if (typeof timer.unref === "function") timer.unref();
+    //
+    // The deadline covers the WHOLE exchange, the body included: headers that arrive
+    // followed by a body that never completes must end like any other silence. It is
+    // raced, not only signalled, so the bound does not depend on the transport
+    // surfacing the abort to a body read already in progress.
+    //
+    // Serialised BEFORE the deadline is armed: a body that cannot be serialised (a
+    // BigInt or a cycle in a tool's `output: unknown`) throws here, and nothing may be
+    // left ticking behind that throw.
     const serialized = JSON.stringify(body);
-    const send = async (secret: string): Promise<Response> =>
-      await this.fetchImpl(this.url, {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(
+          new ConvexIngestError(
+            body.op,
+            null,
+            `Convex ingest ${body.op} timed out after ${WRITE_TIMEOUT_MS}ms`,
+          ),
+        );
+      }, WRITE_TIMEOUT_MS);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+    // Never an unhandled rejection, whatever path leaves this function first.
+    deadline.catch(() => undefined);
+    const exchange = async (): Promise<T> => {
+      const response = await this.fetchImpl(this.url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${secret}`,
+          Authorization: `Bearer ${this.ingestSecret}`,
         },
         body: serialized,
         signal: controller.signal,
       });
-    let response: Response;
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new ConvexIngestError(
+          body.op,
+          response.status,
+          `Convex ingest ${body.op} -> HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+        );
+      }
+      return (await response.json()) as T;
+    };
     try {
-      response = await send(this.ingestSecret);
+      return await Promise.race([exchange(), deadline]);
     } catch (err) {
-      if (controller.signal.aborted) {
+      // The transport's own word for the abort is the same timeout.
+      if (controller.signal.aborted && !(err instanceof ConvexIngestError)) {
         throw new ConvexIngestError(
           body.op,
           null,
@@ -1946,15 +2046,6 @@ export class HttpConvexWriter implements ConvexWriter {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new ConvexIngestError(
-        body.op,
-        response.status,
-        `Convex ingest ${body.op} -> HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
-      );
-    }
-    return (await response.json()) as T;
   }
 
   async findProjectedBubble(chatId: string, sessionKey: string, runId: string, segment: number): Promise<string | null> {
@@ -3243,42 +3334,155 @@ export class HttpConvexWriter implements ConvexWriter {
     });
   }
 
-  async upsertSubAgent(record: SubAgentRecord): Promise<void> {
+  upsertSubAgent(record: SubAgentRecord): Promise<void> {
     // OFF the per-message serialization chain ON PURPOSE: a sub-agent observation
     // is keyed by childSessionKey and outlives the parent turn -- there is no
     // message to key on, and putting it on a chain would block the turn's critical
-    // ordered writes. doPost runs it independently; the CALL SITE (Session.consume)
-    // fires it best-effort (void + catch) so a slow/failed observation write never
-    // delays or wedges the consume loop. The Convex upsert is reorder-tolerant (it
-    // never downgrades a terminal status), so racing records are safe.
-    await this.doPost({
-      op: "upsertSubAgent",
-      chatId: record.chatId,
-      instanceName: this.instanceName ?? undefined,
-      parentMessageId: record.parentMessageId ?? null,
-      anchorExact: record.anchorExact,
-      childSessionKey: record.childSessionKey,
-      kind: record.kind,
-      bornOfRun: record.bornOfRun,
-      ...(record.startRunId !== undefined ? { startRunId: record.startRunId } : {}),
-      ...(record.childRunId !== undefined ? { childRunId: record.childRunId } : {}),
-      ...(record.runTimeoutSeconds !== undefined
-        ? { runTimeoutSeconds: record.runTimeoutSeconds }
-        : {}),
-      taskName: record.taskName,
-      declaredTimeoutMs: record.declaredTimeoutMs,
-      status: record.status,
-      ...(record.providerStatus !== undefined
-        ? { providerStatus: record.providerStatus }
-        : {}),
-      ...(record.rollup !== undefined ? { rollup: record.rollup } : {}),
-      resultText: record.resultText,
-      phase: record.phase,
-      errorMessage: record.errorMessage,
-      ...(record.errorCode !== undefined ? { errorCode: record.errorCode } : {}),
-      tools: record.tools,
-      sessionMeta: record.sessionMeta,
-      telemetry: record.telemetry,
+    // ordered writes. The CALL SITE (Session.consume) fires it best-effort (void +
+    // catch) so a slow/failed observation write never delays or wedges the consume
+    // loop.
+    //
+    // ONE REQUEST IN FLIGHT PER CHILD. Every write of a child reads and patches the
+    // SAME Convex document, so two of them in flight always conflict: a child running
+    // tools in parallel emits one record per tool frame within a millisecond, and
+    // fired together they made each other lose every optimistic-concurrency retry
+    // (HTTP 500 occ_conflict, in bursts).
+    //
+    // The records that arrive during a request wait IN ORDER and leave together as
+    // one batch, which Convex applies record by record with the single write's own
+    // logic, in one transaction. Nothing is merged here: what two records amount to
+    // depends on the row's stored state, which only the mutation reads. So a terminal,
+    // or the registration the frame path awaits, waits for the request in flight and
+    // is carried by the next one — as long as no more than SUBAGENT_BATCH_MAX_RECORDS
+    // records arrived during that request; beyond, the rest follows in further
+    // requests, still one at a time and in order.
+    // Children do not wait for one another. Each caller's promise settles with the
+    // request that carried its record.
+    const key = record.childSessionKey;
+    return new Promise<void>((resolve, reject) => {
+      const entry: QueuedSubAgentWrite = { record, resolve, reject };
+      const waiting = this.subAgentLanes.get(key);
+      if (waiting !== undefined) {
+        waiting.push(entry);
+        return;
+      }
+      this.subAgentLanes.set(key, []);
+      // Nothing in flight for this child: sent at once.
+      this.sendSubAgentRecords(key, [entry]);
+    });
+  }
+
+  /** Send `entries` (one child, one chat, in order) as ONE request, then the next. */
+  private sendSubAgentRecords(key: string, entries: QueuedSubAgentWrite[]): void {
+    // Whatever the outcome (doPost always settles): what waits goes next, or the
+    // child's entry is removed — before the callers are answered, so none of them
+    // observes a write of its child still held here.
+    const next = (unwritten: QueuedSubAgentWrite[]): void => {
+      const waiting = this.subAgentLanes.get(key) ?? [];
+      // Records the request did not write keep their place ahead of later ones.
+      if (unwritten.length > 0) waiting.unshift(...unwritten);
+      if (waiting.length === 0) {
+        this.subAgentLanes.delete(key);
+        if (this.subAgentLanes.size === 0) {
+          for (const done of this.subAgentIdleWaiters.splice(0)) done();
+        }
+        return;
+      }
+      this.subAgentLanes.set(key, waiting);
+      // One batch names one chat: records of another (never produced for one child,
+      // but not this function's to assume) leave in a request of their own.
+      const chatId = waiting[0]!.record.chatId;
+      let take = 1;
+      // A record Convex left unwritten was stopped by a row that runs its terminal
+      // effects on every write: each such record ends its transaction, so sending the
+      // tail again as a batch would only re-send it once per record.
+      if (!this.subAgentBatchUnsupported && waiting[0]!.alone !== true) {
+        while (
+          take < waiting.length &&
+          take < SUBAGENT_BATCH_MAX_RECORDS &&
+          waiting[take]!.record.chatId === chatId
+        ) {
+          take++;
+        }
+      }
+      this.sendSubAgentRecords(key, waiting.splice(0, take));
+    };
+    void this.postSubAgentRecords(entries.map((e) => e.record)).then(
+      (applied) => {
+        const unwritten = entries.slice(applied);
+        for (const e of unwritten) e.alone = true;
+        next(unwritten);
+        for (const e of entries.slice(0, applied)) e.resolve();
+      },
+      (err: unknown) => {
+        // An older Convex refuses the batch op WHOLE (unknown op: nothing was written):
+        // the same records go again, one at a time, and so does everything after them.
+        if (
+          entries.length > 1 &&
+          err instanceof ConvexIngestError &&
+          err.status === 400 &&
+          /unknown op/.test(err.message)
+        ) {
+          this.subAgentBatchUnsupported = true;
+          next(entries);
+          return;
+        }
+        // The request failed: its records are its callers' failure; what waits is untouched.
+        next([]);
+        for (const e of entries) e.reject(err);
+      },
+    );
+  }
+
+  /** One request for `records`; resolves with how many of them Convex wrote, from the
+   *  first. One record is the single op (every Convex knows it). */
+  private async postSubAgentRecords(records: SubAgentRecord[]): Promise<number> {
+    const first = records[0]!;
+    if (records.length === 1) {
+      await this.doPost({
+        op: "upsertSubAgent",
+        chatId: first.chatId,
+        instanceName: this.instanceName ?? undefined,
+        childSessionKey: first.childSessionKey,
+        ...subAgentRecordFields(first),
+      });
+      return 1;
+    }
+    const res = await this.doPost<{ applied?: unknown }>({
+      op: "upsertSubAgentBatch",
+      chatId: first.chatId,
+      childSessionKey: first.childSessionKey,
+      records: records.map(subAgentRecordFields),
+    });
+    // Convex stops a batch after the first record that ran the terminal effects and
+    // says how many it wrote. A count that is missing, zero or out of range says nothing
+    // about what was written: the request FAILED for its callers, like a write that timed
+    // out — never an acknowledgement, and nothing is sent again on a guess.
+    const applied = res?.applied;
+    if (typeof applied !== "number" || !Number.isInteger(applied) || applied < 1 || applied > records.length) {
+      throw new ConvexIngestError(
+        "upsertSubAgentBatch",
+        200,
+        "Convex ingest upsertSubAgentBatch -> HTTP 200 without a usable applied count",
+      );
+    }
+    return applied;
+  }
+
+  /** Test/diagnostic seam: the children with a sub-agent row write in flight or waiting. */
+  get pendingSubAgentChildren(): number {
+    return this.subAgentLanes.size;
+  }
+
+  /**
+   * Resolves once no sub-agent row write is in flight or waiting. For the process
+   * shutdown: a record still waiting behind a write has not left yet, and a terminal
+   * dropped there leaves its row `running`. The caller bounds the wait.
+   */
+  drainSubAgentWrites(): Promise<void> {
+    if (this.subAgentLanes.size === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.subAgentIdleWaiters.push(resolve);
     });
   }
 

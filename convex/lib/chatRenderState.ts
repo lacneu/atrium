@@ -155,10 +155,12 @@ export const KNOWN_ERROR_CODES = [
   // which says WE recognized nothing; here we recognized the wrapper and it carried nothing.
   "compaction_failed_no_cause",
   "run_failed_no_cause",
-  // The gateway DROPPED the user's admitted input: a concurrent run (a requester-settle
-  // wake, prod 2026-09-28) replaced the conversation's active branch before the input
-  // was promoted, so nothing was processed. Named, so the card can say "send it again"
-  // instead of "unknown", and the per-cause plane can count the race.
+  // The gateway DROPPED the user's admitted input: the message was already written in
+  // the transcript, and the active branch no longer contained it when the turn's run
+  // persisted its prompt (upstream session-accessor.sqlite-transcript-message-append.ts
+  // :182-187 at v2026.9.36). The run made no model call and nothing re-queues the input.
+  // Named, so the card can say "send it again" instead of "unknown", and the per-cause
+  // plane can count it.
   "pending_input_dropped",
   "gateway_storage_busy",
   // PHASE 6 (projection `on` only): the gateway interrupted the turn on state contention

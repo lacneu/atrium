@@ -48,6 +48,7 @@ import {
   watchdogOptionsFromEnv,
 } from "./core/event-loop-watchdog.js";
 import { carriesGatewayText, errForLog } from "./core/log-safe-error.js";
+import { closeThenExit } from "./shutdown.js";
 
 /**
  * Build one self-contained bundle for an instance: its hot media provider, a Convex
@@ -308,8 +309,20 @@ async function main(): Promise<void> {
     refresh?.stop();
     for (const discovery of registrationDiscoveries) discovery.stop();
     registry.closeAll();
-    server.close(() => process.exit(0));
-    // Hard cap so a stuck close never blocks the process forever.
+    closeThenExit({
+      close: (onClosed) => server.close(onClosed),
+      // Every served instance has its own writer.
+      drain: async () => {
+        await Promise.all(
+          [...served.values()].map((bundle) => bundle.writer.drainSubAgentWrites?.()),
+        );
+      },
+      pending: () =>
+        [...served.values()].some((bundle) => (bundle.writer.pendingSubAgentChildren ?? 0) > 0),
+      exit: () => process.exit(0),
+    });
+    // Hard cap so a stuck close, or a write Convex never answers, never blocks the
+    // process forever.
     const timer = setTimeout(() => process.exit(0), 5_000);
     if (typeof timer.unref === "function") {
       timer.unref();

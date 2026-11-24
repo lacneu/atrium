@@ -44,6 +44,7 @@ import {
 } from "./lib/foreignRunRefusals";
 import { usablePlanStamp } from "./lib/planOrder";
 import { CHILD_RUN_ID_RE } from "./lib/deliveryRuns";
+import { MAX_SUBAGENT_BATCH_RECORDS } from "./subAgents";
 import { isSessionRunStatus } from "./lib/sessionRowStatus";
 import {
   AGENT_REQUEST_SOURCES,
@@ -795,6 +796,15 @@ type IngestOp =
         startedAt?: number;
       };
     }
+  // Several records of ONE child of ONE chat, in the order the bridge received them,
+  // applied by one transaction (subAgents.upsertSubAgentBatch). A record carries what an
+  // `upsertSubAgent` body carries beside the two keys, which the batch states once.
+  | {
+      op: "upsertSubAgentBatch";
+      chatId: string;
+      childSessionKey: string;
+      records: Array<Record<string, unknown>>;
+    }
   // Per-tool DETAIL (args + result) for a sub-agent's call, keyed by
   // (childSessionKey, toolCallId). In its OWN table (NOT subAgents.tools[]) to avoid
   // re-pushing the whole array per write. In-app user data; server-paths stripped by
@@ -929,6 +939,7 @@ function ingestTargetIds(op: IngestOp): {
   // (the mutation re-checks atomically as well — this is the fast 403).
   const childSessionKey =
     (op.op === "upsertSubAgent" ||
+      op.op === "upsertSubAgentBatch" ||
       op.op === "upsertSubAgentToolPart" ||
       op.op === "applySubAgentRowStatus") &&
     typeof b.childSessionKey === "string"
@@ -941,6 +952,62 @@ function ingestTargetIds(op: IngestOp): {
         ? { interactionId }
         : {};
   return childSessionKey !== undefined ? { ...base, childSessionKey } : base;
+}
+
+/** One sub-agent record as the mutation takes it — the fields of an `upsertSubAgent`
+ *  body beside its keys, bounded at this untrusted boundary. Shared by the single op and
+ *  by each record of a batch, so both admit exactly the same values. */
+function subAgentRecordArgs(body: Extract<IngestOp, { op: "upsertSubAgent" }>) {
+  return {
+    parentMessageId: body.parentMessageId
+      ? (body.parentMessageId as Id<"messages">)
+      : undefined,
+    anchorExact: body.anchorExact === true ? true : undefined,
+    // Only the shape upstream mints (no ':' or ','): the settle join splits
+    // on both, and an id carrying them could pose as another child's.
+    childRunId:
+      typeof body.childRunId === "string" &&
+      CHILD_RUN_ID_RE.test(body.childRunId)
+        ? body.childRunId
+        : undefined,
+    // A declared limit shown to the reader: only a whole, non-negative number
+    // of seconds, within a week (the bridge's own bound) — anything else is
+    // not a figure the gateway enforced.
+    runTimeoutSeconds:
+      typeof body.runTimeoutSeconds === "number" &&
+      Number.isInteger(body.runTimeoutSeconds) &&
+      body.runTimeoutSeconds >= 0 &&
+      body.runTimeoutSeconds <= 7 * 24 * 60 * 60
+        ? body.runTimeoutSeconds
+        : undefined,
+    kind: body.kind,
+    bornOfRun: body.bornOfRun,
+    // Phase 5: a run id, bounded like one (lib/transcriptProjection MAX_RUN_ID_CHARS).
+    ...(typeof body.startRunId === "string" && body.startRunId.length > 0 && body.startRunId.length <= 256
+      ? { startRunId: body.startRunId }
+      : {}),
+    taskName: body.taskName,
+    // BOUNDED here, at the untrusted boundary: a non-finite or absurd figure
+    // must not become a deadline. The cap is the safety net's own horizon, so
+    // a declared value can only ever TIGHTEN what already applies.
+    declaredTimeoutMs:
+      typeof body.declaredTimeoutMs === "number" &&
+      Number.isFinite(body.declaredTimeoutMs) &&
+      body.declaredTimeoutMs > 0 &&
+      body.declaredTimeoutMs <= 24 * 60 * 60 * 1000
+        ? Math.round(body.declaredTimeoutMs)
+        : undefined,
+    status: body.status,
+    providerStatus: body.providerStatus,
+    rollup: body.rollup,
+    resultText: body.resultText,
+    phase: body.phase,
+    errorMessage: body.errorMessage,
+    errorCode: body.errorCode,
+    tools: body.tools,
+    sessionMeta: body.sessionMeta,
+    telemetry: body.telemetry,
+  };
 }
 
 export const ingest = httpAction(async (ctx, request) => {
@@ -2091,55 +2158,8 @@ export const ingest = httpAction(async (ctx, request) => {
         // ATOMIC cross-gateway re-check inside the mutation (global-key TOCTOU +
         // parentMessageId).
         boundInstanceName,
-        parentMessageId: body.parentMessageId
-          ? (body.parentMessageId as Id<"messages">)
-          : undefined,
-        anchorExact: body.anchorExact === true ? true : undefined,
         childSessionKey: body.childSessionKey,
-        // Only the shape upstream mints (no ':' or ','): the settle join splits
-        // on both, and an id carrying them could pose as another child's.
-        childRunId:
-          typeof body.childRunId === "string" &&
-          CHILD_RUN_ID_RE.test(body.childRunId)
-            ? body.childRunId
-            : undefined,
-        // A declared limit shown to the reader: only a whole, non-negative number
-        // of seconds, within a week (the bridge's own bound) — anything else is
-        // not a figure the gateway enforced.
-        runTimeoutSeconds:
-          typeof body.runTimeoutSeconds === "number" &&
-          Number.isInteger(body.runTimeoutSeconds) &&
-          body.runTimeoutSeconds >= 0 &&
-          body.runTimeoutSeconds <= 7 * 24 * 60 * 60
-            ? body.runTimeoutSeconds
-            : undefined,
-        kind: body.kind,
-        bornOfRun: body.bornOfRun,
-        // Phase 5: a run id, bounded like one (lib/transcriptProjection MAX_RUN_ID_CHARS).
-        ...(typeof body.startRunId === "string" && body.startRunId.length > 0 && body.startRunId.length <= 256
-          ? { startRunId: body.startRunId }
-          : {}),
-        taskName: body.taskName,
-        // BOUNDED here, at the untrusted boundary: a non-finite or absurd figure
-        // must not become a deadline. The cap is the safety net's own horizon, so
-        // a declared value can only ever TIGHTEN what already applies.
-        declaredTimeoutMs:
-          typeof body.declaredTimeoutMs === "number" &&
-          Number.isFinite(body.declaredTimeoutMs) &&
-          body.declaredTimeoutMs > 0 &&
-          body.declaredTimeoutMs <= 24 * 60 * 60 * 1000
-            ? Math.round(body.declaredTimeoutMs)
-            : undefined,
-        status: body.status,
-        providerStatus: body.providerStatus,
-        rollup: body.rollup,
-        resultText: body.resultText,
-        phase: body.phase,
-        errorMessage: body.errorMessage,
-        errorCode: body.errorCode,
-        tools: body.tools,
-        sessionMeta: body.sessionMeta,
-        telemetry: body.telemetry,
+        ...subAgentRecordArgs(body),
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -2157,6 +2177,55 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
+    }
+    case "upsertSubAgentBatch": {
+      // ONE chat and ONE child per batch, stated once: a record naming another chat or
+      // another child is refused with the whole batch (nothing written) rather than
+      // quietly applied under the batch's keys.
+      const records: unknown = body.records;
+      const valid =
+        Array.isArray(records) &&
+        records.length >= 1 &&
+        records.length <= MAX_SUBAGENT_BATCH_RECORDS &&
+        records.every(
+          (r) =>
+            r !== null &&
+            typeof r === "object" &&
+            !Array.isArray(r) &&
+            ((r as { chatId?: unknown }).chatId === undefined ||
+              (r as { chatId?: unknown }).chatId === body.chatId) &&
+            ((r as { childSessionKey?: unknown }).childSessionKey === undefined ||
+              (r as { childSessionKey?: unknown }).childSessionKey === body.childSessionKey),
+        );
+      if (!valid) {
+        await traceIngestRejected(ctx, body.op, 400, "invalid_body");
+        return json({ ok: false, error: "invalid body" }, 400);
+      }
+      const list = records as Array<Extract<IngestOp, { op: "upsertSubAgent" }>>;
+      const res = await ctx.runMutation(internal.subAgents.upsertSubAgentBatch, {
+        chatId: body.chatId as Id<"chats">,
+        // The PROVEN instance, as for the single op.
+        instanceName: boundInstanceName,
+        boundInstanceName,
+        childSessionKey: body.childSessionKey,
+        records: list.map((r) => subAgentRecordArgs(r)),
+      });
+      const last = list[res.applied - 1];
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        meta: {
+          op: body.op,
+          // Structural only: how many records came, how many this transaction wrote, and
+          // the status of the last one written.
+          count: list.length,
+          applied: res.applied,
+          ...(last !== undefined ? { status: last.status } : {}),
+          ok: true,
+        },
+      });
+      return json({ ok: true, applied: res.applied });
     }
     case "upsertSubAgentToolPart": {
       await ctx.runMutation(internal.subAgents.upsertSubAgentToolPart, {

@@ -414,8 +414,30 @@ describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
     );
     expect(a.class).toBe("dispatch_error");
     expect(a.suggestedAction).toBe(actionForErrorCode("pending_input_dropped"));
-    expect(a.suggestedAction).toMatch(/nothing was processed/i);
+    // What is established, and no more: the send was accepted, the run made no model
+    // call, nothing re-queues it — and the cause of the branch change is NOT claimed
+    // (three prod cases on 2026.9.36 where no concurrent reply explains it).
+    expect(a.suggestedAction).toMatch(/ACCEPTED this send/);
+    expect(a.suggestedAction).toMatch(/made no model call/);
+    expect(a.suggestedAction).toMatch(/neither re-queues nor retries/);
+    expect(a.suggestedAction).toMatch(/MINUTES after the send/);
+    expect(a.suggestedAction).toMatch(/not visible from Atrium/);
+    expect(a.suggestedAction).not.toMatch(/nothing was processed/i);
+    expect(a.suggestedAction).not.toMatch(/before the input was promoted/i);
+    // No guarantee about what later runs read: upstream's orphan repair can hand the
+    // text to another run as context (attempt-prompt-helpers.ts, v2026.9.36). Not a turn,
+    // and possibly context — both said.
+    expect(a.suggestedAction).not.toMatch(/later runs do not read/i);
+    expect(a.suggestedAction).toMatch(/does not process the message as a turn/);
+    expect(a.suggestedAction).toMatch(/MAY still have received its text as context only/);
     expect(a.suggestedAction).toMatch(/resends/);
+    // The outbox row is not read here, so neither of its two possible states is asserted:
+    // `sent` after the ack, still `pending` after a `/send` timeout (convex/bridge.ts
+    // leaves it for the reconciler). Both are named as possible, none as found.
+    expect(a.suggestedAction).not.toMatch(/the outbox row is `sent`/);
+    expect(a.suggestedAction).toMatch(/did NOT read the outbox row/);
+    expect(a.suggestedAction).toMatch(/`sent` when the gateway's ack reached the bridge/);
+    expect(a.suggestedAction).toMatch(/still be `pending` when the bridge's `\/send` timed out/);
   });
 
   test("priority: a failed MAIN turn beats a recent sub-agent failure", () => {

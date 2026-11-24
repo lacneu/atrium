@@ -13,6 +13,7 @@ import { sleep } from "./helpers/sleep.js";
 import { Readable } from "node:stream";
 import {
   lateFinalAskedOnce, HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
+import { closeThenExit } from "../src/shutdown";
 import {
   MEDIA_TOO_LARGE_CODE,
   type MediaFetcher,
@@ -2245,5 +2246,377 @@ describe("a late final is NAMED by its write (the key makes it repeatable)", () 
     expect(bodies).toHaveLength(1);
     expect(err).toBeInstanceOf(Error);
     expect(lateFinalAskedOnce(err)).toBe(false);
+  });
+});
+
+// A child running tools in parallel emits one record per tool frame within a millisecond.
+// Every record of a child reads and patches the same Convex row, so two in flight always
+// conflict: fired together they lost each other's optimistic-concurrency retries and Convex
+// answered 500 `occ_conflict` in bursts (prod 2026-11-16). One request in flight per child;
+// what arrives meanwhile leaves in order as ONE batch, applied by Convex record by record.
+describe("sub-agent row writes: one request in flight per child, the rest as an ordered batch", () => {
+  type Rec = { status: string; tools?: unknown[]; phase?: string; resultText?: string; childRunId?: string };
+  type Body = Rec & { op: string; chatId: string; childSessionKey: string; records?: Rec[] };
+
+  /** A fetch fake that counts the requests in flight PER CHILD and answers them by hand. */
+  function childFetch(opts: { batch?: "known" | "unknown"; applied?: (records: Rec[]) => number } = {}) {
+    const sent: Body[] = [];
+    const inFlight = new Map<string, number>();
+    let maxPerChild = 0;
+    const pending: Array<(fail: boolean) => void> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as Body;
+      sent.push(body);
+      const now = (inFlight.get(body.childSessionKey) ?? 0) + 1;
+      inFlight.set(body.childSessionKey, now);
+      maxPerChild = Math.max(maxPerChild, now);
+      return await new Promise<Response>((resolve) => {
+        pending.push((fail) => {
+          inFlight.set(body.childSessionKey, (inFlight.get(body.childSessionKey) ?? 1) - 1);
+          if (fail) return resolve(new Response("OptimisticConcurrencyControlFailure", { status: 500 }));
+          if (body.op === "upsertSubAgentBatch" && opts.batch === "unknown") {
+            // What a Convex from before the op answers (convex/bridge_ingest.ts, default case).
+            return resolve(new Response(JSON.stringify({ ok: false, error: "unknown op" }), { status: 400 }));
+          }
+          const applied = body.records === undefined ? undefined : (opts.applied?.(body.records) ?? body.records.length);
+          resolve(new Response(JSON.stringify({ ok: true, ...(applied === undefined ? {} : { applied }) }), { status: 200 }));
+        });
+      });
+    }) as unknown as typeof fetch;
+    const settleNext = (fail = false) => pending.shift()?.(fail);
+    const settleAll = async () => {
+      for (let idle = 0; idle < 3; ) {
+        if (pending.length > 0) {
+          settleNext();
+          idle = 0;
+        } else idle++;
+        await sleep(0);
+      }
+    };
+    /** Every record sent, in the order Convex would apply them. */
+    const records = () => sent.flatMap((b) => b.records ?? [b as Rec]);
+    return { fetchImpl, sent, records, settleNext, settleAll, waiting: () => pending.length, maxPerChild: () => maxPerChild };
+  }
+
+  const A = "agent:main:subagent:a";
+  const record = (childSessionKey: string, toolCount: number) => ({
+    chatId: "chat-1",
+    childSessionKey,
+    status: "running" as const,
+    tools: Array.from({ length: toolCount }, (_, i) => ({
+      name: "exec",
+      status: "running" as const,
+      toolCallId: `call-${i}`,
+    })),
+  });
+  const progress = (n: number) => ({ chatId: "chat-1", childSessionKey: A, status: "running" as const, phase: `progress-${n}` });
+  const shape = (f: ReturnType<typeof childFetch>) => f.sent.map((b) => (b.records === undefined ? b.op : b.records.length));
+
+  test("a burst for one child: the first leaves at once, the rest leave as ONE batch, in order", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const writes = [1, 2, 3, 4, 5].map((n) => w.upsertSubAgent(record(A, n)));
+    await sleep(0);
+    expect(f.waiting()).toBe(1);
+    await f.settleAll();
+    await Promise.all(writes);
+    expect(f.maxPerChild()).toBe(1);
+    expect(shape(f)).toEqual(["upsertSubAgent", 4]);
+    expect(f.sent[1]).toMatchObject({ op: "upsertSubAgentBatch", chatId: "chat-1", childSessionKey: A });
+    // Nothing folded: every record, as received.
+    expect(f.records().map((r) => r.tools?.length)).toEqual([1, 2, 3, 4, 5]);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("children do not wait for one another", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const writes = [
+      w.upsertSubAgent(record(A, 1)),
+      w.upsertSubAgent(record("agent:main:subagent:b", 1)),
+      w.upsertSubAgent(record(A, 2)),
+    ];
+    await sleep(0);
+    // One per child in flight; the second record of `a` waits behind the first.
+    expect(f.sent.map((b) => b.childSessionKey)).toEqual([A, "agent:main:subagent:b"]);
+    await f.settleAll();
+    await Promise.all(writes);
+    expect(f.maxPerChild()).toBe(1);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("a refused request is its own callers' failure: the records waiting behind it are neither lost nor rejected", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const first = w.upsertSubAgent(record(A, 1)).then(
+      () => "ok",
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    const behind = [w.upsertSubAgent(record(A, 2)), w.upsertSubAgent(record(A, 3))];
+    await sleep(0);
+    f.settleNext(true);
+    expect(await first).toMatch(/upsertSubAgent -> HTTP 500/);
+    await f.settleAll();
+    await Promise.all(behind);
+    expect(shape(f)).toEqual(["upsertSubAgent", 2]);
+    expect(f.records().map((r) => r.tools?.length)).toEqual([1, 2, 3]);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  // The frame path AWAITS a child's registration (Session.flushSubAgentObserved); a child
+  // that resumes after a `chat:error` registers again while its earlier records wait.
+  test("an awaited registration behind a stalled request is carried by the NEXT one", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    void w.upsertSubAgent(record(A, 1)); // in flight, stalled
+    const updates = [2, 3, 4, 5].map((n) => w.upsertSubAgent(record(A, n)));
+    let registered = false;
+    const registration = w
+      .upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "running", childRunId: "run-2", phase: "start" })
+      .then(() => {
+        registered = true;
+      });
+    await sleep(0);
+    expect(f.sent).toHaveLength(1);
+    f.settleNext(); // the stalled request answers
+    await sleep(0);
+    expect(shape(f)).toEqual(["upsertSubAgent", 5]);
+    expect(f.sent[1]!.records![4]).toMatchObject({ status: "running", childRunId: "run-2", phase: "start" });
+    expect(registered).toBe(false);
+    f.settleNext();
+    await registration;
+    await Promise.all(updates);
+    expect(f.sent).toHaveLength(2);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  // Hermes relays one record per `subagent.thinking` / `subagent.progress` event.
+  test("200 progress updates then `done`: a handful of requests, every record in order, the end last", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const all = [w.upsertSubAgent(progress(-1))];
+    for (let i = 0; i < 200; i++) all.push(w.upsertSubAgent(progress(i)));
+    all.push(w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" }));
+    await f.settleAll();
+    await Promise.all(all);
+    // 1 in flight, then 201 records in batches of at most 64 — not 202 requests.
+    expect(shape(f)).toEqual(["upsertSubAgent", 64, 64, 64, 9]);
+    expect(f.maxPerChild()).toBe(1);
+    const sent = f.records();
+    expect(sent.slice(0, 201).map((r) => r.phase)).toEqual(Array.from({ length: 201 }, (_, i) => `progress-${i - 1}`));
+    expect(sent[201]).toMatchObject({ status: "done", resultText: "the answer" });
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("Convex wrote only the first records of a batch: the rest goes next, ahead of what arrived since", async () => {
+    // It stops after the record that ran the terminal effects (subAgents.upsertSubAgentBatch).
+    const f = childFetch({ applied: (records) => Math.min(2, records.length) });
+    const w = writerWith(f.fetchImpl);
+    const settled: number[] = [];
+    void w.upsertSubAgent(progress(0));
+    const batch = [1, 2, 3, 4].map((n) => w.upsertSubAgent(progress(n)).then(() => settled.push(n)));
+    await sleep(0);
+    f.settleNext(); // the request in flight
+    await sleep(0);
+    expect(shape(f)).toEqual(["upsertSubAgent", 4]);
+    const late = w.upsertSubAgent(progress(5)).then(() => settled.push(5));
+    f.settleNext(); // the batch: two written
+    await sleep(0);
+    expect(settled).toEqual([1, 2]);
+    // The unwritten records go one at a time (each would end its transaction again),
+    // still ahead of what arrived since.
+    expect(f.sent[2]).toMatchObject({ op: "upsertSubAgent", phase: "progress-3" });
+    await f.settleAll();
+    await Promise.all([...batch, late]);
+    expect(shape(f)).toEqual(["upsertSubAgent", 4, "upsertSubAgent", "upsertSubAgent", "upsertSubAgent"]);
+    expect(f.records().map((r) => r.phase)).toEqual([0, 1, 2, 3, 4, 3, 4, 5].map((n) => `progress-${n}`));
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("a Convex from before the batch op: asked once, then one record at a time, nothing lost", async () => {
+    const f = childFetch({ batch: "unknown" });
+    const w = writerWith(f.fetchImpl);
+    const first = [0, 1, 2, 3].map((n) => w.upsertSubAgent(progress(n)));
+    await f.settleAll();
+    await Promise.all(first); // the refused batch rejected nobody
+    expect(shape(f)).toEqual(["upsertSubAgent", 3, "upsertSubAgent", "upsertSubAgent", "upsertSubAgent"]);
+    const second = [4, 5, 6].map((n) => w.upsertSubAgent(progress(n)));
+    await f.settleAll();
+    await Promise.all(second);
+    // Not asked again.
+    expect(f.sent.filter((b) => b.op === "upsertSubAgentBatch")).toHaveLength(1);
+    expect(f.sent.filter((b) => b.op === "upsertSubAgent").map((b) => b.phase)).toEqual(
+      [0, 1, 2, 3, 4, 5, 6].map((n) => `progress-${n}`),
+    );
+    expect(f.maxPerChild()).toBe(1);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("a response whose body never ends is a timeout: the caller is answered, the child's next record goes", async () => {
+    vi.useFakeTimers();
+    try {
+      const bodies: Body[] = [];
+      let hang = true;
+      const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body) as Body);
+        if (hang) {
+          hang = false;
+          // Headers arrived; the body never completes.
+          return { ok: true, status: 200, json: () => new Promise(() => {}) } as unknown as Response;
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const w = writerWith(fetchImpl);
+      const first = w.upsertSubAgent(record(A, 1)).then(
+        () => "ok",
+        (e: unknown) => (e instanceof Error ? e.message : String(e)),
+      );
+      const end = w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done" });
+      await vi.advanceTimersByTimeAsync(20_001); // past WRITE_TIMEOUT_MS
+      expect(await first).toMatch(/upsertSubAgent timed out after 20000ms/);
+      await end;
+      expect(bodies.map((b) => b.status)).toEqual(["running", "done"]);
+      expect(w.pendingSubAgentChildren).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("shutdown: the drain ends only once the request in flight AND the waiting batch have been written", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    void w.upsertSubAgent(record(A, 1));
+    void w.upsertSubAgent(progress(1));
+    void w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" });
+    let drained = false;
+    let exited = false;
+    closeThenExit({
+      close: (onClosed) => onClosed(), // the inbound server closes at once
+      drain: () =>
+        w.drainSubAgentWrites().then(() => {
+          drained = true;
+        }),
+      pending: () => w.pendingSubAgentChildren > 0,
+      exit: () => {
+        exited = true;
+      },
+    });
+    await sleep(0);
+    expect(exited).toBe(false);
+    f.settleNext(); // the request in flight answers: the batch leaves now
+    await sleep(0);
+    expect(shape(f)).toEqual(["upsertSubAgent", 2]);
+    expect(f.sent[1]!.records![1]).toMatchObject({ status: "done", resultText: "the answer" });
+    expect(drained).toBe(false);
+    expect(exited).toBe(false);
+    f.settleNext();
+    await sleep(5);
+    expect(drained).toBe(true);
+    expect(exited).toBe(true);
+    // Nothing waiting: a drain is immediate.
+    await w.drainSubAgentWrites();
+  });
+
+  // Session.flushSubAgentObserved AWAITS a child's first record, then sends its terminal:
+  // the end of that first write ends the drain a moment before the terminal is handed over.
+  test("shutdown: a producer that awaited the drained write sends its terminal next — the exit waits for it too", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const producer = (async () => {
+      await w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "running", phase: "start" });
+      await w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" });
+    })();
+    let exited = false;
+    closeThenExit({
+      close: (onClosed) => onClosed(),
+      drain: () => w.drainSubAgentWrites(),
+      pending: () => w.pendingSubAgentChildren > 0,
+      exit: () => {
+        exited = true;
+      },
+    });
+    await sleep(5);
+    expect(f.sent).toHaveLength(1);
+    f.settleNext(); // the first write ends: the drain ends, then the producer sends `done`
+    await sleep(5);
+    expect(f.sent.map((b) => b.status)).toEqual(["running", "done"]);
+    expect(exited).toBe(false);
+    f.settleNext();
+    await producer;
+    await sleep(5);
+    expect(exited).toBe(true);
+  });
+
+  test("a batch answered 200 without a usable count is a FAILED request: nobody is acknowledged, nothing is re-sent on a guess", async () => {
+    for (const answer of [{ ok: true, applied: 0 }, { ok: true }, { ok: true, applied: 3 }, { ok: true, applied: "2" }]) {
+      const bodies: Body[] = [];
+      const release: Array<() => void> = [];
+      const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+        const body = JSON.parse(init.body) as Body;
+        bodies.push(body);
+        await new Promise<void>((r) => release.push(r));
+        return new Response(JSON.stringify(body.op === "upsertSubAgentBatch" ? answer : { ok: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const w = writerWith(fetchImpl);
+      const outcome = (p: Promise<void>) =>
+        p.then(
+          () => "written",
+          (e: unknown) => (e instanceof Error ? e.message : String(e)),
+        );
+      void w.upsertSubAgent(progress(0));
+      const pair = [
+        outcome(w.upsertSubAgent(progress(1))),
+        outcome(w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" })),
+      ];
+      await sleep(0);
+      release.shift()!(); // the request in flight
+      await sleep(0);
+      release.shift()!(); // the batch
+      for (const o of await Promise.all(pair)) expect(o).toMatch(/upsertSubAgentBatch -> HTTP 200 without a usable applied count/);
+      await sleep(0);
+      // No loop: the batch was asked once, and the child's entry is gone.
+      expect(bodies.map((b) => b.op)).toEqual(["upsertSubAgent", "upsertSubAgentBatch"]);
+      expect(w.pendingSubAgentChildren).toBe(0);
+      // The child's next record goes as usual.
+      const later = outcome(w.upsertSubAgent(progress(2)));
+      await sleep(0);
+      release.shift()!();
+      expect(await later).toBe("written");
+    }
+  });
+});
+
+describe("a body that cannot be serialised leaves nothing behind", () => {
+  test("the caller is refused, no deadline stays armed, and nothing is rejected unhandled later", async () => {
+    vi.useFakeTimers();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let calls = 0;
+      const fetchImpl = (async () => {
+        calls++;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const w = writerWith(fetchImpl);
+      // A tool's `output` is `unknown`: a BigInt in it cannot be serialised.
+      const refusal = w
+        .addToolPart("m1", { kind: "tool", name: "exec", phase: "result", output: { size: 1n } } as never)
+        .then(
+          () => "ok",
+          (e: unknown) => (e instanceof Error ? e.name : String(e)),
+        );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await refusal).toBe("TypeError");
+      expect(calls).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(20_001); // past WRITE_TIMEOUT_MS
+      vi.useRealTimers();
+      await sleep(5); // a real turn of the loop: an unhandled rejection is reported by now
+      expect(unhandled).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });
