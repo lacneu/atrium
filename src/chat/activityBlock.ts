@@ -123,3 +123,13 @@ export function groupOutcome(
   if (failed > 0 || parts.some((p) => p.phase === "error")) return "failed";
   return blockInterrupted(parts, cut) ? "interrupted" : "done";
 }
+
+/** The outcome of any group, shown row by row or not: its failures are counted the same
+ *  way in both (a command that ended with a nonzero exit has phase `completed`, so the
+ *  phase alone would read it as done). */
+export function settledGroupOutcome(
+  parts: readonly ToolActivityPart[],
+  cut: ReadonlySet<string>,
+): "failed" | "interrupted" | "done" {
+  return groupOutcome(parts, cut, activityBlock(parts, true).failed);
+}

@@ -19,7 +19,7 @@ import { ToolCard } from "./ToolCard";
 import { useWorkZone } from "./WorkZone";
 import type { WorkZoneMark } from "./workZoneView";
 import type { ToolActivityPart } from "./toolActivityView";
-import { activityBlock, groupOutcome, type ActivityNode } from "./activityBlock";
+import { activityBlock, groupOutcome, settledGroupOutcome, type ActivityNode } from "./activityBlock";
 import { interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
 import {
   activityLabel,
@@ -113,7 +113,7 @@ export function InlineTurnActivity(props: {
       ? activityLabel(block === null || live ? parts : shown, { live })
       : block.summary;
   const Icon = FAMILY_ICON[dominantFamily(shown)];
-  const outcome = groupOutcome(parts, cut, block?.failed);
+  const outcome = block !== null ? groupOutcome(parts, cut, block.failed) : settledGroupOutcome(parts, cut);
   const trailing = live ? (
     <LoaderCircle
       size={13}

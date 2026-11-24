@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from "vitest";
 import { m } from "@/paraglide/messages.js";
-import { activityBlock, groupOutcome } from "./activityBlock";
+import { readFileSync } from "node:fs";
+import { activityBlock, groupOutcome, settledGroupOutcome } from "./activityBlock";
 import { toolCardPhase } from "./ToolCard";
 import { blockInterrupted, interruptedCalls, turnInterrupted, turnInterruptionText } from "./turnInterruptionView";
 
@@ -90,6 +91,15 @@ describe("a tool call the interrupted turn left without a result", () => {
     expect(block.summary).toContain(m.activity_summary_failed({ count: "1" }));
     expect(block.failed).toBe(1);
     expect(groupOutcome(parts, none, block.failed)).toBe("failed");
+  });
+  it("a group NOT shown row by row counts a nonzero exit as failed too", () => {
+    const none = new Set<string>();
+    const parts = [{ toolCallId: "c2", toolName: "exec", phase: "completed", result: { status: "completed", exitCode: 2, durationMs: 5 } }];
+    // The phase alone reads it as done: the line needs the summary's own count.
+    expect(groupOutcome(parts, none)).toBe("done");
+    expect(settledGroupOutcome(parts as never, none)).toBe("failed");
+    expect(settledGroupOutcome([{ toolCallId: "c1", toolName: "exec", phase: "completed", result: { status: "completed", exitCode: 0, durationMs: 5 } }] as never, none)).toBe("done");
+    expect(readFileSync(new URL("./InlineTurnActivity.tsx", import.meta.url), "utf8")).toMatch(/block !== null \? groupOutcome\(parts, cut, block\.failed\) : settledGroupOutcome\(parts, cut\)/);
   });
   it("interrupted and failed: the failure; interrupted alone stays interrupted", () => {
     const cut = new Set(["c9"]);
