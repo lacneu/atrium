@@ -238,9 +238,14 @@ const FILES = [
     "schema/sessions-involvement.ts",
     "schema/sessions-provider-review.ts",
     "schema/sessions-search.ts",
-    "schema/skill-curator.ts",
     "schema/ui-appearance-typefaces.ts",
   ]),
+  // The skill curator contract lived from 2026.9.6 to 2026.9.36: v2026.10.33
+  // deleted the module and every `SkillCurator*` / `SkillProposal*` schema with it
+  // (the `skills.curator.*` methods remain as shells answering INVALID_REQUEST,
+  // src/gateway/server-methods/skills-retired.ts). Bounded on both sides, so every
+  // tag in between still requires it.
+  { since: "2026.9.6", until: "2026.10.33", candidates: ["schema/skill-curator.ts"] },
 
   // New transitive imports as of 2026.9.7, computed as the closure of the modules
   // above against the checkout: environments read a worker-capacity bound, plugins a
@@ -254,6 +259,30 @@ const FILES = [
     "plugin-ui-capabilities.ts",
     "session-companion-contract.ts",
     "schema/presence.ts",
+  ]),
+
+  // New transitive imports as of 2026.10.33, computed as the closure of the modules
+  // above against the checkout: agents-models-skills split out its summary enums,
+  // the session-placement list and the skill detail/search contracts (which read the
+  // ClawHub listing and plugin compatibility), sessions gained the communication
+  // policy (schema + the root contract it reads) and a sharing-constants module, the
+  // UI appearance a background and a tab icon, users a background upload, and worker
+  // admission its gateway/session tool lists.
+  ...since("2026.10.33", [
+    "session-communication.ts",
+    "schema/agent-summary-enums.ts",
+    "schema/agents-list-session-placement.ts",
+    "schema/background-preferences.ts",
+    "schema/clawhub-listing.ts",
+    "schema/plugin-compatibility.ts",
+    "schema/sessions-communication.ts",
+    "schema/sessions-sharing-constants.ts",
+    "schema/skill-detail.ts",
+    "schema/skills-search.ts",
+    "schema/tab-icon.ts",
+    "schema/users-background.ts",
+    "schema/worker-gateway-tool.ts",
+    "schema/worker-session-tools.ts",
   ]),
 
   // INLINE WIDGETS: `canvas.document.view` — the bridge relays one widget document

@@ -86,6 +86,7 @@ import {
   wasWithheldBeforeSend,
   type ChatSendGate,
 } from "./providers/openclaw/chat-send.js";
+import { settleHeldInputAck } from "./providers/openclaw/chat-send-ack.js";
 import { isSessionVisibilityRefusedText } from "./core/failure-classifier.js";
 import { sessionPatchNeedsAdmin } from "./providers/openclaw/session-patch-scope.js";
 import {
@@ -3538,11 +3539,7 @@ async function sendHeldInput(
       conn.sessionReplaced = false;
     }
     ackStatus = (response as { payload?: { status?: unknown } } | undefined)?.payload?.status;
-    if (ackStatus === "started" || ackStatus === "in_flight") {
-      session.runManager.noteInputAckRun(opts.sendKey, extractRunId(response));
-    } else {
-      session.runManager.forgetHeldInput(opts.sendKey);
-    }
+    settleHeldInputAck(session.runManager, opts.sendKey, ackStatus, extractRunId(response));
     console.log(
       `[send] chat=${body.chatId} follow-up input accepted while a run works (queueMode=${opts.queueMode ?? "gateway"}, ack=${String(ackStatus)})`,
     );

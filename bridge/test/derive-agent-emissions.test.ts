@@ -492,6 +492,42 @@ describe("deriveAgentEmissions — the emitter family is DISCOVERED", () => {
     const second = `${BUS}\nexport function backdoor(e: AgentEventPayload) { notifyListeners(iterateAgentEventListeners(e), e); }\n`;
     expect(() => derive({ root: "/v", files: { ...UPSTREAM, "src/infra/agent-events.ts": second }, tsconfig: TSCONFIG, compilerOptions: OPTIONS })).toThrow(/must be fed by dispatchAgentEvent alone/);
   });
+
+  // v2026.10.33: the generator is gone — the dispatcher reads the registrations itself and
+  // calls each one's `listener`; the bus's types moved to a sibling module it re-exports.
+  const BUS_INLINE = BUS.replace('export type AgentEventPayload = { runId: string; seq: number; stream: string; ts: number; data: Record<string, unknown>; sessionKey?: string };', 'import type { AgentEventPayload } from "./agent-events.types.js";\nexport type { AgentEventPayload, AgentEventStream } from "./agent-events.types.js";')
+    .replace("function* iterateAgentEventListeners(evt: AgentEventPayload): Generator<Listener> {\n  yield* listeners;\n}\n", "const registrations = new Map<Listener, { listener: Listener; id: number }>();\n")
+    .replace("notifyListeners(iterateAgentEventListeners(enriched), enriched);", "notifyListeners([...registrations.values()].map((registration) => (delivered: AgentEventPayload) => { registration.listener(delivered); }), enriched);");
+  const BUS_TYPES = `export type AgentEventStream = "lifecycle" | "tool" | (string & {});\nexport type AgentEventPayload = { runId: string; seq: number; stream: AgentEventStream; ts: number; data: Record<string, unknown>; sessionKey?: string };\n`;
+  const inline = (bus: string) => derive({ root: "/virtual-upstream", files: { ...UPSTREAM, "src/infra/agent-events.ts": bus, "src/infra/agent-events.types.ts": BUS_TYPES }, tsconfig: TSCONFIG, compilerOptions: OPTIONS });
+
+  it("derives the same surface from a dispatcher that calls the registrations itself, with the bus types re-exported (v2026.10.33 layout)", () => {
+    expect(BUS_INLINE).not.toContain("iterateAgentEventListeners");
+    expect(BUS_INLINE).toContain("registration.listener(delivered)");
+    const next = inline(BUS_INLINE);
+    const rows = (i: Inventory) => i.emissions.map((e) => `${e.file}|${e.function}|${e.stream}|${String(e.phase)}|${e.keys.map((k) => k.key).join(",")}`).sort();
+    expect(rows(next)).toEqual(rows(inv));
+    const root = (next as unknown as { root: { listenerIterator: string | null; listenerMember?: string; declaredStreams: { literals: string[]; open: boolean; source?: string } | null } }).root;
+    expect(root.listenerIterator).toBeNull();
+    expect(root.listenerMember).toBe("listener");
+    // The declared stream union is read through the re-export, and says where it lives.
+    expect(root.declaredStreams).toMatchObject({ literals: ["lifecycle", "tool"], open: true, source: "src/infra/agent-events.types.ts" });
+    // …and the older layout's record is unchanged: no new key, the generator named.
+    const before = (inv as unknown as { root: Record<string, unknown> }).root;
+    expect(before.listenerIterator).toBe("iterateAgentEventListeners");
+    expect(before).not.toHaveProperty("listenerMember");
+  });
+
+  it("in that layout, a second function reading a registration's listener is a second door", () => {
+    const second = `${BUS_INLINE}\nexport function backdoor(e: AgentEventPayload) { for (const r of registrations.values()) r.listener(e); }\n`;
+    expect(() => inline(second)).toThrow(/must be read by dispatchAgentEvent alone; read by \[dispatchAgentEvent, backdoor\]/);
+    // Handed out without being called is the same door.
+    const handed = `${BUS_INLINE}\nexport function leak() { return [...registrations.values()].map((r) => r.listener); }\n`;
+    expect(() => inline(handed)).toThrow(/a second door to the public listeners/);
+    // And a dispatcher that reaches no listener at all is not a root.
+    const none = BUS_INLINE.replace("registration.listener(delivered);", "void delivered; void registration;");
+    expect(() => inline(none)).toThrow(/must be read by dispatchAgentEvent alone; read by \[\]/);
+  });
 });
 
 describe("deriveAgentEmissions — nothing is lost in silence", () => {
@@ -1879,6 +1915,24 @@ export function wire() {
   it("another object providing the member refuses the derivation", () => {
     const other = { ...FILES, "src/gateway/other-state.ts": `import type { RunState } from "./run-state.js";\nexport const fake: RunState = { record: (runId, event) => void [runId, event] };\n` };
     expect(() => run(other, [ENTRY])).toThrow(/RunState\.record: another object provides it \(src\/gateway\/other-state\.ts:2\)/);
+  });
+
+  it("a type DERIVED from the factory declares no signature to trust: the entry is not applied and the body is read (v2026.10.33)", () => {
+    // `type ChatRunState = ReturnType<typeof createChatRunState>`: the checker reaches the
+    // member's body, so the send resolves from the body itself — with the stale entry
+    // present (not a refusal) exactly as with none.
+    const derived = runState(RECORD)
+      .replace("export type RunState = {\n  record: (runId: string, event: Ev, extra?: Ev) => void;\n};", "export type RunState = ReturnType<typeof createRunState>;")
+      .replace("export function createRunState(): RunState {", "export function createRunState() {");
+    expect(derived).toContain("ReturnType<typeof createRunState>");
+    const files = { ...FILES, "src/gateway/run-state.ts": derived };
+    const withEntry = tfOf(run(files, [ENTRY]));
+    const without = tfOf(run(files, []));
+    expect(withEntry).toEqual(without);
+    expect(withEntry.fabricated.filter((g) => g.stream === "x_recorded").map((g) => g.keys)).toEqual([["a"]]);
+    // A body that WRITES into the event is then seen, entry or not: nothing was trusted.
+    const writing = { ...files, "src/gateway/run-state.ts": derived.replace("store.set(runId, copyEvent(event));", "event.data.touched = 1;\n    store.set(runId, copyEvent(event));") };
+    expect(tfOf(run(writing, [ENTRY]))).toEqual(tfOf(run(writing, [])));
   });
 
   it("a declared member that is gone refuses the derivation", () => {

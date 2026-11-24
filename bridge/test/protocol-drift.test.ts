@@ -87,6 +87,35 @@ describe("protocol drift detector", () => {
     expect(protocolDrift.report()).toEqual([]);
   });
 
+  it("the fields a 2026.10.33 gateway adds to an agent frame are silent; one nobody vendored still reports", () => {
+    // Vendored ahead of the promise: seven fields of the session snapshot
+    // (src/gateway/session-event-payload.ts) and `preamble`, a field of the agent event
+    // itself (schema/agent.ts). Badged "unknown field", they would bury the one that is.
+    const frame = (extra: Record<string, unknown>): unknown => ({
+      type: "event",
+      event: "agent",
+      payload: { runId: "r", seq: 1, stream: "lifecycle", ts: 1, sessionKey: SESSION_KEY, data: { phase: "start" }, ...extra },
+    });
+    protocolDrift.observe(
+      frame({
+        usageReport: { state: "available" },
+        communication: null,
+        effectiveCommunication: { send: "always", receive: "always" },
+        deviceFolder: null,
+        sidebarRoot: false,
+        snoozedUntil: null,
+        snoozedAt: null,
+        preamble: { retainedText: "…" },
+      }),
+    );
+    expect(protocolDrift.report()).toEqual([]);
+    // The row fields the snapshot does NOT flatten are not declared for the frame.
+    protocolDrift.observe(frame({ sessionModelRevision: 3 }));
+    const report = protocolDrift.report();
+    expect(report).toHaveLength(1);
+    expect(report[0]!.shape).toMatch(/^agent\.lifecycle\.field_[0-9a-f]{8}$|^agent\.field_[0-9a-f]{8}$/);
+  });
+
   it("an unknown chat payload field is counted by DIGEST — never its name, never a value", () => {
     protocolDrift.observe(chatFrame({ steerHint: "secret content" }));
     protocolDrift.observe(chatFrame({ steerHint: "other content" }));
@@ -596,15 +625,32 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
           ) as { fields: string[] }
         ).fields,
     );
+    // A version vendored AHEAD of the promise declares its own AgentEvent fields
+    // (2026.10.33 adds `preamble`): the bench runs the bridge against that gateway
+    // before `maxValidated` moves, and a field its vendored contract declares is not
+    // unknown drift there. Only versions ABOVE the promise are added — the promised
+    // manifest stays the reference, and an older one is never consulted.
+    const all = vendoredVersions();
+    const ahead = all.slice(all.indexOf(REFERENCE) + 1).flatMap((v) =>
+      Object.keys(
+        (
+          JSON.parse(
+            readFileSync(new URL(`../protocol/openclaw/coverage/${v}.json`, import.meta.url), "utf-8"),
+          ) as Manifest
+        ).schemas.AgentEvent?.fields ?? {},
+      ),
+    );
+    expect(all, "the promised version must be vendored").toContain(REFERENCE);
     const expected = new Set([
       ...Object.keys(MANIFEST.schemas.AgentEvent?.fields ?? {}),
+      ...ahead,
       ...snapshot.fields,
       ...older,
       ...AGENT_ROUTING_ENVELOPE_FIELDS,
     ]);
     expect(
       [...KNOWN_AGENT_FIELDS].sort(),
-      "the known-field set no longer equals (manifest ∪ every vendored derived snapshot ∪ envelope) — " +
+      "the known-field set no longer equals (promised manifest ∪ manifests vendored ahead ∪ every vendored derived snapshot ∪ envelope) — " +
         "re-run scripts/vendor-protocol.mjs and copy the derived list, deliberately",
     ).toEqual([...expected].sort());
   });

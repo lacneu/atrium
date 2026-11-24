@@ -261,6 +261,11 @@ export const CLASSIFIED_EVENTS: ReadonlySet<string> = new Set([
   "users.prefs.changed",
   "voicewake.changed",
   "voicewake.routing.changed",
+  // Announced from 2026.10.33 on (vendored ahead of the promise, classified `gap` in
+  // events/2026.10.33.json): an agent identity file was written; a reaction was set on
+  // a session message. Someone has looked at them, so they are not "never anticipated".
+  "agent.identity.changed",
+  "session.reaction",
 ]);
 
 /** Event families the gateway can BROADCAST without ever ANNOUNCING them.
@@ -284,6 +289,10 @@ export const BROADCAST_ONLY_EVENTS: ReadonlySet<string> = new Set([
   // No longer ANNOUNCED from 2026.9.7 (it left GATEWAY_EVENTS with the `tasks.*` RPCs),
   // still a key of the scope-guard table, so a gateway can still broadcast it.
   "task",
+  // In the scope-guard table from 2026.10.33 on (vendored ahead of the promise),
+  // classified `gap` in events/2026.10.33.json: the MCP app host's two notices.
+  "mcp.app.hostContextChanged",
+  "mcp.app.resourceUpdated",
 ]);
 
 export const AGENT_ROUTING_ENVELOPE_FIELDS: readonly string[] = [
@@ -429,7 +438,23 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "updatedAt",
   "verboseLevel",
   "visibility",
-
+  // NEW at 2026.10.33, vendored AHEAD of the promise (`maxValidated` is still
+  // 2026.9.36 until the bench attests the new tag): seven fields the gateway adds to
+  // the session snapshot (src/gateway/session-event-payload.ts) — the per-session
+  // communication policy and its effective value, the device folder a session is
+  // bound to, the sidebar-root flag, the two snooze instants, and `usageReport`
+  // (whether the run's token usage is available) — plus `preamble`, a top-level field
+  // of the agent event itself (schema/agent.ts, the text retained before the live
+  // text). Declared, not adopted: a field a vendored contract carries is not unknown
+  // drift, on the gateway that sends it. A 2026.9.36 gateway never sends them.
+  "communication",
+  "deviceFolder",
+  "effectiveCommunication",
+  "preamble",
+  "sidebarRoot",
+  "snoozedAt",
+  "snoozedUntil",
+  "usageReport",
 ]);
 
 /**

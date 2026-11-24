@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deliveryChildKey,
+  deliveryIdentityKey,
   deliveryPartStamp,
   followedUpChildRunIds,
   isDeliveryRun,
@@ -139,6 +140,84 @@ describe("requester-settle run grammar", () => {
     );
     expect(deliveryPartStamp("webchat-abc")).toBeUndefined();
     expect(deliveryPartStamp(undefined)).toBeUndefined();
+  });
+});
+
+// OpenClaw v2026.10.33 adds a `:pause` segment (src/agents/subagents/registry/
+// subagent-requester-settle-identity.ts `buildRequesterSettleWakeIdentity`: the batch key
+// is `requester-settle:<agent>:<key>:<ids>` + [`yield-N`] + [`pause`], and `:retry-K`
+// follows it). Verbatim upstream forms: subagent-parent-recovery.restart-integration
+// .test.ts:71 (`…:parent:child:pause`), subagent-requester-settle-identity.test.ts:15-48
+// (a paused batch at attempt 1 ends in `:retry-1`).
+describe("requester-settle run grammar — every form, by table", () => {
+  const BASE = "announce:requester-settle:meta:agent:meta:atrium:chat:o:c";
+  const A = "5c2543ae-a10b-4bcd-a346-6e3f8ab0e70e";
+  const B = "swarm_0123456789abcdef0123456789abcdef";
+
+  // The forms 2026.9.36 mints: parsed to the SAME value as before the pause segment
+  // existed — no `pause` key at all.
+  it.each([
+    [`${BASE}:${A}`, { childRunIds: [A], yieldGeneration: null }],
+    [`${BASE}:${A}:yield-1`, { childRunIds: [A], yieldGeneration: 1 }],
+    [`${BASE}:${A}:retry-2`, { childRunIds: [A], yieldGeneration: null }],
+    [`${BASE}:${A},${B}:yield-3:retry-1`, { childRunIds: [A, B], yieldGeneration: 3 }],
+    [`announce:requester-settle:unknown:agent:meta:main:${B}`, { childRunIds: [B], yieldGeneration: null }],
+  ])("2026.9.36 form %s", (rid, expected) => {
+    const parsed = parseRequesterSettleRun(rid);
+    expect(parsed).toStrictEqual(expected);
+    expect(parsed).not.toHaveProperty("pause");
+  });
+
+  // The pause notice: it settles no child and continues no yielded turn.
+  it.each([
+    [`${BASE}:${A}:pause`, { childRunIds: [A], yieldGeneration: null }],
+    [`${BASE}:${A}:yield-1:pause`, { childRunIds: [A], yieldGeneration: 1 }],
+    [`${BASE}:${A}:pause:retry-1`, { childRunIds: [A], yieldGeneration: null }],
+    [`${BASE}:${A}:yield-2:pause:retry-3`, { childRunIds: [A], yieldGeneration: 2 }],
+    [`${BASE}:${A},${B}:yield-1:pause`, { childRunIds: [A, B], yieldGeneration: 1 }],
+    // Upstream's own fixture (restart-integration test).
+    ["announce:requester-settle:main:agent:main:parent:child:pause", { childRunIds: ["child"], yieldGeneration: null }],
+  ])("2026.10.33 pause form %s", (rid, pause) => {
+    expect(parseRequesterSettleRun(rid)).toStrictEqual({ childRunIds: [], yieldGeneration: null, pause });
+    // Still a delivery run of the settle family, stamped like the others.
+    expect(isRequesterSettleRun(rid)).toBe(true);
+    expect(isDeliveryRun(rid)).toBe(true);
+    expect(deliveryChildKey(rid)).toBeNull();
+    expect(deliveryPartStamp(rid)).toBe(rid);
+  });
+
+  it("`pause` is read in its one position only", () => {
+    // Before the yield suffix it is not the segment upstream writes: the yield reads,
+    // and what is left names no run this can state (the id list would be `pause`).
+    expect(parseRequesterSettleRun(`${BASE}:${A}:pause:yield-1`)).toStrictEqual({
+      childRunIds: ["pause"],
+      yieldGeneration: 1,
+    });
+    // A pause with no id list in front of it fails closed.
+    expect(parseRequesterSettleRun("announce:requester-settle:meta:key:pause")).toBeNull();
+    expect(parseRequesterSettleRun(`${BASE}:a,,b:pause`)).toBeNull();
+  });
+
+  it("a pause notice has its own delivery identity — never the batch's, never another notice's", () => {
+    const done = deliveryIdentityKey(`${BASE}:${A}:yield-1`);
+    const paused = deliveryIdentityKey(`${BASE}:${A}:yield-1:pause`);
+    expect(done).toBe(`settle:${A}`);
+    expect(paused).toBe(`settle-pause:${A}:yield-1`);
+    // A retry of the notice is the same notice.
+    expect(deliveryIdentityKey(`${BASE}:${A}:yield-1:pause:retry-1`)).toBe(paused);
+    // Another child's notice, or another rearm generation's, is another delivery: read
+    // as `settle:pause`, every notice of a conversation shared one bubble.
+    expect(deliveryIdentityKey(`${BASE}:${B}:yield-1:pause`)).not.toBe(paused);
+    expect(deliveryIdentityKey(`${BASE}:${A}:yield-2:pause`)).not.toBe(paused);
+    expect(deliveryIdentityKey(`${BASE}:${A}:pause`)).toBe(`settle-pause:${A}:-`);
+    // The 2026.9.36 identities are unchanged: the batch, whatever its suffixes.
+    expect(deliveryIdentityKey(`${BASE}:${B},${A}:yield-3:retry-1`)).toBe(`settle:${[A, B].sort().join(",")}`);
+  });
+
+  it("a file stamped by a pause notice follows no batch up", () => {
+    expect(
+      followedUpChildRunIds("", [{ at: 0, childRunIds: [A] }], [`${BASE}:${A}:yield-1:pause`]),
+    ).toEqual([]);
   });
 });
 

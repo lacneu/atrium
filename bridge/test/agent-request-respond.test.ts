@@ -64,8 +64,10 @@ describe("parsing", () => {
         source: "openclaw.ask_user",
         answers: [{ id: "tags", values: Array.from({ length: n }, (_, i) => `v${i}`) }],
       });
-    expect(parseRespondBody(body(8))?.answers?.[0]?.values).toHaveLength(8);
-    expect(parseRespondBody(body(9))).toBeNull();
+    // The bound is the most options one question may carry (64 from OpenClaw 2026.10.33
+    // on): every option of a multi-select question can be picked.
+    expect(parseRespondBody(body(64))?.answers?.[0]?.values).toHaveLength(64);
+    expect(parseRespondBody(body(65))).toBeNull();
   });
 
   it("refuses a provider that contradicts the source", () => {
@@ -87,6 +89,36 @@ describe("OpenClaw questions", () => {
       ["question.get", { id: "ask_1" }],
       ["question.resolve", { id: "ask_1", answers: { answers: { format: ["PDF"] } }, resolvedBy: "atrium" }],
     ]);
+  });
+
+  it("answers a picked option with the VALUE the gateway's record gives it (OpenClaw 2026.10.33)", async () => {
+    // The record re-read at the gateway is the one the answer is canonicalized against
+    // (question-manager.ts `canonicalizeQuestionAnswer` reads an answer as a value FIRST):
+    // the label "eu" alone would select the option labelled "Europe".
+    const record = {
+      id: "ask_1",
+      sessionKey: SESSION,
+      status: "pending",
+      createdAtMs: 1_000,
+      questions: [
+        {
+          questionId: "region",
+          header: "Région",
+          question: "Où ?",
+          presentation: "form",
+          options: [{ label: "Europe", value: "eu" }, { label: "eu", value: "legacy" }, { label: "Asie" }],
+        },
+      ],
+    };
+    for (const [picked, sent] of [["Europe", "eu"], ["eu", "legacy"], ["Asie", "Asie"]] as const) {
+      const { calls, gw } = recorder({ "question.get": { question: record }, "question.resolve": { status: "answered" } });
+      const out = await respondOpenClaw(body({ answers: [{ id: "region", values: [picked] }] }), gw, false, LIVE);
+      expect(out).toEqual({ ok: true });
+      expect(calls[1]).toEqual([
+        "question.resolve",
+        { id: "ask_1", answers: { answers: { region: [sent] } }, resolvedBy: "atrium" },
+      ]);
+    }
   });
 
   it("refuses when the id now asks ANOTHER question at the same creation time (codex, 0.21.5 pass 15)", async () => {

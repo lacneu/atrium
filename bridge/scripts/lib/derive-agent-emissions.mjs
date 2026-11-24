@@ -90,6 +90,10 @@ export const ROOT_DISPATCHER = "dispatchAgentEvent";
  *  door to the public listeners would be a second root, and choosing one would inventory
  *  half of what reaches the gateway. */
 export const ROOT_LISTENER_ITERATOR = "iterateAgentEventListeners";
+/** v2026.10.33 removed that generator: the dispatcher reads the registrations itself and
+ *  calls each one's `listener` member. The same single-door rule is then held on that
+ *  member: every read of a `.listener` property in ROOT_SOURCE must sit in the dispatcher. */
+export const ROOT_LISTENER_MEMBER = "listener";
 /** Upstream's declared stream union — reported for reference, never used as the answer. */
 export const STREAM_TYPE = "AgentEventStream";
 /** The event the bus hands its listeners, declared in ROOT_SOURCE: a gateway frame is a
@@ -3419,18 +3423,62 @@ export function deriveAgentEmissions(input) {
     visit(fnNode.body);
     return found;
   };
-  const feeders = topFns.filter((s) => s.body && callsTo(s, ROOT_LISTENER_ITERATOR));
-  if (feeders.length !== 1 || feeders[0] !== dispatcher) {
-    throw new Error(
-      `${ROOT_SOURCE}: ${ROOT_LISTENER_ITERATOR} must be fed by ${ROOT_DISPATCHER} alone; fed by ` +
-        `[${feeders.map((f) => f.name.text).join(", ")}] — a second door to the public listeners is a second root`,
-    );
+  // Which layout: the generator over the public listeners (up to 2026.9.36), or the
+  // dispatcher reading the registrations itself (2026.10.33). Decided by whether the
+  // generator is DECLARED, never by the version: a module with neither refuses below.
+  const hasListenerIterator = topFns.some((s) => s.name.text === ROOT_LISTENER_ITERATOR);
+  if (hasListenerIterator) {
+    const feeders = topFns.filter((s) => s.body && callsTo(s, ROOT_LISTENER_ITERATOR));
+    if (feeders.length !== 1 || feeders[0] !== dispatcher) {
+      throw new Error(
+        `${ROOT_SOURCE}: ${ROOT_LISTENER_ITERATOR} must be fed by ${ROOT_DISPATCHER} alone; fed by ` +
+          `[${feeders.map((f) => f.name.text).join(", ")}] — a second door to the public listeners is a second root`,
+      );
+    }
+  } else {
+    // Every read of a registration's `.listener` in the module, wherever it sits (a
+    // top-level function, a nested one, module scope): a function other than the
+    // dispatcher that reads one can hand an event to the public listeners.
+    const readers = new Set();
+    let outside = 0;
+    const visit = (n, owner) => {
+      const next = ts.isFunctionDeclaration(n) && n.parent === rootSf ? n : owner;
+      if (ts.isPropertyAccessExpression(n) && n.name.text === ROOT_LISTENER_MEMBER) {
+        if (next) readers.add(next);
+        else outside += 1;
+      }
+      ts.forEachChild(n, (c) => visit(c, next));
+    };
+    visit(rootSf, null);
+    if (outside > 0 || readers.size !== 1 || !readers.has(dispatcher)) {
+      throw new Error(
+        `${ROOT_SOURCE}: no ${ROOT_LISTENER_ITERATOR}, and the registrations' \`.${ROOT_LISTENER_MEMBER}\` must be read by ${ROOT_DISPATCHER} alone; read by ` +
+          `[${[...readers].map((f) => f.name.text).join(", ")}]${outside > 0 ? ` and ${outside} site(s) outside any top-level function` : ""} — a second door to the public listeners is a second root`,
+      );
+    }
   }
   if (dispatcher.parameters.length === 0) throw new Error(`${ROOT_DISPATCHER} takes no event parameter`);
+  /** A type the root module RE-EXPORTS by name (`export type { X } from "./…types.js"`,
+   *  v2026.10.33 moved the bus's types to a sibling module): the declaration it names. */
+  const reExportedType = (name) => {
+    for (const st of rootSf.statements) {
+      if (!ts.isExportDeclaration(st) || !st.exportClause || !ts.isNamedExports(st.exportClause)) continue;
+      for (const spec of st.exportClause.elements) {
+        if (spec.name.text !== name) continue;
+        const local = checker.getSymbolAtLocation(spec.name);
+        const target = local && local.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(local) : local;
+        const decl = target?.declarations?.find((d) => ts.isTypeAliasDeclaration(d) || ts.isInterfaceDeclaration(d));
+        if (decl) return { symbol: target, decl };
+      }
+    }
+    return null;
+  };
   const busEventSym = (() => {
     for (const st of rootSf.statements) {
       if ((ts.isTypeAliasDeclaration(st) || ts.isInterfaceDeclaration(st)) && st.name.text === EVENT_TYPE) return checker.getSymbolAtLocation(st.name);
     }
+    const moved = reExportedType(EVENT_TYPE);
+    if (moved) return moved.symbol;
     throw new Error(`${ROOT_SOURCE}: no ${EVENT_TYPE} type — upstream renamed the event the bus hands its listeners, and a relay of it can no longer be told from a frame of the gateway's own`);
   })();
   // Other notifiers of the module: listed so the reader sees what is OUT of the channel.
@@ -3439,16 +3487,23 @@ export function deriveAgentEmissions(input) {
     .map((s) => ({ function: s.name.text, line: lineOf(s), exported: (s.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword) }));
   // The declared stream union, for reference only.
   let declaredStreams = null;
+  const readDeclaredStreams = (st, source) => {
+    const t = checker.getTypeAtLocation(st.name);
+    const members = t.isUnion() ? t.types : [t];
+    declaredStreams = {
+      literals: members.filter((m) => m.flags & ts.TypeFlags.StringLiteral).map((m) => m.value).sort(),
+      open: members.some(isOpenStringish),
+      line: lineOf(st),
+      // Named only when the union is declared OUTSIDE the root module (re-exported by it).
+      ...(source ? { source } : {}),
+    };
+  };
   for (const st of rootSf.statements) {
-    if (ts.isTypeAliasDeclaration(st) && st.name.text === STREAM_TYPE) {
-      const t = checker.getTypeAtLocation(st.name);
-      const members = t.isUnion() ? t.types : [t];
-      declaredStreams = {
-        literals: members.filter((m) => m.flags & ts.TypeFlags.StringLiteral).map((m) => m.value).sort(),
-        open: members.some(isOpenStringish),
-        line: lineOf(st),
-      };
-    }
+    if (ts.isTypeAliasDeclaration(st) && st.name.text === STREAM_TYPE) readDeclaredStreams(st);
+  }
+  if (declaredStreams === null) {
+    const moved = reExportedType(STREAM_TYPE);
+    if (moved && ts.isTypeAliasDeclaration(moved.decl)) readDeclaredStreams(moved.decl, fileOf(moved.decl));
   }
 
   // ---- 3. discovery ---------------------------------------------------------------------
@@ -3572,6 +3627,8 @@ export function deriveAgentEmissions(input) {
     return p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) && p.initializer && unwrapExpr(p.initializer) === fn ? p : undefined;
   };
   const readOnlyDecls = new Map(); // member declaration → entry
+  /** Entries whose declared type no longer declares members (see below): not applied. */
+  const retiredReadOnly = [];
   {
     const problems = [];
     const functionsOf = (sf) => {
@@ -3590,6 +3647,18 @@ export function deriveAgentEmissions(input) {
       const members = typeDecl ? (ts.isInterfaceDeclaration(typeDecl) ? typeDecl.members : ts.isTypeLiteralNode(typeDecl.type) ? typeDecl.type.members : []) : [];
       const memberDecls = members.filter((m) => (ts.isPropertySignature(m) || ts.isMethodSignature(m)) && m.name && ts.isIdentifier(m.name) && m.name.text === entry.member);
       if (memberDecls.length === 0) {
+        // The type is still declared there, but DERIVED from an implementation
+        // (`type ChatRunState = ReturnType<typeof createChatRunState>`, v2026.10.33): it
+        // declares no member signature of its own, so no call can resolve to a body-less
+        // one. The premise of the entry is gone — the checker reaches the body itself and
+        // the body is analysed like any other. Nothing is trusted on the entry's word
+        // (`readOnlyDecls` stays without it). A type that is absent, or that still lists
+        // its members and lost this one, refuses as before.
+        const derivedType = typeDecl && ts.isTypeAliasDeclaration(typeDecl) && !ts.isTypeLiteralNode(typeDecl.type) && !ts.isIntersectionTypeNode(typeDecl.type) && !ts.isUnionTypeNode(typeDecl.type);
+        if (derivedType) {
+          retiredReadOnly.push({ type: entry.type, member: entry.member, declaredIn: entry.declaredIn, declaredAs: typeDecl.type.getText().replace(/\s+/g, " ") });
+          continue;
+        }
         problems.push(`${where}: the declared member is absent from ${entry.declaredIn}`);
         continue;
       }
@@ -6425,7 +6494,10 @@ export function deriveAgentEmissions(input) {
       source: ROOT_SOURCE,
       dispatcher: ROOT_DISPATCHER,
       dispatcherLine: lineOf(dispatcher),
-      listenerIterator: ROOT_LISTENER_ITERATOR,
+      // null from v2026.10.33 on: the dispatcher reads the registrations itself, and the
+      // single-door rule is held on their `.listener` member instead.
+      listenerIterator: hasListenerIterator ? ROOT_LISTENER_ITERATOR : null,
+      ...(hasListenerIterator ? {} : { listenerMember: ROOT_LISTENER_MEMBER }),
       otherChannels,
       declaredStreams,
     },
