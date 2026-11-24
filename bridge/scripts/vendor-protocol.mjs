@@ -238,14 +238,16 @@ const FILES = [
     "schema/sessions-involvement.ts",
     "schema/sessions-provider-review.ts",
     "schema/sessions-search.ts",
-    "schema/ui-appearance-typefaces.ts",
   ]),
   // The skill curator contract lived from 2026.9.6 to 2026.9.36: v2026.10.33
   // deleted the module and every `SkillCurator*` / `SkillProposal*` schema with it
   // (the `skills.curator.*` methods remain as shells answering INVALID_REQUEST,
   // src/gateway/server-methods/skills-retired.ts). Bounded on both sides, so every
-  // tag in between still requires it.
+  // tag in between still requires it — and kept at ITS place in the list: the order
+  // of this list is the order of PROVENANCE.json, and re-vendoring an older tag must
+  // reproduce its record byte for byte.
   { since: "2026.9.6", until: "2026.10.33", candidates: ["schema/skill-curator.ts"] },
+  ...since("2026.9.6", ["schema/ui-appearance-typefaces.ts"]),
 
   // New transitive imports as of 2026.9.7, computed as the closure of the modules
   // above against the checkout: environments read a worker-capacity bound, plugins a
@@ -507,6 +509,7 @@ for (const site of SNAPSHOT_SITES) {
       fnName: site.fn,
       sourceLabel: site.source,
       fileName: path.basename(site.source),
+      supersetLiteral: site.supersetLiteral,
     });
     snapshotSource = site.source;
     snapshotRaw = candidateRaw;

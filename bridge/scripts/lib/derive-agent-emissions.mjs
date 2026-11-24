@@ -466,6 +466,46 @@ function holeFns(av, out = new Set(), seen = new Set()) {
   return out;
 }
 
+/** The parameter indexes of `fn` a value is written in terms of (its holes of that function). */
+function holeIndexes(av, fn, out = new Set(), seen = new Set()) {
+  if (!av || seen.has(av)) return out;
+  seen.add(av);
+  switch (av.k) {
+    case "hole":
+      if (av.fn === fn) out.add(av.idx);
+      break;
+    case "union":
+      for (const o of av.opts) holeIndexes(o, fn, out, seen);
+      break;
+    case "obj":
+      for (const e of av.entries) {
+        if (e.t === "spread" || (e.t === "prop" && !e.lazy)) holeIndexes(e.v, fn, out, seen);
+      }
+      break;
+    case "arr":
+      for (const e of av.elems) holeIndexes(e, fn, out, seen);
+      break;
+    case "call":
+      holeIndexes(av.callee, fn, out, seen);
+      for (const a of av.args) holeIndexes(a, fn, out, seen);
+      break;
+    case "derived":
+      holeIndexes(av.from, fn, out, seen);
+      break;
+    case "tpl":
+      for (const p of av.parts) if (typeof p !== "string") holeIndexes(p, fn, out, seen);
+      break;
+    case "guard":
+      holeIndexes(av.base, fn, out, seen);
+      holeIndexes(av.t, fn, out, seen);
+      holeIndexes(av.f, fn, out, seen);
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
 /** A GUARDED value — `base.prop === lit ? t : f` whose test depends on a parameter: decided
  *  where the parameter is filled (`tool.phase === "result" ? "end" : tool.phase` must not
  *  report "result" once the caller passes it). Undecided, it is the union of both. */
@@ -1979,6 +2019,110 @@ export function deriveAgentEmissions(input) {
    *  read where the cycle started, and a result resting on that assumption is not kept. */
   const readsOnlyMemo = new Map();
   const readsOnlyStack = new Set();
+  /** The functions a call through a CALLBACK PARAMETER may run, when every one of them is in
+   *  the analysed sources (v2026.10.33 `createAgentEventAdmission({ handleEvent,
+   *  resolveEventSession, isCurrent, dispose })`: the event is handed to `isCurrent(evt)` and
+   *  `resolveEventSession(evt)` before it reaches the handler, and the checker resolves those
+   *  calls to the parameter's declared function TYPE — a signature with no body). The callee
+   *  must be a parameter of the enclosing function, or one binding of its object pattern,
+   *  never reassigned and with no default; the function must be reached by direct calls only
+   *  (no reference that hands it elsewhere, no export from a module plugins import); and at
+   *  EVERY call the argument must resolve to functions with a body here. Undefined otherwise:
+   *  the call is then code whose effects are not modeled, as before. */
+  const callbackImplsMemo = new Map();
+  function callbackParameterImpls(call) {
+    const callee = call.expression ? unwrapExpr(call.expression) : undefined;
+    if (!callee || !ts.isIdentifier(callee)) return undefined;
+    let bindings;
+    try {
+      bindings = declsOf(valueSymOf(callee));
+    } catch {
+      return undefined;
+    }
+    if (bindings.length !== 1) return undefined;
+    const b = bindings[0];
+    if (callbackImplsMemo.has(b)) return callbackImplsMemo.get(b);
+    callbackImplsMemo.set(b, undefined);
+    const result = (() => {
+      let param;
+      let key;
+      if (ts.isParameter(b) && ts.isIdentifier(b.name)) param = b;
+      else if (ts.isBindingElement(b) && ts.isIdentifier(b.name) && !b.dotDotDotToken && !b.initializer && ts.isObjectBindingPattern(b.parent) && ts.isParameter(b.parent.parent)) {
+        param = b.parent.parent;
+        const k = b.propertyName ?? b.name;
+        if (!ts.isIdentifier(k)) return undefined;
+        key = k.text;
+      } else return undefined;
+      if (param.dotDotDotToken || param.initializer) return undefined;
+      if (bindingWrites(b).reassigned.length > 0) return undefined;
+      const fn = param.parent;
+      if (!isFunctionLike(fn) || !fn.body) return undefined;
+      const index = fn.parameters.indexOf(param);
+      // The function's own name: a declaration's, or the const an arrow initializes.
+      let holder;
+      if (ts.isFunctionDeclaration(fn) && fn.name) holder = fn;
+      else {
+        const v = skipOuter(fn).parent;
+        if (v && ts.isVariableDeclaration(v) && ts.isIdentifier(v.name) && v.initializer && unwrapExpr(v.initializer) === fn && bindingWrites(v).reassigned.length === 0) holder = v;
+      }
+      if (!holder || publicSurface(fileOf(holder))) return undefined;
+      const name = holder.name.text;
+      const impls = new Set();
+      let calls = 0;
+      for (const sf of filesMentioning(name)) {
+        for (const id of identifiersOf(sf).get(name) ?? []) {
+          if (id === holder.name) continue;
+          const importExport = isImportExportName(id);
+          let sym;
+          try {
+            sym = importExport ? resolveSym(id) : valueSymOf(id);
+          } catch {
+            return undefined;
+          }
+          if (!declsOf(sym).includes(holder)) continue;
+          if (importExport) {
+            const p = id.parent;
+            if (p && ts.isExportAssignment(p)) return undefined;
+            if (p && ts.isExportSpecifier(p) && publicSurface(fileOf(p))) return undefined;
+            continue;
+          }
+          if (isTypePosition(id)) continue;
+          const site = callOfCallee(id);
+          if (!site || !ts.isCallExpression(site)) return undefined;
+          const args = site.arguments;
+          if (args.slice(0, index + 1).some((a) => ts.isSpreadElement(a))) return undefined;
+          const arg = args[index] ? unwrapExpr(args[index]) : undefined;
+          if (!arg) return undefined;
+          let value = arg;
+          if (key !== undefined) {
+            if (!ts.isObjectLiteralExpression(arg) || arg.properties.some((m) => ts.isSpreadAssignment(m))) return undefined;
+            const members = arg.properties.filter((m) => m.name && memberNameOf(m.name) === key);
+            if (members.length !== 1) return undefined;
+            const m = members[0];
+            if (ts.isMethodDeclaration(m) && m.body) {
+              impls.add(m);
+              calls += 1;
+              continue;
+            }
+            if (ts.isPropertyAssignment(m)) value = m.initializer;
+            else if (ts.isShorthandPropertyAssignment(m)) value = m.name;
+            else return undefined;
+          }
+          const { fns, unknown } = functionValues(value);
+          if (unknown.length > 0 || fns.length === 0 || fns.some((f) => f.bound || !f.fn.body)) return undefined;
+          for (const f of fns) impls.add(f.fn);
+          calls += 1;
+        }
+      }
+      // A transport's own sender handed in as a callback is a delivery, settled with every
+      // other send (`withoutSendEffects`): not this rule's to read.
+      if ([...impls].some((f) => senderRootFns.has(f) || insideSenderRoot(f))) return undefined;
+      return calls > 0 ? [...impls] : undefined;
+    })();
+    callbackImplsMemo.set(b, result);
+    return result;
+  }
+
   function readsOnly(decl, index) {
     const key = `${index}`;
     const known = readsOnlyMemo.get(decl)?.get(key);
@@ -2014,6 +2158,21 @@ export function deriveAgentEmissions(input) {
             if (libNoEffect(c.call)) {
               const g = gettersRunBy(c.call.arguments[c.argIndex]);
               if (g) return { readOnly: false, reason: `${labelOf(decl)} passes it to ${calleeText(c.call)}(…): ${g}` };
+              continue;
+            }
+            // A callback parameter whose every value is a function read here.
+            const impls = callbackParameterImpls(c.call);
+            if (impls) {
+              let refused;
+              for (const f of impls) {
+                const r3 = readsOnly(f, c.argIndex);
+                if (!r3.readOnly) {
+                  refused = { readOnly: false, reason: `passed to ${calleeText(c.call)}(…), a callback that may be ${labelOf(f)}: ${r3.reason}`, call: c.call };
+                  break;
+                }
+                if (r3.assumed) assumed = true;
+              }
+              if (refused) return refused;
               continue;
             }
             return { readOnly: false, reason: `passed to ${calleeText(c.call)}(…), code whose effects on it are not modeled`, call: c.call };
@@ -2074,6 +2233,19 @@ export function deriveAgentEmissions(input) {
       }
       // Reached through a declared type, reviewed and locked for this version.
       if (readOnlyMemberOf(call, argIndex)) return none;
+      // A callback parameter: every function it may be is read; one that does more than
+      // read the object makes the call unmodeled, by name.
+      const impls = callbackParameterImpls(call);
+      if (impls) {
+        for (const f of impls) {
+          const r = readsOnly(f, argIndex);
+          // Named by THIS call, as an unread callee is: when the callback is itself a frame
+          // sender's wrapper (the admission hands the event to `handleEvent`), the call is the
+          // delivery, and `withoutSendEffects` settles it once every send is known.
+          if (!r.readOnly) return unmodeled(`passed to ${text}(…) before the send, a callback that may be ${labelOf(f)} (${locOf(f)}): ${r.reason}`, call);
+        }
+        return none;
+      }
       return unmodeled(`passed to ${text}(…) before the send, code whose effects on it are not modeled`, call);
     }
     // A transport's sender delivers the payload; its body is not analysed (section 6).
@@ -4050,6 +4222,24 @@ export function deriveAgentEmissions(input) {
     return out;
   }
 
+  /** Is argument #index of this call the key of a WeakMap or WeakSet of the standard library
+   *  — the receiver's type is the library's own (a subclass is another type, with methods of
+   *  its own), the method one that takes the key first? */
+  const WEAK_KEY_METHODS = { WeakMap: new Set(["get", "set", "has", "delete"]), WeakSet: new Set(["add", "has", "delete"]) };
+  function isWeakCollectionKey(call, callee, index) {
+    if (index !== 0 || !ts.isCallExpression(call) || !ts.isPropertyAccessExpression(callee)) return false;
+    let sym;
+    try {
+      sym = checker.getNonNullableType(checker.getTypeAtLocation(callee.expression)).symbol;
+    } catch {
+      return false;
+    }
+    const methods = sym && Object.hasOwn(WEAK_KEY_METHODS, sym.name) ? WEAK_KEY_METHODS[sym.name] : undefined;
+    if (!methods || !methods.has(callee.name.text)) return false;
+    const decls = declsOf(sym);
+    return decls.length > 0 && decls.every(isLibDecl);
+  }
+
   /** The value item of a function expression that forwards: give it a name to be found by. */
   function itemForValue(expr, template, holeFn, chain, via, label, family = "bus", eventPrefix = undefined) {
     const results = [];
@@ -4076,6 +4266,14 @@ export function deriveAgentEmissions(input) {
             results.push({ invokeAt: call, args: (ctx) => [elementOf(ev(callee.expression, ctx), locOf(callee.expression)), opaque("index", locOf(call)), ev(callee.expression, ctx)] });
             continue;
           }
+        }
+        // The KEY of a standard WeakMap / WeakSet (v2026.10.33 `owners.get(owner)` with
+        // `owners: WeakMap<GatewayBroadcastFn, …>`): the collection compares the function's
+        // identity, never calls it, and cannot hand a key back — it has no iteration, and
+        // `get` answers the VALUE. The function goes nowhere through it.
+        if (isWeakCollectionKey(call, callee, t.index)) {
+          results.push({ benign: "weak-key", reason: `the key of ${callee.getText().slice(0, 60)}(…)` });
+          continue;
         }
         const decl = calleeDeclaration(call);
         if (!decl) {
@@ -4232,6 +4430,25 @@ export function deriveAgentEmissions(input) {
     return out;
   }
 
+  /** Is this call the wrapper `wfn` calling itself, every parameter its template reads
+   *  handed on as it was received? Each such parameter must be passed by its own name at its
+   *  own position, and be neither reassigned nor written into anywhere in the function — a
+   *  recursion that changes what it passes on is a forward like any other. */
+  function isIdentityRecursion(call, item, wfn) {
+    if (item.holeFn !== wfn || !ts.isCallExpression(call)) return false;
+    const indexes = holeIndexes(item.template, wfn);
+    if (indexes.size === 0) return false;
+    for (const idx of indexes) {
+      const param = wfn.parameters[idx];
+      const arg = call.arguments[idx] ? unwrapExpr(call.arguments[idx]) : undefined;
+      if (!param || param.dotDotDotToken || !ts.isIdentifier(param.name) || !arg || !ts.isIdentifier(arg)) return false;
+      if (!declsOf(checker.getSymbolAtLocation(arg)).includes(param)) return false;
+      const w = bindingWrites(param);
+      if (w.reassigned.length > 0 || w.props.length > 0 || w.nested.length > 0) return false;
+    }
+    return true;
+  }
+
   function processCallSite(siteNode, item, argAVs, how) {
     // A frame sender's own body is the transport (section 6): nothing in it is a site.
     if (item.family === "sender" && insideSenderRoot(siteNode)) return "root-internal";
@@ -4246,6 +4463,17 @@ export function deriveAgentEmissions(input) {
     }
     if (c.kind === "forward") {
       const wfn = c.wrapperFn;
+      // A wrapper calling ITSELF with its own parameters, unchanged (v2026.10.33
+      // `sendLivePayload`: a held terminal is released by `() => sendLivePayload(event,
+      // sessionKey, payload, opts)`). The inner call sends what the outer one sends: it
+      // adds no (event, payload) the wrapper's callers have not already given it. Followed
+      // like any forward, it re-entered the wrapper's own template with one more layer of
+      // the body's effects on each round, never the same value twice, until the evaluator's
+      // bound made the event unreadable.
+      if (isIdentityRecursion(siteNode, item, wfn)) {
+        siteResults.set(siteNode, { item, kind: "forward", wrapper: labelOf(wfn), how, followed: [{ self: "the wrapper's own parameters, unchanged" }] });
+        return "forward";
+      }
       const chain = [wrapperLabel(wfn), ...item.chain];
       const via = [{ at: locOf(siteNode), through: item.label }];
       let handled;
