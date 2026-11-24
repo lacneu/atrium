@@ -15,6 +15,8 @@ import { m } from "@/paraglide/messages.js";
 import { useUiPrefs } from "./ConvexChat";
 import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
+import { useWorkZone } from "./WorkZone";
+import type { WorkZoneMark } from "./workZoneView";
 import type { ToolActivityPart } from "./toolActivityView";
 import { activityBlock, type ActivityNode } from "./activityBlock";
 import { blockInterrupted, interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
@@ -29,7 +31,8 @@ import type { ToolFamily } from "./runStatusView";
 // MessagePrimitive.Parts via the `__turn_flow__` tools mapping, at the group's
 // TRUE position between the narrative paragraphs (convertMessage builds the
 // sequence from the parts' textOffset anchors). Chrome = the shared
-// ActivityRow; expand = the existing ToolCards.
+// ActivityRow, as ONE light line on the turn's work rail (`oc-work`, convexChat.css):
+// its family icon sits on the rail; expand = the existing ToolCards.
 //
 // The wrapper carries `oc-msg__meta` so collectAnchorBlocks (bookmarks /
 // quote-reply) never counts the cards' internal markdown as body blocks.
@@ -72,7 +75,7 @@ function NodeCard({ node, settled, cut }: { node: ActivityNode; settled: boolean
 }
 
 export function InlineTurnActivity(props: {
-  args?: { parts?: ToolActivityPart[]; rows?: boolean };
+  args?: { parts?: ToolActivityPart[]; rows?: boolean; zone?: WorkZoneMark };
 }) {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as FlowMeta | undefined)?.status,
@@ -90,8 +93,11 @@ export function InlineTurnActivity(props: {
   // always-visible plan): no activity rows at all — the working label under
   // the bubble keeps carrying the in-progress signal.
   const { showTools } = useUiPrefs();
+  const zone = useWorkZone(props.args?.zone);
   const parts = props.args?.parts ?? [];
   if (!showTools || parts.length === 0) return null;
+  // The reader folded the zone this group belongs to: its header stands for it.
+  if (zone.folded) return zone.header;
   // A part can be left on `start` forever (lost completion frame): on a
   // TERMINAL message the row must read settled, never spin (codex P2).
   const live =
@@ -130,8 +136,10 @@ export function InlineTurnActivity(props: {
     </>
   );
   return (
+    <>
+    {zone.header}
     <div
-      className="oc-msg__meta oc-flowact"
+      className="oc-msg__meta oc-work oc-flowact"
       role="group"
       aria-label={m.turnflow_activity_aria()}
     >
@@ -170,5 +178,6 @@ export function InlineTurnActivity(props: {
         </div>
       ) : null}
     </div>
+    </>
   );
 }

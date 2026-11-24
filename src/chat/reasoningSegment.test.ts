@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { convertConvexMessage } from "./convertMessage";
+import type { WorkZoneMark } from "./workZoneView";
 import type { ConvexMessageView } from "./convexTypes";
 
 function assistantWith(parts: ConvexMessageView["parts"], extra: Partial<ConvexMessageView> = {}): ConvexMessageView {
@@ -34,7 +35,7 @@ function assistantWith(parts: ConvexMessageView["parts"], extra: Partial<ConvexM
   } as unknown as ConvexMessageView;
 }
 
-type Content = Array<{ type: string; text?: string; data?: { text: string; open?: boolean } }>;
+type Content = Array<{ type: string; text?: string; data?: { text: string; live?: boolean; zone?: WorkZoneMark } }>;
 
 describe("a work note lands in the BODY, not the activity row", () => {
   it("a part written before 0.103.0 (no nature) is a work note, shown in the body", () => {
@@ -73,22 +74,29 @@ describe("a work note lands in the BODY, not the activity row", () => {
   });
 });
 
-describe("the model's reasoning: its own block, folded once the answer begins", () => {
-  it("Hermes' reasoning of the turn sits above the reply, folded on a settled bubble", () => {
+describe("the model's reasoning: its own block, on view, live until the answer begins", () => {
+  it("Hermes' reasoning of the turn sits above the reply, settled on a settled bubble", () => {
     const content = convertConvexMessage(assistantWith([{ kind: "reasoning", nature: "thinking", text: "Je compare." }] as never)).content as Content;
     expect(content.map((c) => c.type)).toEqual(["data-thinking", "text"]);
-    expect(content[0]!.data).toMatchObject({ text: "Je compare.", open: false });
+    expect(content[0]!.data).toMatchObject({ text: "Je compare.", live: false });
   });
 
-  it("open while the bubble runs and no answer follows it; folded as soon as one does", () => {
+  it("…and it is a work zone of the bubble, headed by that reasoning", () => {
+    // The zone is what the header ("Réflexion") and its fold hang on (WorkZone.tsx): a
+    // reasoning converted without one would have no label and could not be folded.
+    const content = convertConvexMessage(assistantWith([{ kind: "reasoning", nature: "thinking", text: "Je compare." }] as never)).content as Content;
+    expect(content[0]!.data?.zone).toMatchObject({ key: "m1:p0", head: true, proseHead: true, thoughts: 1, actions: 0, live: false });
+  });
+
+  it("live while the bubble runs and no answer follows it; settled as soon as one does", () => {
     const running = convertConvexMessage(
       assistantWith([{ kind: "reasoning", nature: "thinking", text: "Je compare." }] as never, { status: "streaming", text: "" }),
     ).content as Content;
-    expect(running.find((c) => c.type === "data-thinking")?.data?.open).toBe(true);
+    expect(running.find((c) => c.type === "data-thinking")?.data?.live).toBe(true);
     const answering = convertConvexMessage(
       assistantWith([{ kind: "reasoning", nature: "thinking", text: "Je compare." }] as never, { status: "streaming", text: "La rép" }),
     ).content as Content;
-    expect(answering.find((c) => c.type === "data-thinking")?.data?.open).toBe(false);
+    expect(answering.find((c) => c.type === "data-thinking")?.data?.live).toBe(false);
   });
 
   it("an empty reasoning is no block", () => {

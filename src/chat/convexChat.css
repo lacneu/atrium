@@ -2536,47 +2536,173 @@ button.oc-bmk-rail__count:hover {
 .oc-msg--user {
   justify-content: flex-end;
 }
-/* 0.103.0 — PROSE THAT IS NOT THE ANSWER (ReasoningBlocks.tsx), always VISIBLE (the
-   Tools toggle gates the analysis view and is off by default), one type scale with the
-   reply: 14 px for what is read, the activity row's chrome for the disclosure.
-   - .oc-msg__note: the agent's WORK NOTE between its actions (Hermes `message.interim`,
-     OpenClaw preamble / commentary rows) — ordinary prose, quieter than the answer;
-   - .oc-thinking: the MODEL'S REASONING — a disclosure; its text muted, set off by a rule
-     on its left, folded once the answer begins. */
-.oc-msg__note {
-  margin: 0.25rem 0 0.5rem;
-  color: var(--muted-foreground);
-  font-size: 0.875rem;
+/* THE TURN'S WORK — ONE THREAD, THREE WRITINGS. What the agent did before answering
+   (ReasoningBlocks.tsx, InlineTurnActivity.tsx) hangs on ONE thin rail down the left of
+   the reply, everything on it muted and indented behind it, each kind told apart by its
+   writing alone:
+   - .oc-workhead: the zone's ONE label (WorkZone.tsx) — a brain and "Réflexion" at the
+     top of the rail, the control that folds the zone; only on a zone that holds a thought;
+   - .oc-thinking: the MODEL'S REASONING — bare text, regular weight;
+   - .oc-flowact: an ACTION — one light line, its family icon ON the rail;
+   - .oc-msg__note: the agent's WORK NOTE (Hermes `message.interim`, OpenClaw preamble /
+     commentary rows) — the same quiet prose behind a dot on the rail.
+   THE ANSWER IS TOLD BY STRUCTURE, not by weight (it is ordinary prose): the rail ENDS
+   before it, a clear space follows, and it starts flush with the reply's left edge, out
+   of the rail's indent, in the only full-contrast text.
+   Always VISIBLE for the prose (the Tools toggle gates the actions only), one type scale
+   with the reply: 14 px for what is read.
+   Each item draws its own stretch of rail over its WHOLE box and they stack with no
+   margin between them, so the stretches meet. An icon on the rail is not painted over
+   it (the reply has no background of its own to paint with): the rail stops above the
+   glyph and resumes below, from `--oc-work-node`, the glyph's centre.
+   Flat, never the card the meta block gives a row group (`.oc-msg__meta:has(.oc-actrow)`,
+   further down, which the doubled selectors outweigh). */
+.oc-work {
+  /* The rail's axis, and where the text starts: one indent for every writing. */
+  --oc-work-x: 0.4375rem;
+  --oc-work-indent: 1.5rem;
+  /* What a one-line control (an action, the zone's header) adds above and below itself
+     where a finger is used. */
+  --oc-work-tap: 0rem;
+  /* The centre of a glyph on the rail — the middle of the item's first line — and half
+     the gap the rail leaves around it. */
+  --oc-work-node: calc(0.875rem + var(--oc-work-tap));
+  --oc-work-gap: 0.7rem;
 }
-.oc-msg__note .oc-md,
-.oc-thinking__body .oc-md {
-  font-size: inherit;
-  color: inherit;
+@media (hover: none), (any-pointer: coarse) {
+  .oc-work {
+    --oc-work-tap: 0.375rem;
+  }
 }
-/* Flat, never the activity card the meta block gives a tool group (`.oc-msg__meta:has(
-   .oc-actrow)`): the reasoning is prose set off by its rule, not a card. */
-.oc-msg__meta.oc-thinking,
-.oc-msg__meta.oc-thinking:has(.oc-actrow) {
-  margin: 0.25rem 0 0.5rem;
-  padding: 0;
+.oc-msg__meta.oc-work,
+.oc-msg__meta.oc-work:has(.oc-actrow) {
+  position: relative;
+  display: block;
+  margin: 0;
+  padding: 0.25rem 0 0.25rem var(--oc-work-indent);
   border: 0;
   border-radius: 0;
   background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
 }
-.oc-thinking > .oc-actrow {
+.oc-work::before,
+.oc-work::after {
+  position: absolute;
+  left: calc(var(--oc-work-x) - 0.5px);
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+.oc-work::before {
+  content: "";
+  top: 0;
+  bottom: 0;
+}
+/* A one-line control: it starts ON the rail (its icon is the rail's node), the rail in
+   two stretches around the glyph. */
+.oc-msg__meta.oc-work:is(.oc-flowact, .oc-workhead),
+.oc-msg__meta.oc-work:is(.oc-flowact, .oc-workhead):has(.oc-actrow) {
+  padding: 0.125rem 0;
+}
+.oc-work:is(.oc-flowact, .oc-workhead)::before {
+  bottom: auto;
+  height: calc(var(--oc-work-node) - var(--oc-work-gap));
+}
+.oc-work:is(.oc-flowact, .oc-workhead)::after {
+  content: "";
+  top: calc(var(--oc-work-node) + var(--oc-work-gap));
+  bottom: 0;
+}
+/* The header is the TOP of the rail: nothing above its glyph, and nothing below it once
+   the zone is folded. */
+.oc-work.oc-workhead::before,
+.oc-work.oc-workhead[data-open="false"]::after {
+  content: none;
+}
+.oc-work > .oc-actrow {
   width: fit-content;
   max-width: 100%;
+  /* Icon centred on the rail's axis, label on the work's indent; the hover background
+     reaches a little left of the icon. */
+  margin-left: -0.25rem;
+  padding: calc(0.125rem + var(--oc-work-tap)) 0.5rem calc(0.125rem + var(--oc-work-tap)) 0.25rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
 }
-.oc-thinking > .oc-actrow .oc-actrow__label {
+.oc-work > .oc-actrow .oc-actrow__top {
+  /* The icon keeps the first line when the label wraps (a phone): the rail's gap is there. */
+  align-items: flex-start;
+  gap: calc(var(--oc-work-indent) - 0.875rem);
+}
+.oc-work > .oc-actrow :is(.oc-actrow__icon, .oc-actrow__trail, .oc-actrow__chev) {
+  height: 1.25rem;
+  align-items: center;
+  align-self: flex-start;
+}
+/* Quiet lines: they must not catch the eye before the reasoning they sit in. */
+.oc-work > .oc-actrow .oc-actrow__label {
   font-weight: 400;
   color: var(--muted-foreground);
 }
-.oc-thinking__body {
-  margin: 0.15rem 0 0 0.75rem;
-  padding: 0 0 0 0.75rem;
-  border-left: 2px solid var(--border);
-  color: var(--muted-foreground);
-  font-size: 0.875rem;
+.oc-work > .oc-actrow:hover .oc-actrow__label,
+.oc-work > .oc-actrow:focus-visible .oc-actrow__label {
+  color: var(--foreground);
+}
+.oc-workhead > .oc-actrow .oc-actrow__label {
+  font-weight: 500;
+}
+.oc-workhead__steps {
+  font-size: 0.75rem;
+}
+/* A finger's zone: the line's own pitch, never over the item above or below. */
+@media (hover: none), (any-pointer: coarse) {
+  .oc-work > .oc-actrow {
+    position: relative;
+  }
+  .oc-work > .oc-actrow::after {
+    content: "";
+    position: absolute;
+    inset: -0.125rem 0;
+  }
+}
+/* THE END OF THE RAIL: the work, then what is not the work (the answer, a file) — and
+   the answer, then more work (text between two actions is an answer segment). */
+.oc-work + :not(.oc-work) {
+  margin-top: 1rem;
+}
+:not(.oc-work) + .oc-msg__meta.oc-work,
+:not(.oc-work) + .oc-msg__meta.oc-work:has(.oc-actrow) {
+  margin-top: 0.75rem;
+}
+/* The rail starts and ends ON a glyph, never as a stub past it: nothing above the icon of
+   a zone's first line, nothing below a last line that shows no cards. */
+.oc-flowact:is(:first-child, :not(.oc-work) + *)::before,
+.oc-flowact:not(:has(+ .oc-work), :has(> .oc-toolact__detail))::after {
+  content: none;
+}
+
+.oc-work .oc-md {
+  font-size: inherit;
+  color: inherit;
+}
+/* Prose (a note, a thought): the middle of ITS first line, 14 px at the reply's line
+   height. */
+.oc-msg__note {
+  --oc-work-node: calc(0.25rem + 0.875rem * 1.65 / 2);
+}
+/* The note's dot, on the rail at its first line: the agent speaking between two actions. */
+.oc-msg__note.oc-work::after {
+  content: "";
+  top: calc(var(--oc-work-node) - 0.15625rem);
+  left: calc(var(--oc-work-x) - 0.15625rem);
+  width: 0.3125rem;
+  height: 0.3125rem;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+.oc-thinking {
+  font-weight: 400;
 }
 /* What the block says of its text (being read, gone, cut): the qualifier scale. */
 .oc-thinking__status {
@@ -3106,11 +3232,12 @@ button.oc-bmk-rail__count:hover {
 }
 .oc-queue-card--others .oc-queue-card__text { color: var(--muted-foreground); }
 
-/* ── Inline turn-activity group (interleaved flow, ChatGPT-style): a quiet
-   collapsed row between narrative paragraphs; expand = the ToolCards. Carries
-   oc-msg__meta (anchor-block exclusion) with tightened spacing for inline use. */
+/* ── Inline turn-activity group (interleaved flow, ChatGPT-style): ONE light line on
+   the turn's work rail (`.oc-work`, above, which dresses the row) — no box, no
+   background at rest; expand = the ToolCards. Carries oc-msg__meta (anchor-block
+   exclusion). */
 .oc-flowact {
-  margin: 0.5rem 0;
+  min-width: 0;
 }
 /* The QUIET-CHIP sizing belongs to the collapsed ROW, not to the group. On the group
    it also measured the EXPANDED state, where the group hosts the ToolCards: every
@@ -3121,6 +3248,32 @@ button.oc-bmk-rail__count:hover {
 .oc-flowact > .oc-actrow {
   width: fit-content;
   max-width: 100%;
+}
+/* The cards of an unfolded action: under its label, flat rows — the box belongs to
+   what a card shows once opened (its input and output), not to its header. */
+.oc-flowact > .oc-toolact__detail {
+  margin: 0.125rem 0 0.25rem;
+  padding-left: var(--oc-work-indent);
+}
+.oc-flowact .oc-tool {
+  margin: 0;
+  border: 0;
+  background: transparent;
+}
+.oc-flowact .oc-tool__header {
+  margin-left: -0.4rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: var(--radius-sm, 0.375rem);
+}
+.oc-flowact .oc-tool[open] > .oc-tool__header {
+  border-bottom: 0;
+}
+.oc-flowact .oc-tool__name {
+  font-weight: 500;
+}
+.oc-flowact .oc-tool__io {
+  padding-left: 0;
+  padding-right: 0;
 }
 .oc-flowact__count {
   font-size: 0.75rem;

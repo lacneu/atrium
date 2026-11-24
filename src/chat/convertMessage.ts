@@ -32,6 +32,7 @@ import { m } from "@/paraglide/messages.js";
 import { cardOwnership, hiddenPartStorageIds, layoutFileIds, rowSegments, type RowSegment } from "./rowLayoutView";
 import { handOffFactsOf, type ResumeIndex } from "./handOffFacts";
 import { activeBubbleTail } from "./streamTail";
+import { markWorkZones } from "./workZoneView";
 
 // A localized "(N KB, not shown here)" note for a part field ELIDED from the window
 // read (loadChatView PART_FIELD_CAP) — shown in place of the omitted output/input/
@@ -78,14 +79,14 @@ function withActiveRows(message: ConvexMessageView): { message: ConvexMessageVie
   return { message: { ...message, text: active.text }, liveTail: tail !== null && tail.trim() !== "" ? tail : null };
 }
 
-/** 0.103.0 — the model's reasoning, as a data part rendered by `ThinkingBlock`. `open` is
+/** 0.103.0 — the model's reasoning, as a data part rendered by `ThinkingBlock`. `live` is
  *  decided once the bubble's content is known (`settleThinkingBlocks`). A row's reasoning
- *  carries no text: `row` names where the block reads it when opened. */
+ *  carries no text: `row` names where the block reads it while on view. */
 function thinkingContent(
   key: string,
   source: { text: string; capped?: boolean } | { row: { messageId: string; entryId: string } },
 ): ContentPart {
-  return { type: "data-thinking", data: { key, ...source, open: false } } as unknown as ContentPart;
+  return { type: "data-thinking", data: { key, ...source, live: false } } as unknown as ContentPart;
 }
 
 /** 0.103.0 — the agent's work note, as a data part rendered by `CommentaryNote`. */
@@ -93,15 +94,17 @@ function commentaryContent(key: string, text: string, capped = false): ContentPa
   return { type: "data-commentary", data: { key, text, ...(capped ? { capped: true } : {}) } } as unknown as ContentPart;
 }
 
-/** Open each reasoning block of a RUNNING bubble that no answer text follows yet; fold every
- *  other one. Work notes, tool groups and files are not the answer: they do not fold it. */
+/** Mark LIVE each reasoning block of a RUNNING bubble that no answer text follows yet (it
+ *  may still be being written, and is titled so); every other one is settled. Work notes,
+ *  tool groups and files are not the answer: they do not settle it. Whether it is on view
+ *  is not decided here (workZoneView.ts `zoneExpanded`). */
 export function settleThinkingBlocks(content: ContentPart[], streaming: boolean): void {
   let answerAfter = false;
   for (let i = content.length - 1; i >= 0; i--) {
-    const c = content[i] as { type: string; text?: string; data?: { text: string; key: string; open: boolean } };
+    const c = content[i] as { type: string; text?: string; data?: { text: string; key: string; live: boolean } };
     if (c.type === "text" && (c.text ?? "").trim() !== "") answerAfter = true;
     else if (c.type === "data-thinking" && c.data !== undefined) {
-      content[i] = { ...c, data: { ...c.data, open: streaming && !answerAfter } } as unknown as ContentPart;
+      content[i] = { ...c, data: { ...c.data, live: streaming && !answerAfter } } as unknown as ContentPart;
     }
   }
 }
@@ -583,9 +586,11 @@ export function convertConvexMessage(
   // The work notes the rows do not hold yet, then the message still being written.
   for (const n of liveNotes) content.push(commentaryContent(n.key, n.text));
   if (liveTail !== null) content.push({ type: "text", text: renderableText(liveTail, renderedViewIds, true) });
-  // A reasoning block stays open while the bubble runs and no answer follows it; it folds
-  // as soon as the answer begins, and on every settled bubble (0.103.0).
+  // A reasoning block is live while the bubble runs and no answer follows it; settled as
+  // soon as the answer begins, and on every settled bubble.
   settleThinkingBlocks(content, message.status === "streaming");
+  // The runs of work between the pieces of the answer: one header each, one fold.
+  if (message.role === "assistant") markWorkZones(content, message._id);
 
   // 3) Inline widgets, then media/file attachments, stay AFTER the text. A widget is
   // an assistant-ui DATA part (`data-widget`), rendered in the message BODY by
