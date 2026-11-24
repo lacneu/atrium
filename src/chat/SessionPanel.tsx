@@ -19,6 +19,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -624,7 +625,8 @@ export function SessionPanel({
                 {m.spanel_summary_save_error()}
               </p>
             ) : null}
-            <div className="oc-summary-dialog__actions">
+            {/* Pinned at the dialog's foot as every layer's footer is (lot 29). */}
+            <DialogFooter className="oc-summary-dialog__actions">
               {summaryDraft !== null ? (
                 <>
                   <Button
@@ -678,7 +680,7 @@ export function SessionPanel({
                   </Button>
                 </>
               )}
-            </div>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
         <SheetFooter className="oc-spanel__actions">

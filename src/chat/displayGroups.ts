@@ -10,6 +10,7 @@ export type GroupedMessage = {
   role: string;
   text: string;
   displayGroupId?: string;
+  status?: string;
 };
 
 export type GroupPlace = {
@@ -22,6 +23,9 @@ export type GroupPlace = {
   firstId: string;
   /** Every member's text, in order: what Copy, Read aloud and the whole-answer quote take. */
   groupText: string;
+  /** Every member, in order, and whether it is still being written: whose blocks the
+   *  group's one ⋯ lists — the members before the last have no ⋯ of their own (lot 21). */
+  members: Array<{ id: string; live: boolean }>;
 };
 
 /** Where each displayed message sits in its display group (absent: alone). */
@@ -35,8 +39,9 @@ export function displayGroupPlaces(list: readonly GroupedMessage[]): Map<string,
         .filter((t) => t !== "")
         .join("\n\n");
       const firstId = run[0]!._id;
+      const members = run.map((m) => ({ id: m._id, live: m.status === "streaming" }));
       run.forEach((m, i) => {
-        out.set(m._id, { follows: i > 0, continues: i < run.length - 1, firstId, groupText });
+        out.set(m._id, { follows: i > 0, continues: i < run.length - 1, firstId, groupText, members });
       });
     }
     run = [];

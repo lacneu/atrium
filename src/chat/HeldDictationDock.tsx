@@ -8,6 +8,7 @@
 import {
   useCallback,
   useEffect,
+  useReducer,
   useRef,
   useSyncExternalStore,
 } from "react";
@@ -52,6 +53,7 @@ import { getLocale } from "@/paraglide/runtime.js";
 import { createPortal } from "react-dom";
 import { useToast } from "@/components/ui/toast";
 import { currentEngineGen } from "./dictationHold";
+import { visibleRect } from "@/lib/virtualKeyboard";
 
 /** A pointer drag reporting incremental deltas from the last position. Shared
  *  by the header (move) and the corner (resize). */
@@ -90,28 +92,38 @@ export function HeldDictationDock() {
   // chrome — logout / impersonation remounts it, stopping + purging the hold.
   useEffect(() => () => void releaseHeldDictation(), []);
 
+  // A gesture starts from the panel as it is SHOWN (clamped to what is shown), and
+  // only a gesture stores a geometry: the place and size the person chose.
   const moveBy = useCallback((dx: number, dy: number) => {
-    const g = getHeldDictation()?.geom;
-    if (g === undefined) return;
+    const stored = getHeldDictation()?.geom;
+    if (stored === undefined) return;
+    const g = clampGeometry(stored, visibleRect());
     setHeldGeometry({ ...g, x: g.x + dx, y: g.y + dy });
   }, []);
   const resizeBy = useCallback((dx: number, dy: number) => {
-    const g = getHeldDictation()?.geom;
-    if (g === undefined) return;
+    const stored = getHeldDictation()?.geom;
+    if (stored === undefined) return;
+    const g = clampGeometry(stored, visibleRect());
     setHeldGeometry({ ...g, w: g.w + dx, h: g.h + dy });
   }, []);
   const onHeaderDown = useDrag(moveBy);
   const onCornerDown = useDrag(resizeBy);
 
-  // Re-clamp to the viewport on window resize (the panel must never strand
-  // off-screen).
+  // Clamped again to what is shown when the window resizes and when what is shown
+  // moves or resizes (a page panned, a keyboard): the panel never strands off-screen.
+  // Clamped AT RENDER, never stored (lot 27): a keyboard opening, a resize, a pan
+  // moved the place the person chose for good, and every scroll event wrote it.
+  const [, viewChanged] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
-    const onResize = () => {
-      const g = getHeldDictation()?.geom;
-      if (g !== undefined) setHeldGeometry(g);
+    const vv = window.visualViewport;
+    window.addEventListener("resize", viewChanged);
+    vv?.addEventListener("resize", viewChanged);
+    vv?.addEventListener("scroll", viewChanged);
+    return () => {
+      window.removeEventListener("resize", viewChanged);
+      vv?.removeEventListener("resize", viewChanged);
+      vv?.removeEventListener("scroll", viewChanged);
     };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   // Local dictation engine (owned by the store while detached).
@@ -198,10 +210,7 @@ export function HeldDictationDock() {
 
   if (held === null) return null;
 
-  const clamped: HeldGeometry = clampGeometry(held.geom, {
-    w: window.innerWidth,
-    h: window.innerHeight,
-  });
+  const clamped: HeldGeometry = clampGeometry(held.geom, visibleRect());
 
   // Portal to <body>: a `position: fixed` panel rendered inside the chrome can
   // be trapped by an ancestor containing block (the same "invisible fixed"
@@ -320,7 +329,8 @@ export function HeldDictationDock() {
       />
       {(recording || held.finalizing) && held.interim !== "" ? (
         <div className="oc-detach__interim" aria-hidden>
-          {held.interim}
+          {/* Its spacing is its content's: given way, the preview costs nothing (lot 29). */}
+          <span className="oc-detach__interim-text">{held.interim}</span>
         </div>
       ) : null}
 

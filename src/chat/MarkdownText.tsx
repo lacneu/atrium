@@ -6,6 +6,8 @@ import {
 } from "@assistant-ui/react-streamdown";
 import { Streamdown, type StreamdownProps } from "streamdown";
 import { isNavigableHref } from "./markdownLinks";
+import { markdownTableMaxHeight } from "./markdownTable";
+import { useIsShortScreen } from "@/lib/useSidebarLayout";
 
 // Anchor renderer for AGENT-AUTHORED markdown. Two cases:
 //   - A real, browser-navigable URL (absolute http(s)/mailto) → open in a NEW tab
@@ -68,8 +70,13 @@ const agentMdComponents = { a: AgentAnchor } as StreamdownProps["components"];
  * reads the assistant-ui part context), this takes the text directly.
  */
 export function AgentMarkdown({ text }: { text: string }) {
+  const short = useIsShortScreen();
   return (
-    <Streamdown className="oc-md" components={agentMdComponents}>
+    <Streamdown
+      className="oc-md"
+      components={agentMdComponents}
+      tableMaxHeight={markdownTableMaxHeight(short)}
+    >
       {text}
     </Streamdown>
   );
@@ -89,9 +96,11 @@ export const MarkdownText = memo(function MarkdownText() {
       | undefined;
     return custom?.hasMergedRuns === true;
   });
+  const short = useIsShortScreen();
   return (
     <StreamdownTextPrimitive
       className="oc-md"
+      tableMaxHeight={markdownTableMaxHeight(short)}
       // `smooth` reveals text per animation frame, which re-parses the LAST block more
       // often than the network cadence. For a single growing block (e.g. one long code
       // fence) that could amplify cost — BUT we do not install `@streamdown/code`

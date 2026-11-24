@@ -395,6 +395,12 @@ export function CronDetailContent({
               variant="outline"
               size="sm"
               disabled={busy !== null}
+              // A column beside the thread or a sheet over it: the confirmation
+              // unmounts with the sheet when the room changes. The focus finds
+              // this button in the other one by this key (lib/returnFocus) — once
+              // it is shown: the panel reloads the cron as it mounts, and until
+              // then the focus goes back to what opened the panel.
+              data-focus-key={`cron-panel:delete:${instanceName}:${jobId ?? ""}`}
               onClick={() => setConfirmDelete(true)}
             >
               <Trash2 size={14} aria-hidden />

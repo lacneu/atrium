@@ -1108,7 +1108,7 @@ function AgentTypesEditor({
           className="oc-agenttype__chip"
           title={agentTypeDesc(code)}
         >
-          {agentTypeLabel(code)}
+          <span className="oc-agenttype__label">{agentTypeLabel(code)}</span>
         </Badge>
       ))}
       <Popover>
@@ -1385,6 +1385,11 @@ function InstanceAgentsDialog({
                             void toggle(a.agentId, v === true)
                           }
                         />
+                        {/* Name, then what qualifies it (model, badges, the
+                            default action): they wrap UNDER the name where the
+                            row runs out of room, never over it (a long name was
+                            crushed to 0 px on a phone). */}
+                        <div className="oc-agentcard__main">
                         <span className="oc-agentcard__name" title={label}>
                           {a.emoji ? `${a.emoji} ` : ""}
                           {label}
@@ -1432,6 +1437,7 @@ function InstanceAgentsDialog({
                             {m.settings_make_default()}
                           </Button>
                         )}
+                        </div>
                       </div>
                       {a.reserved ? (
                         <div className="oc-agentcard__head">

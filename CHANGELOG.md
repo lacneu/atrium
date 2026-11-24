@@ -2,8 +2,8 @@
 
 ## [0.104.0] — The reply's live text comes from the gateway's chat stream, and a turn cut by a restart says so
 
-Feature and reliability release, with one privacy fix. The bridge, the Convex functions and the
-frontend all change. The Convex schema gains a table (`lateFinalWrites`, with indexes `by_chat` and
+Feature and reliability release, with one privacy fix and a frontend made for phones and
+tablets. The bridge, the Convex functions and the frontend all change. The Convex schema gains a table (`lateFinalWrites`, with indexes `by_chat` and
 `by_chat_key`), an index (`transcriptRows.by_chat_recovers`), two message-part kinds
 (`model_fallback`, `gateway_notice`) and five optional fields (`messages.resumeChain`,
 `messages.interruption`, `transcriptRows.recoversRunId`, and `attachmentMaxBytes` /
@@ -132,6 +132,23 @@ once the bridge image is deployed.
   `openclaw.gateway_seq_report`. `openclaw.frame_gap` now only means frames the gateway dropped
   for a connection of the bridge.
 
+**Phones and tablets**
+
+- **Atrium is usable on a phone and on a tablet.** Under 768 px of width — or on a low screen
+  used with a finger — the sidebar becomes a drawer, the main bars offer 44 px touch targets,
+  and the tables, the calendar and the project page switch to a stacked layout when their
+  content no longer fits; on a phone the project page is browsed one level at a time. This
+  only changes the frontend.
+- **Menus, dialogs and the composer stay within the visible screen, on-screen keyboard
+  included.** Every layer is bounded by the room actually visible, the expanded composer stays
+  above the keyboard with its send bar in view, and the queued messages stay in view while the
+  layout moves.
+- **A dialog gives the focus back to the control that opened it.** No dialog of the app did,
+  on a computer either.
+- **Also visible on a computer:** text smaller than 12 px is raised to 12 px, "Reply to a
+  block…" and "Bookmark a block…" are in a reply's "⋯" menu, and the calendar has an "Agenda"
+  button.
+
 **Known limits.**
 
 - A turn the gateway cuts and never resumes shows no notice, as before: only the gateway's own
@@ -152,6 +169,10 @@ once the bridge image is deployed.
 - Covered by automated tests only, not replayed on the live bench: a notice line other than a
   model fallback, the completion of a bubble closed on an error, the rewritten late final,
   several `message` sends in one turn, and the refusal of an oversized image in the composer.
+- The phone and tablet layouts were checked in a browser at phone and tablet sizes, not on
+  physical devices. A control removed after its dialog closed (a deleted row) does not get the
+  focus back. In landscape on a small phone with the keyboard open, very little of the page
+  stays visible above the composer.
 - A connection closed for silence while no turn is running is reopened at the next message. A
   gateway that answers requests but no longer emits events keeps its connection.
 

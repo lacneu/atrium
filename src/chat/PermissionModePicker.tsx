@@ -8,7 +8,7 @@
 // is titled "Execution permissions" with a "Learn more" link, five options (icon, title,
 // one-line description, shortcut 1-5 while the menu is open), full access in alert red.
 
-import { useCallback, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import {
   Check,
@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/toast";
+import { composerAround } from "./composerFocus";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import type { ConvexId } from "./convexTypes";
@@ -187,15 +188,29 @@ export function PermissionModePicker({
   chatId,
   routedAgent,
   multiAgent,
+  onVisibleChange,
 }: {
   chatId: ConvexId<"chats">;
   /** The agent the next message goes to (null = the chat's own resolution). */
   routedAgent: { instanceName: string; agentId: string } | null;
   /** A per-turn routed conversation: the choice spans several agents. */
   multiAgent: boolean;
+  /** Whether the button renders: the composer decides what fits in its bar. */
+  onVisibleChange?: (visible: boolean) => void;
 }) {
   const ctl = usePermissionControl(chatId, routedAgent, multiAgent);
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const visible = ctl !== null && !ctl.view.hidden;
+  useEffect(() => {
+    onVisibleChange?.(visible);
+  }, [visible, onVisibleChange]);
+  useEffect(
+    () => () => {
+      onVisibleChange?.(false);
+    },
+    [onVisibleChange],
+  );
   if (ctl === null || ctl.view.hidden) return null;
   const { view, pick } = ctl;
   // Shortcuts only while the menu is OPEN (upstream handlePermissionPickerKeydown).
@@ -211,6 +226,7 @@ export function PermissionModePicker({
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
+          ref={triggerRef}
           type="button"
           className={`oc-composer__perm${view.alert ? " is-alert" : ""}${
             view.pending ? " is-pending" : ""
@@ -218,6 +234,7 @@ export function PermissionModePicker({
           title={view.title}
           aria-label={view.ariaLabel}
           data-permission-mode={view.current}
+          data-overflow="perm"
         >
           <ModeIcon icon={view.icon} size={15} />
           <span className="oc-composer__perm-label">{view.label}</span>
@@ -229,6 +246,12 @@ export function PermissionModePicker({
         side="top"
         className="oc-perm__menu w-80"
         onKeyDown={onKeyDown}
+        // Its button may have gone into the composer's More menu meanwhile (the
+        // bar narrowed): the focus then goes there, else to the field.
+        returnFocus={() => {
+          const { more, field } = composerAround(triggerRef.current);
+          return [more, field];
+        }}
       >
         <Heading />
         {view.items.map((item) => (

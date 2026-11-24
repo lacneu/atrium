@@ -18,6 +18,8 @@ import {
   pageFramePolicy,
   resolveWidgetSandboxOrigin,
 } from "./chat/widgets/widgetSandbox";
+import { installKeyboardInset } from "@/lib/virtualKeyboard";
+import { installFocusHistory } from "@/lib/returnFocus";
 import "./index.css";
 import "./chat/convexChat.css";
 
@@ -39,7 +41,7 @@ function BootMessage({ children }: { children: React.ReactNode }) {
     <div
       style={{
         display: "flex",
-        minHeight: "100vh",
+        minHeight: "100dvh",
         alignItems: "center",
         justifyContent: "center",
         padding: "2rem",
@@ -52,6 +54,16 @@ function BootMessage({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+// `--oc-kb` and `--oc-vv-top`: what the iOS keyboard covers at the bottom and what
+// iOS scrolled out of sight at the top, for the layouts sized on the screen to keep
+// out of (src/lib/virtualKeyboard.ts). Installed once, for the page's life.
+installKeyboardInset();
+
+// The page's focus moves, from which a dialog reads the control it was opened from
+// when it closes (src/lib/returnFocus.ts). Installed once, for the page's life,
+// before anything can take the focus.
+installFocusHistory();
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 

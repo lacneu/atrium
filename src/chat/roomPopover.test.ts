@@ -51,7 +51,7 @@ describe("the quick view carries no technical detail", () => {
 
   test("the conversation panel keeps both, for every agent of the room", () => {
     expect(PANEL).toMatch(
-      /<Server size=\{10\} aria-hidden \/> \{a\.instanceName\}\s*\{a\.model \? ` · \$\{a\.model\}` : ""\}/,
+      /<Server size=\{10\} aria-hidden \/>\{" "\}\s*<span className="oc-convpanel__subtext">\s*\{a\.instanceName\}\s*\{a\.model \? ` · \$\{a\.model\}` : ""\}/,
     );
   });
 });

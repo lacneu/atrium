@@ -5,6 +5,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useLayerFocus, type ReturnFocus } from "@/lib/returnFocus"
 import { Button } from "@/components/ui/button"
 import { m } from "@/paraglide/messages.js"
 
@@ -51,24 +52,52 @@ function DialogOverlay({
   )
 }
 
+// NEVER TALLER THAN THE VISIBLE SCREEN: a dialog taller than the viewport used to
+// run off both edges with no way to scroll (title and buttons cut on a phone held
+// in landscape). Capped at the dynamic viewport height minus the same 1rem margin
+// it keeps at the sides, it scrolls inside instead. A caller's own `max-h-*` /
+// `overflow-*` still wins (tailwind-merge; unlayered CSS on its class wins too).
+// Its width and its place across are the stylesheet's (lot 25): what is shown less
+// its safe areas, centred on it, never the layout viewport (convexChat.css).
+// Its padding is the CALLER's (lot 29): the default gives way with the room shown
+// (`--oc-layer-pad-y`, set by the stylesheet on the slot: 1.25rem down to 0.5rem),
+// and is here, in the class, so that a caller's own padding replaces it — a rule on
+// the slot beat the search palette's `p-0`.
+// ITS COLUMN IS ITS WIDTH (lot 32): `grid-cols-1` is `minmax(0, 1fr)`, where the
+// implicit column was `auto` — as wide as the widest content of a child on one line (a
+// select's value, a tab bar), which pushed the dialog's content past its edge on a
+// phone. Where the content fits, the column is the dialog's width either way.
+// The z-index utility stays on the element, after its `data-slot`:
+// overlayLayer.test.ts pairs the two by position to prove the surface is raised
+// by the app's layer rule.
+export const dialogContentClassName =
+  "fixed top-1/2 grid grid-cols-1 max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding px-5 py-(--oc-layer-pad-y) text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  returnFocus,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+}: Omit<React.ComponentProps<typeof DialogPrimitive.Content>, "onCloseAutoFocus" | "ref"> & {
   showCloseButton?: boolean
+  /** Where the focus goes as the dialog closes if the control that opened it is
+   *  gone or hidden by then — controls of the view that stay, in order. */
+  returnFocus?: ReturnFocus
 }) {
+  // The focus goes back where the dialog was opened from, by the one rule of
+  // lib/returnFocus — a view only adds fallbacks (`returnFocus`): it cannot pass
+  // its own `onCloseAutoFocus`, which would run before the guard.
+  const focus = useLayerFocus("dialog", returnFocus)
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
-        className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
-        )}
+        className={cn("z-50", dialogContentClassName, className)}
         {...props}
+        ref={focus.ref}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
       >
         {children}
         {showCloseButton && (

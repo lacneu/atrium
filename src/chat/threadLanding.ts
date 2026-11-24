@@ -21,6 +21,7 @@
 // once and the first image push the thread off the mark.
 
 import type { BookmarkView } from "./bookmarkView";
+import { stopReserveFollow } from "./queueReserve";
 
 /** Where the thread should sit when a conversation opens. */
 export type LandingTarget =
@@ -167,7 +168,12 @@ export function landThread(
     // `null` means a bookmark whose bubble has not mounted: keep waiting rather than
     // jumping to a guessed position, and let the deadline reveal the thread if it never
     // arrives (a bookmark on a message that was deleted upstream).
-    if (top !== null) viewport.scrollTop = top;
+    if (top !== null) {
+      // The landing holds the position until the thread settles; the queued cards'
+      // follow (queueReserve.ts) gives way to it.
+      stopReserveFollow(viewport);
+      viewport.scrollTop = top;
+    }
 
     const settled = top !== null && settle.observe(viewport.scrollHeight);
     if (settled || now() - started >= LANDING_DEADLINE_MS) {

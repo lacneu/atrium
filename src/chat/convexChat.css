@@ -68,6 +68,227 @@
   z-index: var(--oc-layer-overlay);
 }
 
+/* REDUCED MOTION, for the same family. Their enter/exit animations come from
+   tw-animate-css, which ignores `prefers-reduced-motion`: the drawer moved onto the
+   shared Sheet and started sliding again where the hand-made one had stopped. Keyed
+   on `data-slot` like the layer above, and derived the same way by its test
+   (overlayMotion.test.ts): every animated content and overlay of
+   `src/components/ui/**` must be listed here. Radix unmounts at once when there is
+   no animation to wait for. */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="alert-dialog-overlay"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="popover-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="select-content"],
+  [data-slot="tooltip-content"],
+  [data-slot="dialog-overlay"],
+  [data-slot="dialog-content"],
+  [data-slot="sheet-overlay"],
+  [data-slot="sheet-content"] {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* REVEALED ON HOVER, WITH A TOUCH FALLBACK — one class for every control that a
+   row shows only when it is hovered (its menu, a copy or bookmark button, a grip).
+   The pattern had been written a dozen times, in Tailwind and in CSS, and almost
+   never with a fallback: on a phone the conversation menus, the copy of a tool's
+   output or a table row's actions were invisible, reachable only by tapping blindly
+   where they had to be.
+   `.oc-reveal` marks the control and `.oc-reveal-host` its row. The control shows
+   while its NEAREST host is hovered or holds the focus — a host nested in another
+   (a tool card inside a message) keeps its controls to itself — while its own menu
+   is open, on keyboard focus, and always where a finger can be used:
+   `hover: none` alone asks about the PRIMARY pointer, so a tablet with a mouse kept
+   them hidden while still taking touch; `any-pointer: coarse` asks whether a coarse
+   pointer exists at all. The query is TOUCH_REVEAL_QUERY in src/lib/useMediaQuery.ts
+   (touchReveal.test.ts keeps the two in step). */
+.oc-reveal {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.oc-reveal-host:hover .oc-reveal:not(.oc-reveal-host:not(:hover) .oc-reveal),
+.oc-reveal-host:focus-within .oc-reveal:not(.oc-reveal-host:not(:focus-within) .oc-reveal),
+.oc-reveal:focus-visible,
+.oc-reveal[aria-expanded="true"] {
+  opacity: 1;
+}
+@media (hover: none), (any-pointer: coarse) {
+  .oc-reveal {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-reveal {
+    transition: none;
+  }
+}
+
+/* …and a HIT ZONE for the small icons of a row (Olivier's arbitration, 2026-11:
+   the icons keep their look, only their invisible tap area grows, never over a
+   neighbour's). An invisible ::after centred on the control, 44 px each way by
+   default; a row whose geometry leaves less room caps it with `--oc-hit-w` /
+   `--oc-hit-h` (its pitch), so two zones meet and never overlap and no zone spills
+   into the next row. The shared `Button` too (lot 7, the same arbitration): its
+   look does not change, its zone grows the same way — matched on `data-variant`,
+   which it always sets (as a menu or dialog trigger its `data-slot` is the
+   trigger's).
+   The zone needs its control positioned. A control already positioned stays so:
+   `position: relative` sits in a cascade layer BELOW Tailwind's utilities — an
+   unlayered rule would beat the `absolute` that places a dialog's close button and
+   drop it into the flow — and at no weight (`:where`) under this file's own rules. */
+@layer base {
+  @media (hover: none), (any-pointer: coarse) {
+    :where(.oc-hit, .oc-msg__actions .oc-iconbtn, .oc-cronactions button, [data-variant][data-size]) {
+      position: relative;
+    }
+  }
+}
+@media (hover: none), (any-pointer: coarse) {
+  .oc-hit::after,
+  .oc-msg__actions .oc-iconbtn::after,
+  .oc-cronactions button::after,
+  [data-variant][data-size]::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, var(--oc-hit-w, 2.75rem));
+    height: max(100%, var(--oc-hit-h, 2.75rem));
+    /* `--oc-hit-x` / `--oc-hit-y` slide the zone where the room is: back inside a
+       row whose edge clips it, away from a neighbour, into an empty gap. */
+    transform: translate(
+      calc(-50% + var(--oc-hit-x, 0px)),
+      calc(-50% + var(--oc-hit-y, 0px))
+    );
+  }
+  /* A message's action row (copy, read aloud, report, delete, ⋯): icons 32.8 px
+     apart, so each zone is one pitch wide and 44 px tall — slid DOWN into the
+     28 px gap between messages, the whole extra height below the bar: above it
+     is the message itself, whose own controls (a widget's "retry") sit 8 px up. */
+  .oc-msg__actions {
+    --oc-hit-w: 2.05rem;
+    --oc-hit-y: 0.425rem;
+  }
+  /* The reply header's bookmark and reply: 23 px apart on a 28 px line. Each zone
+     is 44 px square, the first slid over the agent's name, the second into the
+     empty line, so they meet without overlapping; both slid 4 px up into the gap
+     above the message — no further: the previous message's action zones reach
+     14 px into that 28 px gap. */
+  .oc-msg__name .oc-bmk-headbtn {
+    --oc-hit-x: -0.65rem;
+    --oc-hit-y: -0.25rem;
+  }
+  .oc-msg__name .oc-bmk-headbtn + .oc-bmk-headbtn {
+    --oc-hit-x: 0.65rem;
+  }
+  /* A scheduled job's actions: 2 px apart in the table, so one pitch wide each
+     there; a finger apart once the rows stack, so the full 44 px. */
+  .oc-cronactions {
+    --oc-hit-w: 1.875rem;
+  }
+  .oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) .oc-cronactions {
+    --oc-hit-w: 2.75rem;
+  }
+  /* Shared buttons closer to a neighbour than 16 px (lot 7, measured at 360 px):
+     each zone takes at most half the gap. A filter bar's reset sits 10 px above
+     its table's "add"; the scheduled jobs' and the project page's view toggles
+     are 2 px apart (28 px buttons); the calendar's arrows too; the trash's
+     actions, once wrapped, 6 px apart. */
+  .oc-filterbar__reset,
+  .oc-dt__bar [data-variant] {
+    --oc-hit-h: 2.375rem;
+  }
+  /* The project page's bar (icons only on a phone): 32 px buttons and its 28 px
+     ⋯, 6 px apart — 34 px zones; its view toggle (below) is tighter still. */
+  .oc-projpage__actions [data-variant] {
+    --oc-hit-w: 2.125rem;
+  }
+  .oc-sched__viewtoggle [data-variant],
+  .oc-projpage__viewtoggle [data-variant],
+  .oc-cal__nav [data-size^="icon"] {
+    --oc-hit-w: 1.875rem;
+  }
+  /* The calendar's head on a phone: its arrows and its modes wrap to two rows of
+     28 px buttons 13 px apart — 40 px zones keep each row to itself. */
+  .oc-cal__head [data-variant] {
+    --oc-hit-h: 2.5rem;
+  }
+  .oc-trash__actions [data-variant] {
+    --oc-hit-h: 2.125rem;
+  }
+  /* The sidebar's shortcuts (Scheduled, Library, Settings): 32 px rows touching
+     each other — their zones keep to their row. */
+  .oc-sidebar__shortcut {
+    --oc-hit-h: 2rem;
+  }
+  /* An access list's "make default" star: rows 30 px apart, the star at the row's
+     end — its zone keeps to its row and slides back inside it. */
+  .oc-access__row {
+    --oc-hit-h: 1.875rem;
+  }
+  .oc-access__setdefault {
+    --oc-hit-x: -0.5rem;
+  }
+  /* A field's `?`: on its label's line, 18 px above the field it explains, and in
+     placeholder chips that wrap on 27 px lines — 24 px tall keeps it off both. */
+  .oc-field__help {
+    --oc-hit-h: 1.5rem;
+  }
+  /* The sidebar: chat rows are 36 px, a folder's head 24 px — each zone keeps to
+     its own row — and the menu ends 4 px before the row's edge, where the list
+     clips: the zone slides 6 px back in so all 44 px of its width are live. */
+  .oc-chatitem {
+    --oc-hit-h: 2.25rem;
+    --oc-hit-x: -0.375rem;
+  }
+  .oc-sidebar__group-head {
+    --oc-hit-h: 1.5rem;
+  }
+  .oc-sidebar__group-menu {
+    --oc-hit-x: -0.375rem;
+  }
+  /* …and a folder's fold chevron opens its head, at the list's left edge: its
+     zone slides right, onto the folder's name, to stay inside the list. */
+  .oc-sidebar__group-chevbtn {
+    --oc-hit-x: 0.5rem;
+  }
+}
+
+/* MENU AND LIST ITEMS a finger's height on a coarse pointer (lot 7): the shared
+   dropdown menu, the select lists, the reply's ⋯ menu, the pickers' options. They
+   are stacked in their own surface, so a taller row cannot cover a neighbour. */
+@media (pointer: coarse) {
+  [data-slot="dropdown-menu-item"],
+  [data-slot="dropdown-menu-radio-item"],
+  [data-slot="dropdown-menu-checkbox-item"],
+  [data-slot="dropdown-menu-sub-trigger"],
+  [data-slot="select-item"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [role="menuitemcheckbox"],
+  [role="option"] {
+    min-height: 2.75rem;
+  }
+}
+
+/* KEYBOARD HINTS where the primary pointer is a finger (lot 9): "New chat"'s
+   Ctrl+Shift+O, the search box's Ctrl+K, the palette's ↑↓ ↵ Esc footer, the
+   permission menu's digits. The shortcuts keep working with a keyboard attached;
+   only the hint goes. A touch-screen laptop keeps them: its primary pointer is fine.
+   The "New chat" ghosts are hidden alike, so its measured fit stays exact. Classes
+   doubled: the base rules further down set `display` at a single class's weight. */
+@media (pointer: coarse) {
+  .oc-newchat__kbd.oc-newchat__kbd,
+  .oc-search-trigger__kbd.oc-search-trigger__kbd,
+  .oc-search-palette__footer.oc-search-palette__footer,
+  .oc-perm__shortcut.oc-perm__shortcut {
+    display: none;
+  }
+}
+
 .oc-boot,
 .oc-empty {
   display: grid;
@@ -88,7 +309,7 @@
   height: 100%;
   /* Fill the FULL viewport: this fallback can render full-page (when the error is
      caught ABOVE the app chrome, so there is no sidebar/top bar to size it), where
-     a 60vh floor left a white band below it. In-shell it is clipped by `.oc-main`
+     a 60dvh floor left a white band below it. In-shell it is clipped by `.oc-main`
      (overflow:hidden), so 100dvh is correct in both cases. */
   min-height: 100dvh;
   padding: 2rem;
@@ -182,8 +403,10 @@
   align-items: center;
   justify-content: center;
   gap: 1.5rem;
-  min-height: 100vh;
-  padding: 2rem;
+  min-height: 100dvh;
+  /* 2rem, more where the screen's safe areas ask for it (lot 8). */
+  padding: max(2rem, env(safe-area-inset-top)) max(2rem, env(safe-area-inset-right))
+    max(2rem, env(safe-area-inset-bottom)) max(2rem, env(safe-area-inset-left));
   background-color: var(--background);
   /* Very light glow from the bottom — mirrors the chat-canvas ambiance. --primary
      is neutral on Atrium (soft darkening at the bottom in light, lightening in
@@ -334,6 +557,22 @@
   flex-direction: column;
   gap: 0.55rem;
 }
+/* A SHORT screen (a phone held sideways, C4): the page and its card give back
+   their spacing so three providers fit without scrolling. Height alone decides —
+   the same 500 px as the shell's short mode. */
+@media (max-height: 500px) {
+  .oc-signin {
+    gap: 0.75rem;
+    padding-block: max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .oc-signin__card {
+    gap: 0.45rem;
+    padding: 1rem 1.5rem;
+  }
+  .oc-signin__subtitle {
+    margin-bottom: 0.1rem;
+  }
+}
 
 /* Provider buttons — faithful to each brand (their OWN colors, not theme tokens,
    so "Sign in with Google" reads as Google in any chart/mode). */
@@ -443,8 +682,145 @@
   display: flex;
   flex-direction: column;
   /* dvh (not vh): on mobile, vh includes the area behind the browser's dynamic
-     address bar, which pushes content off-screen; dvh tracks the visible height. */
-  height: 100dvh;
+     address bar, which pushes content off-screen; dvh tracks the visible height.
+     Less what the iOS keyboard covers (`--oc-kb`, src/lib/virtualKeyboard.ts): the
+     composer stays above it. 0 everywhere else. */
+  height: calc(100dvh - var(--oc-kb, 0px));
+  /* SAFE AREAS (lot 8): the page runs edge to edge (`viewport-fit=cover`), its
+     content clear of the notch, the rounded corners and the home bar — whose
+     inset the keyboard covers when it is open. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    max(0px, calc(env(safe-area-inset-bottom) - var(--oc-kb, 0px)))
+    env(safe-area-inset-left);
+}
+/* EVERY KIND OF LAYER STAYS IN THE VISIBLE SCREEN (lots 17-19): its height bounded
+   by the screen less the safe areas and the iOS keyboard (`--oc-kb`), scrolling
+   inside, its actions in view. What is on screen is a RECTANGLE (lot 19): iOS also
+   scrolls the visual viewport down to reveal a field, and `--oc-vv-top` is how far
+   — every layer stays between that top and the keyboard. Each kind is listed by its slot, and the list is
+   derived from the components by its test (safeAreas.test.ts).
+   THE BOUND IS ONE VARIABLE, `--oc-layer-room`: the visible height. A view that
+   caps one of its layers further writes `min(its cap, the bound)` — never its cap
+   alone: a rule as specific as the shared one and later in the cascade wins it
+   (the search palette's 70dvh did, keyboard or not). safeAreas.test.ts reads every
+   rule that sizes a layer, the layers found in the components.
+   The sheets (the drawer, the side panels) run the full height of the screen: they
+   stop at the safe areas — and above the keyboard, which covers the bottom one
+   when it is open (they used to run under it, buttons and all). Where there is
+   neither (every desktop) this is exactly `inset-y-0`. Every fixed bottom edge
+   stands on `--oc-vv-bottom` (lot 26): what lies below what is shown in the layout
+   viewport — the keyboard, or the height a page wider than the screen added. */
+:root {
+  --oc-layer-room: calc(
+    100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - env(safe-area-inset-top) -
+      env(safe-area-inset-bottom)
+  );
+}
+[data-slot="sheet-content"][data-side="left"],
+[data-slot="sheet-content"][data-side="right"] {
+  top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top));
+  bottom: max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px));
+  height: auto;
+}
+[data-slot="sheet-content"][data-side="top"],
+[data-slot="sheet-content"][data-side="bottom"] {
+  max-height: var(--oc-layer-room);
+}
+[data-slot="sheet-content"][data-side="top"] {
+  top: calc(var(--oc-vv-top, 0px) + env(safe-area-inset-top));
+}
+[data-slot="sheet-content"][data-side="bottom"] {
+  bottom: max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px));
+}
+[data-slot="sheet-content"][data-side="left"] {
+  left: calc(var(--oc-vv-left, 0px) + env(safe-area-inset-left));
+}
+[data-slot="sheet-content"][data-side="right"] {
+  right: max(
+    env(safe-area-inset-right),
+    calc(100% - 100vw - var(--oc-vv-left, 0px) + env(safe-area-inset-right))
+  );
+}
+/* EVERY LAYER STAYS IN THE VISIBLE WIDTH TOO (lot 25). THE BOUND IS ONE VARIABLE,
+   `--oc-layer-width`: the width shown, less the safe areas (the notch and the rounded
+   corners, at the sides in landscape). The width SHOWN: on a phone `100vw` is the
+   screen's width even when the page runs wider — its layout viewport then grows, and
+   a fixed layer's `50%` and `right: 0` with it (the chat page did from the text scale
+   xl at 360 px) —; on a computer `100%` leaves the scrollbar out. WHERE it is shown:
+   such a page can be panned sideways; `--oc-vv-left` (lib/virtualKeyboard.ts) is how
+   far right what is shown begins, and a dialog or a sheet is placed from it. A
+   floating layer is bounded by the width Floating UI measured for it on the visual
+   viewport (`--radix-<kind>-content-available-width`), which its shared content takes
+   as its cap. A view gives a layer a width only as `min(its width, the bound)` — a
+   width alone would replace the bound: safeAreas.test.ts reads every rule that sizes
+   one. */
+:root {
+  --oc-layer-width: calc(min(100%, 100vw) - env(safe-area-inset-left) - env(safe-area-inset-right));
+}
+[data-slot="sheet-content"][data-side="left"],
+[data-slot="sheet-content"][data-side="right"] {
+  width: min(75%, var(--oc-layer-width));
+}
+[data-slot="sheet-content"][data-side="top"],
+[data-slot="sheet-content"][data-side="bottom"] {
+  left: calc(var(--oc-vv-left, 0px) + env(safe-area-inset-left));
+  right: max(
+    env(safe-area-inset-right),
+    calc(100% - 100vw - var(--oc-vv-left, 0px) + env(safe-area-inset-right))
+  );
+}
+/* A dialog — and a confirmation, which used to escape this — stays clear of the
+   safe areas, and between the visible top and the iOS keyboard: shorter by what
+   they hide and moved by half their difference, so its centre is the visible
+   centre. The search palette is anchored near the visible top: its own rule bounds
+   it from there. */
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"] {
+  /* What surrounds the action bar gives way before it (lot 28): the 1rem margin
+     above and below goes once the room is under the dialog's floor plus that
+     margin — the dialog then takes the room, down to the whole of it — and its
+     padding, down to 0.5rem. At 100 px shown a dialog was 60 px tall, 50 of them
+     padding, its footer cut. The padding is the caller's (lot 29): the slot only
+     carries the value the shared class's `py-(--oc-layer-pad-y)` reads, so that a
+     caller's own padding class replaces it — set here, it beat the palette's `p-0`. */
+  max-height: max(calc(var(--oc-layer-room) - 2rem), min(var(--oc-layer-room), 7rem));
+  --oc-layer-pad-y: clamp(0.5rem, calc((var(--oc-layer-room) - 8rem) / 4), 1.25rem);
+  /* As wide as what is shown less a margin, narrowed by its own `max-width`, and
+     centred between the safe areas of what is shown (lot 25). */
+  width: calc(var(--oc-layer-width) - 2rem);
+  left: calc(
+    var(--oc-vv-left, 0px) + min(50%, 50vw) +
+      (env(safe-area-inset-left) - env(safe-area-inset-right)) / 2
+  );
+}
+[data-slot="dialog-content"]:not(.oc-search-palette),
+[data-slot="alert-dialog-content"] {
+  margin-top: calc((var(--oc-vv-top, 0px) - var(--oc-vv-bottom, 0px)) / 2);
+}
+/* A FLOATING LAYER (popover, menu, select) never exceeds the room Floating UI
+   measured for it, `--radix-<kind>-content-available-height`, which its shared
+   content takes as its cap: that room is measured on the VISUAL viewport
+   (@floating-ui/dom's getViewportRect), which the iOS keyboard shrinks — the
+   keyboard is already out of it (lot 17 took it out a second time, and its floor
+   of a few rows could exceed the room). A view caps it further only with
+   `min(its cap, that room)`. */
+/* ITS ACTIONS IN VIEW: a layer taller than the room scrolls inside, and its footer
+   stays at the bottom of what is shown, opaque over the scrolled content.
+   Unscrolled, the footer is where it always was. A field the focus scrolls into
+   view (the type-to-confirm field, as the keyboard opens) stops above that footer:
+   the room it takes, stacked buttons included, is kept out of the scrolling. */
+[data-slot="dialog-footer"],
+[data-slot="alert-dialog-footer"],
+[data-slot="sheet-footer"] {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--popover);
+}
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"],
+[data-slot="sheet-content"] {
+  scroll-padding-bottom: 6rem;
 }
 .oc-topbar {
   display: flex;
@@ -479,6 +855,62 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
+}
+/* THE TOP BAR FITS THE SCREEN (lot 26, topBarFit.ts): `data-fit` names what it
+   shows, measured on clones of the bar. `full`: the brand's label and the account's
+   name; `logo`: the logo alone (a brand without one keeps its label) and the name
+   shortened; `icon`: the account as its icon. Every label can shorten (ellipsis,
+   its whole text in the title), and in the last presentation the brand gives way
+   too: the bar never runs past the screen. */
+.oc-topbar__left,
+.oc-topbar__actions,
+.oc-topbar__brand,
+.oc-drawer__head .oc-topbar__brand {
+  min-width: 0;
+}
+.oc-topbar__left {
+  flex-shrink: 0;
+}
+.oc-brand__label,
+.oc-usermenu__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-usermenu__icon {
+  display: none;
+}
+.oc-topbar[data-fit="logo"] .oc-brand__logo + .oc-brand__label,
+.oc-topbar[data-fit="icon"] .oc-brand__logo + .oc-brand__label,
+.oc-drawer__head[data-fit="logo"] .oc-brand__logo + .oc-brand__label,
+.oc-topbar[data-fit="icon"] .oc-usermenu__label,
+.oc-topbar[data-fit="icon"] .oc-usermenu__chev {
+  display: none;
+}
+.oc-topbar[data-fit="icon"] .oc-usermenu__icon {
+  display: block;
+}
+.oc-topbar[data-fit="icon"] .oc-topbar__left,
+.oc-topbar[data-fit="icon"] .oc-brand__logo {
+  flex-shrink: 1;
+  min-width: 0;
+}
+/* The clones the fit measures: laid out off-screen at their natural width. A
+   label is measured at its floor where it may shorten: below it, the next
+   presentation. */
+.oc-topbar.oc-topbar--measure,
+.oc-drawer__head.oc-drawer__head--measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+.oc-topbar.oc-topbar--measure[data-fit="logo"] .oc-usermenu__label,
+.oc-topbar.oc-topbar--measure[data-fit="logo"] .oc-brand__label {
+  max-width: 7em;
 }
 /* Flex row (NOT a fixed grid): the sidebar column owns its width via
    `flex: 0 0 <width>px` (resizable, see useSidebarLayout) and the main area
@@ -555,10 +987,144 @@
   position: relative; /* anchor for the absolute scroll-to-bottom pill */
   /* Query container so the chat header adapts to the WORKSPACE width (sidebar
      open/closed + window), NOT the viewport — a narrow workspace on a wide screen
-     must still compact. inline-size only (block size stays content-driven, so the
-     flex column height is unaffected). Already a containing block via
+     must still compact — and folds when the thread is too short for it (lot 28,
+     below). Both sizes: the thread's height is the flex column's (the shell's less
+     the keyboard), never its content's. Already a containing block via
      position:relative, so this doesn't change the scroll-pill anchoring. */
-  container: chatpane / inline-size;
+  container: chatpane / size;
+}
+/* WHAT GIVES WAY (lot 28). A thread shorter than its content (a keyboard over a
+   phone held sideways) gives up the transcript first (its padding included: the
+   spacers below), then the header, then what the composer holds — its quotes and
+   attachments shrink and scroll, its field down to one line —, never the bar; under
+   even the composer's floor, the bar's foot stays in view, as the full-page
+   prompt's does (lot 12). It used to lose its bottom: 140 px shown, the header kept
+   its 44 px and the transcript its padding, the send bar wholly cut.
+   The header folds in a thread too short for it AND the composer's floor (its field
+   on one line, its bar, its chrome: 7 to 8rem with a quote and attachments) — under
+   11rem, a keyboard over a phone held sideways. */
+@container chatpane (max-height: 11rem) {
+  .oc-thread > .oc-chathead {
+    display: none;
+  }
+  /* The banner with it (lot 29): given way, its border and its margin still cost
+     the composer 10 px — out of the layout, still read out. */
+  .oc-thread > .oc-chat-banner {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+/* WHAT SITS ABOVE THE COMPOSER GIVES WAY BEFORE IT (lot 29): a banner, the queued
+   messages, the agent's pending request. A banner kept its 59 px, two queued cards
+   their 122, a pending request its 163: the composer was squeezed to its border, its
+   bar under the keyboard. The order:
+   1. the banner's text, the queued cards, the request's question shrink first — a
+      thousand times faster than the composer —: the banner down to nothing, clipped
+      (its spacing is its content's margin); the cards and the question scroll;
+   2. the composer's quotes, attachments and extra lines (lot 28), down to its floor;
+   3. the request keeps its FLOOR — its bar and its response controls, whole, its
+      card's head scrolled behind them —, the composer its own; when both do not fit
+      (the thresholds below), the one whose field has the keyboard stays and the
+      other steps aside. */
+.oc-thread > :is(.oc-chat-banner, .oc-queue-dock, .oc-areq-dock) {
+  flex-shrink: 1000;
+  min-height: 0;
+  overflow: clip;
+}
+.oc-thread > .oc-queue-dock {
+  /* Scrolled, not clipped: a queued message's edit and cancel stay within reach. */
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+/* The queued cards float over the end of the TRANSCRIPT, never over what sits
+   between them: they covered a banner whole (its 44 px under their negative margin),
+   and in a short thread the header's foot. Under a banner they take their own room;
+   over the transcript, the transcript keeps the room they float over and tuck into —
+   room the cards and the composer cover, so it costs nothing. */
+.oc-chat-banner + .oc-queue-dock {
+  margin-top: 0.35rem;
+}
+.oc-thread > .oc-areq-dock {
+  /* Its floor, never taller than the thread less its margins: answered in a thread
+     too short even for it, it stays above the keyboard, its list scrolled to the
+     focused field. */
+  min-height: min(var(--oc-areq-floor), calc(100cqh - 0.9rem));
+}
+/* WHEN BOTH FLOORS DO NOT FIT (lot 29) — the composer's (its field on one line, its
+   bar: 5.375rem + 4px, measured in lot 28) and the request's: the keyboard is for
+   the field that has the focus, and that field's controls stay.
+   - The composer's, by default (its field has the focus when the keyboard rises):
+     the request steps aside to its bar — the panel holds it whole —, then, shorter,
+     out of the thread; it comes back with the room.
+   - The request's while the reader answers it (the focus in its card): the composer
+     steps aside, its draft kept, and comes back when the answer is sent.
+   The thresholds are the floors' sums: the header (2.75rem, above 11rem), the
+   request's floor (below), its margins (0.9rem), the banner's (0.5rem and its
+   border), the composer's floor (6.25rem, its largest: upright, measured). One row
+   of response controls: 16.15rem + 8px; three (a narrow thread): 20.55rem + 8px;
+   the bar alone: 13.05rem + 6px. */
+@container chatpane (height < calc(16.15rem + 8px)) {
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within)) > .oc-areq-dock {
+    --oc-areq-list-floor: 0px;
+  }
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within))
+    > .oc-areq-dock
+    > :is(.oc-areq-dock__list, .oc-areq-dock__bar > [aria-controls]) {
+    display: none;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > form.oc-composer:not(.oc-composer--expanded) {
+    display: none;
+  }
+}
+@container chatpane (width < 44rem) and (height < calc(20.55rem + 8px)) {
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within)) > .oc-areq-dock {
+    --oc-areq-list-floor: 0px;
+  }
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within))
+    > .oc-areq-dock
+    > :is(.oc-areq-dock__list, .oc-areq-dock__bar > [aria-controls]) {
+    display: none;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > form.oc-composer:not(.oc-composer--expanded) {
+    display: none;
+  }
+}
+@container chatpane (height < calc(13.05rem + 6px)) {
+  .oc-thread:not(:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within)) > .oc-areq-dock {
+    display: none;
+  }
+}
+/* Shorter still, its card focused: the request's bar goes, and the header with it, in
+   a thread too short for them and its floor — 11rem, as the header's own fold; in a
+   narrow thread, whose controls take three rows, 14.3rem + 8px (the header 2.75rem,
+   the bar 2.65rem, the list's floor 7.5rem, the margins 0.9rem, a banner's 0.5rem).
+   The request then
+   fits the thread: its list scrolls to the focused field, the controls pinned at its
+   foot. Folded at 11rem alone, the narrow request came back cut just above it, the
+   header and the bar back at once. */
+@container chatpane (height < 11rem) {
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock {
+    --oc-areq-floor-bar: 2px;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock > .oc-areq-dock__bar {
+    display: none;
+  }
+}
+@container chatpane (width < 44rem) and (height < calc(14.3rem + 8px)) {
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock {
+    --oc-areq-floor-bar: 2px;
+  }
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-chathead,
+  .oc-thread:has(> .oc-areq-dock > .oc-areq-dock__list:focus-within) > .oc-areq-dock > .oc-areq-dock__bar {
+    display: none;
+  }
 }
 /* Conversation column. Messages are centered in a readable column whose width
    tracks the workspace (the cap keeps line length comfortable; collapsing the
@@ -576,18 +1142,40 @@
      event reads as juddering (user report). Smooth-scroll the follow, and
      ease the dock reserve so the thread glides instead of snapping. */
   scroll-behavior: smooth;
-  transition:
-    padding-bottom 200ms ease,
-    opacity 160ms ease;
-  /* --oc-dock-pad: set by QueuedDock (its measured height) so the queued
-     cards never mask the end of the in-flight reply — auto-scroll keeps the
-     bottom visible ABOVE the frosted cards; manual scroll still slides the
-     text behind them (the blur effect). */
-  padding: 1.5rem 1rem calc(2rem + var(--oc-dock-pad, 0px));
+  transition: opacity 160ms ease;
+  /* Its space above and below the messages is SCROLLED CONTENT (the spacers below),
+     not padding (lot 28): a padding is a floor the transcript could not give up,
+     and with the header it pushed the composer under the keyboard. */
+  padding: 0 1rem;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1.75rem;
+  --oc-thread-gap: 1.75rem;
+  gap: var(--oc-thread-gap);
+}
+/* The spacers: 1.5rem above the first message, 2rem below the last — plus
+   --oc-dock-pad, set by QueuedDock (its measured height) so the queued cards never
+   mask the end of the in-flight reply: auto-scroll keeps the bottom visible ABOVE
+   the frosted cards; manual scroll still slides the text behind them (the blur
+   effect). Each cancels the gap that separates it from the messages. */
+.oc-thread__viewport::before,
+.oc-thread__viewport::after {
+  content: "";
+  flex: none;
+}
+.oc-thread__viewport::before {
+  height: 1.5rem;
+  margin-bottom: calc(-1 * var(--oc-thread-gap));
+}
+.oc-thread__viewport::after {
+  height: calc(2rem + var(--oc-dock-pad, 0px));
+  margin-top: calc(-1 * var(--oc-thread-gap));
+  transition: height 200ms ease;
+}
+/* Under queued cards that float over its end, the transcript keeps the room they
+   float over and tuck into (lot 29, the rule on the queue above). */
+.oc-thread:has(> .oc-scrolldown-anchor + .oc-queue-dock) > .oc-thread__viewport {
+  min-height: calc(3.25rem + 0.85rem);
 }
 /* LANDING (user report: opening a chat scrolled visibly from the first message to the
    last). The smooth scroll above is for FOLLOWING new content; applied to the initial
@@ -645,8 +1233,9 @@
   text-overflow: ellipsis;
 }
 /* Title block = optional folder breadcrumb stacked over the title. Carries the
-   flex behavior the bare title used to have (the measurer reads ITS
-   scrollWidth, still capped by TITLE_CAP in the header logic). */
+   flex behavior the bare title used to have. The measurer reads each LINE's
+   scrollWidth (each one ellipsizes its own overflow, so the block's own
+   scrollWidth is the squeezed width), capped by HEADER_TITLE_CAP. */
 .oc-chathead__titlebox {
   min-width: 0;
   display: flex;
@@ -659,7 +1248,7 @@
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-chathead__crumb {
@@ -755,7 +1344,7 @@
 .oc-chip__hint {
   margin-left: 0.3rem;
   padding: 0.02rem 0.32rem;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   border-radius: var(--radius-sm);
   background: var(--secondary);
@@ -805,21 +1394,21 @@
   margin-left: 0.35rem;
   padding-left: 0.35rem;
   border-left: 1px solid var(--border);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 /* "défaut" marker inside the reasoning radio list. */
 .oc-menu__hint {
   margin-left: auto;
   padding-left: 0.5rem;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--muted-foreground);
 }
 /* Muted footnote (e.g. the deliberate verbosity exclusion). */
 .oc-menu__note {
   padding: 0.3rem 0.5rem 0.15rem;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   line-height: 1.3;
   color: var(--muted-foreground);
 }
@@ -1023,6 +1612,25 @@
   display: flex;
   gap: 0.15rem;
 }
+/* An older message's bar is RENDERED — hidden, not absent — so a keyboard reaches it
+   (lot 22): its ⋯ and the block lists behind it were out of reach of Tab, assistant-ui
+   rendering nothing without a mouse over the message. It shows on hover, on KEYBOARD
+   focus within the message (a mouse click leaves no lasting bar: :focus-visible, not
+   :focus-within) and while one of its menus is open; a mouse sees what it saw before,
+   nothing until it hovers. Where a finger can be used, always (touchReveal.ts). */
+.oc-msg__actions[data-reveal="hover"] {
+  opacity: 0;
+}
+.oc-msg:hover .oc-msg__actions[data-reveal="hover"],
+.oc-msg:has(:focus-visible) .oc-msg__actions[data-reveal="hover"],
+.oc-msg__actions[data-reveal="hover"]:has([aria-expanded="true"]) {
+  opacity: 1;
+}
+@media (hover: none), (any-pointer: coarse) {
+  .oc-msg__actions[data-reveal="hover"] {
+    opacity: 1;
+  }
+}
 .oc-iconbtn {
   display: inline-grid;
   place-items: center;
@@ -1097,7 +1705,7 @@
 }
 .oc-feedback__count {
   align-self: flex-end;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-feedback__result {
@@ -1132,7 +1740,7 @@
 .oc-fbadmin__detail section { display: flex; flex-direction: column; gap: 0.3rem; }
 .oc-fbadmin__h {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -1151,7 +1759,7 @@
   display: inline-block;
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   background: var(--muted);
   color: var(--muted-foreground);
@@ -1184,7 +1792,7 @@
 .oc-fbadmin__ctx-role { color: var(--muted-foreground); font-weight: 600; }
 .oc-fbadmin__ctx-text { white-space: pre-wrap; word-break: break-word; }
 .oc-fbadmin__env { margin: 0; font-size: 0.78rem; color: var(--muted-foreground); display: flex; flex-direction: column; gap: 0.2rem; }
-.oc-fbadmin__ua { font-family: var(--font-mono); font-size: 0.72rem; opacity: 0.75; }
+.oc-fbadmin__ua { font-family: var(--font-mono); font-size: 0.75rem; opacity: 0.75; }
 .oc-fbadmin__plugins { font-size: 0.78rem; }
 .oc-fbadmin__note { opacity: 0.7; font-style: italic; }
 .oc-fbadmin__thread { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.5rem; }
@@ -1220,10 +1828,9 @@
   text-align: center;
 }
 .oc-notif {
-  width: 360px;
-  max-width: 92vw;
+  width: min(360px, var(--radix-dropdown-menu-content-available-width));
   padding: 0;
-  max-height: 70vh;
+  max-height: min(70dvh, var(--radix-dropdown-menu-content-available-height, 70dvh));
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -1236,13 +1843,13 @@
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
 }
 .oc-notif__head--sub {
-  font-size: 0.74rem; font-weight: 700; text-transform: uppercase;
+  font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.03em; color: var(--muted-foreground);
   border-top: 1px solid var(--border);
 }
 .oc-notif__bulk { display: flex; gap: 0.35rem; }
 .oc-notif__act {
-  font-size: 0.72rem; color: var(--muted-foreground); cursor: pointer;
+  font-size: 0.75rem; color: var(--muted-foreground); cursor: pointer;
   background: none; border: none; padding: 0.1rem 0.2rem; border-radius: 0.3rem;
 }
 .oc-notif__act:hover:not(:disabled) { color: var(--foreground); background: var(--muted); }
@@ -1275,7 +1882,7 @@
 .oc-notif__item-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .oc-notif__cat { font-weight: 600; font-size: 0.82rem; }
 .oc-notif__status {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   padding: 0.05rem 0.45rem;
   border-radius: 999px;
@@ -1288,7 +1895,7 @@
   color: var(--foreground);
   border-color: color-mix(in oklch, var(--primary, green) 45%, var(--border));
 }
-.oc-notif__when { font-size: 0.72rem; color: var(--muted-foreground); }
+.oc-notif__when { font-size: 0.75rem; color: var(--muted-foreground); }
 .oc-notif__comment { margin: 0; font-size: 0.82rem; font-style: italic; color: var(--muted-foreground); }
 .oc-notif__thread { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.15rem; }
 .oc-notif__msg {
@@ -1301,16 +1908,16 @@
 }
 .oc-notif__msg--admin { background: var(--muted); }
 .oc-notif__msg--user { background: color-mix(in oklch, var(--primary, blue) 9%, var(--background)); }
-.oc-notif__msg-who { font-size: 0.68rem; font-weight: 700; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: 0.03em; }
+.oc-notif__msg-who { font-size: 0.75rem; font-weight: 700; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: 0.03em; }
 .oc-notif__msg-text { white-space: pre-wrap; word-break: break-word; }
-.oc-notif__link { font-size: 0.74rem; color: var(--primary, #3b82f6); text-decoration: none; align-self: flex-start; }
+.oc-notif__link { font-size: 0.75rem; color: var(--primary, #3b82f6); text-decoration: none; align-self: flex-start; }
 .oc-notif__link:hover { text-decoration: underline; }
 /* Reported-message reveal (the frozen snapshot text) + withdraw form. */
 .oc-notif__report-toggle {
   display: inline-flex; align-items: center; gap: 0.25rem;
   margin-top: 0.3rem; padding: 0;
   background: transparent; border: none; cursor: pointer;
-  font-size: 0.72rem; color: var(--muted-foreground);
+  font-size: 0.75rem; color: var(--muted-foreground);
 }
 .oc-notif__report-toggle:hover { color: var(--foreground); }
 .oc-notif__report-msg {
@@ -1338,13 +1945,13 @@
 .oc-notif__close-actions { display: flex; gap: 0.4rem; }
 .oc-notif__close-confirm {
   padding: 0.25rem 0.7rem; border-radius: 0.4rem; cursor: pointer;
-  font-size: 0.74rem; font-weight: 600; border: none;
+  font-size: 0.75rem; font-weight: 600; border: none;
   background: var(--destructive); color: var(--destructive-foreground, #fff);
 }
 .oc-notif__close-confirm:disabled { opacity: 0.6; cursor: not-allowed; }
 .oc-notif__close-cancel {
   padding: 0.25rem 0.7rem; border-radius: 0.4rem; cursor: pointer;
-  font-size: 0.74rem; background: transparent; color: var(--muted-foreground);
+  font-size: 0.75rem; background: transparent; color: var(--muted-foreground);
   border: 1px solid var(--border);
 }
 .oc-notif__close-cancel:hover { color: var(--foreground); }
@@ -1373,7 +1980,7 @@
    asymmetric spacing — more air before a group than after its header. */
 .oc-prefs__cat {
   margin: 1.4rem 0 0.2rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1403,7 +2010,7 @@
 .oc-prefs__label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: 500; }
 .oc-prefs__help { font-size: 0.78rem; color: var(--muted-foreground); }
 .oc-prefs__lock {
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -1414,7 +2021,7 @@
   border: 1px solid color-mix(in oklch, var(--destructive, orange) 45%, var(--border));
 }
 .oc-prefs__def {
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   padding: 0.05rem 0.4rem;
@@ -1425,7 +2032,7 @@
 }
 .oc-prefs__ctl { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
 .oc-prefs__reset {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   background: none;
   border: none;
@@ -1472,7 +2079,7 @@
 }
 .oc-prefs__gov-row { display: flex; align-items: center; gap: 0.6rem; }
 .oc-prefs__gov-label {
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -1485,7 +2092,7 @@
   font-size: 0.78rem;
   color: var(--foreground);
 }
-.oc-prefs__gov-help { font-size: 0.72rem; color: var(--muted-foreground); }
+.oc-prefs__gov-help { font-size: 0.75rem; color: var(--muted-foreground); }
 
 /* ── Admin "Préférences UI" tab (RETIRED) — classes kept: IntegrationsTab still
    uses .oc-uipa__h / .oc-uipa__note for its section headers. */
@@ -1499,7 +2106,7 @@
   padding-bottom: 1.1rem;
   border-bottom: 1px solid var(--border);
 }
-.oc-int__section-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.2rem; }
+.oc-int__section-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-bottom: 0.2rem; }
 .oc-int__fields { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.6rem; max-width: 480px; }
 .oc-int__field { display: flex; flex-direction: column; gap: 0.25rem; }
 .oc-int__field-label { font-size: 0.78rem; font-weight: 600; color: var(--foreground); }
@@ -1517,7 +2124,7 @@
   margin-bottom: 0.3rem;
 }
 .oc-msg__source-label {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1717,9 +2324,98 @@
 .oc-bmk-gutter--reply:hover {
   color: var(--primary);
 }
+/* A refused gutter action, said where it was clicked (lot 24): under the row's line,
+   over the block's start — above the row when the thread's bottom is too close —, for
+   a few seconds; the pointer passes through it. */
+.oc-bmk-status {
+  position: absolute;
+  left: 0;
+  z-index: 3;
+  transform: translateY(1.6rem);
+  max-width: min(24rem, 100%);
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--popover-foreground);
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 18px -6px rgb(0 0 0 / 0.25);
+  pointer-events: none;
+}
+.oc-bmk-status[data-above] {
+  transform: translateY(calc(-100% - 0.25rem));
+}
+/* The region is in the bubble from the start, empty (ARIA22): out of sight and out of
+   the flow until it says something. */
+.oc-bmk-status:empty {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  box-shadow: none;
+}
+/* "Reply to a block…" and "Bookmark a block…" (the reply's ⋯ menu): the reply's
+   blocks as flat rows, a finger's height each, scrolling past what the screen
+   holds. A bookmark row carries the gutter's flag, amber and filled once set. */
+.oc-blockpick__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  max-height: min(60dvh, 28rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.oc-blockpick__item {
+  min-height: 2.75rem;
+  padding-block: 0.5rem;
+  line-height: 1.4;
+  /* A block's text can hold a long unbroken run (a table's cells run together, an
+     address): it breaks rather than widen the list past the dialog. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.oc-blockpick__item .oc-blockpick__mark {
+  align-self: flex-start;
+  margin-top: 0.15rem;
+  color: var(--muted-foreground);
+}
+.oc-blockpick__item .oc-blockpick__mark.is-set {
+  color: var(--bookmark);
+  fill: currentColor;
+}
+.oc-blockpick__empty {
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+/* A pick that found its passage changed did nothing, and says so above the list read
+   again (lot 22). */
+.oc-blockpick__changed {
+  font-size: 0.875rem;
+  color: var(--foreground);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--muted);
+}
+/* The status region is on the page from the list's opening, empty (ARIA22, lot 23):
+   out of the flow until it says something, so the dialog's gap stays as it was. */
+.oc-blockpick__changed:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
 /* Rename/delete popover */
 .oc-bmk-pop {
-  width: 15rem;
+  width: min(15rem, var(--radix-popover-content-available-width));
   padding: 0.6rem;
 }
 .oc-bmk-pop__form {
@@ -1753,7 +2449,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
 }
@@ -1763,7 +2459,7 @@
 }
 /* Bookmark list (click the rail counter): name or block excerpt per entry. */
 .oc-bmk-menu {
-  width: 17rem;
+  width: min(17rem, var(--radix-dropdown-menu-content-available-width));
 }
 .oc-bmk-menu__flag {
   flex-shrink: 0;
@@ -1780,7 +2476,7 @@
 }
 .oc-bmk-menu__foot {
   padding: 0.35rem 0.5rem 0.25rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   border-top: 1px solid var(--border);
   margin-top: 0.25rem;
@@ -1811,11 +2507,9 @@ button.oc-bmk-rail__count:hover {
   border-radius: 0.3rem;
   color: var(--muted-foreground);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms ease;
 }
-.oc-msg:hover .oc-bmk-headbtn,
-.oc-bmk-headbtn:focus-visible,
+/* Revealed by `.oc-reveal` (hover of the message, or always on touch); a placed
+   bookmark always shows. */
 .oc-bmk-headbtn.is-set {
   opacity: 1;
 }
@@ -2052,7 +2746,7 @@ button.oc-bmk-rail__count:hover {
   gap: 0.35rem;
   align-self: flex-end;
   margin-top: 0.2rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-msg__sending-spin {
@@ -2080,7 +2774,7 @@ button.oc-bmk-rail__count:hover {
   gap: 0.35rem;
   align-self: flex-end;
   margin-top: 0.2rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 /* TRANSCRIPT PROJECTION `on` (phase 3): the gateway's custody of a user message —
@@ -2091,7 +2785,7 @@ button.oc-bmk-rail__count:hover {
   gap: 0.35rem;
   align-self: flex-end;
   margin-top: 0.2rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-msg__custody--cancelled,
@@ -2102,7 +2796,7 @@ button.oc-bmk-rail__count:hover {
   margin-left: 0.25rem;
   padding: 0 0.35rem;
   border-radius: 0.375rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--foreground);
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -2248,6 +2942,12 @@ button.oc-bmk-rail__count:hover {
   border: 1px solid var(--border);
   padding: 0.4em 0.7em;
   text-align: left;
+  /* Break between words, never inside one (lot 7, G1): the message's own
+     `word-break: break-word`, inherited, let the table squeeze its columns down
+     to a letter ("Atriu/m/Cons/eil") instead of scrolling sideways. A word wider
+     than its column still breaks rather than overflow it. */
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 .oc-md th {
   background: var(--muted);
@@ -2663,7 +3363,7 @@ button.oc-bmk-rail__count:hover {
    with the label (past the leading icon + gap). */
 .oc-actrow__sub {
   padding-left: calc(15px + 0.55rem);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.25;
   color: var(--muted-foreground);
   overflow: hidden;
@@ -2675,7 +3375,7 @@ button.oc-bmk-rail__count:hover {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-actrow__counts {
@@ -2719,7 +3419,7 @@ button.oc-bmk-rail__count:hover {
   gap: 0.2rem;
   flex-shrink: 0;
   padding: 0.02rem 0.34rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--primary);
   background: color-mix(in oklch, var(--primary) 12%, transparent);
@@ -2837,7 +3537,7 @@ button.oc-bmk-rail__count:hover {
   margin-top: 0.3rem;
 }
 .oc-subagent__result > summary {
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   cursor: pointer;
 }
@@ -2975,7 +3675,7 @@ button.oc-bmk-rail__count:hover {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-subpanel__status--running {
@@ -3009,7 +3709,7 @@ button.oc-bmk-rail__count:hover {
 }
 .oc-subpanel__section-title {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3076,7 +3776,7 @@ button.oc-bmk-rail__count:hover {
   border-radius: var(--radius-sm, 0.375rem);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -3101,7 +3801,7 @@ button.oc-bmk-rail__count:hover {
 .oc-subpanel__adv-list {
   margin: 0.4rem 0 0;
   display: grid;
-  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  grid-template-columns: minmax(min(5.5rem, 100%), auto) 1fr;
   gap: 0;
   font-size: 0.76rem;
   border: 1px solid var(--border);
@@ -3206,7 +3906,7 @@ button.oc-bmk-rail__count:hover {
   gap: 0.5rem;
 }
 .oc-subpanel__prompt-hint {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 /* Hidden native file input driven by the attach (+) button. */
@@ -3230,7 +3930,7 @@ button.oc-bmk-rail__count:hover {
   background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   cursor: pointer;
   transition:
     background-color 0.12s ease,
@@ -3264,7 +3964,7 @@ button.oc-bmk-rail__count:hover {
   border-radius: 999px;
   background: var(--muted);
   color: var(--muted-foreground);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 .oc-subpanel__attchip-name {
   overflow: hidden;
@@ -3450,7 +4150,8 @@ button.oc-bmk-rail__count:hover {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .oc-thread__viewport {
+  .oc-thread__viewport,
+  .oc-thread__viewport::after {
     scroll-behavior: auto;
     transition: none;
   }
@@ -3590,7 +4291,7 @@ button.oc-bmk-rail__count:hover {
   color: var(--destructive);
 }
 .oc-tool__outcome-note {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   font-style: italic;
 }
@@ -3643,7 +4344,7 @@ button.oc-bmk-rail__count:hover {
 .oc-tool__io > summary {
   cursor: pointer;
   width: fit-content;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3684,15 +4385,11 @@ button.oc-bmk-rail__count:hover {
   background: var(--card);
   color: var(--muted-foreground);
   cursor: pointer;
-  opacity: 0;
+  /* Revealed by `.oc-reveal` (hover of its block, or always on touch). */
   transition:
     opacity 150ms ease,
     color 150ms ease,
     background 150ms ease;
-}
-.oc-tool__prewrap:hover .oc-copybtn,
-.oc-copybtn:focus-visible {
-  opacity: 1;
 }
 .oc-copybtn:hover {
   color: var(--foreground);
@@ -3910,6 +4607,57 @@ button.oc-bmk-rail__count:hover {
     border-color 150ms ease,
     box-shadow 150ms ease;
 }
+/* The region holding everything but the action bar (lot 13): inline it lays out
+   nothing of its own, its children are the card's column as before. The full-page
+   prompt makes it the part that gives way (below). */
+.oc-composer__body {
+  display: contents;
+}
+/* INLINE, THE CARD NEVER RUNS PAST THE THREAD (lot 28): it shrinks to what the
+   thread leaves it. What it holds gives way first — the quotes and the attachments
+   shrink and scroll, before the lines of a long text —, the field down to one line,
+   never the bar; under even those, the card's top leaves first, the bar's foot in
+   view. */
+.oc-composer:not(.oc-composer--expanded) {
+  min-height: 0;
+  justify-content: flex-end;
+}
+.oc-composer:not(.oc-composer--expanded) > .oc-composer__body > :is(.oc-composer__quotes, .oc-attachrow) {
+  flex-shrink: 100;
+}
+/* AND SO DOES EVERYTHING ELSE THE CARD HOLDS (lot 29): the upload's progress, the
+   dictation's live preview — whatever sits above or below the field, now or later —
+   shrinks with the quotes, before the field's lines, down to nothing, clipped. A long
+   dictation hypothesis kept its whole height and pushed the field out at the top.
+   Given way, it costs the card nothing: the preview, between the field and the bar,
+   spaces itself with its content and takes back the gap above it; above the field, in
+   a thread too short for them beside the floors below (the request's and the
+   composer's, the header: 20rem), the upload's progress leaves the layout (still read
+   out: the screen-reader-only box) and the people of a room fold — a row of faces
+   whose names show above them, out of their box, that a clip would cut. */
+.oc-composer:not(.oc-composer--expanded)
+  > .oc-composer__body
+  > :not(.oc-composer__input, .oc-composer__quotes, .oc-attachrow, .oc-presence) {
+  flex-shrink: 100;
+  min-height: 0;
+  overflow: clip;
+}
+@container chatpane (height < 20rem) {
+  .oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-presence {
+    display: none;
+  }
+  .oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-upload {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
 /* Stand-in note where the inline composer would be, while a composer is pinned
    (detached to the floating panel): every conversation shows this instead of a
    composer, so the sole editable composer is unmistakably the movable one. */
@@ -4008,9 +4756,11 @@ button.oc-bmk-rail__count:hover {
    chat's staged quote stays visible + cancellable while its composer floats. */
 /* The staged passages inside the DETACHED dock. The dock is a small clamped
    panel, so the stack scrolls rather than pushing the textarea off it — the
-   same rule the composer's own stack follows. */
+   same rule the composer's own stack follows — and gives way first (lot 28): at
+   6rem whatever the panel's height, three quotes left the field no line and the
+   send bar under a keyboard. */
 .oc-detach__quotes {
-  flex: none;
+  flex: 0 1 auto;
   max-height: 6rem;
   overflow-y: auto;
 }
@@ -4076,8 +4826,12 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__input {
   width: 100%;
   resize: none;
-  min-height: 1.5rem;
-  max-height: 12rem;
+  /* One line of text at least, its top padding added (lot 28): 1.5rem held the
+     padding and 18 px of a 24 px line. */
+  min-height: calc(1.5em + 0.4rem);
+  /* The same bound on a short screen, so text and attachments together still
+     leave the action bar in sight (unchanged from 768 px of height up). */
+  max-height: min(12rem, 25dvh);
   border: none;
   background: transparent;
   box-shadow: none;
@@ -4095,7 +4849,7 @@ button.oc-bmk-rail__count:hover {
   align-items: center;
   gap: 0.35rem;
   padding: 0.1rem 0.55rem 0.25rem;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-composer__queuehint-spin {
@@ -4114,12 +4868,59 @@ button.oc-bmk-rail__count:hover {
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
-  /* The bar measures ITSELF — the composer's width, not the window's. What has
-     to collapse depends on the space this bar actually has, which a viewport
-     breakpoint cannot know: the same window holds a wide composer or a narrow
-     one depending on the side panel. */
-  container-type: inline-size;
-  container-name: composerbar;
+}
+/* MEASURED, NOT GUESSED (composerFit.ts). The bar's level is written onto it as
+   `data-labels` (on/off) and `data-moved` (the controls moved to the "More" menu,
+   each of which carries the matching `data-overflow`). The level is chosen by
+   measuring an off-screen clone of the bar under each level against the width the
+   bar actually has — the composer's, not the window's — so a translated label or
+   a side panel changes the outcome, where the fixed container widths it replaces
+   (30rem, 20rem, 17rem, 11rem) did not. */
+.oc-composer__bar[data-labels="off"] .oc-composer__tools-label,
+.oc-composer__bar[data-labels="off"] .oc-composer__perm-label,
+.oc-composer__bar[data-labels="off"] .oc-composer__perm-chev,
+.oc-composer__bar[data-labels="off"] .oc-talk__label {
+  display: none;
+}
+.oc-composer__bar[data-labels="off"] .oc-composer__tools,
+.oc-composer__bar[data-labels="off"] .oc-composer__perm {
+  padding: 0 0.55rem;
+}
+.oc-composer__bar[data-moved~="hold"] [data-overflow="hold"],
+.oc-composer__bar[data-moved~="expand"] [data-overflow="expand"],
+.oc-composer__bar[data-moved~="talk-settings"] [data-overflow="talk-settings"],
+.oc-composer__bar[data-moved~="perm"] [data-overflow="perm"],
+.oc-composer__bar[data-moved~="tools"] [data-overflow="tools"],
+.oc-composer__bar[data-moved~="room-settings"] [data-overflow="room-settings"],
+.oc-composer__bar[data-moved~="talk"] [data-overflow="talk"],
+/* Never the RECORDING microphone, whatever the level says: it is the only way to
+   stop a live microphone. composerFit.ts never moves it; this is the backstop. */
+.oc-composer__bar[data-moved~="mic"] [data-overflow="mic"]:not(.oc-composer__icon--rec) {
+  display: none;
+}
+/* The "More" button exists only when something moved. */
+.oc-composer__bar[data-moved=""] .oc-composer__more {
+  display: none;
+}
+/* A split pill whose settings half moved keeps a symmetric outline. */
+.oc-composer__bar[data-moved~="room-settings"] .oc-roompill__main {
+  padding-right: 0.65rem;
+}
+.oc-composer__bar[data-moved~="talk-settings"] .oc-talk__pillmain {
+  padding-right: 0.6rem;
+}
+/* The measuring clone: laid out at its natural width, invisible, out of flow. */
+.oc-composer__bar--measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+.oc-composer__bar.oc-composer__bar--measure > .oc-composer__group:nth-child(n) {
+  flex: none;
+  overflow: visible;
 }
 .oc-composer__group {
   display: flex;
@@ -4158,7 +4959,8 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__bar > .oc-composer__group:last-child > * {
   flex: none;
 }
-/* The talk control loses its TEXT by a step, not by compression — see below.
+/* The talk control loses its TEXT by a step (`data-labels="off"`, above), not by
+   compression.
    Compressing it meant either clipping its hang-up or reserving a minimum that
    included the label anyway, since the label cannot wrap. A step removes the
    text outright and leaves the dot and the buttons, which is what the control is
@@ -4167,7 +4969,7 @@ button.oc-bmk-rail__count:hover {
   flex: none;
 }
 /* Last resort, so nothing spills even at absurd widths: the labels clip rather
-   than push. Above this the container query drops them cleanly instead. */
+   than push. Above this the measured level drops them cleanly instead. */
 .oc-composer__group > * {
   min-width: 0;
 }
@@ -4177,63 +4979,6 @@ button.oc-bmk-rail__count:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* Iconify before clipping: a truncated "Ou…" says less than the icon alone. The
-   controls stay in place and keep their accessible names — only the visible text
-   goes. */
-@container composerbar (max-width: 30rem) {
-  .oc-composer__bar .oc-composer__tools .oc-composer__tools-label {
-    display: none;
-  }
-  /* SCOPED so it outranks the base `.oc-composer__tools` padding, which is
-     declared further down at the same specificity and would otherwise win by
-     order alone — leaving the button its full width in exactly the state where
-     the bar needs the room back. */
-  .oc-composer__bar .oc-composer__tools {
-    padding: 0 0.55rem;
-  }
-}
-/* Narrower still: the agent's NAME goes and its avatar stays. Past this the row
-   is icons only, and the picker still opens on the same control — which is why
-   the name can leave without the affordance leaving with it. */
-@container composerbar (max-width: 20rem) {
-  .oc-composer__agent-name {
-    display: none;
-  }
-}
-/* THE FLOOR. Past this the four right-hand controls alone need more room than
-   the bar has, and the left group is already at zero — so something must go, and
-   the choice is between losing the auxiliary controls or losing SEND. Losing send
-   is not a degradation, it is a composer that cannot send, which is the whole
-   defect this rule exists to prevent. The auxiliaries stand down; send stays.
-   Reachable only on a composer narrower than a phone, so the trade is rare and
-   the alternative is a broken frame. */
-/* The auxiliaries step out here, well before the bar runs out — early enough
-   that nothing is ever half-visible, and late enough that they are present at
-   every width a window actually produces. */
-@container composerbar (max-width: 17rem) {
-  /* THE SLOT, not its contents. The held chip and the hold button live inside
-     `.oc-composer__voiceslot`, so naming them directly matched nothing and the
-     slot kept its full width — with every child now refusing to shrink, that was
-     enough to push send back out. */
-  .oc-composer__bar > .oc-composer__group:last-child > .oc-composer__voiceslot {
-    display: none;
-  }
-  /* The call keeps its dot and its buttons; only the wording goes. */
-  .oc-talk__label {
-    display: none;
-  }
-}
-@container composerbar (max-width: 11rem) {
-  /* NOT the one that is recording. Dictation keeps the microphone open, and this
-     button is the only built-in way to stop it — hiding it would leave a live
-     microphone with no visible control, which is worse than any layout defect
-     this rule exists to fix. */
-  .oc-composer__bar
-    > .oc-composer__group:last-child
-    > *:not(.oc-composer__send):not(.oc-composer__icon--rec):not(.oc-talk) {
-    display: none;
-  }
 }
 /* Round icon button (the "+" attach). */
 .oc-composer__icon {
@@ -4257,6 +5002,80 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__icon:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+/* The "More" menu (ComposerMoreMenu.tsx): the moved controls, as flat rows and
+   sections, in the order they left the bar. */
+.oc-composer__more-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+/* A row wraps its label rather than run past the menu: at 360 px under the largest
+   text scale a label is wider than the room the menu has (lot 25). The shared
+   button keeps its single line everywhere else. */
+.oc-composer__more-pop .oc-composer__more-item {
+  height: auto;
+  min-height: 2rem;
+  white-space: normal;
+  text-align: start;
+}
+.oc-composer__more-section {
+  padding: 0.25rem 0;
+  border-top: 1px solid var(--border);
+}
+.oc-composer__more-section:first-child {
+  border-top: none;
+}
+/* Same heading as the permission section beside it (.oc-perm__heading). */
+.oc-composer__more-heading {
+  padding: 0.35rem 0.5rem 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.oc-composer__more-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0 0.5rem 0.25rem;
+}
+/* COARSE POINTER (Olivier's arbitration: mixed). The composer's bar is one of the
+   three main bars whose controls are 44 px high on a finger-driven device; its
+   round icon buttons are 44 px wide too, which is what makes the measured levels
+   above move controls to "More" at phone widths instead of crushing them. The split
+   pills' settings halves stay narrower (36 px): they are the first to move. */
+/* Scoped under `.oc-composer` so these win over the base rules declared further
+   down (and in chatParticipants.css) without depending on the order of the sheets. */
+@media (pointer: coarse) {
+  .oc-composer .oc-composer__icon,
+  .oc-composer .oc-composer__send,
+  .oc-composer .oc-composer__stop,
+  .oc-composer .oc-talk__btn {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+  .oc-composer .oc-composer__tools,
+  .oc-composer .oc-composer__perm,
+  .oc-composer .oc-roompill,
+  .oc-composer .oc-talk__pill,
+  .oc-composer .oc-talk,
+  .oc-composer .oc-composer__expclose,
+  .oc-composer__more-pop .oc-composer__more-item {
+    min-height: 2.75rem;
+  }
+  .oc-composer .oc-composer__tools,
+  .oc-composer .oc-composer__perm {
+    min-width: 2.75rem;
+    justify-content: center;
+  }
+  .oc-composer .oc-roompill__main,
+  .oc-composer .oc-talk__pillmain {
+    min-width: 2.75rem;
+  }
+  .oc-composer .oc-roompill__chev,
+  .oc-composer .oc-talk__pillchev {
+    min-width: 2.25rem;
+  }
 }
 /* Pill toggle (Outils). */
 .oc-composer__tools {
@@ -4349,16 +5168,6 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__perm.is-pending {
   opacity: 0.7;
 }
-/* Iconify before clipping, like the Outils label. */
-@container composerbar (max-width: 30rem) {
-  .oc-composer__bar .oc-composer__perm .oc-composer__perm-label,
-  .oc-composer__bar .oc-composer__perm .oc-composer__perm-chev {
-    display: none;
-  }
-  .oc-composer__bar .oc-composer__perm {
-    padding: 0 0.55rem;
-  }
-}
 /* The menu and the Advanced section share the option rows. */
 .oc-perm__heading {
   display: flex;
@@ -4449,7 +5258,7 @@ button.oc-perm__opt:disabled {
   color: var(--muted-foreground);
 }
 .oc-perm__shortcut {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   border: 1px solid var(--border);
   border-radius: 0.25rem;
   padding: 0 0.3rem;
@@ -4535,7 +5344,7 @@ button.oc-perm__opt:disabled {
   white-space: nowrap;
   padding-left: 0.35rem;
   border-left: 1px solid var(--border);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 /* Selector popover: its type scale and rows live with the conversation styles
@@ -4618,7 +5427,7 @@ button.oc-perm__opt:disabled {
 .oc-pending {
   display: flex; flex-direction: column; gap: 12px;
   align-items: center; justify-content: center;
-  min-height: 100vh; padding: 24px; text-align: center;
+  min-height: 100dvh; padding: 24px; text-align: center;
 }
 .oc-pending__title { font-size: 1.3rem; font-weight: 600; }
 .oc-pending__body { color: var(--muted-foreground); max-width: 28rem; }
@@ -4626,7 +5435,18 @@ button.oc-perm__opt:disabled {
 .oc-admin { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .oc-admin__header { padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .oc-admin__header h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 8px; }
-.oc-admin__body { padding: 16px 20px; overflow: auto; }
+/* Its top padding is a variable: a sticky head inside (the agenda's) offsets by it,
+   since a sticky box stops at the scroller's padding edge, not at its top.
+   Its scrollbar's room is kept whether or not the page scrolls (lot 11): where
+   scrollbars take room (Windows, or macOS set to always show them), a page whose
+   content reacts to its own width — the calendar's grid or agenda — would
+   otherwise change that width by showing the scrollbar it causes. */
+.oc-admin__body {
+  --oc-scroll-pad-top: 16px;
+  padding: var(--oc-scroll-pad-top) 20px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
 /* The health bar now sits at the top of the content (the old settings header is
    gone — the tab nav moved to the vertical SettingsNav in the left column). */
 .oc-admin > .oc-bridgebar { margin: 16px 20px 0; }
@@ -4723,12 +5543,17 @@ button.oc-perm__opt:disabled {
   background: transparent;
   color: var(--muted-foreground);
   cursor: grab;
-  opacity: 0;
+  /* Revealed by `.oc-reveal` on hover; gone where a finger is used (below). */
   touch-action: none;
 }
-.oc-settings-tabs__item:hover .oc-settings-tabs__grip,
-.oc-settings-tabs__item:focus-within .oc-settings-tabs__grip {
-  opacity: 1;
+/* No reordering by finger (decided 2026-11): where the primary pointer is a finger
+   the grip is not offered at all — it only cluttered the tab bar. Under a mouse it
+   still shows on hover, a touch-screen laptop included (its primary pointer is
+   fine). */
+@media (pointer: coarse) {
+  .oc-settings-tabs__grip {
+    display: none;
+  }
 }
 .oc-settings-tabs__tab {
   display: flex;
@@ -4772,7 +5597,7 @@ button.oc-perm__opt:disabled {
 /* --- Theme showroom ----------------------------------------------------- */
 .oc-show { display: flex; flex-direction: column; gap: 2rem; max-width: 64rem; }
 .oc-show__section {
-  display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem;
+  display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 1.5rem;
   padding-bottom: 1.5rem; border-bottom: 1px solid var(--border);
 }
 .oc-show__title { font-size: 0.95rem; font-weight: 600; }
@@ -4782,7 +5607,7 @@ button.oc-perm__opt:disabled {
 .oc-show__row--col { flex-direction: column; align-items: stretch; }
 .oc-show__check { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; }
 @media (max-width: 720px) {
-  .oc-show__section { grid-template-columns: 1fr; gap: 0.75rem; }
+  .oc-show__section { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
 }
 
 /* --- Apparence: charte graphique (P3) ----------------------------------- */
@@ -4795,7 +5620,7 @@ button.oc-perm__opt:disabled {
 /* Per-user chart picker: a responsive grid of selectable palette cards. */
 .oc-chart-grid {
   display: grid; gap: 0.75rem;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
 }
 .oc-chart-card {
   display: flex; flex-direction: column; gap: 0.625rem;
@@ -4973,17 +5798,17 @@ button.oc-perm__opt:disabled {
   font-size: 0.8rem;
 }
 .oc-chart-mine__domains-body {
-  display: flex; flex-direction: column; gap: 0.4rem; min-width: 16rem;
+  display: flex; flex-direction: column; gap: 0.4rem; min-width: min(16rem, 100%);
 }
 .oc-chart-mine__domains-input { max-width: 18rem; }
 
 /* --- Data table shell + sheet form -------------------------------------- */
 .oc-dt { display: flex; flex-direction: column; gap: 0.75rem; }
 .oc-dt__bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem;
 }
 .oc-dt__title { font-size: 1rem; font-weight: 600; }
-.oc-dt__bar-actions { display: flex; align-items: center; gap: 0.5rem; }
+.oc-dt__bar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
 /* Sortable column header (CHARTE): the whole header label is a button; a muted
    double-chevron hints sortability, replaced by a solid up/down when active. */
 .oc-dt__sort {
@@ -5022,11 +5847,135 @@ button.oc-perm__opt:disabled {
 .oc-dt__sort:focus-visible .oc-dt__sort-icon--idle {
   opacity: 0.5;
 }
+/* No hover to wait for where a finger is used: the hint simply shows. */
+@media (hover: none), (any-pointer: coarse) {
+  .oc-dt__sort-icon--idle {
+    opacity: 0.5;
+  }
+}
 /* Inline row expansion (DataTableShell): the detail card sits directly under
    its row, full-width, with no hover highlight. */
 .oc-dt__expansion:hover { background: transparent; }
 .oc-dt__expansion-cell { padding: 0 0.5rem 0.75rem; }
 .oc-dt__expansion-cell .oc-sa__keys { margin: 0; }
+
+/* The clone DataTableShell measures on: the table at its NARROWEST — what its
+   cells cannot wrap (they do not: `nowrap`) plus what can (a list of chips), at
+   min-content — off-screen and invisible. Wider than the room it has, the table
+   would scroll sideways: its rows stack instead. */
+.oc-dt__measure {
+  position: absolute;
+  left: -100000px;
+  top: 0;
+  width: min-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* STACKED ROWS (`.oc-tablefit`, useTableLayout.ts: DataTableShell and the
+   scheduled jobs — when the table does not fit, measured). Each row
+   reads as its first cell, then one "label  value" line per column; the checkbox
+   and the menu flank the first line; the menu is always in sight. The header row
+   becomes a wrapping bar of what it can do: select all, sort by a column. Flat
+   rows, as the table's, a rule between them. The measuring clone is left out. */
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure),
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > thead,
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody {
+  display: block;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > thead > tr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.75rem;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > thead th {
+  display: block;
+  height: auto;
+  padding: 0.25rem 0;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > thead th:not(:has(button, [role="checkbox"])) {
+  display: none;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > thead:not(:has(button, [role="checkbox"])) {
+  display: none;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 0.5rem;
+  align-items: start;
+  padding: 0.5rem 0;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.5rem;
+  min-width: 0;
+  padding: 0.125rem 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td[data-label]:not(.oc-dt__lead)::before {
+  content: attr(data-label);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__lead {
+  font-weight: 500;
+}
+/* Nothing in a stacked cell may be wider than the row: a chip with a long name
+   (an agent, a group) wraps inside itself instead of running off the screen. */
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td * {
+  max-width: 100%;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td [data-slot="badge"] {
+  height: auto;
+  white-space: normal;
+  text-align: left;
+}
+/* The header row is a sort bar there: say which labels sort. */
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) .oc-dt__sort-icon--idle {
+  opacity: 0.5;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__check {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__actions {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__actions .oc-reveal {
+  opacity: 1;
+  /* Its tap zone slides back inside the row: past the row's edge it would be
+     clipped, and make the list scroll sideways. */
+  --oc-hit-x: -0.5rem;
+}
+/* A row of action buttons (the scheduled jobs: run, pause, edit, history,
+   delete) gets a line of its own, under the values, its buttons a finger apart. */
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__actionsrow {
+  grid-column: 2 / span 2;
+  padding-top: 0.25rem;
+}
+/* Not in the measuring clone (lot 13): wrapped there too, the five actions made the
+   clone narrower once the list was stacked, and the table and the stacked rows
+   called each other for ever. */
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr > td.oc-dt__actionsrow .oc-cronactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr.oc-dt__expansion {
+  display: block;
+  padding: 0 0 0.5rem;
+}
+.oc-tablefit[data-layout="stacked"] table:not(.oc-dt__measure) > tbody > tr.oc-dt__expansion > td {
+  display: block;
+}
 
 .oc-form { display: flex; flex-direction: column; gap: 1rem; max-width: 32rem; }
 .oc-field { display: flex; flex-direction: column; gap: 0.375rem; }
@@ -5080,7 +6029,7 @@ button.oc-perm__opt:disabled {
 
 /* Prompt injections — shared bits reused by the dedicated Injections tab cards. */
 .oc-injection__badge {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -5098,7 +6047,7 @@ button.oc-perm__opt:disabled {
   flex-wrap: wrap;
 }
 .oc-injection__ph {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
@@ -5120,10 +6069,25 @@ button.oc-perm__opt:disabled {
 }
 .oc-injtab__picker {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.85rem;
   color: var(--muted-foreground);
+  /* A long instance name must not push the picker past the page: it shrinks to the
+     line and the name truncates inside the trigger. */
+  min-width: 0;
+  max-width: 100%;
+}
+.oc-injtab__picker > span {
+  white-space: nowrap;
+}
+/* The trigger keeps the line beside its label while it can stay 11 rem wide, and
+   takes a line of its own below it otherwise (a longer label, a narrower screen). */
+.oc-injtab__picker > [data-slot="select-trigger"] {
+  flex: 1 1 11rem;
+  min-width: min(11rem, 100%);
+  max-width: 100%;
 }
 .oc-injtab__body {
   display: flex;
@@ -5144,6 +6108,13 @@ button.oc-perm__opt:disabled {
   align-items: center;
   gap: 0.6rem;
   justify-content: space-between;
+  /* On the narrowest phones at a large text scale (lot 32: a Galaxy Fold folded, 280
+     px), a card's title was wider than the card: the badge goes to the next line, and a
+     word of the title breaks where it must. */
+  flex-wrap: wrap;
+}
+.oc-injcard__head .oc-field__label {
+  overflow-wrap: anywhere;
 }
 .oc-injcard__text {
   width: 100%;
@@ -5186,11 +6157,15 @@ button.oc-perm__opt:disabled {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--background);
+  /* Never wider than the card (lot 32): a placeholder's name breaks inside its chip. */
+  max-width: 100%;
 }
 .oc-injcard__ph-chip code {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--foreground);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .oc-injcard__preview {
   display: flex;
@@ -5264,7 +6239,7 @@ button.oc-perm__opt:disabled {
   margin-left: auto;
   flex-shrink: 0;
   font-family: inherit;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   line-height: 1;
   padding: 0.15rem 0.35rem;
   border-radius: 0.3rem;
@@ -5306,7 +6281,7 @@ button.oc-perm__opt:disabled {
 .oc-sidebar__group-label {
   flex: 1; min-width: 0; text-align: left;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+  font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.04em; color: var(--muted-foreground);
 }
 /* Project chevron carries the folder hue — one glyph does color + accordion. */
@@ -5562,14 +6537,14 @@ button.oc-perm__opt:disabled {
    hue so the eye pairs it with the rail. */
 .oc-chatitem__domain {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 0.68rem; line-height: 1.2;
+  font-size: 0.75rem; line-height: 1.2;
   color: color-mix(in srgb, var(--proj-hue, var(--muted-foreground)) 55%, var(--muted-foreground));
 }
 /* Compact relative age (OpenWebUI-style), right-aligned, muted; fades out on row
    hover/focus so the kebab menu reads cleanly in its place. */
 .oc-chatitem__age {
   flex-shrink: 0;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
   padding-right: 0.125rem;
@@ -5607,7 +6582,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-colorgrid__dot.is-selected { box-shadow: 0 0 0 2px var(--ring); }
 .oc-colorgrid__none {
-  background: var(--muted); color: var(--muted-foreground); font-size: 0.7rem;
+  background: var(--muted); color: var(--muted-foreground); font-size: 0.75rem;
 }
 
 /* DnD: drop-target highlight, empty section, collapsible head, drag overlay */
@@ -5629,6 +6604,21 @@ button.oc-perm__opt:disabled {
   width: 100%; background: transparent; cursor: pointer; gap: 0.25rem;
 }
 .oc-sidebar__group-head--btn:hover { color: var(--foreground); }
+/* A FINGER'S DENSITY (lot 10, decided 2026-11): where the primary pointer is a
+   finger, a chat row (36 px) and a folder's head (24 px) are 44 px tall, and
+   their controls' tap zones grow with them to 44 × 44 — still each within its
+   own row. A mouse keeps the dense list, and so does a touch-screen laptop
+   (its primary pointer is fine; its zones keep the rows' 36 and 24 px). */
+@media (pointer: coarse) {
+  .oc-chatitem {
+    min-height: 2.75rem;
+    --oc-hit-h: 2.75rem;
+  }
+  .oc-sidebar__group-head {
+    height: 2.75rem;
+    --oc-hit-h: 2.75rem;
+  }
+}
 .oc-chatitem--overlay {
   background: var(--sidebar-accent); box-shadow: var(--shadow, 0 4px 12px rgb(0 0 0 / 0.2));
   border-radius: var(--radius-md);
@@ -5642,42 +6632,172 @@ button.oc-perm__opt:disabled {
 }
 .oc-sidebar-resizer:hover { background: color-mix(in srgb, var(--ring) 40%, transparent); }
 
-/* ---- Mobile sidebar = off-canvas drawer -------------------------------------
-   Driven by the `oc-workspace--mobile` class (toggled from useSidebarLayout's
-   matchMedia — single breakpoint source, no CSS media query, so JS/CSS can't
-   disagree at the 1px edge). The column leaves the flex flow and floats over a
-   full-width chat; a backdrop catches taps to close. */
-.oc-workspace--mobile .oc-sidebar-col {
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 0;
+/* ---- The drawer (drawer layout: drawerLayout.ts) -----------------------------
+   The shared Sheet (router.tsx), kept on the sidebar's own layers: the archive drop
+   hint (51) and the app's floating panels still paint above it, as they did over the
+   hand-made drawer it replaces, and a menu or dialog opened from it rises above it
+   (overlay layer). */
+.oc-drawer[data-slot="sheet-content"] {
   z-index: var(--oc-layer-sidebar-drawer);
-  width: min(86vw, 320px);
-  box-shadow: 2px 0 18px rgb(0 0 0 / 0.22);
-  animation: oc-drawer-in 180ms ease;
+  width: min(86vw, 320px, var(--oc-layer-width));
+  max-width: none;
+  gap: 0;
+  padding: 0;
+  background: var(--sidebar);
 }
-/* No edge-resize on touch — width is fixed in drawer mode. */
-.oc-workspace--mobile .oc-sidebar-resizer { display: none; }
-.oc-sidebar-backdrop {
-  position: fixed;
-  inset: 0;
+.oc-drawer-overlay[data-slot="sheet-overlay"] {
   z-index: var(--oc-layer-sidebar-backdrop);
   background: rgb(0 0 0 / 0.45);
-  animation: oc-backdrop-in 180ms ease;
 }
-@keyframes oc-drawer-in {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(0); }
+/* Its head: the brand (back to the chats) and a close button that is always in
+   sight — the hand-made drawer had none, only a 50 px strip of backdrop. */
+.oc-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.75rem;
+  border-bottom: 1px solid var(--border);
 }
-@keyframes oc-backdrop-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+.oc-sidebar-col--drawer {
+  flex: 1;
+  min-height: 0;
+  border-right: none;
 }
-@media (prefers-reduced-motion: reduce) {
-  .oc-workspace--mobile .oc-sidebar-col,
-  .oc-sidebar-backdrop {
-    animation: none;
+/* SHORT screen: three links pinned to the drawer's foot left about two
+   conversations in sight between them and the list's head (740 x 360). The drawer
+   scrolls as one instead, links included. */
+.oc-drawer--short .oc-sidebar-col--drawer {
+  overflow-y: auto;
+}
+.oc-drawer--short .oc-sidebar-col--drawer .oc-sidebar {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
+}
+/* ---- SHORT screen: the top bar becomes a rail (drawerLayout.ts) --------------
+   On a phone in landscape the bars took the height (the thread was 157 px tall at
+   740 x 360) while the width was left over: the same controls, icons only, stacked
+   on the left edge. */
+.oc-shell__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.oc-shell--short .oc-shell__body {
+  flex-direction: row;
+}
+.oc-shell--short .oc-workspace {
+  min-width: 0;
+}
+/* …and the composer gives back its outer spacing (14 px of height on 360). */
+.oc-shell--short .oc-composer {
+  margin-bottom: 0.5rem;
+  padding: 0.35rem 0.5rem 0.35rem;
+}
+/* Its two growing parts get a tighter share of the height there, so that both at
+   their fullest — sixteen attachments AND a long text, 360 px high — still leave
+   the action bar on the screen (it ran 9 px below it at the general bounds). The
+   full-page mode keeps its own, later rule. */
+.oc-shell--short .oc-attachrow {
+  max-height: 25dvh;
+}
+.oc-shell--short .oc-composer__input {
+  max-height: 20dvh;
+}
+.oc-topbar.oc-topbar--rail {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-bottom: none;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.oc-topbar--rail .oc-topbar__left,
+.oc-topbar--rail .oc-topbar__actions {
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.oc-topbar--rail .oc-topbar__search {
+  flex: none;
+  padding: 0;
+}
+.oc-topbar--rail .oc-search-trigger__label,
+.oc-topbar--rail .oc-search-trigger__kbd,
+.oc-topbar--rail .oc-brand__logo + .oc-brand__label {
+  display: none;
+}
+.oc-topbar--rail .oc-search-trigger {
+  width: auto;
+  padding: 0 0.5rem;
+}
+.oc-topbar--rail .oc-topbar__brand {
+  min-width: 2.25rem;
+  justify-content: center;
+}
+.oc-topbar--rail .oc-brand__label {
+  max-width: 2.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+/* COARSE POINTER (Olivier's arbitration: mixed): the top bar and the conversation
+   header are main bars, 44 px high, and so is every control's HIT ZONE — but what
+   shows stays a 36 px chip, so a filled control (the search box, the header's
+   chips) no longer runs into the bar's edges. The extra height is an invisible
+   ::after centred on the control; neighbours sit 8 px apart, so two 44 px zones
+   around 36 px controls meet and never overlap.
+   Buttons are matched on `data-variant`, which the shared Button always sets: used
+   as a menu or dialog trigger (`asChild`), its `data-slot` is the trigger's. */
+@media (pointer: coarse) {
+  .oc-topbar {
+    padding-block: 0;
+    min-height: 2.75rem;
+  }
+  .oc-chathead {
+    padding-block: 0;
+  }
+  .oc-topbar [data-variant],
+  .oc-topbar .oc-bell,
+  .oc-topbar .oc-search-trigger,
+  .oc-topbar .oc-topbar__brand,
+  .oc-drawer__head [data-variant],
+  .oc-drawer__head .oc-topbar__brand,
+  .oc-chathead .oc-chip--btn {
+    position: relative;
+    min-height: 2.25rem;
+  }
+  .oc-topbar [data-variant][data-size^="icon"],
+  .oc-topbar .oc-bell,
+  .oc-topbar .oc-search-trigger,
+  .oc-drawer__head [data-variant][data-size^="icon"],
+  .oc-chathead .oc-chip--btn {
+    min-width: 2.25rem;
+    justify-content: center;
+  }
+  .oc-topbar [data-variant]::after,
+  .oc-topbar .oc-bell::after,
+  .oc-topbar .oc-search-trigger::after,
+  .oc-topbar .oc-topbar__brand::after,
+  .oc-drawer__head [data-variant]::after,
+  .oc-drawer__head .oc-topbar__brand::after,
+  .oc-chathead .oc-chip--btn::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 2.75rem);
+    height: max(100%, 2.75rem);
+    transform: translate(-50%, -50%);
+  }
+  .oc-topbar__actions,
+  .oc-topbar.oc-topbar--rail,
+  .oc-topbar--rail .oc-topbar__left,
+  .oc-topbar--rail .oc-topbar__actions {
+    gap: 0.5rem;
   }
 }
 .oc-topbar__left { display: flex; align-items: center; gap: 0.5rem; }
@@ -5731,7 +6851,7 @@ button.oc-perm__opt:disabled {
 .oc-search-trigger__kbd {
   flex-shrink: 0;
   font-family: inherit;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   line-height: 1;
   padding: 0.15rem 0.35rem;
   border: 1px solid var(--border);
@@ -5741,10 +6861,17 @@ button.oc-perm__opt:disabled {
 }
 
 /* ---- Command palette (Dialog content) ------------------------------------ */
+/* Anchored near the visible top, not centred: its room runs from its top down to
+   the keyboard, less the bottom safe area and a margin. */
 .oc-search-palette {
+  --oc-palette-top: 12dvh;
+  top: calc(var(--oc-vv-top, 0px) + var(--oc-palette-top));
   display: flex;
   flex-direction: column;
-  max-height: 70vh;
+  max-height: min(
+    70dvh,
+    calc(var(--oc-layer-room) + env(safe-area-inset-top) - var(--oc-palette-top) - 1rem)
+  );
 }
 .oc-search-palette__head {
   display: flex;
@@ -5833,7 +6960,7 @@ button.oc-perm__opt:disabled {
 /* Folder path of the hit's chat ("Client ACME › Devis") — situates a result
    without stealing attention from title/snippet. */
 .oc-search-result__path {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   opacity: 0.85;
   overflow: hidden;
@@ -5842,7 +6969,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-search-result__tag {
   flex-shrink: 0;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: var(--muted-foreground);
@@ -5855,7 +6982,7 @@ button.oc-perm__opt:disabled {
   gap: 1rem;
   padding: 0.5rem 0.875rem;
   border-top: 1px solid var(--border);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-search-palette__footer kbd {
@@ -5975,14 +7102,14 @@ button.oc-perm__opt:disabled {
 /* The key is a small inline identifier chip next to the name — NOT a second
    title line (that read as a duplicate of the name for built-in roles). */
 .oc-matrix__rolekey {
-  font-size: 0.7rem; color: var(--muted-foreground);
+  font-size: 0.75rem; color: var(--muted-foreground);
   background: var(--muted); border-radius: 0.25rem; padding: 0.05rem 0.3rem;
 }
 .oc-matrix__roledesc {
   font-size: 0.75rem; line-height: 1.35; color: var(--muted-foreground);
   margin-top: 0.3rem; white-space: normal; font-weight: 400;
 }
-.oc-matrix__unseeded { display: block; font-size: 0.7rem; color: var(--destructive); margin-top: 0.1rem; }
+.oc-matrix__unseeded { display: block; font-size: 0.75rem; color: var(--destructive); margin-top: 0.1rem; }
 .oc-matrix__cell { vertical-align: middle; }
 .oc-matrix__cell .peer { margin: 0 auto; }
 
@@ -6002,7 +7129,7 @@ button.oc-perm__opt:disabled {
 .oc-traces__principal { display: inline-flex; align-items: center; gap: 0.4rem; }
 .oc-traces__route { display: inline-flex; align-items: center; gap: 0.35rem; }
 .oc-traces__method {
-  font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+  font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.02em; color: var(--muted-foreground);
 }
 /* correlationId follow trigger — looks like the monospace id, acts as a link. */
@@ -6041,7 +7168,7 @@ button.oc-perm__opt:disabled {
   background: color-mix(in srgb, var(--destructive) 14%, transparent);
   color: var(--destructive);
   border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   font-family: var(--font-mono, ui-monospace, monospace);
   white-space: nowrap;
@@ -6055,7 +7182,7 @@ button.oc-perm__opt:disabled {
   font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85rem;
 }
 .oc-traces__meta-json {
-  margin-top: 0.25rem; max-height: 60vh; overflow: auto;
+  margin-top: 0.25rem; max-height: 60dvh; overflow: auto;
   padding: 0.75rem; border-radius: var(--radius-md);
   background: var(--muted); border: 1px solid var(--border);
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -6073,11 +7200,11 @@ button.oc-perm__opt:disabled {
 }
 .oc-kpi__grid {
   display: grid; gap: 0.75rem;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
 }
 .oc-kpi__card-title { font-size: 0.9rem; }
 .oc-kpi__card-metric code {
-  font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.72rem;
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.75rem;
 }
 .oc-kpi__card-body { display: flex; flex-direction: column; gap: 0.5rem; }
 .oc-kpi__value-row { display: flex; align-items: baseline; gap: 0.35rem; }
@@ -6099,7 +7226,7 @@ button.oc-perm__opt:disabled {
 .oc-kpi__bar--error:hover { fill: #b91c1c; }
 .oc-kpi__axis {
   display: flex; justify-content: space-between; align-items: center;
-  font-size: 0.72rem; color: var(--muted-foreground);
+  font-size: 0.75rem; color: var(--muted-foreground);
 }
 .oc-kpi__axis-latest { font-variant-numeric: tabular-nums; }
 .oc-kpi__muted { color: var(--muted-foreground); }
@@ -6181,7 +7308,7 @@ button.oc-perm__opt:disabled {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  max-height: 65vh;
+  max-height: 65dvh;
   overflow-y: auto;
 }
 .oc-anomaly__attachment-name {
@@ -6208,13 +7335,18 @@ button.oc-perm__opt:disabled {
   margin: 0 auto 0.5rem;
   max-width: 48rem;
   width: 100%;
-  padding: 0.6rem 0.9rem;
+  /* Its space above and below is its content's margin, not its padding (lot 29): a
+     padding is a floor the banner could not give up in a short thread. */
+  padding: 0 0.9rem;
   border-radius: var(--radius, 0.5rem);
   font-size: 0.85rem;
   line-height: 1.4;
 }
 .oc-chat-banner > svg {
   flex-shrink: 0;
+}
+.oc-chat-banner > * {
+  margin-block: 0.6rem;
 }
 .oc-chat-banner--error {
   background: color-mix(in srgb, var(--destructive) 12%, var(--background));
@@ -6248,7 +7380,7 @@ button.oc-perm__opt:disabled {
    The dimming is applied SIBLING BY SIBLING rather than on a common ancestor: CSS
    opacity groups its whole subtree, so a child can never be brighter than its
    parent — an ancestor rule could not be lifted back on the selector. */
-.oc-composer--disabled > *:not(.oc-composer__bar),
+.oc-composer--disabled > .oc-composer__body > *,
 .oc-composer--disabled .oc-composer__bar > *:not(.oc-composer__group),
 .oc-composer--disabled .oc-composer__group > *:not(.oc-composer__agent) {
   opacity: 0.65;
@@ -6516,7 +7648,7 @@ button.oc-perm__opt:disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  white-space: nowrap;
+  max-width: 100%;
 }
 .oc-bridge-card__hint {
   margin: 0.15rem 0 0;
@@ -6546,6 +7678,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-bridge-provider__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   padding-bottom: 0.55rem;
@@ -6562,7 +7695,7 @@ button.oc-perm__opt:disabled {
 /* Sub-section labels inside a provider card (Connexions / Compatibilité). */
 .oc-bridge-provider__sub {
   margin: 0.45rem 0 0.05rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -6769,7 +7902,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-compat__versions-pop {
   width: auto;
-  max-width: 22rem;
+  max-width: min(22rem, var(--radix-popover-content-available-width));
   padding: 0.75rem;
 }
 .oc-compat__versions-title {
@@ -6858,9 +7991,20 @@ button.oc-perm__opt:disabled {
    Fixed bottom-right stack of non-blocking notifications. Auto-dismiss + manual
    close. On tokens, except the destructive accent stripe (hex, like statuses). */
 .oc-toast__viewport {
-  position: fixed; bottom: 1rem; right: 1rem; z-index: var(--oc-layer-toast);
+  position: fixed; z-index: var(--oc-layer-toast);
+  /* Clear of the home bar and the notch side, and above the iOS keyboard (lot 8);
+     in what is shown, like every layer (lots 25-26): its edges from what is shown,
+     its width within the bound. */
+  bottom: calc(1rem + max(env(safe-area-inset-bottom), var(--oc-vv-bottom, 0px)));
+  right: calc(
+    1rem +
+      max(
+        env(safe-area-inset-right),
+        100% - 100vw - var(--oc-vv-left, 0px) + env(safe-area-inset-right)
+      )
+  );
   display: flex; flex-direction: column; gap: 0.5rem;
-  max-width: min(24rem, calc(100vw - 2rem)); pointer-events: none;
+  max-width: min(24rem, calc(var(--oc-layer-width) - 2rem)); pointer-events: none;
 }
 .oc-toast {
   pointer-events: auto;
@@ -6890,6 +8034,16 @@ button.oc-perm__opt:disabled {
 @keyframes oc-toast-in {
   from { opacity: 0; transform: translateY(0.4rem); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Shared admin components (src/chat/admin/) ------------------------- */
+/* A field's help (admin FieldLabel): a sentence or two, never past the room (lot 25). */
+.oc-fieldhelp {
+  max-width: min(20rem, var(--radix-popover-content-available-width));
+}
+/* The admin's entity sheet: four fifths of the width shown (lot 25). */
+.oc-entity-sheet[data-slot="sheet-content"][data-side] {
+  width: min(80%, var(--oc-layer-width));
 }
 
 /* --- Reusable filter primitives (src/chat/admin/filters/) --------------- */
@@ -6927,7 +8081,7 @@ button.oc-perm__opt:disabled {
 /* TimeRangePicker: Grafana-style popover. Trigger shows the human label; the
    panel mirrors SelectContent's popover styling (already token-styled inline). */
 .oc-timerange__trigger { font-weight: 500; }
-.oc-timerange__panel { padding: 0.75rem; width: min(34rem, 92vw); }
+.oc-timerange__panel { padding: 0.75rem; width: min(34rem, var(--radix-popover-content-available-width)); }
 .oc-timerange__cols {
   display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem;
 }
@@ -6936,7 +8090,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-timerange__absolute { display: flex; flex-direction: column; gap: 0.5rem; }
 .oc-timerange__section-title {
-  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.04em; color: var(--muted-foreground); margin-bottom: 0.1rem;
 }
 .oc-timerange__apply { align-self: flex-start; margin-top: 0.15rem; }
@@ -6991,7 +8145,7 @@ button.oc-perm__opt:disabled {
 .oc-advfilter__count {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 1.1rem; height: 1.1rem; padding: 0 0.3rem;
-  border-radius: 999px; font-size: 0.7rem; font-weight: 600;
+  border-radius: 999px; font-size: 0.75rem; font-weight: 600;
   background: var(--primary); color: var(--primary-foreground);
 }
 .oc-advfilter__body {
@@ -7048,17 +8202,16 @@ button.oc-perm__opt:disabled {
 /* Selected/total counter pinned to the right of a section header. */
 .oc-access__count {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
-/* shadcn DialogContent has no max-height/scroll — cap the access dialog so a
-   long list never pushes the title or footer off-screen. */
-.oc-access { max-height: 85vh; overflow-y: auto; }
+/* Cap the access dialog so a long list never pushes the title or footer off the
+   visible screen — within the bound of every dialog. */
+.oc-access { max-height: min(85dvh, calc(var(--oc-layer-room) - 2rem)); overflow-y: auto; }
 /* The member / agent / chart rows carry a name PLUS several controls; give the
    dialog more room (responsive cap) so nothing clips and the tab labels fit. The
    doubled class beats shadcn's `sm:max-w-lg` utility without !important. */
 .oc-access.oc-access {
-  width: 100%;
   max-width: min(44rem, calc(100vw - 2rem));
 }
 /* Compact manager toggle / indicator (shield): ONE control replaces a long text
@@ -7114,13 +8267,59 @@ button.oc-perm__opt:disabled {
 .oc-agentcard__head > * {
   flex: 0 0 auto;
 }
-.oc-agentcard__name {
+/* A head of controls only (a reserved agent's actions) wraps as a whole — and a control
+   longer than the card's row (lifting the reservation, at a large text scale on a phone)
+   wraps its label inside it (lot 32). */
+.oc-agentcard__head:not(:has(> .oc-agentcard__main)) {
+  flex-wrap: wrap;
+}
+.oc-agentcard__head:not(:has(> .oc-agentcard__main)) > [data-slot="button"] {
+  max-width: 100%;
+  height: auto;
+  min-height: 1.75rem;
+  white-space: normal;
+}
+/* The name and what qualifies it (model, badges, the default action) share the
+   rest of the row: they wrap UNDER the name, aligned with it, where the row runs
+   out of room — a long name was crushed to 0 px on a phone — and a name longer
+   than the row wraps itself instead of being cut. */
+.oc-agentcard__head > .oc-agentcard__main {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
+}
+.oc-agentcard__main > * {
+  flex: 0 0 auto;
+}
+.oc-agentcard__main > .oc-agentcard__name {
+  flex: 1 1 auto;
+  max-width: 100%;
+  min-width: 0;
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+/* What qualifies it never runs past the card either (lot 32): at a large text scale on a
+   phone, a reservation's badge (the group's name), a model id or the default action is
+   wider than the row, and wraps inside it. */
+.oc-agentcard__main > :not(.oc-agentcard__name) {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+/* On one line, the same box as before: a badge's 1.25rem (its padding gone, its line
+   where it was), a button's 1.75rem. */
+.oc-agentcard__main > [data-slot="badge"] {
+  height: auto;
+  min-height: 1.25rem;
+  padding-block: 0;
+  white-space: normal;
+}
+.oc-agentcard__main > [data-slot="button"] {
+  height: auto;
+  min-height: 1.75rem;
+  white-space: normal;
 }
 /* TYPES row: a label + the SELECTED types as read-only chips + a "Manage" popover
    trigger. Only selected types show here (scales to many types — the full catalogue
@@ -7133,22 +8332,30 @@ button.oc-perm__opt:disabled {
   padding-left: 1.85rem;
 }
 .oc-agentcard__types-label {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted-foreground);
 }
 .oc-agenttype__chip {
-  max-width: 14rem;
+  /* Never wider than its row (lot 32): 14rem is wider than a card on a phone at a large
+     text scale. */
+  max-width: min(14rem, 100%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The label in a box of its own (lot 32): the chip is a flex box, which draws no
+   ellipsis — a long type was cut off at both ends. Here it ends in "…". */
+.oc-agenttype__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* Type-catalogue popover: each type = a checkbox + label + DESCRIPTION (so an admin
    understands it). Scrollable so a growing catalogue (10+ types) stays usable. */
 .oc-agenttypes-pop {
-  width: 22rem;
-  max-width: calc(100vw - 2rem);
+  width: min(22rem, var(--radix-popover-content-available-width));
 }
 .oc-agenttypes-pop__title {
   font-weight: 600;
@@ -7219,7 +8426,7 @@ button.oc-perm__opt:disabled {
   white-space: nowrap;
 }
 .oc-access__sub {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7227,7 +8434,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-access__role {
   flex: 0 0 auto;
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   text-transform: capitalize;
 }
 /* Prev / page / next footer under a paged list. */
@@ -7255,11 +8462,11 @@ button.oc-perm__opt:disabled {
 .oc-agentpicker__instance,
 .oc-access__instance {
   display: flex; align-items: center; gap: 0.4rem;
-  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
   color: var(--muted-foreground);
   padding: 0.5rem 0.25rem 0.15rem;
 }
-.oc-agentpicker__kind, .oc-access__kind { font-size: 0.65rem; }
+.oc-agentpicker__kind, .oc-access__kind { font-size: 0.75rem; }
 .oc-agentpicker__item {
   display: flex; align-items: center; gap: 0.55rem;
   width: 100%; text-align: left;
@@ -7281,14 +8488,14 @@ button.oc-perm__opt:disabled {
 }
 .oc-agentpicker__main > .oc-agentpicker__label { flex: none; }
 .oc-agentpicker__desc {
-  font-size: 0.72rem; color: var(--muted-foreground); line-height: 1.35;
+  font-size: 0.75rem; color: var(--muted-foreground); line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden;
 }
 /* Admin manage-agents card: the specialty editor input. */
 .oc-agentcard__desc { margin-top: 0.35rem; font-size: 0.8rem; }
 .oc-agentpicker__model, .oc-access__model {
-  font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted-foreground);
+  font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground);
 }
 .oc-agentpicker__default { color: oklch(0.8 0.15 85); flex: 0 0 auto; }
 .oc-access__row {
@@ -7305,6 +8512,17 @@ button.oc-perm__opt:disabled {
 .oc-access__row > .oc-agentpicker__label {
   flex: 1 1 auto;
   min-width: 0;
+}
+/* Where even an empty name leaves the controls no room (a phone at the largest text
+   scale), they go to the next line instead of past the list (lot 32). The name grows
+   from nothing, so the row breaks only then: where it fits, nothing moves. */
+.oc-access__row {
+  flex-wrap: wrap;
+}
+.oc-access__row > :is(.oc-access__who, .oc-access__label, .oc-agentpicker__label) {
+  flex-basis: 0;
+  /* A few characters of the name before the row breaks (lot 33), never wider than it. */
+  min-width: min(3rem, 100%);
 }
 .oc-access__label {
   overflow: hidden;
@@ -7343,19 +8561,16 @@ button.oc-perm__opt:disabled {
   color: oklch(0.8 0.15 85);
 }
 /* Non-default agents: no star at rest; revealed on row hover / keyboard focus
-   to offer "make default". Reserved in flow (opacity, not display) → no shift. */
+   (`.oc-reveal`, always there on touch) to offer "make default". Reserved in flow
+   (opacity, not display) → no shift. It turns gold only under the pointer or the
+   focus: a gold star means "the default". */
 .oc-access__setdefault {
   margin-left: auto;
   color: var(--muted-foreground);
-  opacity: 0;
-  transition: opacity 150ms ease;
 }
 .oc-access__row:hover .oc-access__setdefault,
 .oc-access__row:focus-within .oc-access__setdefault,
-.oc-access__setdefault:focus-visible { opacity: 1; color: oklch(0.8 0.15 85); }
-@media (prefers-reduced-motion: reduce) {
-  .oc-access__setdefault { transition: none; }
-}
+.oc-access__setdefault:focus-visible { color: oklch(0.8 0.15 85); }
 .oc-access__warn {
   display: flex; align-items: center; gap: 0.45rem;
   font-size: 0.8rem; color: var(--foreground);
@@ -7394,7 +8609,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-introspect__section { display: flex; flex-direction: column; gap: 0.5rem; }
 .oc-introspect__title {
-  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.05em; color: var(--muted-foreground); margin: 0;
 }
 .oc-introspect__id { display: flex; align-items: center; gap: 0.6rem; }
@@ -7415,7 +8630,9 @@ button.oc-perm__opt:disabled {
 /* ── DEV user switcher (dev-only floating affordance) ───────────────────────── */
 .oc-devfab {
   /* Sits ABOVE the TanStack Router devtools toggle (also fixed bottom-right in dev). */
-  position: fixed; right: 0.85rem; bottom: 2.9rem; z-index: var(--oc-layer-dev-fab);
+  position: fixed; z-index: var(--oc-layer-dev-fab);
+  right: calc(0.85rem + max(0px, 100% - 100vw - var(--oc-vv-left, 0px)));
+  bottom: calc(2.9rem + var(--oc-vv-bottom, 0px));
   display: inline-flex; align-items: center; gap: 0.3rem;
   padding: 0.3rem 0.55rem; border-radius: 999px; cursor: pointer;
   font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
@@ -7456,7 +8673,6 @@ button.oc-perm__opt:disabled {
 .oc-spanel-pop {
   display: flex;
   flex-direction: column;
-  max-width: calc(100vw - 1rem);
 }
 .oc-spanel-pop__all {
   display: flex;
@@ -7506,14 +8722,14 @@ button.oc-perm__opt:disabled {
 .oc-spanel__rowhead { display: flex; align-items: center; gap: 0.45rem; }
 .oc-spanel__label {
   flex: 1 1 auto;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--foreground);
 }
 .oc-spanel__badge {
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   padding: 0.05rem 0.4rem;
@@ -7541,7 +8757,7 @@ button.oc-perm__opt:disabled {
 .oc-spanel__ctl { display: flex; }
 .oc-spanel__help {
   margin: 0;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 /* The context PRE-ANNOUNCEMENT (G-08): the session no longer fits. A warning,
@@ -7557,7 +8773,7 @@ button.oc-perm__opt:disabled {
 .oc-error-card__notice {
   flex-basis: 100%;
   margin: 0;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-spanel__help--warn {
@@ -7568,14 +8784,14 @@ button.oc-perm__opt:disabled {
   align-items: center;
   gap: 0.5rem;
   margin: 0;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--destructive);
 }
 .oc-spanel__retry {
   border: none;
   background: none;
   padding: 0;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--foreground);
   text-decoration: underline;
   cursor: pointer;
@@ -7597,7 +8813,7 @@ button.oc-perm__opt:disabled {
   border: none;
   background: transparent;
   color: var(--muted-foreground);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.15;
   white-space: nowrap;
   overflow: hidden;
@@ -7625,8 +8841,22 @@ button.oc-perm__opt:disabled {
    !important needed to beat the sheet primitive's width utilities (same
    specificity, earlier in the cascade is not guaranteed). */
 .oc-spanel[data-slot="sheet-content"] {
-  width: min(26rem, 100vw) !important;
+  width: min(26rem, var(--oc-layer-width)) !important;
   max-width: 100vw !important;
+  /* Its own height decides how much the actions zone keeps (lot 28). */
+  container: oc-spanel / size;
+}
+/* A SHORT SHEET KEEPS ITS ACTIONS IN VIEW (lot 28): the zone's heading and most of
+   its padding go, the three actions stay — a keyboard over a phone held sideways
+   left 140 px, and the 158 px zone lost its last action under it. */
+@container oc-spanel (max-height: 24rem) {
+  .oc-spanel__actions {
+    padding-block: 0.5rem;
+    gap: 0.35rem;
+  }
+  .oc-spanel__actions > .oc-spanel__cat {
+    display: none;
+  }
 }
 .oc-spanel__body {
   flex: 1 1 auto;
@@ -7640,7 +8870,7 @@ button.oc-perm__opt:disabled {
 /* Layer-cake section headers (mirrors .oc-prefs__cat). */
 .oc-spanel__cat {
   margin: 1.1rem 0 0.2rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -7670,7 +8900,7 @@ button.oc-perm__opt:disabled {
 .oc-spanel__action { display: flex; flex-direction: column; gap: 0.3rem; }
 .oc-spanel__action-note {
   margin: 0;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 
@@ -7726,7 +8956,7 @@ button.oc-perm__opt:disabled {
 }
 /* Mobile host = a right Sheet; let the inner panel fill it (it owns the padding). */
 .oc-sources-panel-sheet[data-slot="sheet-content"] {
-  width: min(92vw, 30rem);
+  width: min(92vw, 30rem, var(--oc-layer-width));
   max-width: 30rem;
   padding: 0;
   gap: 0;
@@ -7805,7 +9035,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-sources-panel__acthint {
   margin: 0;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   line-height: 1.4;
   color: var(--muted-foreground);
 }
@@ -7841,7 +9071,7 @@ button.oc-perm__opt:disabled {
 .oc-srcsec__count {
   min-width: 1.4rem;
   padding: 0.05rem 0.4rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   text-align: center;
   color: var(--muted-foreground);
   background: var(--background);
@@ -7889,7 +9119,7 @@ button.oc-perm__opt:disabled {
 .oc-srccard__subid {
   margin-top: 0.1rem;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   overflow-wrap: anywhere;
   opacity: 0.85;
@@ -7902,7 +9132,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-srccard__chip {
   padding: 0.05rem 0.45rem;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   background: var(--muted);
   border-radius: 999px;
@@ -7945,7 +9175,7 @@ button.oc-perm__opt:disabled {
   border: none;
   background: none;
   font-family: inherit;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--primary);
   cursor: pointer;
 }
@@ -7954,7 +9184,7 @@ button.oc-perm__opt:disabled {
   align-items: center;
   gap: 0.35rem;
   margin-top: 0.15rem;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   opacity: 0.7;
 }
@@ -7996,8 +9226,11 @@ button.oc-perm__opt:disabled {
   flex-wrap: wrap;
   gap: 0.4rem;
   /* ~3 rows of thumbnails, then scroll: a large paste must never grow the
-     composer without bound. */
-  max-height: 15rem;
+     composer without bound. On a SHORT screen the bound is a share of its
+     height: on a phone held sideways (360-430 px high) sixteen chips at 15rem
+     pushed the send bar below the screen, out of reach. Unchanged from 800 px
+     of height up. */
+  max-height: min(15rem, 30dvh);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -8044,7 +9277,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-attach__state {
   flex: none;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-attach--error .oc-attach__state {
@@ -8313,7 +9546,7 @@ button.oc-perm__opt:disabled {
 .oc-spanel__kv {
   margin: 0.4rem 0 0;
   display: grid;
-  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  grid-template-columns: minmax(min(5.5rem, 100%), auto) 1fr;
   gap: 0;
   font-size: 0.8rem;
   border: 1px solid var(--border);
@@ -8377,8 +9610,13 @@ button.oc-perm__opt:disabled {
 /* Chat-defaults tab: Atrium-side summarize-threshold field (number + inline save). */
 .oc-cdefaults__inline {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
+}
+.oc-cdefaults__select {
+  max-width: 100%;
 }
 .oc-cdefaults__number {
   max-width: 9rem;
@@ -8420,7 +9658,7 @@ button.oc-perm__opt:disabled {
   overflow-wrap: anywhere;
   font-size: 0.9rem;
   line-height: 1.55;
-  max-height: 65vh;
+  max-height: 65dvh;
   overflow-y: auto;
   padding: 0.75rem 1rem;
   border: 1px solid var(--border);
@@ -8435,7 +9673,7 @@ button.oc-perm__opt:disabled {
 /* Dialog EDIT mode: same reading surface, as a textarea. */
 .oc-summary-dialog__edit {
   width: 100%;
-  min-height: 45vh;
+  min-height: 45dvh;
   resize: vertical;
   font: inherit;
   font-size: 0.9rem;
@@ -8463,7 +9701,7 @@ button.oc-perm__opt:disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--muted-foreground);
   white-space: nowrap;
@@ -8487,7 +9725,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-gateway-notices__line {
   margin: 0.1rem 0;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.4;
   color: var(--muted-foreground);
   white-space: pre-wrap;
@@ -8513,7 +9751,7 @@ button.oc-perm__opt:disabled {
    row — a hash that wraps mid-column cannot be compared by eye, and comparing it is
    the only reason to show one. */
 .oc-filemeta {
-  width: min(22rem, calc(100vw - 2rem));
+  width: min(22rem, var(--radix-popover-content-available-width));
   font-size: 0.8rem;
 }
 .oc-filemeta__title {
@@ -8556,7 +9794,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-filemeta__digest {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   overflow-wrap: anywhere;
 }
 .oc-filemeta__copy {
@@ -8604,7 +9842,12 @@ button.oc-perm__opt:disabled {
 /* Lightbox overlay (portaled to body). */
 .oc-lightbox {
   position: fixed;
-  inset: 0;
+  /* What is shown, not the layout viewport: a page wider than the screen left its
+     bar's buttons past the screen's edge (lot 26). */
+  top: var(--oc-vv-top, 0px);
+  bottom: var(--oc-vv-bottom, 0px);
+  left: var(--oc-vv-left, 0px);
+  right: max(0px, calc(100% - 100vw - var(--oc-vv-left, 0px)));
   z-index: var(--oc-layer-lightbox);
   background: rgba(0, 0, 0, 0.82);
   display: flex;
@@ -8775,14 +10018,14 @@ button.oc-perm__opt:disabled {
 .oc-afiles__curate { margin-left: 0.25rem; }
 .oc-afiles__curate-status { margin-left: 0.25rem; opacity: 0.8; }
 /* Near-fullscreen review (the before/after must be COMFORTABLY readable —
-   user feedback 2026-07-05): same sizing pattern as the file editor dialog. */
+   user feedback 2026-07-05): same sizing pattern as the file editor dialog — the
+   bound of every dialog, and in a room too short for its margin, the room itself
+   (lot 29: its footer was cut under 89 px shown). */
 [data-slot="dialog-content"].oc-afiles__review {
   display: flex;
   flex-direction: column;
-  width: calc(100vw - 2rem);
   max-width: 96rem;
-  height: calc(100vh - 2rem);
-  max-height: none;
+  height: max(calc(var(--oc-layer-room) - 2rem), min(var(--oc-layer-room), 7rem));
 }
 .oc-afiles__review-sizes { font-size: 0.9rem; opacity: 0.9; display: flex; align-items: center; gap: 0.3rem; }
 .oc-afiles__review-diff { font-size: 0.9rem; opacity: 0.75; margin-top: -0.25rem; }
@@ -8800,7 +10043,8 @@ button.oc-perm__opt:disabled {
   background: var(--oc-surface-2, rgba(127,127,127,0.08)); border-radius: 0.5rem;
   border: 1px solid var(--oc-border, rgba(127,127,127,0.2));
 }
-.oc-afiles__review-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.75rem; }
+/* The dialog's footer (lot 29): its gap from the panes is the dialog's own. */
+.oc-afiles__review-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 .oc-afiles__reject-form { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
 .oc-afiles__reject-textarea {
   width: 100%; resize: vertical; font-size: 0.9rem; line-height: 1.5;
@@ -8818,6 +10062,9 @@ button.oc-perm__opt:disabled {
 
 /* Injections tab: content-language selector */
 .oc-injtab__content-locale { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+/* Its 11 rem as long as the line holds them, never wider than the line (lot 32): on a
+   280 px phone at a large text scale they ran past the page. As the picker above. */
+.oc-injtab__content-locale > [data-slot="select-trigger"] { min-width: min(11rem, 100%); }
 .oc-injtab__content-locale > span { font-size: 0.9rem; font-weight: 600; }
 .oc-injtab__content-locale .oc-admin__hint { flex-basis: 100%; margin: 0; }
 
@@ -8886,7 +10133,7 @@ button.oc-perm__opt:disabled {
   word-break: break-all;
 }
 .oc-attach__dialog-text {
-  max-height: 70vh;
+  max-height: 70dvh;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -8900,7 +10147,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-attach__dialog-img {
   max-width: 100%;
-  max-height: 70vh;
+  max-height: 70dvh;
   object-fit: contain;
   border-radius: 8px;
 }
@@ -9157,7 +10404,7 @@ button.oc-perm__opt:disabled {
   color: white;
 }
 .oc-docviewer__railmore {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   text-align: center;
   padding: 0.3rem 0;
@@ -9238,7 +10485,7 @@ button.oc-perm__opt:disabled {
   background: transparent;
   color: var(--primary);
   cursor: pointer;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   text-decoration: underline;
   padding: 0;
 }
@@ -9286,7 +10533,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-docviewer__savestate {
   margin-right: auto;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 
@@ -9462,7 +10709,7 @@ button.oc-perm__opt:disabled {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 11px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 999px;
   border: 1px solid var(--border);
@@ -9484,7 +10731,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-cronact__sched {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   opacity: 0.75;
   white-space: nowrap;
   flex: none;
@@ -9547,7 +10794,7 @@ button.oc-perm__opt:disabled {
 }
 .oc-cronpanel__message-label,
 .oc-cronpanel__runs-label {
-  font-size: 11.5px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted-foreground);
@@ -9586,7 +10833,7 @@ button.oc-perm__opt:disabled {
 .oc-cronpanel__run-dur {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
 }
 .oc-cronpanel__run-summary {
   margin-top: 4px;
@@ -9740,7 +10987,7 @@ button.oc-perm__opt:disabled {
 /* Grow with the dictation: the chat stays visible above (the user reads the
    conversation WHILE speaking); beyond the cap the caret auto-follows. */
 .oc-composer--dictation .oc-composer__input {
-  max-height: 44vh;
+  max-height: 44dvh;
 }
 /* Live-transcript ghost: the engine's in-flight hypothesis, visually "not yet
    text" (muted + voice tint), replaced on every event. */
@@ -9754,6 +11001,15 @@ button.oc-perm__opt:disabled {
   font-style: italic;
   color: color-mix(in srgb, var(--voice) 55%, var(--muted-foreground));
   animation: oc-interim-in 160ms ease;
+}
+/* Inline, its spacing is its content's (lot 29): the card's gap above it taken back,
+   its own below — given way, it costs the card nothing. */
+.oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-composer__interim {
+  margin-top: -0.4rem;
+  padding-bottom: 0;
+}
+.oc-composer:not(.oc-composer--expanded) > .oc-composer__body > .oc-composer__interim > * {
+  margin-block: 0.4rem 0.15rem;
 }
 .oc-composer__interim-dot {
   flex: none;
@@ -9796,7 +11052,7 @@ button.oc-perm__opt:disabled {
   gap: 0.3rem;
   padding: 0.15rem 0.55rem;
   border-radius: 999px;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--voice);
   background: color-mix(in srgb, var(--voice) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--voice) 30%, transparent);
@@ -9819,21 +11075,55 @@ button.oc-perm__opt:disabled {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+/* THE ACTION BAR IS ALWAYS VISIBLE (lot 12). The panel is laid out from the BOTTOM
+   of the visible area — above the iOS keyboard (`--oc-kb`), with a 5dvh gap while
+   there is room for one — so its foot, where the bar is, can never sink under the
+   keyboard. Inside, a column: the bar never shrinks; the field shrinks to nothing
+   and scrolls; the header folds away when the panel is very short. When even the
+   bar and its paddings do not fit (a keyboard over a phone held sideways), the
+   panel keeps that floor and overflows at the TOP of the screen, the bar still in
+   view. Twice the keyboard defeated a centred panel with a fixed field (lots 11,
+   12): nothing here is centred or fixed in height any more. */
 .oc-composer--expanded {
   position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  /* Centred on what is shown, between its safe areas, within the bound (lots
+     25-26): centred on a layout viewport grown by a page wider than the screen, it
+     ran past the screen and its action bar sank below it. */
+  left: calc(
+    var(--oc-vv-left, 0px) + min(50%, 50vw) +
+      (env(safe-area-inset-left) - env(safe-area-inset-right)) / 2
+  );
+  top: auto;
+  transform: translateX(-50%);
   z-index: var(--oc-layer-focus-panel);
   /* A GENEROUS workspace on big screens (dictation comfort), still bounded for
      line readability. Fills most of the height so a long dictated prompt is
      visible at once; small screens fall back to the viewport and scroll. */
-  width: min(94vw, 1040px);
+  width: min(94vw, 1040px, var(--oc-layer-width));
   max-width: none;
-  height: 90vh;
-  max-height: 90vh;
+  /* The floor: what the column cannot give up — the bar (44 px on touch), the
+     gap above it, the paddings, the borders — and one line of the field with the
+     gaps of the stacks above it, even squeezed to nothing (lot 28: the bar alone
+     was the floor, and the margins kept 5dvh while the field had no line); the rest
+     of the region gives up everything (lot 13). Between this floor and 10dvh more,
+     the panel IS the floor: the margins take the rest. */
+  --oc-exp-floor: 7.75rem;
+  --oc-exp-gap: max(
+    0px,
+    min(5dvh, calc((100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - var(--oc-exp-floor)) / 2))
+  );
+  bottom: calc(var(--oc-vv-bottom, 0px) + var(--oc-exp-gap));
+  height: max(
+    var(--oc-exp-floor),
+    calc(100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px) - 2 * var(--oc-exp-gap))
+  );
+  max-height: none;
   margin: 0;
-  padding: 0.9rem 1.15rem 0.8rem;
+  /* Paddings give way with the visible height (0.25 to 0.9 rem). */
+  --oc-exp-pad: clamp(0.25rem, calc((100dvh - var(--oc-vv-top, 0px) - var(--oc-kb, 0px)) / 20), 0.9rem);
+  padding: var(--oc-exp-pad) 1.15rem calc(var(--oc-exp-pad) * 0.9);
+  /* The panel's own height decides what folds (the header, below). */
+  container: oc-exp / size;
   border-radius: 1.25rem;
   border: 1px solid var(--input);
   background: var(--card);
@@ -9844,8 +11134,39 @@ button.oc-perm__opt:disabled {
   animation: oc-expand-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes oc-expand-in {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.97); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; transform: translateX(-50%) scale(0.97); }
+  to { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+/* TWO CHILDREN, the bar last (lot 13): the region — the header, the people, the
+   quote, the attachments, the field, the dictation preview — and the action bar.
+   The bar never gives way; the region gives way entirely: it shrinks to nothing
+   and scrolls what it holds. A child left beside the region (the people row, lot
+   12) kept its height and pushed the bar out of the panel, through its bottom. */
+.oc-composer--expanded > .oc-composer__body {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.oc-composer--expanded > .oc-composer__bar {
+  flex: none;
+}
+/* Inside the region the field and the two stacks that scroll (the quotes, the
+   attachments) give way, the field down to a line; the rest keeps its height (lot
+   28: the region scrolled the field out of view under a keyboard, the attachments
+   kept whole above it). */
+.oc-composer--expanded > .oc-composer__body > :not(.oc-composer__input, .oc-composer__quotes, .oc-attachrow) {
+  flex-shrink: 0;
+}
+/* A panel too short for its header (a keyboard over a phone held sideways): the
+   header folds — the backdrop and the bar's collapse still close the panel. */
+@container oc-exp (max-height: 10.5rem) {
+  .oc-composer--expanded > .oc-composer__body > .oc-composer__exphead {
+    display: none;
+  }
 }
 .oc-composer--expanded.oc-composer--dictation {
   border-color: color-mix(in srgb, var(--voice) 55%, var(--input));
@@ -9879,12 +11200,28 @@ button.oc-perm__opt:disabled {
   background: var(--muted);
   color: var(--foreground);
 }
-/* The workspace fills the panel: a generous minimum so it's roomy from the
-   start, growing to fill the flex space, scrolling beyond. The bar below
-   stays visible because the panel height is fixed (90vh flex column). */
+/* Measured like the bar: the label goes, rather than wrap onto two lines (it did
+   at 360 px). The button keeps its accessible name. */
+.oc-composer__exphead[data-labels="off"] .oc-composer__expclose-label {
+  display: none;
+}
+.oc-composer__expclose-label {
+  white-space: nowrap;
+}
+.oc-composer__exphead--measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* The workspace fills the region's free height and scrolls beyond it. One line at
+   least: when the keyboard leaves little room it is the REGION that scrolls, to
+   the line being typed — the bar below is never what gives (lots 12, 13). */
 .oc-composer--expanded .oc-composer__input {
   flex: 1 1 auto;
-  min-height: 30vh;
+  min-height: 2.5rem;
   max-height: none;
   overflow-y: auto;
   font-size: 1.02rem;
@@ -9993,10 +11330,16 @@ button.oc-perm__opt:disabled {
   z-index: var(--oc-layer-detached-composer);
   display: flex;
   flex-direction: column;
+  /* Under its floor, what is left leaves at the top (lot 28): the head first, the
+     bar last. */
+  justify-content: flex-end;
   /* Yield to a sub-minimum viewport so the panel never overflows the screen
-     (matches clampGeometry, which caps size at the viewport). */
-  min-width: min(300px, 100vw);
-  min-height: min(200px, 100dvh);
+     (matches clampGeometry, which caps size at what is shown): its floor is never
+     above what is shown — 100dvh stays the screen's above a keyboard, and a 200 px
+     floor beat the 140 px the script gave it, its send bar 60 px under the keyboard
+     (lot 27). */
+  min-width: min(300px, var(--oc-layer-width));
+  min-height: min(200px, var(--oc-layer-room));
   padding-left: 20px; /* room for the left move-handle */
   border-radius: 0.9rem;
   border: 1px solid color-mix(in srgb, var(--voice) 35%, var(--border));
@@ -10083,7 +11426,9 @@ button.oc-perm__opt:disabled {
 }
 .oc-detach__input {
   flex: 1 1 auto;
-  min-height: 0;
+  /* One line at least, its paddings added (lot 28): at 0 it gave way before the
+     quotes and showed no line. */
+  min-height: calc(1.5em + 1.2rem);
   resize: none;
   border: none;
   background: transparent;
@@ -10095,14 +11440,25 @@ button.oc-perm__opt:disabled {
   overflow-y: auto;
 }
 .oc-detach__interim {
-  padding: 0 0.7rem 0.3rem;
+  /* Its space below is its content's (lot 29): given way, it costs nothing. */
+  padding: 0 0.7rem;
   font-size: 0.82rem;
   font-style: italic;
   line-height: 1.4;
   color: color-mix(in srgb, var(--voice) 55%, var(--muted-foreground));
-  flex: none;
   max-height: 3.2rem;
   overflow: hidden;
+}
+.oc-detach__interim-text {
+  display: block;
+  padding-bottom: 0.3rem;
+}
+/* Whatever the detached composer holds besides its head, its field and its bar — its
+   quotes, the dictation's live preview, now or later — gives way first (lot 29): the
+   preview kept its 3.2rem, and under a keyboard the field went out at the top. */
+.oc-detach > :not(.oc-detach__head, .oc-detach__input, .oc-detach__bar, .oc-detach__handle, .oc-detach__resize) {
+  flex-shrink: 100;
+  min-height: 0;
 }
 .oc-detach__bar {
   display: flex;
@@ -10252,6 +11608,8 @@ button.oc-perm__opt:disabled {
 }
 .oc-talk__pillchev {
   padding: 0 0.45rem 0 0.2rem;
+  /* Never under WCAG 2.5.8's 24 px (it measured 23). */
+  min-width: 1.5rem;
 }
 .oc-talk__pillchev:hover {
   background: var(--muted);
@@ -10260,7 +11618,7 @@ button.oc-perm__opt:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
-  width: 240px;
+  width: min(240px, var(--radix-popover-content-available-width));
 }
 .oc-talk__setting {
   display: flex;
@@ -10268,7 +11626,7 @@ button.oc-perm__opt:disabled {
   gap: 0.3rem;
 }
 .oc-talk__settinglabel {
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--muted-foreground);
 }
@@ -10438,10 +11796,15 @@ button.oc-perm__opt:disabled {
 .oc-areq__head {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.4rem 0.55rem;
   min-height: 2.6rem;
   padding: 0.4rem 0.55rem 0.4rem 0.8rem;
   font-size: 0.86rem;
+  /* The title never yields: where the badges (outcome, deadline) do not fit
+     beside it they move to a line of their own — measured by the browser on
+     the title's own width, not on a screen width. On a phone the title came
+     down to five letters ("Autor…") behind the badge. */
+  flex-wrap: wrap;
 }
 .oc-areq__icon {
   flex-shrink: 0;
@@ -10455,7 +11818,10 @@ button.oc-perm__opt:disabled {
   color: color-mix(in oklch, var(--tone) 88%, var(--foreground));
 }
 .oc-areq__toggle {
-  flex: 1;
+  /* Sized on its title alone (the summary claims no width of its own): the
+     line breaks before the title is cut, and a title wider than the card breaks
+     too (lot 26: at 360 px under the largest text scale it was cut). */
+  flex: 1 1 max-content;
   min-width: 0;
   display: flex;
   align-items: baseline;
@@ -10474,13 +11840,18 @@ button.oc-perm__opt:disabled {
   border-radius: 6px;
 }
 .oc-areq__kind {
-  flex-shrink: 0;
+  /* One line, whole, while the card has room for it: its width is what the
+     head's line break is measured on; narrower, it breaks. */
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-weight: 600;
   color: color-mix(in oklch, var(--tone) 80%, var(--foreground));
   letter-spacing: 0.005em;
 }
 .oc-areq__summary {
+  flex: 1 1 0;
   min-width: 0;
+  contain: inline-size;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -10494,7 +11865,7 @@ button.oc-perm__opt:disabled {
   gap: 0.3rem;
   padding: 0.12rem 0.5rem;
   border-radius: 999px;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-weight: 500;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -10596,7 +11967,7 @@ button.oc-perm__opt:disabled {
   border-radius: 0.35rem;
   background: color-mix(in oklch, var(--tone) 14%, transparent);
   color: color-mix(in oklch, var(--tone) 85%, var(--foreground));
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -10764,7 +12135,7 @@ button.oc-perm__opt:disabled {
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
   border: 1px solid var(--border);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-areq__fact--mono { font-family: var(--font-mono); }
@@ -10876,7 +12247,7 @@ button.oc-perm__opt:disabled {
   background: color-mix(in oklch, var(--tone) 14%, transparent);
   color: color-mix(in oklch, var(--tone) 85%, var(--foreground));
   font: inherit;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
 }
@@ -10885,10 +12256,117 @@ button.oc-perm__opt:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-  max-height: min(46vh, 28rem);
+  max-height: min(46dvh, 28rem);
   overflow-y: auto;
   padding: 0 0.5rem 0.55rem;
   overscroll-behavior: contain;
+}
+/* A phone held sideways: the dock's cards get a third of the height at most (the
+   thread keeps the rest), and the dock starts folded to its bar. */
+.oc-shell--short .oc-areq-dock__list {
+  max-height: 33dvh;
+}
+.oc-areq-dock__list[hidden] {
+  display: none;
+}
+/* The cards keep their height and the LIST scrolls: shrunk to the list's height,
+   an open card clipped its own answer field out of reach. */
+.oc-areq-dock__list > * {
+  flex-shrink: 0;
+}
+/* THE DOCK GIVES WAY BY ITS LIST (lot 29): a column, its bar kept while its list
+   shrinks and scrolls; the open card's response controls — allow, deny, send — stay
+   at the foot of the list, opaque over the question that scrolls behind them (its
+   head included), as a dialog's footer does. They are primary controls: at 360 px
+   held sideways, with no keyboard, the list cut them by two pixels.
+   For them to rise over the card's head, the CARD is the box they stick within: in
+   the dock its body and the form or approval inside it lay out nothing of their own
+   (`display: contents`), their content the card's own column.
+   Its FLOOR, below which the thread does not squeeze it (the rule above): its bar
+   (1.75rem buttons in 0.9rem of padding) and its borders; with an open card that
+   can be answered, the list's foot (0.55rem), the card's borders and the controls'
+   rows (1.75rem buttons, 0.45rem apart, in 0.8rem of padding): one row, or three in
+   a thread narrower than 44rem, where the decisions may wrap — four of them need
+   36rem in a row; three wrapped in two rows at 360 px, in three at 150 %; the
+   confirmation of "always" adds its sentence. */
+.oc-areq-dock {
+  --oc-areq-floor-bar: calc(2.65rem + 2px);
+  --oc-areq-list-floor: 0px;
+  --oc-areq-floor: calc(var(--oc-areq-floor-bar) + var(--oc-areq-list-floor));
+  display: flex;
+  flex-direction: column;
+}
+.oc-areq-dock:has(> .oc-areq-dock__list:not([hidden]) .oc-areq__actions) {
+  --oc-areq-list-floor: calc(0.55rem + 2px + 2.55rem);
+}
+@container chatpane (width < 44rem) {
+  .oc-areq-dock:has(> .oc-areq-dock__list:not([hidden]) .oc-areq__actions) {
+    --oc-areq-list-floor: calc(0.55rem + 2px + 6.95rem);
+  }
+}
+.oc-areq-dock:has(> .oc-areq-dock__list:not([hidden]) .oc-areq__confirm) {
+  --oc-areq-list-floor: calc(0.55rem + 2px + 7.4rem);
+}
+.oc-areq-dock__bar {
+  flex: none;
+}
+.oc-areq-dock__list {
+  flex: 0 1 auto;
+  min-height: 0;
+  /* Never capped under its floor (a third of a sideways phone is 7.4rem at 150 %). */
+  max-height: max(var(--oc-areq-list-floor), min(46dvh, 28rem));
+  /* The focused answer field scrolls into view above the pinned controls. */
+  scroll-padding-bottom: 2.55rem;
+}
+.oc-shell--short .oc-areq-dock__list {
+  max-height: max(var(--oc-areq-list-floor), 33dvh);
+}
+.oc-areq--dock {
+  /* Clipped without being a scroll container: the controls stick to the LIST. */
+  overflow: clip;
+  display: flex;
+  flex-direction: column;
+}
+.oc-areq--dock > .oc-areq__head {
+  flex: none;
+}
+.oc-areq--dock > .oc-areq__body,
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form) {
+  display: contents;
+}
+/* What they spaced, each part of the card's content now spaces itself: the body's
+   sides and foot, the column's 0.7rem. */
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form) > *,
+.oc-areq--dock > .oc-areq__body > .oc-areq__note {
+  margin-inline: 0.95rem;
+  margin-block-start: 0.7rem;
+}
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form) > :first-child {
+  margin-block-start: 0.1rem;
+}
+.oc-areq--dock > .oc-areq__body > :last-child,
+.oc-areq--dock > .oc-areq__body > :is(.oc-areq__approval, .oc-areq__form):last-child > :last-child {
+  margin-block-end: 0.9rem;
+}
+.oc-areq--dock :is(.oc-areq__actions, .oc-areq__confirm) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+.oc-areq--dock .oc-areq__actions {
+  padding-block: 0.4rem;
+  background: color-mix(in oklch, var(--tone) 4%, var(--card));
+}
+.oc-areq--dock .oc-areq__confirm {
+  /* Opaque: its tint over the card's own, not over the question scrolling behind. */
+  background:
+    linear-gradient(color-mix(in oklch, var(--tone) 9%, transparent), color-mix(in oklch, var(--tone) 9%, transparent)),
+    color-mix(in oklch, var(--tone) 4%, var(--card));
+}
+.oc-areq--dock .oc-areq__confirm .oc-areq__actions {
+  position: static;
+  padding-block: 0;
+  background: none;
 }
 .oc-areq--dock { border-radius: 0.75rem; box-shadow: none; animation: none; }
 .oc-areq--dock .oc-areq__head { min-height: 2.35rem; padding-top: 0.25rem; padding-bottom: 0.25rem; }
@@ -10898,8 +12376,12 @@ button.oc-perm__opt:disabled {
 .oc-areq-panel {
   display: flex;
   flex-direction: column;
-  width: min(30rem, 100vw);
   max-width: 100vw;
+}
+/* Its width, as specific as the side sheets' shared one (lot 29): a class alone lost
+   to it — the panel ran 75% of the screen, 960 px on a desktop for its 30rem. */
+.oc-areq-panel[data-slot="sheet-content"] {
+  width: min(30rem, var(--oc-layer-width));
 }
 .oc-areq-panel__filters {
   display: flex;
@@ -10942,7 +12424,7 @@ button.oc-perm__opt:disabled {
   align-items: center;
   gap: 0.4rem;
   margin: 0.6rem 0 0.1rem;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -10978,7 +12460,7 @@ button.oc-perm__opt:disabled {
   border-radius: 999px;
   background: var(--areq-question);
   color: var(--background);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -11034,16 +12516,7 @@ button.oc-perm__opt:disabled {
 @media (max-width: 640px) {
   .oc-areq-dock { width: calc(100% - 2rem); }
   .oc-areq__body { padding-left: 0.95rem; }
-  .oc-areq__summary { display: none; }
-  /* Narrow: the kind yields to the badges instead of running under them. */
-  .oc-areq__kind {
-    flex-shrink: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .oc-areq__head { gap: 0.4rem; }
+  .oc-areq__head { column-gap: 0.4rem; }
   .oc-areq__actions { justify-content: stretch; }
   .oc-areq__actions > * { flex: 1 1 auto; }
   .oc-areq__actions .oc-areq__spacer { display: none; }
@@ -11059,4 +12532,28 @@ button.oc-perm__opt:disabled {
   margin-top: 0.35rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* 16 PX FIELDS WHERE A FINGER TYPES (lot 7, G4; lot 20). Below 16 px, iOS and
+   iPadOS zoom the whole page on focus and leave it zoomed — and zoomed, the page
+   stops fitting its layers to the keyboard: past a scale of 1.01 the visual
+   viewport is read as the reader zooming (lib/virtualKeyboard).
+   The floor is IMPORTANT, so no normal declaration can beat it: not a heavier
+   selector, not a later file, not a `font: inherit`, not a rem under a small text
+   scale. A floor of no weight with a list of classes raised by name (lots 7-19)
+   lost to every rule outside the list: the room picker's search took its
+   popover's 14 px through `font: inherit`, and at the "sm" text scale (a 14 px
+   root) the composer fell to 14 px, the full-page composer's 1.02rem to 14.28 px.
+   `max(16px, 1em)` is the size of the text around the field, never under 16 px:
+   a field drawn larger than its surroundings comes back to them (the full-page
+   composer's 2 %). touchType.test.ts computes each field's cascade under each of
+   the six text scales: only an important declaration could still win, and any
+   that reaches a field is evaluated too. */
+@media (hover: none), (any-pointer: coarse) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"], [type="hidden"]),
+  textarea,
+  select,
+  [contenteditable]:not([contenteditable="false"]) {
+    font-size: max(16px, 1em) !important;
+  }
 }

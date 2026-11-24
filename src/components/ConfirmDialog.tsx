@@ -1,6 +1,7 @@
 import * as React from "react"
 
 import { m } from "@/paraglide/messages.js"
+import type { ReturnFocus } from "@/lib/returnFocus"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -40,6 +41,9 @@ export type ConfirmOptions = {
   confirmWord?: string
   /** Render the action button with the destructive style. */
   destructive?: boolean
+  /** Where the focus goes when the dialog closes if the control that asked is
+   *  gone or hidden by then — controls of the same view that stay, in order. */
+  returnFocus?: ReturnFocus
 }
 
 export type PromptOptions = {
@@ -53,6 +57,8 @@ export type PromptOptions = {
   /** Allow confirming with an EMPTY value (resolves to "") — for prompts whose
    *  blank answer has a meaningful fallback (e.g. "keep the current title"). */
   allowEmpty?: boolean
+  /** As `ConfirmOptions.returnFocus`. */
+  returnFocus?: ReturnFocus
 }
 
 type ConfirmReq = { kind: "confirm"; opts: ConfirmOptions }
@@ -134,6 +140,7 @@ export function DialogsProvider({ children }: { children: React.ReactNode }) {
         {isConfirm ? (
           <AlertDialogContent
             onOpenAutoFocus={confirmWord ? focusInput : undefined}
+            returnFocus={req.opts.returnFocus}
             // Opt out of radix's description requirement when none is provided
             // (avoids the "Missing Description / aria-describedby" warning).
             {...(req.opts.description ? {} : { "aria-describedby": undefined })}
@@ -200,6 +207,7 @@ export function DialogsProvider({ children }: { children: React.ReactNode }) {
         {isPrompt ? (
           <DialogContent
             onOpenAutoFocus={focusInput}
+            returnFocus={req.opts.returnFocus}
             {...(req.opts.description ? {} : { "aria-describedby": undefined })}
           >
             <DialogHeader>

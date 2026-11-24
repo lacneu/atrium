@@ -3,6 +3,8 @@ import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 import { CheckIcon, CircleIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useLayerFocus, type ReturnFocus } from "@/lib/returnFocus"
+import { OVERLAY_COLLISION_PADDING } from "@/components/ui/popover"
 
 function DropdownMenu(
   props: React.ComponentProps<typeof DropdownMenuPrimitive.Root>
@@ -21,18 +23,30 @@ function DropdownMenuTrigger(
 function DropdownMenuContent({
   className,
   sideOffset = 4,
+  collisionPadding = OVERLAY_COLLISION_PADDING,
+  returnFocus,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+}: Omit<React.ComponentProps<typeof DropdownMenuPrimitive.Content>, "onCloseAutoFocus" | "ref"> & {
+  /** Where the focus goes as the menu closes if its trigger is gone or hidden by
+   *  then — controls of the view that stay, in order. */
+  returnFocus?: ReturnFocus
+}) {
+  // The focus goes back to the trigger by the one rule of lib/returnFocus — a view
+  // only adds fallbacks (`returnFocus`).
+  const focus = useLayerFocus("menu", returnFocus)
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
-          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md",
+          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 max-h-(--radix-dropdown-menu-content-available-height) max-w-(--radix-dropdown-menu-content-available-width) min-w-[min(8rem,var(--radix-dropdown-menu-content-available-width))] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md",
           className
         )}
         {...props}
+        ref={focus.ref}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
       />
     </DropdownMenuPrimitive.Portal>
   )

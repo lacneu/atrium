@@ -4,6 +4,7 @@ import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useLayerFocus, type ReturnFocus } from "@/lib/returnFocus"
 import { buttonVariants } from "@/components/ui/button"
 
 // Confirmation dialog (shadcn convention) for destructive / irreversible
@@ -49,20 +50,40 @@ function AlertDialogOverlay({
   )
 }
 
+// NEVER TALLER THAN THE VISIBLE SCREEN, like every layer (lot 17): a confirmation
+// used to keep its natural height, centred on the layout viewport — the iOS
+// keyboard opened by its type-to-confirm field covered its buttons, and a short
+// landscape screen cut it. Capped like the dialog, it scrolls inside; the
+// stylesheet subtracts the keyboard and the safe areas, lifts it, keeps its
+// actions in view, and sizes and centres it across what is shown (lot 25;
+// convexChat.css, safeAreas.test.ts). Its padding gives way with the room, the
+// caller's to replace, as the dialog's (lot 29); its column is its width, as the
+// dialog's (lot 32). The z-index utility stays on the element, after its
+// `data-slot` (overlayLayer.test.ts).
+export const alertDialogContentClassName =
+  "fixed top-1/2 grid grid-cols-1 max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl border border-border bg-popover bg-clip-padding px-5 py-(--oc-layer-pad-y) text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+
 function AlertDialogContent({
   className,
+  returnFocus,
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+}: Omit<React.ComponentProps<typeof AlertDialogPrimitive.Content>, "onCloseAutoFocus" | "ref"> & {
+  /** Where the focus goes as the dialog closes if the control that opened it is
+   *  gone or hidden by then — controls of the view that stay, in order. */
+  returnFocus?: ReturnFocus
+}) {
+  // The focus goes back where the dialog was opened from, by the one rule of
+  // lib/returnFocus — a view only adds fallbacks (`returnFocus`).
+  const focus = useLayerFocus("dialog", returnFocus)
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
-        className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg duration-200 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
-        )}
+        className={cn("z-50", alertDialogContentClassName, className)}
         {...props}
+        ref={focus.ref}
+        onCloseAutoFocus={focus.onCloseAutoFocus}
       />
     </AlertDialogPortal>
   )

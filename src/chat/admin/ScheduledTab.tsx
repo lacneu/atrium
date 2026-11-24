@@ -58,7 +58,13 @@ import { FilterBar } from "./filters/FilterBar";
 import { TimezoneCombobox } from "./TimezoneCombobox";
 import { DateTimePicker } from "./DateTimePicker";
 import "./confTabs.css";
-import { CalendarView, type CalendarCursor, type CalendarMode } from "./CalendarView";
+import { useTableLayout } from "./useTableLayout";
+import {
+  CalendarView,
+  calendarReturnFocus,
+  type CalendarCursor,
+  type CalendarMode,
+} from "./CalendarView";
 import { monthWindow, yearWindow, type CalendarEvent } from "./calendarData";
 import {
   cronEventsInWindow,
@@ -229,7 +235,9 @@ export function ScheduledTab() {
     localStorage.setItem("oc.sched.view", v);
     setSchedView(v);
   };
-  const [calMode, setCalMode] = useState<CalendarMode>("month");
+  // null = not chosen: the calendar opens on the month grid where it fits, on the
+  // agenda where it does not (measured by CalendarView).
+  const [calMode, setCalMode] = useState<CalendarMode | null>(null);
   const [calCursor, setCalCursor] = useState<CalendarCursor>(() => {
     const d = new Date();
     return { year: d.getFullYear(), month: d.getMonth() };
@@ -258,9 +266,13 @@ export function ScheduledTab() {
     () => cronEventsInWindow(calendarJobs, calWindow.startMs, calWindow.endMs),
     [calendarJobs, calWindow],
   );
+  // The occurrence the editor was opened from, if any: the calendar may swap its
+  // button for another (month <-> agenda) while the editor is open.
+  const editFromEvent = useRef<string | null>(null);
   const onCalendarEventClick = (ev: CalendarEvent) => {
     const entry = calendar.byItemId.get(ev.itemId);
     if (entry === undefined || !entry.canEdit || entry.job.id === null) return;
+    editFromEvent.current = ev.id;
     void openEdit(entry.instanceName, entry.job);
   };
 
@@ -287,6 +299,10 @@ export function ScheduledTab() {
     return params.get("job");
   }, []);
   const highlightRef = useRef<HTMLTableRowElement | null>(null);
+  // The jobs' tables (one per instance) stack their rows when the widest does not
+  // fit — measured (useTableLayout): on a phone the actions sat off-screen.
+  const listWrapRef = useRef<HTMLDivElement>(null);
+  const listLayout = useTableLayout(listWrapRef, [groups, filter, schedView, getLocale()]);
   useEffect(() => {
     if (groups !== null && highlightRef.current !== null) {
       highlightRef.current.scrollIntoView({ block: "center" });
@@ -326,6 +342,11 @@ export function ScheduledTab() {
   // let the FIRST request's completion overwrite (or close) the second.
   const historyGen = useRef(0);
   const editGen = useRef(0);
+  // Closing the editor opened from an occurrence whose button the calendar has
+  // replaced meanwhile: the rule finds the same occurrence in the view now shown
+  // by its focus key; when that view does not show it, the calendar's toolbar.
+  const editReturnFocus = () =>
+    editFromEvent.current === null ? [] : calendarReturnFocus();
   const openHistory = async (instanceName: string, job: CronJob) => {
     if (job.id === null) return;
     const gen = ++historyGen.current;
@@ -535,6 +556,7 @@ export function ScheduledTab() {
       <div
         style={{
           display: "flex",
+          flexWrap: "wrap",
           alignItems: "flex-start",
           gap: 8,
           marginBottom: 12,
@@ -657,6 +679,7 @@ export function ScheduledTab() {
           {groups.length === 0 ? (
             <p className="oc-admin__hint">{m.scheduled_empty()}</p>
           ) : null}
+          <div ref={listWrapRef} className="oc-tablefit" data-layout={listLayout}>
           {groups.map((g) => {
             // Filter WITHIN the group (keep the unsupported/error/empty
             // messages + the ?job deep-link highlight working).
@@ -720,7 +743,7 @@ export function ScheduledTab() {
                         }
                       >
                         <TableCell
-                          className="font-medium"
+                          className="oc-dt__lead font-medium"
                           style={{
                             maxWidth: 280,
                             overflow: "hidden",
@@ -730,10 +753,13 @@ export function ScheduledTab() {
                         >
                           {j.name ?? m.scheduled_unnamed()}
                         </TableCell>
-                        <TableCell>
+                        <TableCell data-label={m.scheduled_col_agent()}>
                           <Badge variant="secondary">{j.agentId}</Badge>
                         </TableCell>
-                        <TableCell className="whitespace-nowrap">
+                        <TableCell
+                          className="whitespace-nowrap"
+                          data-label={m.scheduled_col_schedule()}
+                        >
                           <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
                             {j.schedule ?? "—"}
                           </span>
@@ -751,12 +777,15 @@ export function ScheduledTab() {
                             ) : null;
                           })()}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">
+                        <TableCell
+                          className="whitespace-nowrap text-muted-foreground"
+                          data-label={m.scheduled_col_next_run()}
+                        >
                           {j.nextRunAtMs !== null
                             ? dateFmt.format(j.nextRunAtMs)
                             : "—"}
                         </TableCell>
-                        <TableCell>
+                        <TableCell data-label={m.scheduled_col_status()}>
                           {cronJobStateKind(j) === "auto-disabled" ? (
                             // The scheduler stopped this job itself; the flag may
                             // still say enabled. Reason + moment on hover.
@@ -783,7 +812,7 @@ export function ScheduledTab() {
                             <span className="text-muted-foreground">—</span>
                           )}
                         </TableCell>
-                        <TableCell>
+                        <TableCell data-label={m.cron_col_result()}>
                           <ResultBadge status={j.lastRunStatus} />
                           {/* Shown only on an explicit `false`: a run can succeed
                               and reach nobody, and this table is where an operator
@@ -802,7 +831,7 @@ export function ScheduledTab() {
                             </Badge>
                           ) : null}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap">
+                        <TableCell className="oc-dt__actionsrow whitespace-nowrap">
                           {j.id === null ? (
                             <span className="text-muted-foreground">—</span>
                           ) : busy ? (
@@ -892,7 +921,10 @@ export function ScheduledTab() {
                                   title={m.cron_action_edit()}
                                   aria-label={m.cron_action_edit()}
                                   disabled={busyJob !== null}
-                                  onClick={() => void openEdit(g.instanceName, j)}
+                                  onClick={() => {
+                                    editFromEvent.current = null;
+                                    void openEdit(g.instanceName, j);
+                                  }}
                                 >
                                   <Pencil size={14} aria-hidden />
                                 </Button>
@@ -941,6 +973,7 @@ export function ScheduledTab() {
             </section>
             );
           })}
+          </div>
           {totalJobs > 0 ? (
             <p className="oc-admin__hint" style={{ marginTop: 4 }}>
               {m.scheduled_hint_manage()}
@@ -1064,7 +1097,7 @@ export function ScheduledTab() {
           }
         }}
       >
-        <DialogContent className="oc-cronedit">
+        <DialogContent className="oc-cronedit" returnFocus={editReturnFocus}>
           <DialogHeader>
             <DialogTitle>{m.cron_edit_title()}</DialogTitle>
             <DialogDescription>{m.cron_edit_desc()}</DialogDescription>

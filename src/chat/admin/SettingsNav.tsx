@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
+import { revealFocusIn, revealInline } from "@/lib/revealInline";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -136,12 +137,12 @@ function SortableTab({ tab, active }: { tab: Tab; active: boolean }) {
     <div
       ref={setNodeRef}
       style={style}
-      className="oc-settings-tabs__item"
+      className="oc-settings-tabs__item oc-reveal-host"
       role="presentation"
     >
       <button
         type="button"
-        className="oc-settings-tabs__grip"
+        className="oc-settings-tabs__grip oc-reveal"
         aria-label={m.settingsnav_reorder()}
         {...attributes}
         {...listeners}
@@ -195,6 +196,36 @@ export function SettingsTabBar() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // On a narrow screen the bar scrolls and the ACTIVE tab could sit past its edge
+  // (Settings ▸ Trash at 360 px: the active tab at x=545–632). Brought into view
+  // whenever the active tab changes — only the bar scrolls, never the page — and
+  // again whenever a width changes afterwards: a tab's (the bridge tab's status
+  // dot lands with its own query, after this effect, and pushed the active tab
+  // 20 px back past the edge) or the bar's own (opening the sidebar at 768 px
+  // narrowed the bar to 508 px and left the active tab wholly past its edge;
+  // turning a phone does the same). A reader's own scroll changes no width, so
+  // it stays.
+  const barRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const reveal = () =>
+      revealInline(bar, bar.querySelector('[role="tab"][aria-selected="true"]'));
+    reveal();
+    const ro = new ResizeObserver(reveal);
+    ro.observe(bar);
+    for (const item of Array.from(bar.children)) ro.observe(item);
+    // The FOCUSED tab too (lot 26): walked with Tab, a tab partly past the edge got
+    // the focus unseen — the browser scrolls a focused element in only when none
+    // of it shows.
+    const onFocusIn = (e: FocusEvent) => revealFocusIn(bar, e.target, '[role="tab"]');
+    bar.addEventListener("focusin", onFocusIn);
+    return () => {
+      ro.disconnect();
+      bar.removeEventListener("focusin", onFocusIn);
+    };
+  }, [activeTab, groupTabs.length]);
+
   if (group === undefined || groupTabs.length === 0) return null;
   const groupDef = SETTINGS_GROUPS.find((g) => g.id === group);
 
@@ -213,6 +244,7 @@ export function SettingsTabBar() {
 
   return (
     <div
+      ref={barRef}
       className="oc-settings-tabs"
       role="tablist"
       aria-label={groupDef?.label()}

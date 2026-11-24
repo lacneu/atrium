@@ -15,14 +15,15 @@ import {
 } from "./toolActivityView";
 
 // Small copy button for a tool's input/output block. Hover-revealed in the
-// block's top-right (the standard code-copy affordance); flips to a check for a
-// moment after copying. navigator.clipboard works on localhost (secure context).
+// block's top-right (the standard code-copy affordance), always there where a
+// finger can be used (`.oc-reveal`); flips to a check for a moment after copying.
+// navigator.clipboard works on localhost (secure context).
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
-      className="oc-copybtn"
+      className="oc-copybtn oc-reveal oc-hit"
       title={m.common_copy()}
       aria-label={m.toolcard_copy_content()}
       onClick={() => {
@@ -145,7 +146,7 @@ export function ToolCard({
         {inputText ? (
           <details className="oc-tool__io">
             <summary>input</summary>
-            <div className="oc-tool__prewrap">
+            <div className="oc-tool__prewrap oc-reveal-host">
               <pre className="oc-tool__pre">{inputText}</pre>
               <CopyButton text={inputText} />
             </div>
@@ -163,7 +164,7 @@ export function ToolCard({
         ) : out ? (
           <details className="oc-tool__io" open>
             <summary>output</summary>
-            <div className="oc-tool__prewrap">
+            <div className="oc-tool__prewrap oc-reveal-host">
               <pre className="oc-tool__pre">{out.text}</pre>
               <CopyButton text={out.text} />
             </div>

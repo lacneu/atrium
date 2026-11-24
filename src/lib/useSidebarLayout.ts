@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DRAWER_QUERY, SHORT_SCREEN_QUERY } from "./drawerLayout";
+import { useMediaQuery } from "./useMediaQuery";
 
 // Layout primitives shared by the resizable columns (left sidebar + right Sources
 // panel) so there is ONE drag/clamp/persist implementation and ONE mobile
@@ -9,23 +11,17 @@ const COLLAPSED_KEY = "oc.sidebar.collapsed";
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 520;
 const DEFAULT_WIDTH = 260;
-// Single source of truth for the mobile breakpoint (CSS keys off classes toggled
-// from this — see AuthenticatedChrome — so JS and CSS never disagree at 1px).
-const MOBILE_QUERY = "(max-width: 767px)";
 
-/** Reactive `(max-width: 767px)` — the one mobile breakpoint, shared. */
+/** Reactive drawer layout (drawerLayout.ts: narrow, or short with a coarse pointer)
+ *  — the one mobile breakpoint, shared. CSS keys off the classes toggled from this
+ *  (see AuthenticatedChrome), so JS and CSS never disagree at 1px. */
 export function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState<boolean>(
-    () =>
-      typeof window !== "undefined" && window.matchMedia(MOBILE_QUERY).matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia(MOBILE_QUERY);
-    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return isMobile;
+  return useMediaQuery(DRAWER_QUERY);
+}
+
+/** Reactive short layout: a phone in landscape (drawerLayout.ts). */
+export function useIsShortScreen(): boolean {
+  return useMediaQuery(SHORT_SCREEN_QUERY);
 }
 
 export interface ResizableWidthOptions {
@@ -334,31 +330,42 @@ export function useSidebarLayout() {
     max: MAX_WIDTH,
     edge: "left",
   });
+  // The DESKTOP column's preference, persisted. The drawer has its own state below:
+  // a single `collapsed` for both used to be forced on by the phone layout and
+  // persisted, so a reader who had opened the app on a phone (or turned a tablet
+  // across 767 px) found the desktop column collapsed afterwards.
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem(COLLAPSED_KEY) === "1",
   );
+  // The drawer's: never persisted, closed on arrival.
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const isMobile = useIsMobile();
 
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
-  // Entering mobile closes the drawer so it never covers the conversation by
-  // default; the user opens it deliberately via the top-bar toggle.
+  // Leaving the drawer layout closes the drawer: coming back starts closed.
   useEffect(() => {
-    if (isMobile) setCollapsed(true);
+    if (!isMobile) setDrawerOpen(false);
   }, [isMobile]);
 
-  const toggleCollapsed = useCallback(() => setCollapsed((c) => !c), []);
-  const collapse = useCallback(() => setCollapsed(true), []);
+  /** The top bar's toggle: the drawer in the drawer layout, the column otherwise. */
+  const toggleSidebar = useCallback(() => {
+    if (isMobile) setDrawerOpen((open) => !open);
+    else setCollapsed((c) => !c);
+  }, [isMobile]);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
   return {
     width,
     columnRef,
     collapsed,
-    toggleCollapsed,
-    collapse,
     startResize,
     isMobile,
+    drawerOpen,
+    setDrawerOpen,
+    toggleSidebar,
+    closeDrawer,
     MIN_WIDTH,
     MAX_WIDTH,
   };

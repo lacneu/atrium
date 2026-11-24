@@ -1,5 +1,4 @@
 import {
-  ActionBarMorePrimitive,
   ActionBarPrimitive,
   AssistantRuntimeProvider,
   AttachmentPrimitive,
@@ -42,11 +41,10 @@ import {
 import { useResolvedMode } from "@/lib/useChart";
 import { uploadProgressStore } from "./uploadProgressStore";
 import { attachmentAddInFlight } from "./attachmentBusy";
-import { TalkControl } from "./TalkControl";
+import { TalkControl, type TalkPresence } from "./TalkControl";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import {
   QUOTE_EXCERPT_CLIENT_MAX,
-  QUOTE_MAX_PER_TURN,
   addPendingQuote,
   clearPendingQuotes,
   pendingQuoteKey,
@@ -142,6 +140,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  ActionBarMore,
+  ActionBarMoreContent,
+  ActionBarMoreItem,
+  ActionBarMoreSeparator,
+  ActionBarMoreTrigger,
+} from "@/components/ui/action-bar-more";
 import { formatDateTime, formatDurationShort } from "@/lib/format";
 import {
   Popover,
@@ -237,6 +242,8 @@ import {
 import { InlineTurnActivity } from "./InlineTurnActivity";
 import { CommentaryNote, ThinkingBlock } from "./ReasoningBlocks";
 import { QueuedDock } from "./QueuedDock";
+import { QueueDockContext, type QueueDockValue, type QueuedTurnView } from "./queueDockContext";
+import { stopReserveFollow } from "./queueReserve";
 import { QueuedTurnContext } from "./queuedTurnContext";
 import {
   CustodyBadge,
@@ -303,6 +310,21 @@ import {
   type SubAgentPanelApi,
 } from "./SubAgentPanel";
 import { useResizableWidth, useIsMobile } from "@/lib/useSidebarLayout";
+import { useFitLevel } from "@/lib/useFitLevel";
+import { measureCloneWidths } from "@/lib/measureClone";
+import { useCoarsePointer, useTouchReveal } from "@/lib/useMediaQuery";
+import { composerAutoFocus, messageActionsReveal } from "./touchReveal";
+import { BlockPicker } from "./BlockPicker";
+import { blockKey, listSources, type GroupMember } from "./quoteBlocks";
+import { bookmarkRefusalText, quoteRefusalText } from "./blockRefusals";
+import { headerFitInput } from "./chatHeaderFit";
+import {
+  composerFitLevels,
+  fitAttributes,
+  levelAt,
+  movableControls,
+} from "./composerFit";
+import { composerAround } from "./composerFocus";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { MediaPart } from "./MediaPart";
 import { MarkdownText, AgentMarkdown } from "./MarkdownText";
@@ -341,6 +363,7 @@ import {
 import { visibilityChipView } from "./sessionAccessView";
 import { PermissionModePicker, PermissionModeSection } from "./PermissionModePicker";
 import { ComposerAddMenu } from "./ComposerAddMenu";
+import { ComposerMoreMenu } from "./ComposerMoreMenu";
 import { TornMessageBoundary } from "./TornMessageBoundary";
 import {
   inlineFinal,
@@ -462,29 +485,10 @@ const QueueSendContext = createContext<
 >(null);
 
 // Codex-style QUEUE DOCK: the mid-turn messages parked in the outbox, surfaced
-// as editable/cancellable cards above the composer (QueuedDock.tsx consumes).
-export interface QueuedTurnView {
-  messageId: string;
-  text: string;
-  pending: boolean;
-  /** Written by the reader: only its author takes it back to edit. */
-  mine: boolean;
-  /** The reader may withdraw it (its author, or the conversation's owner). */
-  canCancel: boolean;
-  /** Phase 6: an input the GATEWAY holds in its own queue (2026.9.7+), not Atrium's. */
-  gateway?: boolean;
-}
-export interface QueueDockValue {
-  queuedTurns: QueuedTurnView[];
-  cancelQueued: (messageId: string) => Promise<boolean>;
-  /** Withdraw an input the gateway queues (`chat.abort {discardPendingInput}`). */
-  withdrawGatewayQueued?: (messageId: string) => Promise<boolean>;
-  /** The gateway can withdraw a queued input (capability `discardPendingInput`). */
-  canWithdrawGateway?: boolean;
-  /** Inputs the gateway queues that are not this conversation's own messages. */
-  gatewayOthers?: number;
-}
-export const QueueDockContext = createContext<QueueDockValue | null>(null);
+// as editable/cancellable cards above the composer (QueuedDock.tsx consumes; the
+// context and its types live in queueDockContext.ts).
+export { QueueDockContext };
+export type { QueueDockValue, QueuedTurnView };
 
 // STOP button context: ends the chat's active turn (optimistic finalize) and
 // best-effort kills the gateway run. Null when no chat is mounted.
@@ -907,7 +911,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             readable thread beside a column. */}
         {sourcesOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) sourcesApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet">
+            {/* The panel closes itself (its own ✕): the sheet's would be a second
+                one on top of it (lot 9, C3). */}
+            <SheetContent side="right" className="oc-sources-panel-sheet" showCloseButton={false}>
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -922,7 +928,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
         {subAgentOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) subAgentApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet">
+            {/* The panel closes itself (its own ✕): the sheet's would be a second
+                one on top of it (lot 9, C3). */}
+            <SheetContent side="right" className="oc-sources-panel-sheet" showCloseButton={false}>
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -939,7 +947,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
         {cronOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) cronApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet">
+            {/* The panel closes itself (its own ✕): the sheet's would be a second
+                one on top of it (lot 9, C3). */}
+            <SheetContent side="right" className="oc-sources-panel-sheet" showCloseButton={false}>
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -955,7 +965,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
         {docViewerOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) docViewerApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
+            <SheetContent
+              side="right"
+              className="oc-sources-panel-sheet oc-docviewer-sheet"
+              showCloseButton={false}
+            >
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -1075,6 +1089,8 @@ function useFocusMessage(
         `[data-message-id="${CSS.escape(focusMessageId)}"]`,
       );
       if (el) {
+        // The queued cards' follow would take this smooth scroll back (queueReserve.ts).
+        stopReserveFollow(el.closest<HTMLElement>(".oc-thread__viewport"));
         el.scrollIntoView({ block: "center", behavior: "smooth" });
         // CSS-class flash (re-add to retrigger the keyframes). We do NOT clear the
         // `?m` param here — the navigate caused a thread REMOUNT that discarded
@@ -2100,7 +2116,6 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const headRef = useRef<HTMLElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
   const ghostRef = useRef<HTMLDivElement>(null);
-  const [compact, setCompact] = useState(false);
 
   // WHO MAY ACT on the session — every reader sees it, guests included, and whatever
   // the "Outils" toggle. (The permission MODE is not a header chip any more: the
@@ -2209,36 +2224,32 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
     visibilityChip?.label ?? "",
     meta?.title ?? "",
     // The breadcrumb widens the title block — its text must retrigger the
-    // measurement (the title claim stays capped at TITLE_CAP either way).
+    // measurement (the title claim stays capped at HEADER_TITLE_CAP either way).
     crumbs.map((c) => c.name).join("/"),
     ui.showTools ? "1" : "0",
   ].join("|");
-  useLayoutEffect(() => {
-    const head = headRef.current;
-    if (!head) return;
-    // The title is a higher priority than the technical chips, so it gets a budget
-    // (it ellipsizes within it); the chips get the remainder. Reserving the title's
-    // natural width (capped) keeps the threshold from drifting with title length.
-    const TITLE_CAP = 360;
-    const GAP = 16;
-    const measure = () => {
-      const ghostW = ghostRef.current?.offsetWidth ?? 0;
-      if (ghostW === 0) return; // not laid out yet -> stay full (no spurious collapse)
-      const titleW = Math.min(titleRef.current?.scrollWidth ?? 0, TITLE_CAP);
-      const chipsAvail = head.clientWidth - titleW - GAP;
-      const next = chipsAvail < ghostW;
-      setCompact((prev) => (prev === next ? prev : next));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(head);
-    // ALSO observe the ghost: its width changes when ASYNC content lands (the
-    // usage gauge's snapshot, late i18n, a model chip) without the header
-    // resizing — measuring only the header would keep a stale compact state
-    // and let the chips overflow (codex P2).
-    if (ghostRef.current) ro.observe(ghostRef.current);
-    return () => ro.disconnect();
-  }, [measureKey]);
+  // The title's claim is its NATURAL width: each line of the title block (crumbs,
+  // title) ellipsizes its own overflow, so it is read line by line — the block's
+  // own scrollWidth is the already-squeezed width (chatHeaderFit.ts).
+  const compact =
+    useFitLevel(
+      () => {
+        const head = headRef.current;
+        const title = titleRef.current;
+        if (!head || !title) return null;
+        return headerFitInput({
+          headWidth: head.clientWidth,
+          titleBlock: title,
+          metaWidth: ghostRef.current?.offsetWidth ?? 0,
+        });
+      },
+      // ALSO the ghost: its width changes when ASYNC content lands (the usage
+      // gauge's snapshot, late i18n, a model chip) without the header resizing —
+      // measuring only the header would keep a stale compact state and let the
+      // chips overflow (codex P2).
+      () => [headRef.current, ghostRef.current],
+      [measureKey],
+    ) > 0;
 
   return (
     <header className="oc-chathead" ref={headRef}>
@@ -2592,11 +2603,11 @@ function IconArrowDown() {
  *  in a new chat"): the fork carries the same visible history up to here, opens
  *  immediately, and its first send re-grounds the agent via the existing
  *  rehydration — the original conversation continues untouched. */
-// Shadcn dropdown-menu look, replicated for the ActionBarMorePrimitive
-// (which needs raw Radix parts — see the comment inside AssistantMoreMenu).
+// Shadcn dropdown-menu look, replicated for assistant-ui's reply menu
+// (components/ui/action-bar-more — see the comment inside AssistantMoreMenu).
 // Keep in sync with components/ui/dropdown-menu.tsx.
 const MSG_MENU_CONTENT_CLS =
-  "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 oc-overlay-layer min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md";
+  "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 oc-overlay-layer origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md";
 const MSG_MENU_ITEM_CLS =
   "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
 
@@ -2611,11 +2622,21 @@ function AssistantMoreMenu({
   sourceShown,
   sourceActive,
   onToggleSource,
+  onPickBlock,
+  onPickBookmarkBlock,
 }: {
   /** Whether the source toggle is offered at all (the showSource UI pref). */
   sourceShown: boolean;
   sourceActive: boolean;
   onToggleSource: () => void;
+  /** Opens the list of this reply's blocks to quote one ("Reply to a block…"):
+   *  the gutter that does it follows the mouse, so a touch screen never sees it.
+   *  Absent when the reply cannot be quoted, or while no bubble it lists is settled
+   *  (an earlier bubble of the answer can be, while the last is being written). */
+  onPickBlock?: () => void;
+  /** The same list, to bookmark one ("Bookmark a block…"), for the same reason.
+   *  Absent when the reply cannot be bookmarked by block. */
+  onPickBookmarkBlock?: () => void;
 }) {
   const messageId = useMessage(
     (msg) => (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
@@ -2671,23 +2692,23 @@ function AssistantMoreMenu({
       setBusy(false);
     }
   };
-  // ActionBarMorePrimitive (NOT the plain shadcn DropdownMenu): the action bar
+  // assistant-ui's ActionBarMore (NOT the plain shadcn DropdownMenu): the action bar
   // AUTOHIDES on non-last messages (visible = hovering), and a plain Radix
   // menu steals the pointer/focus on open -> the bar unmounts -> the trigger
   // disappears -> the menu closes itself instantly. This primitive acquires
   // the action bar's interaction LOCK while open, keeping the bar mounted.
   // Classes mirror components/ui/dropdown-menu.tsx for an identical look.
   return (
-    <ActionBarMorePrimitive.Root>
-      <ActionBarMorePrimitive.Trigger
+    <ActionBarMore>
+      <ActionBarMoreTrigger
         className="oc-iconbtn"
         title={m.chat_more_actions()}
         aria-label={m.chat_more_actions()}
         disabled={busy}
       >
         <Ellipsis size={15} />
-      </ActionBarMorePrimitive.Trigger>
-      <ActionBarMorePrimitive.Content
+      </ActionBarMoreTrigger>
+      <ActionBarMoreContent
         align="end"
         sideOffset={4}
         className={MSG_MENU_CONTENT_CLS}
@@ -2712,31 +2733,43 @@ function AssistantMoreMenu({
                 ) : null;
               })()}
             </div>
-            <ActionBarMorePrimitive.Separator className="bg-border -mx-1 my-1 h-px" />
+            <ActionBarMoreSeparator className="bg-border -mx-1 my-1 h-px" />
           </>
         ) : null}
         {sourceShown ? (
-          <ActionBarMorePrimitive.Item
+          <ActionBarMoreItem
             className={MSG_MENU_ITEM_CLS}
             onSelect={onToggleSource}
           >
             <Code size={14} aria-hidden />
             {sourceActive ? m.chat_show_rendered() : m.chat_show_source()}
-          </ActionBarMorePrimitive.Item>
+          </ActionBarMoreItem>
         ) : null}
         {ownerView ? (
-          <ActionBarMorePrimitive.Item
+          <ActionBarMoreItem
             className={MSG_MENU_ITEM_CLS}
             disabled={busy || streaming}
             onSelect={() => void branch()}
           >
             <GitBranch size={14} aria-hidden />
             {m.chat_branch_action()}
-          </ActionBarMorePrimitive.Item>
+          </ActionBarMoreItem>
+        ) : null}
+        {onPickBlock ? (
+          <ActionBarMoreItem className={MSG_MENU_ITEM_CLS} onSelect={onPickBlock}>
+            <Reply size={14} aria-hidden />
+            {m.quote_reply_pick_action()}
+          </ActionBarMoreItem>
         ) : null}
         <BookmarkMenuItem />
-      </ActionBarMorePrimitive.Content>
-    </ActionBarMorePrimitive.Root>
+        {onPickBookmarkBlock ? (
+          <ActionBarMoreItem className={MSG_MENU_ITEM_CLS} onSelect={onPickBookmarkBlock}>
+            <BookmarkIcon size={14} aria-hidden />
+            {m.bookmark_pick_action()}
+          </ActionBarMoreItem>
+        ) : null}
+      </ActionBarMoreContent>
+    </ActionBarMore>
   );
 }
 
@@ -2750,13 +2783,13 @@ function BookmarkMenuItem() {
     bmApi.byMessage.get(messageId)?.some((b) => b.blockIndex === null) ??
     false;
   return (
-    <ActionBarMorePrimitive.Item
+    <ActionBarMoreItem
       className={MSG_MENU_ITEM_CLS}
       onSelect={() => bmApi.toggle(messageId, null)}
     >
       <BookmarkIcon size={14} aria-hidden />
       {has ? m.bookmark_remove() : m.bookmark_add()}
-    </ActionBarMorePrimitive.Item>
+    </ActionBarMoreItem>
   );
 }
 
@@ -3336,6 +3369,9 @@ function UserMessage() {
   // instead of the action bar so the user sees their message is registered +
   // being sent (esp. on a slow/overloaded/reconnecting backend).
   const sending = useMessage((msg) => msg.id.startsWith("optimistic-"));
+  const touchReveal = useTouchReveal();
+  // The last message's bar always shows; an older one's on hover or keyboard focus (lot 22).
+  const isLast = useMessage((msg) => msg.isLast);
   // Mid-turn QUEUE: this user turn was sent while the chat was busy, so it is parked
   // behind the in-flight turn (its outbox row is `queued`). Show it as WAITING so the
   // interface makes the hold visible; it clears reactively when the drainer dispatches.
@@ -3445,7 +3481,8 @@ function UserMessage() {
           ) : null}
           <ActionBarPrimitive.Root
             className="oc-msg__actions oc-msg__actions--user"
-            autohide="not-last"
+            autohide="never"
+            data-reveal={messageActionsReveal(touchReveal, isLast)}
           >
           <BookmarkToggleButton />
           {ui.copyUser ? (
@@ -3863,28 +3900,58 @@ function AssistantEmptyState({ show }: { show: boolean }) {
 function AssistantMessage() {
   const [showSource, setShowSource] = useState(false);
   const ui = useUiPrefs();
+  const touchReveal = useTouchReveal();
+  // The last message's bar always shows; an older one's on hover or keyboard focus (lot 22).
+  const isLast = useMessage((msg) => msg.isLast);
+  // "Reply to a block…" and "Bookmark a block…" (the ⋯ menu): the list of blocks
+  // is the MESSAGE's, so it outlives the action bar, which unmounts when the
+  // pointer leaves the message.
+  const [quotePickOpen, setQuotePickOpen] = useState(false);
+  const [bookmarkPickOpen, setBookmarkPickOpen] = useState(false);
+  const bmApi = useBookmarks();
   // Avatar = active charte graphique (logo / Atrium mark / initials); name = the
   // responding AGENT's display name (falls back to the brand label for a
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
   const messageId = useMessage((msg) => msg.id);
+  // The bubbles whose blocks the ⋯'s lists hold (lot 21): a delegation's answer is
+  // ONE answer across consecutive bubbles and only its last one has a ⋯, so its
+  // lists hold every settled bubble of the answer, in reading order.
+  const groupMembers = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { groupMembers?: GroupMember[] | null } | undefined)
+        ?.groupMembers ?? null,
+  );
+  const listLive = useMessage((msg) => msg.status?.type === "running");
+  const sources = useMemo(
+    () => listSources(messageId, listLive, groupMembers),
+    [messageId, listLive, groupMembers],
+  );
+  // The blocks of those bubbles that carry a bookmark: set in "Bookmark a block…".
+  const byMessage = bmApi?.byMessage;
+  const bookmarkedBlocks = useMemo(
+    () =>
+      new Set(
+        sources.flatMap((id) =>
+          (byMessage?.get(id) ?? []).flatMap((b) =>
+            b.blockIndex === null ? [] : [blockKey(id, b.blockIndex)],
+          ),
+        ),
+      ),
+    [byMessage, sources],
+  );
   // Quote-reply staging target (the CURRENT chat — keyed store, leak-proof).
   const quoteChatId = useContext(QuoteChatIdContext);
   const quoteAddToast = useToast();
-  // Stage one more passage, or SAY why not. The bound is the server's, mirrored
-  // client-side: refusing the click is honest, letting the send fail is not.
+  // Stage one more passage, or say why not. The bound is the server's, mirrored
+  // client-side: refusing the click is honest, letting the send fail is not. The
+  // reason is RETURNED, for the surface the person acted on to say it there (lot
+  // 24): a block's list in its dialog, the gutter beside its row; the header's
+  // whole-message quote in a toast.
   const stageQuote = useCallback(
-    (chatId: string, quote: PendingQuote) => {
-      const refusal = addPendingQuote(chatId, quote);
-      if (refusal === "too-many") {
-        quoteAddToast.error(
-          m.quote_reply_max_reached({ count: QUOTE_MAX_PER_TURN }),
-        );
-      } else if (refusal === "too-long") {
-        quoteAddToast.error(m.quote_reply_budget_reached());
-      }
-    },
-    [quoteAddToast],
+    (chatId: string, quote: PendingQuote): string | null =>
+      quoteRefusalText(addPendingQuote(chatId, quote)),
+    [],
   );
   // Whole-message quote source (header ↩ next to the agent name — same two
   // levels as bookmarks: header = message, gutter = block). The STORED final
@@ -4043,7 +4110,7 @@ function AssistantMessage() {
   // (codex R2 P2 vs R3 P2: rendering an honest explainer beats hiding a row).
   return (
     <MessagePrimitive.Root
-      className={`oc-msg oc-msg--assistant${groupFollows ? " oc-msg--group-follow" : ""}${
+      className={`oc-msg oc-msg--assistant oc-reveal-host${groupFollows ? " oc-msg--group-follow" : ""}${
         groupContinues ? " oc-msg--group-continues" : ""
       }`}
       data-message-id={messageId}
@@ -4080,7 +4147,7 @@ function AssistantMessage() {
           quoteEffectiveText !== "" ? (
             <button
               type="button"
-              className="oc-bmk-headbtn"
+              className="oc-bmk-headbtn oc-reveal oc-hit"
               title={m.quote_reply_message_button()}
               aria-label={m.quote_reply_message_button()}
               onClick={() => {
@@ -4088,12 +4155,13 @@ function AssistantMessage() {
                   quoteEffectiveText,
                   QUOTE_EXCERPT_CLIENT_MAX,
                 );
-                if (excerpt !== "")
-                  stageQuote(quoteChatId, {
-                    messageId,
-                    blockIndex: null,
-                    excerpt,
-                  });
+                if (excerpt === "") return;
+                const refused = stageQuote(quoteChatId, {
+                  messageId,
+                  blockIndex: null,
+                  excerpt,
+                });
+                if (refused !== null) quoteAddToast.error(refused);
               }}
             >
               <Reply size={13} />
@@ -4185,6 +4253,39 @@ function AssistantMessage() {
             />
           ) : null}
         </div>
+        {/* The lists of the ⋯ — a bubble continued below has none (its blocks are
+            listed by the ⋯ of the answer's last bubble). A pick names the bubble its
+            block belongs to: quoting or marking a block of an earlier bubble of the
+            answer targets THAT bubble, never the one whose ⋯ opened the list. */}
+        {quoteChatId !== null && !messageId.startsWith("optimistic-") && !groupContinues ? (
+          <BlockPicker
+            kind="quote"
+            open={quotePickOpen}
+            onOpenChange={setQuotePickOpen}
+            messageId={messageId}
+            sources={sources}
+            onPick={(choice) =>
+              stageQuote(quoteChatId, {
+                messageId: choice.messageId,
+                blockIndex: choice.blockIndex,
+                excerpt: choice.excerpt,
+              })
+            }
+          />
+        ) : null}
+        {bmApi !== null && !messageId.startsWith("optimistic-") && !groupContinues ? (
+          <BlockPicker
+            kind="bookmark"
+            open={bookmarkPickOpen}
+            onOpenChange={setBookmarkPickOpen}
+            messageId={messageId}
+            sources={sources}
+            marked={bookmarkedBlocks}
+            onPick={(choice) =>
+              bmApi.toggle(choice.messageId, choice.blockIndex).then(bookmarkRefusalText)
+            }
+          />
+        ) : null}
         <BookmarkGutter
           messageLevelMarkers={false}
           onReplyToBlock={
@@ -4205,7 +4306,8 @@ function AssistantMessage() {
         {groupContinues ? null : (
         <ActionBarPrimitive.Root
           className="oc-msg__actions"
-          autohide="not-last"
+          autohide="never"
+          data-reveal={messageActionsReveal(touchReveal, isLast)}
         >
           {ui.copyAssistant ? <CopyAssistantButton /> : null}
           <ReadAloudButton />
@@ -4217,6 +4319,22 @@ function AssistantMessage() {
             sourceShown={ui.showSource}
             sourceActive={showSource}
             onToggleSource={() => setShowSource((s) => !s)}
+            onPickBlock={
+              quoteChatId !== null &&
+              !messageId.startsWith("optimistic-") &&
+              sources.length > 0 &&
+              quoteEffectiveText !== ""
+                ? () => setQuotePickOpen(true)
+                : undefined
+            }
+            onPickBookmarkBlock={
+              bmApi !== null &&
+              !messageId.startsWith("optimistic-") &&
+              sources.length > 0 &&
+              quoteEffectiveText !== ""
+                ? () => setBookmarkPickOpen(true)
+                : undefined
+            }
           />
         </ActionBarPrimitive.Root>
         )}
@@ -4580,6 +4698,7 @@ function ComposerAgentSelect({
   const manages = room ? managesRoom(room.viewerRoomRole) : false;
   const toast = useToast();
   const [open, setOpen] = useState(false);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const [tab, setTab] = useState<"agents" | "people">("agents");
   // People tab: one field filters who is here AND finds whom to invite.
   const [pq, setPq] = useState("");
@@ -5178,15 +5297,26 @@ function ComposerAgentSelect({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
+              ref={settingsTriggerRef}
               type="button"
               className="oc-roompill__chev"
               title={m.room_pill_settings()}
               aria-label={m.room_pill_settings()}
+              data-overflow="room-settings"
             >
               <ChevronDown size={13} aria-hidden />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="oc-roommenu">
+          <DropdownMenuContent
+            align="end"
+            className="oc-roommenu"
+            // The chevron may have gone into the composer's More menu meanwhile:
+            // the focus then goes there, else to the field.
+            returnFocus={() => {
+              const { more, field } = composerAround(settingsTriggerRef.current);
+              return [more, field];
+            }}
+          >
             <DropdownMenuItem onSelect={() => onManage("agents", null)}>
               <Settings2 aria-hidden />
               {m.conversation_manage()}
@@ -5628,6 +5758,7 @@ function DictationButton({
     <button
       type="button"
       className={`oc-composer__icon${recording ? " oc-composer__icon--rec" : ""}`}
+      data-overflow="mic"
       title={(recording ? m.chat_mic_stop() : m.chat_mic_start()) + shortcutHint}
       aria-label={recording ? m.chat_mic_stop() : m.chat_mic_start()}
       aria-pressed={recording}
@@ -6099,6 +6230,85 @@ function Composer({
         <ArrowUp size={18} aria-hidden />
       </button>
     ) : null;
+  // THE ACTION BAR'S MEASURED FIT. Each control that may leave the bar says so with
+  // `data-overflow`; the bar tries every level (composerFit.ts) on an off-screen
+  // clone of itself and keeps the most detailed one whose width fits. What leaves
+  // goes to the "More" menu, so it is moved, never crushed: at 360 px with dictation
+  // and Talk on, "+" used to be 0 px wide and the agent pill 2 px.
+  const coarsePointer = useCoarsePointer();
+  const [talkPresence, setTalkPresence] = useState<TalkPresence>({
+    settings: false,
+    start: false,
+  });
+  const [permVisible, setPermVisible] = useState(false);
+  const movable = movableControls({
+    hold: dictation.canPin || dictation.held,
+    expand: true,
+    talkSettings: talkPresence.settings,
+    perm: permVisible,
+    tools: !composerExpanded,
+    // The agent pill renders (with its settings chevron) wherever there is routing.
+    roomSettings: composerRouting != null,
+    talkStart: talkPresence.start,
+    mic: voiceInput,
+    recording: dictation.recording,
+  });
+  const movableKey = movable.join(" ");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the joined list
+  const fitLevels = useMemo(() => composerFitLevels(movable), [movableKey]);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const fitIndex = useFitLevel(
+    () => {
+      const bar = barRef.current;
+      if (!bar) return null;
+      const available = bar.getBoundingClientRect().width;
+      if (!(available > 0)) return null;
+      // The most compact level needs no measure: it is what remains.
+      const required = measureCloneWidths(
+        bar,
+        fitLevels.slice(0, -1).map((level) => (clone: HTMLElement) => {
+          for (const [name, value] of Object.entries(fitAttributes(level))) {
+            clone.setAttribute(name, value);
+          }
+        }),
+        "oc-composer__bar--measure",
+      );
+      return { available, required };
+    },
+    () => [barRef.current],
+    [fitLevels, coarsePointer, composerExpanded],
+  );
+  const fit = levelAt(fitLevels, fitIndex);
+  const moved = new Set(fit.moved);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [talkSettingsSlot, setTalkSettingsSlot] = useState<HTMLDivElement | null>(null);
+  const [talkStartSlot, setTalkStartSlot] = useState<HTMLDivElement | null>(null);
+  // Nothing left to show: the menu closes rather than stay open, empty.
+  useEffect(() => {
+    if (fit.moved.length === 0) setMoreOpen(false);
+  }, [fit.moved.length]);
+  // The full-page header's close: its label goes before it wraps onto two lines
+  // (it did at 360 px), measured like the bar. The button keeps its name.
+  const expheadRef = useRef<HTMLDivElement | null>(null);
+  const expheadLevel = useFitLevel(
+    () => {
+      const head = expheadRef.current;
+      if (!head) return null;
+      const available = head.getBoundingClientRect().width;
+      if (!(available > 0)) return null;
+      const required = measureCloneWidths(
+        head,
+        [(clone: HTMLElement) => clone.setAttribute("data-labels", "on")],
+        "oc-composer__exphead--measure",
+      );
+      return { available, required };
+    },
+    () => [expheadRef.current],
+    [composerExpanded, coarsePointer],
+  );
+  const multiAgentRoom =
+    composerRouting?.perTurnRouting === true ||
+    (composerRouting?.roomAgents?.length ?? 0) > 0;
   // Unified composer card (per the design reference): the input sits ON TOP, with
   // a single action bar BELOW it — attach (+) and the tools toggle on the left,
   // the circular send (or stop while running) on the right. The CARD owns the
@@ -6130,108 +6340,132 @@ function Composer({
         dictation.recording ? " oc-composer--dictation" : ""
       }${composerExpanded ? " oc-composer--expanded" : ""}`}
     >
-      {composerExpanded ? (
-        // Expanded header: a title + an ALWAYS-visible close (the action bar
-        // stays reachable too, but this guarantees an exit at the top).
-        <div className="oc-composer__exphead">
-          <span className="oc-composer__exptitle">
-            {m.chat_composer_expand_title()}
-          </span>
-          <button
-            type="button"
-            className="oc-composer__expclose"
-            title={m.chat_composer_collapse()}
-            onClick={() => setComposerExpanded(false)}
+      {/* ONE REGION for everything but the action bar (lot 13): the header, the
+          people, the quote, the attachments, the progress, the field and the
+          dictation preview. In the full-page prompt it is the part that gives way
+          — it shrinks to nothing and scrolls — so the bar below it is never cut,
+          whatever else the panel holds. Inline, it lays out nothing of its own
+          (`display: contents`). */}
+      <div className="oc-composer__body">
+        {composerExpanded ? (
+          // Expanded header: a title + an ALWAYS-visible close (the action bar
+          // stays reachable too, but this guarantees an exit at the top).
+          <div
+            className="oc-composer__exphead"
+            ref={expheadRef}
+            data-labels={expheadLevel === 0 ? "on" : "off"}
           >
-            <Minimize2 size={15} aria-hidden />
-            {m.chat_composer_collapse()}
-          </button>
+            <span className="oc-composer__exptitle">
+              {m.chat_composer_expand_title()}
+            </span>
+            <button
+              type="button"
+              className="oc-composer__expclose"
+              title={m.chat_composer_collapse()}
+              aria-label={m.chat_composer_collapse()}
+              onClick={() => setComposerExpanded(false)}
+            >
+              <Minimize2 size={15} aria-hidden />
+              <span className="oc-composer__expclose-label">{m.chat_composer_collapse()}</span>
+            </button>
+          </div>
+        ) : null}
+        {/* WHO ELSE IS HERE — a group conversation names its people where the
+            message is written, not on a button. Opens the people tab. */}
+        {chatId ? (
+          <RoomPresence
+            chatId={chatId as Id<"chats">}
+            onOpen={() => openConversation("people", null)}
+          />
+        ) : null}
+        {chatId ? (
+          <ConversationPanel
+            chatId={chatId as Id<"chats">}
+            routing={composerRouting}
+            open={convOpen}
+            onOpenChange={setConvOpen}
+            tab={convTab}
+            onTabChange={setConvTab}
+            intent={convIntent}
+            onIntentDone={clearConvIntent}
+          />
+        ) : null}
+        <QuoteChip chatId={chatId} />
+        {/* WRAPPER, deliberately. `ComposerPrimitive.Attachments` renders a bare
+            fragment — no element of its own — so every chip became a direct child
+            of the composer, which is a COLUMN flex: ten images stacked ten rows
+            high and pushed the textarea off screen. The row below lays them out
+            horizontally, wraps, and caps its own height rather than growing for
+            ever. `:empty` hides it so it costs no gap when nothing is attached. */}
+        <div className="oc-attachrow">
+          <ComposerPrimitive.Attachments
+            components={{ Attachment: ComposerAttachmentChip }}
+          />
         </div>
-      ) : null}
-      {/* WHO ELSE IS HERE — a group conversation names its people where the
-          message is written, not on a button. Opens the people tab. */}
-      {chatId ? (
-        <RoomPresence
-          chatId={chatId as Id<"chats">}
-          onOpen={() => openConversation("people", null)}
+        {/* SR-only routed-paste confirmation: the paste never lands in the
+            textarea, so without this a non-visual user cannot tell it became an
+            attachment (the visible cue is the chip's mount shimmer). */}
+        <span className="oc-sr-only" role="status" aria-live="polite">
+          {pasteAnnouncement}
+        </span>
+        <UploadProgress />
+        {/* Content fidelity: disable the browser/OS conventions that MUTATE typed
+            text (autocorrect, auto-capitalize, autocomplete) so a word is sent
+            exactly as typed — never silently swapped at submit. `data-gramm`
+            disables Grammarly. spellCheck stays ON (it underlines, it does NOT
+            mutate). NB: no third-party extension is 100% controllable — the
+            per-message "Source" view is the real, convention-free guarantee.
+            One exception, on a coarse pointer only (Olivier's arbitration): the
+            sentence's first letter is capitalized, as every phone keyboard does —
+            it changes no word. Autocorrect stays off everywhere. */}
+        <ComposerPrimitive.Input
+          className="oc-composer__input"
+          placeholder={
+            unavailable
+              ? m.chat_composer_unavailable()
+              : // WHO ANSWERS with no mention (the primary, else brand/identity) —
+                // never a hardcoded provider: OpenClaw is one gateway among others
+                // (Hermes upcoming), not the product the user writes to.
+                composerAmongSeveral
+                ? m.chat_composer_placeholder_primary({ name: composerName })
+                : m.chat_composer_placeholder({ name: composerName })
+          }
+          // A finger's tap (opening a chat from the drawer, a run starting) must
+          // not raise the keyboard over half the thread: under a coarse pointer the
+          // composer is never focused for the reader (lot 8, G14).
+          autoFocus={composerAutoFocus(coarsePointer)}
+          unstable_focusOnRunStart={composerAutoFocus(coarsePointer)}
+          unstable_focusOnScrollToBottom={composerAutoFocus(coarsePointer)}
+          unstable_focusOnThreadSwitched={composerAutoFocus(coarsePointer)}
+          rows={1}
+          disabled={unavailable}
+          onKeyDownCapture={onInputKeyDown}
+          onPaste={onInputPaste}
+          autoCorrect="off"
+          autoCapitalize={coarsePointer ? "sentences" : "off"}
+          autoComplete="off"
+          data-gramm="false"
+          data-gramm_editor="false"
+          data-enable-grammarly="false"
         />
-      ) : null}
-      {chatId ? (
-        <ConversationPanel
-          chatId={chatId as Id<"chats">}
-          routing={composerRouting}
-          open={convOpen}
-          onOpenChange={setConvOpen}
-          tab={convTab}
-          onTabChange={setConvTab}
-          intent={convIntent}
-          onIntentDone={clearConvIntent}
-        />
-      ) : null}
-      <QuoteChip chatId={chatId} />
-      {/* WRAPPER, deliberately. `ComposerPrimitive.Attachments` renders a bare
-          fragment — no element of its own — so every chip became a direct child
-          of the composer, which is a COLUMN flex: ten images stacked ten rows
-          high and pushed the textarea off screen. The row below lays them out
-          horizontally, wraps, and caps its own height rather than growing for
-          ever. `:empty` hides it so it costs no gap when nothing is attached. */}
-      <div className="oc-attachrow">
-        <ComposerPrimitive.Attachments
-          components={{ Attachment: ComposerAttachmentChip }}
-        />
+        {(dictation.recording || dictation.ownsSend) && dictation.interim !== "" ? (
+          // The engine's in-flight hypothesis — display-only ghost under the
+          // caret area, replaced on every event, cleared when it commits.
+          <div className="oc-composer__interim" aria-hidden>
+            <span className="oc-composer__interim-dot" />
+            {/* Its own element: the preview's spacing is its content's, so that given
+                way it costs the card nothing (lot 29). */}
+            <span className="oc-composer__interim-text">{dictation.interim}</span>
+          </div>
+        ) : null}
       </div>
-      {/* SR-only routed-paste confirmation: the paste never lands in the
-          textarea, so without this a non-visual user cannot tell it became an
-          attachment (the visible cue is the chip's mount shimmer). */}
-      <span className="oc-sr-only" role="status" aria-live="polite">
-        {pasteAnnouncement}
-      </span>
-      <UploadProgress />
-      {/* Content fidelity: disable the browser/OS conventions that MUTATE typed
-          text (autocorrect, auto-capitalize, autocomplete) so a word is sent
-          exactly as typed — never silently swapped at submit. `data-gramm`
-          disables Grammarly. spellCheck stays ON (it underlines, it does NOT
-          mutate). NB: no third-party extension is 100% controllable — the
-          per-message "Source" view is the real, convention-free guarantee. */}
-      <ComposerPrimitive.Input
-        className="oc-composer__input"
-        placeholder={
-          unavailable
-            ? m.chat_composer_unavailable()
-            : // WHO ANSWERS with no mention (the primary, else brand/identity) —
-              // never a hardcoded provider: OpenClaw is one gateway among others
-              // (Hermes upcoming), not the product the user writes to.
-              composerAmongSeveral
-              ? m.chat_composer_placeholder_primary({ name: composerName })
-              : m.chat_composer_placeholder({ name: composerName })
-        }
-        autoFocus
-        rows={1}
-        disabled={unavailable}
-        onKeyDownCapture={onInputKeyDown}
-        onPaste={onInputPaste}
-        autoCorrect="off"
-        autoCapitalize="off"
-        autoComplete="off"
-        data-gramm="false"
-        data-gramm_editor="false"
-        data-enable-grammarly="false"
-      />
-      {(dictation.recording || dictation.ownsSend) && dictation.interim !== "" ? (
-        // The engine's in-flight hypothesis — display-only ghost under the
-        // caret area, replaced on every event, cleared when it commits.
-        <div className="oc-composer__interim" aria-hidden>
-          <span className="oc-composer__interim-dot" />
-          {dictation.interim}
-        </div>
-      ) : null}
       {/* No in-composer status. Anything tied to an AI response — processing,
           held-send, sub-agents — is anchored to THAT response in the thread (the
           run status + sub-agent cards), never accumulated in the neutral composer
           (a response with sub-agents, then a plain one, then another with
           sub-agents must each carry their own context where they belong). The
           held-send LOGIC stays (Enter queues while busy); only its hint is gone. */}
-      <div className="oc-composer__bar">
+      <div className="oc-composer__bar" ref={barRef} {...fitAttributes(fit)}>
         <div className="oc-composer__group">
           {/* The QUEUE is TEXT-ONLY: while the chat is busy (in-flight turn OR a
               running sub-agent) the follow-up goes through queueSend (text only),
@@ -6268,6 +6502,7 @@ function Composer({
               onClick={onToggleTools}
               aria-pressed={showTools}
               title={showTools ? m.chat_tools_hide() : m.chat_tools_show()}
+              data-overflow="tools"
             >
               <SlidersHorizontal size={15} aria-hidden />
               {/* WRAPPED so the label alone can go when the bar is narrow. The
@@ -6297,14 +6532,49 @@ function Composer({
                   }
                 : null
             }
-            multiAgent={
-              composerRouting?.perTurnRouting === true ||
-              (composerRouting?.roomAgents?.length ?? 0) > 0
-            }
+            multiAgent={multiAgentRoom}
+            onVisibleChange={setPermVisible}
           />
 
         </div>
         <div className="oc-composer__group">
+          {/* What the bar could not keep (shown only when something moved). */}
+          <ComposerMoreMenu
+            open={moreOpen}
+            onOpenChange={setMoreOpen}
+            moved={moved}
+            hold={{
+              held: dictation.held,
+              disabled: !dictation.canPin || pasteAttaching,
+              onHold: dictation.hold,
+              onRelease: dictation.releaseHereKeepingWords,
+            }}
+            expand={{
+              expanded: composerExpanded,
+              onToggle: () => setComposerExpanded((v) => !v),
+            }}
+            tools={{ shown: showTools, onToggle: onToggleTools }}
+            onManageConversation={() => openConversation("agents", null)}
+            onDictate={dictation.start}
+            permission={
+              moved.has("perm") ? (
+                <PermissionModeSection
+                  chatId={chatId}
+                  routedAgent={
+                    composerTarget
+                      ? {
+                          instanceName: composerTarget.instanceName,
+                          agentId: composerTarget.agentId,
+                        }
+                      : null
+                  }
+                  multiAgent={multiAgentRoom}
+                />
+              ) : null
+            }
+            talkSettingsSlot={setTalkSettingsSlot}
+            talkStartSlot={setTalkStartSlot}
+          />
           {/* PIN / release: detach the composer as a floating panel that
               survives navigation (dictation OR manual). Persistent slot with a
               width transition so the mic + send slide smoothly (no jump). */}
@@ -6313,6 +6583,7 @@ function Composer({
               dictation.canPin || dictation.held ? " is-shown" : ""
             }`}
             aria-hidden={!dictation.canPin && !dictation.held}
+            data-overflow="hold"
           >
             {dictation.held ? (
               <button
@@ -6358,6 +6629,7 @@ function Composer({
             }
             aria-pressed={composerExpanded}
             onClick={() => setComposerExpanded((v) => !v)}
+            data-overflow="expand"
           >
             {composerExpanded ? (
               <Minimize2 size={16} aria-hidden />
@@ -6401,6 +6673,13 @@ function Composer({
                   }
                 : null
             }
+            onPresenceChange={setTalkPresence}
+            more={{
+              moved: { settings: moved.has("talk-settings"), start: moved.has("talk") },
+              settingsSlot: talkSettingsSlot,
+              startSlot: talkStartSlot,
+              onDone: () => setMoreOpen(false),
+            }}
           />
           {unavailable ? (
             // Greyed, non-clickable send: the bridge is down, so persisting a

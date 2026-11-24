@@ -53,13 +53,16 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { m } from "@/paraglide/messages.js";
+import { useIsShortScreen } from "@/lib/useSidebarLayout";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
+import { stopReserveFollow } from "./queueReserve";
 import {
   answersFromDrafts,
   blockedBy,
   deadlineShown,
   severalHermesApprovals,
+  dockFolded,
   dockOrder,
   emptyDraft,
   failureKind,
@@ -131,6 +134,8 @@ function scrollToRequest(request: AgentRequestView): void {
       : null);
   if (!target) return;
   const viewport = target.closest<HTMLElement>(".oc-thread__viewport");
+  // The queued cards' follow would take this smooth scroll back (queueReserve.ts).
+  stopReserveFollow(viewport);
   if (viewport) {
     const delta = target.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
     viewport.scrollTo({
@@ -1067,6 +1072,13 @@ export function AgentRequestDock() {
   const ctx = useAgentRequests();
   const [listOpen, setListOpen] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  // The dock folds down to its bar. On a short screen (a phone held sideways) it
+  // is folded until the reader unfolds it: an open request card took the thread
+  // down to a sliver. Elsewhere it is open until folded.
+  const short = useIsShortScreen();
+  const [readerFolded, setReaderFolded] = useState<boolean | null>(null);
+  const folded = dockFolded(readerFolded, short);
+  const listId = useId();
   const waiting = ctx?.waiting ?? [];
   // A row that stopped waiting (answered, expired) must not stay "the open one".
   useEffect(() => {
@@ -1107,8 +1119,19 @@ export function AgentRequestDock() {
         >
           <Inbox size={14} />
         </button>
+        <button
+          type="button"
+          className="oc-areq__iconbtn"
+          title={folded ? m.areq_expand() : m.areq_collapse()}
+          aria-label={folded ? m.areq_expand() : m.areq_collapse()}
+          aria-expanded={!folded}
+          aria-controls={listId}
+          onClick={() => setReaderFolded(!folded)}
+        >
+          {folded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
       </div>
-      <div className="oc-areq-dock__list">
+      <div className="oc-areq-dock__list" id={listId} hidden={folded}>
         {shown.map((r) => (
           <AgentRequestCard
             key={r._id}

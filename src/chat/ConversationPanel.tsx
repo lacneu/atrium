@@ -83,6 +83,7 @@ import { dockFocus, dockOffsets, dockScales } from "./presenceDock";
 import type { SessionMetaView, SessionSettingsView } from "./sessionKnobs";
 import type { ChatRouting } from "./useConvexChatRuntime";
 import { isAgentPurgePending } from "./admin/groupManageView";
+import { barControl, composerAround } from "./composerFocus";
 
 import "./chatParticipants.css";
 
@@ -408,9 +409,21 @@ export function ConversationPanel({
   );
   const viewer = room?.viewerRoomRole;
   const agentCount = room ? room.agents.length + (room.primary ? 1 : 0) : 0;
+  // Opened from the composer's bar — its room chevron, or an item of the More
+  // menu — whose controls move into More and back with the width: when the opener
+  // is gone by the time the panel closes, the chevron (back in the bar), More,
+  // then the field.
+  const returnFocus = () => {
+    const { bar, more, field } = composerAround(null);
+    return [barControl(bar, "room-settings"), more, field];
+  };
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="oc-spanel oc-convpanel">
+      <SheetContent
+        side="right"
+        className="oc-spanel oc-convpanel"
+        returnFocus={returnFocus}
+      >
         <SheetHeader>
           <SheetTitle>{m.conversation_title()}</SheetTitle>
           <SheetDescription>
@@ -570,7 +583,7 @@ function AgentsTab({
       <AgentFace agent={a} />
       <span className="oc-convpanel__who">
         <span className="oc-convpanel__name">
-          {agentName(a)}
+          <span className="oc-convpanel__nametext">{agentName(a)}</span>
           {primary ? (
             <Crown
               size={12}
@@ -591,8 +604,11 @@ function AgentsTab({
           ) : null}
         </span>
         <span className="oc-convpanel__sub">
-          <Server size={10} aria-hidden /> {a.instanceName}
-          {a.model ? ` · ${a.model}` : ""}
+          <Server size={10} aria-hidden />{" "}
+          <span className="oc-convpanel__subtext">
+            {a.instanceName}
+            {a.model ? ` · ${a.model}` : ""}
+          </span>
         </span>
       </span>
       {!primary && manages ? (
@@ -715,10 +731,15 @@ function AgentsTab({
           <>
             <AgentFace agent={a} />
             <span className="oc-convpanel__who">
-              <span className="oc-convpanel__name">{agentName(a)}</span>
+              <span className="oc-convpanel__name">
+                <span className="oc-convpanel__nametext">{agentName(a)}</span>
+              </span>
               <span className="oc-convpanel__sub">
-                <Server size={10} aria-hidden /> {a.instanceName}
-                {a.description ? ` · ${a.description}` : ""}
+                <Server size={10} aria-hidden />{" "}
+                <span className="oc-convpanel__subtext">
+                  {a.instanceName}
+                  {a.description ? ` · ${a.description}` : ""}
+                </span>
               </span>
             </span>
           </>
@@ -746,9 +767,12 @@ function AgentsTab({
           <>
             <AgentFace agent={a} />
             <span className="oc-convpanel__who">
-              <span className="oc-convpanel__name">{agentName(a)}</span>
+              <span className="oc-convpanel__name">
+                <span className="oc-convpanel__nametext">{agentName(a)}</span>
+              </span>
               <span className="oc-convpanel__sub">
-                <Server size={10} aria-hidden /> {a.instanceName}
+                <Server size={10} aria-hidden />{" "}
+                <span className="oc-convpanel__subtext">{a.instanceName}</span>
               </span>
             </span>
           </>
@@ -843,7 +867,7 @@ function PeopleTab({
               <Avatar userId={String(p.userId)} name={p.name} />
               <span className="oc-convpanel__who">
                 <span className="oc-convpanel__name">
-                  {p.name}
+                  <span className="oc-convpanel__nametext">{p.name}</span>
                   {p.isSelf ? (
                     <span className="oc-convpanel__you">
                       {m.conversation_you()}
@@ -999,7 +1023,9 @@ function PeopleTab({
           <>
             <Avatar userId={String(p.userId)} name={p.name} />
             <span className="oc-convpanel__who">
-              <span className="oc-convpanel__name">{p.name}</span>
+              <span className="oc-convpanel__name">
+                <span className="oc-convpanel__nametext">{p.name}</span>
+              </span>
             </span>
           </>
         )}

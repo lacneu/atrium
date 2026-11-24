@@ -54,7 +54,7 @@
 }
 
 .oc-participants__head {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -114,7 +114,7 @@
 }
 
 .oc-participants__role {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--oc-text-muted, #64748b);
 }
 
@@ -130,7 +130,7 @@
 .oc-participants__note {
   margin: 0;
   padding: 2px 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--oc-text-muted, #64748b);
 }
 
@@ -142,7 +142,7 @@
 .oc-participants__error {
   margin: 0;
   padding: 4px;
-  font-size: 11px;
+  font-size: 12px;
   border-radius: 6px;
   color: var(--oc-danger-fg, #b91c1c);
   background: var(--oc-danger-bg, rgb(185 28 28 / 8%));
@@ -154,7 +154,7 @@
 .oc-msg__author {
   align-self: flex-end;
   padding: 0 4px 2px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--oc-text-muted, #64748b);
 }
 
@@ -309,7 +309,7 @@
    at the same rhythm. Rows are flat (no cards); the only rule is a hairline
    between the conversation's agents and the others. */
 .oc-composer__agent-pop.oc-composer__agent-pop {
-  width: min(21rem, calc(100vw - 2rem));
+  width: min(21rem, var(--radix-popover-content-available-width));
   padding: 0.375rem;
   font-size: 0.875rem;
   line-height: 1.25rem;
@@ -484,6 +484,13 @@
   gap: 0.6rem;
   min-height: 3rem;
   padding: 0.45rem 0.6rem;
+  /* Where even an empty name leaves the role and the actions no room (a phone at the
+     largest text scales), they go to the next line — the list clips its rounded
+     corners, and cut the actions off (lot 32). The name grows from nothing, so the row
+     breaks only then. And a button's tap zone stays within its padding and its gap,
+     inside the list that clips it. */
+  flex-wrap: wrap;
+  --oc-hit-w: 2.7rem;
 }
 .oc-convpanel__member + .oc-convpanel__member {
   border-top: 1px solid var(--border);
@@ -513,17 +520,49 @@
 .oc-convpanel__who {
   display: flex;
   flex-direction: column;
-  min-width: 0;
-  flex: 1 1 auto;
+  /* A few characters of the name before the row breaks (lot 33): from nothing, a name
+     squeezed by its row's controls showed one letter and its ellipsis. Never wider than
+     the row. */
+  min-width: min(3rem, 100%);
+  flex: 1 1 0;
 }
 .oc-convpanel__name {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  /* What qualifies the name goes to the next line before the name loses its floor (lot
+     34): on one line, a badge that does not shrink took the name's whole room. */
+  flex-wrap: wrap;
+  gap: 0.1rem 0.35rem;
   font-size: 0.875rem;
   line-height: 1.3;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The name in a box of its own (lot 32): a flex box draws no ellipsis — its text is an
+   anonymous item `text-overflow` does not reach —, and a long name was cut off mid-letter
+   on a phone. Here it ends in "…", and what follows it ("you", the crown) stays shown. */
+.oc-convpanel__nametext {
+  /* The name keeps its own floor (lot 34): the row's floor (lot 33) is its column's, and
+     inside it a badge beside the name ("deleted from its gateway", 220 px on a phone at
+     the largest text) left the name 0 px — agents of one gateway could not be told apart.
+     Its floor is its flex basis, from which it grows to its text and no further (a name
+     shorter than the floor is as wide as its text): the line breaks only where the floor
+     and what follows no longer fit, and where they fit, nothing moves. */
+  flex: 1 1 3rem;
+  max-width: max-content;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-convpanel__name > :not(.oc-convpanel__nametext) {
+  flex: none;
+}
+/* A badge wider than the line it has gone to ends in an ellipsis inside it. */
+.oc-convpanel__name > .oc-convpanel__badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 .oc-convpanel__sub {
@@ -536,14 +575,21 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* An agent's gateway and model in a box of their own (lot 34), as the name (lot 32): the
+   line is a flex box, which draws no ellipsis — a long model id was cut off mid-letter. */
+.oc-convpanel__subtext {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .oc-convpanel__you {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-convpanel__badge {
   padding: 0 0.4rem;
   border-radius: 999px;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   line-height: 1.4;
   color: var(--primary);
   background: color-mix(in oklch, var(--primary) 12%, transparent);
@@ -680,6 +726,8 @@
   justify-content: space-between;
   gap: 0.75rem;
   font-size: 0.85rem;
+  /* The select goes under its label where both no longer fit (lot 32). */
+  flex-wrap: wrap;
 }
 
 /* ── Sidebar: the group mark on a row ─────────────────────────────────────
@@ -834,7 +882,7 @@
   cursor: default;
 }
 .oc-roommenu {
-  min-width: 14rem;
+  min-width: min(14rem, var(--radix-dropdown-menu-content-available-width));
 }
 /* The invite divider carries the arrival role on its right: whoever is picked
    below arrives with it. */

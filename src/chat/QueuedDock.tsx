@@ -1,8 +1,9 @@
 import { useContext, useLayoutEffect, useRef } from "react";
-import { useThreadRuntime } from "@assistant-ui/react";
+import { useThreadRuntime, useThreadViewportStore } from "@assistant-ui/react";
 import { CornerDownRight, Hourglass, Pencil, Trash2 } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
-import { QueueDockContext } from "./ConvexChat";
+import { QueueDockContext } from "./queueDockContext";
+import { followReserve } from "./queueReserve";
 
 // Codex-style QUEUE DOCK: each message sent mid-turn is a CARD stacked right
 // against the composer (the card's lower edge tucks BEHIND it — one visual
@@ -23,13 +24,16 @@ import { QueueDockContext } from "./ConvexChat";
 export function QueuedDock() {
   const dock = useContext(QueueDockContext);
   const threadRuntime = useThreadRuntime();
+  const viewportStore = useThreadViewportStore();
   const ref = useRef<HTMLDivElement | null>(null);
   const others = dock?.gatewayOthers ?? 0;
   const count = (dock?.queuedTurns.length ?? 0) + (others > 0 ? 1 : 0);
   // Publish the dock's measured height to the thread viewport (CSS var): the
   // cards FLOAT over the end of the thread (frosted), so without this pad the
   // auto-scrolled bottom of the in-flight reply would sit hidden behind them
-  // (user report). Cleared when the dock empties/unmounts.
+  // (user report). Cleared when the dock empties/unmounts. Each change follows
+  // the end of the reply while the reader is there (queueReserve.ts, lot 29):
+  // assistant-ui's own follow does not see the reserve grow.
   useLayoutEffect(() => {
     const el = ref.current;
     const viewport = document.querySelector<HTMLElement>(
@@ -40,16 +44,23 @@ export function QueuedDock() {
       viewport.style.removeProperty("--oc-dock-pad");
       return;
     }
-    const apply = () =>
-      viewport.style.setProperty("--oc-dock-pad", `${el.offsetHeight}px`);
+    let stopFollow = () => {};
+    const apply = () => {
+      const next = `${el.offsetHeight}px`;
+      if (viewport.style.getPropertyValue("--oc-dock-pad") === next) return;
+      viewport.style.setProperty("--oc-dock-pad", next);
+      stopFollow();
+      stopFollow = followReserve(viewport, viewportStore);
+    };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(el);
     return () => {
+      stopFollow();
       ro.disconnect();
       viewport.style.removeProperty("--oc-dock-pad");
     };
-  }, [count]);
+  }, [count, viewportStore]);
   if (dock === null || count === 0) return null;
   const { queuedTurns, cancelQueued, withdrawGatewayQueued, canWithdrawGateway } = dock;
   return (

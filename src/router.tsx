@@ -30,6 +30,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 import {
   Authenticated,
@@ -59,6 +60,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   AlertTriangle,
+  X,
   Compass,
   LibraryBig,
   Settings,
@@ -78,6 +80,7 @@ import { ChatArrivalWatcher } from "./chat/ChatArrivalWatcher";
 import { useStartNewChat } from "./chat/useStartNewChat";
 import { DevUserSwitcher } from "./chat/DevUserSwitcher";
 import { UserMenu } from "./chat/UserMenu";
+import { DRAWER_HEAD_FITS, TOP_BAR_FITS } from "./chat/topBarFit";
 import { LoginBoundary } from "./AutheliaLogin";
 import { autheliaBrowserLogin } from "./lib/autheliaLogin";
 import { NotificationBell } from "./chat/NotificationBell";
@@ -104,12 +107,15 @@ import {
   usersSearchSchema,
 } from "./lib/routing/searchSchemas";
 import { Button } from "@/components/ui/button";
+import { Sheet, SheetClose, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { ArchiveTransferProvider } from "./chat/ArchiveTransferProvider";
 import { ToastProvider } from "@/components/ui/toast";
 import { AtriumMark } from "@/components/AtriumMark";
 import { m } from "@/paraglide/messages.js";
 import { useApplyTheme, type ThemeMode } from "@/lib/useTheme";
 import { useApplyFontScale, type FontScale } from "@/lib/useFontScale";
+import { useFitLevel } from "@/lib/useFitLevel";
+import { measureCloneWidths } from "@/lib/measureClone";
 import { useApplyChart, useResolvedMode } from "@/lib/useChart";
 import {
   isMac,
@@ -126,7 +132,7 @@ import {
 } from "@/lib/appHost";
 import { useApplyLocale, type Locale } from "@/lib/useLocale";
 import type { ChartTokens } from "../convex/lib/charts";
-import { useSidebarLayout } from "@/lib/useSidebarLayout";
+import { useIsShortScreen, useSidebarLayout } from "@/lib/useSidebarLayout";
 import { Link, useMatchRoute } from "@tanstack/react-router";
 
 // Admin/settings tab COMPONENTS are lazy-loaded: they + their data-table/filter deps
@@ -460,6 +466,7 @@ function AppShellSkeleton() {
   const { width, collapsed, isMobile } = useSidebarLayout();
   return (
     <div className="oc-shell">
+      <div className="oc-shell__body">
       <header className="oc-topbar">
         <div className="oc-topbar__left">
           <div
@@ -496,6 +503,7 @@ function AppShellSkeleton() {
           </div>
         ) : null}
         <main className="oc-main" />
+      </div>
       </div>
     </div>
   );
@@ -566,17 +574,12 @@ function RoleGate() {
       <div className="oc-shell">
         <ImpersonationBanner />
         <DevUserSwitcher />
-        <header className="oc-topbar">
-          <span className="oc-topbar__brand">
-            <BrandMark
-              brand={me.resolvedChartBrand}
-              resolvedThemeMode={me.resolvedThemeMode}
-            />
-          </span>
-          <div className="oc-topbar__actions">
-            <UserMenu label={userLabel} mode={me.themeMode} minimal />
-          </div>
-        </header>
+        <PendingTopBar
+          userLabel={userLabel}
+          themeMode={me.themeMode}
+          resolvedThemeMode={me.resolvedThemeMode}
+          brand={me.resolvedChartBrand}
+        />
         <div className="oc-pending">
           <h1 className="oc-pending__title">{m.app_pending_title()}</h1>
           <p className="oc-pending__body">{m.app_pending_body()}</p>
@@ -640,6 +643,13 @@ function ImpersonationBanner() {
   );
 }
 
+/** The brand's name: the chart's label, "Atrium" by default. The brand link's name
+ *  too — its label is hidden where the bar shows the logo alone, and the logo is
+ *  decorative (lot 27: the link was left without a name on a phone). */
+function brandLabelOf(brand: ChartBrand | undefined): string {
+  return brand?.label ?? "Atrium";
+}
+
 // Brand shown in the top bar = the ACTIVE chart's brand (label + optional logo),
 // from getMe.resolvedChartBrand. An uploaded logo is rendered as <img> (never
 // inlined → no script execution); a missing/broken URL falls back to the bundled
@@ -657,7 +667,7 @@ function BrandMark({
   // (the raw user `themeMode` may be null while an admin default resolves the
   // theme). "system" is still resolved to light/dark, consistently with the app.
   const mode = useResolvedMode(resolvedThemeMode);
-  const label = brand?.label ?? "Atrium";
+  const label = brandLabelOf(brand);
   const isDefault = brand?.isDefault ?? true;
   const logoUrl = pickLogoUrl(brand, mode);
   const [imgFailed, setImgFailed] = useState(false);
@@ -686,35 +696,155 @@ function BrandMark({
   );
 }
 
-// Global top bar: sidebar toggle (left) + brand + single user menu (right).
-function AppTopBar({
+// The bar of an account not approved yet: the brand and the account menu (sign out
+// only). It fits the screen like the app's (topBarFit.ts).
+function PendingTopBar({
   userLabel,
   themeMode,
   resolvedThemeMode,
   brand,
-  collapsed,
-  onToggleSidebar,
 }: {
   userLabel: string;
   themeMode: ThemeMode | null;
   resolvedThemeMode: ThemeMode;
   brand: ChartBrand | undefined;
-  collapsed: boolean;
-  onToggleSidebar: () => void;
 }) {
+  const barRef = useRef<HTMLElement>(null);
+  const fit =
+    TOP_BAR_FITS[
+      useFitLevel(
+        () => {
+          const bar = barRef.current;
+          if (bar === null || !(bar.clientWidth > 0)) return null;
+          // The most compact presentation needs no measure: it is what remains.
+          const required = measureCloneWidths(
+            bar,
+            TOP_BAR_FITS.slice(0, -1).map((f) => (clone: HTMLElement) => clone.setAttribute("data-fit", f)),
+            "oc-topbar--measure",
+          );
+          return { available: bar.clientWidth, required };
+        },
+        () => [barRef.current],
+        [],
+      )
+    ];
   return (
-    <header className="oc-topbar">
+    <header ref={barRef} className="oc-topbar" data-fit={fit}>
+      <span className="oc-topbar__brand">
+        <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
+      </span>
+      <div className="oc-topbar__actions">
+        <UserMenu label={userLabel} mode={themeMode} minimal />
+      </div>
+    </header>
+  );
+}
+
+// The drawer's head: the brand (back to the chats) and its close button. In a
+// drawer as narrow as the screen allows, a long brand label gives way to the logo
+// (topBarFit.ts).
+function DrawerHead({
+  brand,
+  resolvedThemeMode,
+}: {
+  brand: ChartBrand | undefined;
+  resolvedThemeMode: ThemeMode;
+}) {
+  const headRef = useRef<HTMLDivElement>(null);
+  const fit =
+    DRAWER_HEAD_FITS[
+      useFitLevel(
+        () => {
+          const head = headRef.current;
+          if (head === null || !(head.clientWidth > 0)) return null;
+          const required = measureCloneWidths(
+            head,
+            DRAWER_HEAD_FITS.slice(0, -1).map((f) => (clone: HTMLElement) => clone.setAttribute("data-fit", f)),
+            "oc-drawer__head--measure",
+          );
+          return { available: head.clientWidth, required };
+        },
+        () => [headRef.current],
+        [],
+      )
+    ];
+  return (
+    <div ref={headRef} className="oc-drawer__head" data-fit={fit}>
+      <SheetTitle className="sr-only">{m.app_drawer_title()}</SheetTitle>
+      <Link to="/" className="oc-topbar__brand" aria-label={brandLabelOf(brand)}>
+        <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
+      </Link>
+      <SheetClose asChild>
+        <Button variant="ghost" size="icon" aria-label={m.common_close()}>
+          <X />
+        </Button>
+      </SheetClose>
+    </div>
+  );
+}
+
+// Global top bar: sidebar toggle (left) + brand + single user menu (right). On a
+// phone held in landscape it is a vertical RAIL on the left edge (drawerLayout.ts):
+// the same controls, icons only, spending width where height was short.
+function AppTopBar({
+  userLabel,
+  themeMode,
+  resolvedThemeMode,
+  brand,
+  sidebarOpen,
+  onToggleSidebar,
+  toggleRef,
+  rail,
+}: {
+  userLabel: string;
+  themeMode: ThemeMode | null;
+  resolvedThemeMode: ThemeMode;
+  brand: ChartBrand | undefined;
+  /** The drawer (drawer layout) or the column (desktop) is showing. */
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+  /** The toggle, where focus returns when the drawer closes. */
+  toggleRef: RefObject<HTMLButtonElement | null>;
+  rail: boolean;
+}) {
+  // It fits the screen (topBarFit.ts): measured, except as a rail — a column whose
+  // controls are icons already.
+  const barRef = useRef<HTMLElement>(null);
+  const fit =
+    TOP_BAR_FITS[
+      useFitLevel(
+        () => {
+          const bar = barRef.current;
+          if (rail || bar === null || !(bar.clientWidth > 0)) return null;
+          const required = measureCloneWidths(
+            bar,
+            TOP_BAR_FITS.slice(0, -1).map((f) => (clone: HTMLElement) => clone.setAttribute("data-fit", f)),
+            "oc-topbar--measure",
+          );
+          return { available: bar.clientWidth, required };
+        },
+        () => [barRef.current],
+        [rail],
+      )
+    ];
+  return (
+    <header
+      ref={barRef}
+      className={rail ? "oc-topbar oc-topbar--rail" : "oc-topbar"}
+      data-fit={rail ? undefined : fit}
+    >
       <div className="oc-topbar__left">
         <Button
+          ref={toggleRef}
           variant="ghost"
           size="icon-sm"
-          aria-label={collapsed ? m.app_sidebar_show() : m.app_sidebar_hide()}
+          aria-label={sidebarOpen ? m.app_sidebar_hide() : m.app_sidebar_show()}
           onClick={onToggleSidebar}
         >
-          {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+          {sidebarOpen ? <PanelLeftClose /> : <PanelLeftOpen />}
         </Button>
         {/* Brand (active chart's logo + label) returns to the chat surface. */}
-        <Link to="/" className="oc-topbar__brand">
+        <Link to="/" className="oc-topbar__brand" aria-label={brandLabelOf(brand)}>
           <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
         </Link>
       </div>
@@ -724,7 +854,7 @@ function AppTopBar({
       </div>
       <div className="oc-topbar__actions">
         <NotificationBell />
-        <UserMenu label={userLabel} mode={themeMode} />
+        <UserMenu label={userLabel} mode={themeMode} compact={rail} />
       </div>
     </header>
   );
@@ -755,11 +885,18 @@ function AuthenticatedChrome({
     width,
     columnRef,
     collapsed,
-    toggleCollapsed,
-    collapse,
     startResize,
     isMobile,
+    drawerOpen,
+    setDrawerOpen,
+    toggleSidebar,
+    closeDrawer,
   } = useSidebarLayout();
+  const shortScreen = useIsShortScreen();
+  // The drawer is opened from the top bar's toggle, outside its Sheet: Radix only
+  // returns focus to a Sheet TRIGGER on close, so it is handed back here explicitly
+  // (it fell to <body>).
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   const matchRoute = useMatchRoute();
   // Active-chat highlight: read the chatId param without requiring a match on a
   // specific route (strict:false → undefined off the chat route).
@@ -768,13 +905,13 @@ function AuthenticatedChrome({
   // Settings is active when any /settings/* route matches (fuzzy).
   const settingsActive = Boolean(matchRoute({ to: "/settings", fuzzy: true }));
 
-  // Mobile: the sidebar is an overlay drawer. Close it on ANY navigation (chat
-  // select, new chat, settings tab) so the user lands on full-width content; the
-  // backdrop tap closes it otherwise. No-op on desktop (in-flow column).
+  // Drawer layout: the sidebar is a modal drawer. Close it on ANY navigation (chat
+  // select, new chat, settings tab) so the user lands on full-width content. No-op
+  // on desktop (the drawer state is the drawer's own; the column is untouched).
   const pathname = useLocation({ select: (l) => l.pathname });
   useEffect(() => {
-    if (isMobile) collapse();
-  }, [pathname, isMobile, collapse]);
+    closeDrawer();
+  }, [pathname, closeDrawer]);
 
   // New-chat orchestration lives HERE (persistent chrome, always mounted) so the
   // ⌘⇧O / Ctrl+Shift+O global shortcut works on every surface — including when
@@ -804,8 +941,50 @@ function AuthenticatedChrome({
     return () => window.removeEventListener("keydown", onKey);
   }, [startNewChat]);
 
+  // ONE sidebar body for both layouts: the column on a desktop, the drawer's content
+  // in the drawer layout. In Settings the chat list is replaced by the vertical
+  // settings nav (the chat "disappears"); a top-bar / back link returns to chat.
+  const sidebarBody = settingsActive ? (
+    <SettingsNav />
+  ) : (
+    <>
+      <ChatSidebar
+        activeChatId={(params.chatId ?? null) as Id<"chats"> | null}
+        onSelect={goToChat}
+        onNewChat={() => void startNewChat()}
+        newChatShortcut={newChatShortcut}
+      />
+      {/* Scheduled shortcut: the user's cron jobs (Settings ▸
+          Personal ▸ Scheduled) one click away from the chat list. */}
+      <Button variant="ghost" className="oc-sidebar__shortcut mx-2 justify-start" asChild>
+        <Link to="/settings/$tab" params={{ tab: "scheduled" }}>
+          <CalendarClock aria-hidden />
+          {m.sidebar_scheduled()}
+        </Link>
+      </Button>
+      {/* Library shortcut: the user's personal files (Settings ▸
+          Personal ▸ Files) one click away from the chat list. */}
+      <Button variant="ghost" className="oc-sidebar__shortcut mx-2 justify-start" asChild>
+        <Link to="/settings/$tab" params={{ tab: "files" }}>
+          <LibraryBig aria-hidden />
+          {m.sidebar_library()}
+        </Link>
+      </Button>
+      {canOpenSettings ? (
+        <Button variant="ghost" className="oc-sidebar__shortcut mx-2 mb-2 justify-start" asChild>
+          {/* Land on the settings index, which redirects to the user's
+              FIRST allowed tab (not a hardcoded admin-only tab). */}
+          <Link to="/settings">
+            <Settings aria-hidden />
+            {m.app_settings()}
+          </Link>
+        </Button>
+      ) : null}
+    </>
+  );
+
   return (
-    <div className="oc-shell">
+    <div className={shortScreen ? "oc-shell oc-shell--short" : "oc-shell"}>
       {picker}
       {/* Headless reply-arrival watcher — persistent-chrome mounted so cues
           (flash / reply sound / mark-seen) survive a collapsed sidebar and the
@@ -815,76 +994,52 @@ function AuthenticatedChrome({
       />
       <ImpersonationBanner />
       <DevUserSwitcher />
+      <div className="oc-shell__body">
       <AppTopBar
         userLabel={userLabel}
         themeMode={themeMode}
         resolvedThemeMode={resolvedThemeMode}
         brand={brand}
-        collapsed={collapsed}
-        onToggleSidebar={toggleCollapsed}
+        sidebarOpen={isMobile ? drawerOpen : !collapsed}
+        onToggleSidebar={toggleSidebar}
+        toggleRef={sidebarToggleRef}
+        rail={shortScreen}
       />
       <div className={isMobile ? "oc-workspace oc-workspace--mobile" : "oc-workspace"}>
-        {/* Mobile: dim + tap-to-close backdrop behind the overlay drawer. */}
-        {isMobile && !collapsed ? (
-          <div
-            className="oc-sidebar-backdrop"
-            onClick={collapse}
-            aria-hidden
-          />
-        ) : null}
-        {!collapsed ? (
+        {isMobile ? (
+          // THE DRAWER is the shared Sheet (a Radix dialog): focus trapped inside,
+          // Escape and the overlay close it, focus returns to the toggle, and the
+          // rest of the page is hidden from assistive technology while it is open.
+          // The hand-made overlay it replaces had none of that: Tab walked into the
+          // top-bar buttons hidden under it, and nothing in it closed it.
+          <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+            <SheetContent
+              side="left"
+              className={shortScreen ? "oc-drawer oc-drawer--short" : "oc-drawer"}
+              overlayClassName="oc-drawer-overlay"
+              showCloseButton={false}
+              aria-describedby={undefined}
+              // Back to where the drawer was opened from — its toggle, as a rule;
+              // the toggle is the fallback when that control is gone. A focus the
+              // user moved meanwhile (the composer) stays (lib/returnFocus).
+              returnFocus={() => [sidebarToggleRef.current]}
+            >
+              <DrawerHead brand={brand} resolvedThemeMode={resolvedThemeMode} />
+              <div className="oc-sidebar-col oc-sidebar-col--drawer">{sidebarBody}</div>
+            </SheetContent>
+          </Sheet>
+        ) : !collapsed ? (
           <div
             className="oc-sidebar-col"
             // Bound so the resize drag paints the width DIRECTLY on this node
             // (rAF), committing React state only on pointerup — a per-pixel
             // setState re-rendered the whole chrome and stuttered.
             ref={(el) => {
-              columnRef.current = isMobile ? null : el;
+              columnRef.current = el;
             }}
-            // On mobile the drawer width is fixed by CSS (overlay); the inline
-            // resizable width applies to the desktop in-flow column only.
-            style={isMobile ? undefined : { width, flex: `0 0 ${width}px` }}
+            style={{ width, flex: `0 0 ${width}px` }}
           >
-            {/* In Settings, the chat list is replaced by a VERTICAL settings nav
-                (the chat "disappears"); a top-bar / back link returns to chat. */}
-            {settingsActive ? (
-              <SettingsNav />
-            ) : (
-              <>
-                <ChatSidebar
-                  activeChatId={(params.chatId ?? null) as Id<"chats"> | null}
-                  onSelect={goToChat}
-                  onNewChat={() => void startNewChat()}
-                  newChatShortcut={newChatShortcut}
-                />
-                {/* Scheduled shortcut: the user's cron jobs (Settings ▸
-                    Personal ▸ Scheduled) one click away from the chat list. */}
-                <Button variant="ghost" className="mx-2 justify-start" asChild>
-                  <Link to="/settings/$tab" params={{ tab: "scheduled" }}>
-                    <CalendarClock aria-hidden />
-                    {m.sidebar_scheduled()}
-                  </Link>
-                </Button>
-                {/* Library shortcut: the user's personal files (Settings ▸
-                    Personal ▸ Files) one click away from the chat list. */}
-                <Button variant="ghost" className="mx-2 justify-start" asChild>
-                  <Link to="/settings/$tab" params={{ tab: "files" }}>
-                    <LibraryBig aria-hidden />
-                    {m.sidebar_library()}
-                  </Link>
-                </Button>
-                {canOpenSettings ? (
-                  <Button variant="ghost" className="mx-2 mb-2 justify-start" asChild>
-                    {/* Land on the settings index, which redirects to the user's
-                        FIRST allowed tab (not a hardcoded admin-only tab). */}
-                    <Link to="/settings">
-                      <Settings aria-hidden />
-                      {m.app_settings()}
-                    </Link>
-                  </Button>
-                ) : null}
-              </>
-            )}
+            {sidebarBody}
             {/* Resize handle on the right edge. */}
             <div
               className="oc-sidebar-resizer"
@@ -909,6 +1064,7 @@ function AuthenticatedChrome({
           viewerUserId={viewerUserId}
           currentChatId={params.chatId ?? null}
         />
+      </div>
       </div>
       {/* Pinned dictation dock: persistent chrome INSIDE the identity-keyed
           tree — an impersonation/identity swap remounts it, which stops the

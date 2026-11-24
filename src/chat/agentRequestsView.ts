@@ -337,3 +337,10 @@ export function failureKind(code: string | null): "none" | "retry" | "config" {
   }
   return "retry";
 }
+
+/** Whether the dock shows only its bar: the reader's own choice once made; until
+ *  then folded on a short screen (a phone held sideways — an open card took the
+ *  thread down to a sliver), open elsewhere. */
+export function dockFolded(readerChoice: boolean | null, shortScreen: boolean): boolean {
+  return readerChoice ?? shortScreen;
+}

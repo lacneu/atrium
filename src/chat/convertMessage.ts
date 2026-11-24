@@ -808,6 +808,8 @@ export function convertConvexMessage(
         // …and the group's first bubble: Delete / Regenerate and Report act on the whole
         // answer, which starts there (codex phase 5 pass 1 #4).
         groupFirstId: group?.firstId ?? null,
+        // …and every member, in order: the blocks the group's one ⋯ lists (lot 21).
+        groupMembers: group?.members ?? null,
         // The EXACT stored text — the verbatim string for the "Source" view (no
         // markdown, no autocorrect, no transformation). For the user turn this is
         // what was typed/sent; for the assistant turn it is the gateway's final

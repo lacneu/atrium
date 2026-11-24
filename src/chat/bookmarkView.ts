@@ -88,6 +88,97 @@ export function collectAnchorBlocks(bubble: Element): Element[] {
   return blocks;
 }
 
+/** What a block shows a reader (lot 21): its text, and — for a block that shows
+ *  media (an image, a video, a drawing) — the media's alt text. A rule or an empty
+ *  block shows nothing. The gutter and the block lists both read blocks through it;
+ *  `print` is what tells the block apart from any other (`blockPrint`, lot 23). */
+export type BlockFace = { text: string; alt: string; media: boolean; print: string };
+
+const MEDIA = "img, picture, video, audio, canvas, svg, iframe";
+
+export function blockFace(block: Element): BlockFace {
+  const images = block.matches("img") ? [block] : [...block.querySelectorAll("img")];
+  return {
+    text: block.textContent ?? "",
+    alt: images
+      .map((img) => img.getAttribute("alt")?.trim() ?? "")
+      .filter((alt) => alt !== "")
+      .join(", "),
+    media: block.matches(MEDIA) || block.querySelector(MEDIA) !== null,
+    print: blockPrint(block),
+  };
+}
+
+const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
+
+/** Attributes that are presentation, state or plumbing — never what a block says, and
+ *  each can change while the block does not (`blockPrint`). */
+const PRINT_IGNORED = new Set(["class", "style", "id", "role", "tabindex", "open", "data-incomplete"]);
+
+/** The parts of a block the renderer adds around what it says: its controls (copy,
+ *  download, full screen — their icons, labels and states change with a click) and
+ *  an image's load-failure notice. */
+function isChrome(el: Element): boolean {
+  return el.tagName === "BUTTON" || el.getAttribute("data-streamdown") === "image-fallback";
+}
+
+function printOf(el: Element): unknown[] {
+  const attributes: [string, string][] = [];
+  for (const name of el.getAttributeNames().sort()) {
+    if (PRINT_IGNORED.has(name) || name.startsWith("aria-")) continue;
+    attributes.push([name, el.getAttribute(name) ?? ""]);
+  }
+  const children: unknown[] = [];
+  for (const node of el.childNodes) {
+    if (node.nodeType === TEXT_NODE) {
+      // The same text split into other nodes is the same text.
+      const last = children.length - 1;
+      if (typeof children[last] === "string") children[last] += node.nodeValue ?? "";
+      else children.push(node.nodeValue ?? "");
+    } else if (node.nodeType === ELEMENT_NODE && !isChrome(node as Element)) {
+      children.push(printOf(node as Element));
+    }
+  }
+  // A task box ticked or not is its property: the attribute says how it was created.
+  return el.tagName === "INPUT"
+    ? [el.tagName, attributes, children, (el as HTMLInputElement).checked]
+    : [el.tagName, attributes, children];
+}
+
+/**
+ * A block's EXACT print (lot 23): what tells it apart from every other block, so that a
+ * block action never lands on a block other than the one the person saw
+ * (`resolveChosen`). Two blocks share a print only when the page renders them alike.
+ * It covers:
+ *  - the kind of block: the tag of every element in it — a heading's level, bold or
+ *    struck-through text, inline code, a link, a table's cells, each line of a code
+ *    block —, the renderer's own name for what it drew (`data-streamdown`), and for a
+ *    list item, its list (numbered or not);
+ *  - every text exactly as rendered: no whitespace collapsed — a code line's
+ *    indentation is its meaning —, no case or Unicode folding;
+ *  - every attribute that says what is shown: a link's target and title, an image's
+ *    source, alt text and size, a code block's language (`data-language`), a list
+ *    item's number when the reply sets it, a cell's span; and whether a task box is
+ *    ticked.
+ * It leaves out what is not what the block says, each of which changes while the block
+ * does not: `class` and `style` (the renderer's presentation — a table column's
+ * alignment is written as a style: where words sit, not what they say —, and the
+ * app's states — a jump's flash, an image that failed to load, heights that follow
+ * the screen), `id`, `role`, `tabindex` and `aria-*` (identity and interaction
+ * plumbing), `open` (a details block the reader opened), `data-incomplete` (a block
+ * still being written, which no list or gutter reads), the renderer's controls and
+ * load notices (`isChrome`), and how a text is split into nodes. What the page does
+ * not render cannot tell blocks apart either: the numbers a list or a code block's
+ * gutter draws from the position (which the block's index and uniqueness already
+ * account for), the target of a link the app shows as plain text (AgentAnchor), the
+ * pixels behind an image's address.
+ */
+export function blockPrint(block: Element): string {
+  const list = block.tagName === "LI" ? (block.parentElement?.tagName ?? "") : "";
+  return JSON.stringify([list, printOf(block)]);
+}
+
 /**
  * Resolve a bookmark anchor to the DOM element the UI scrolls to / marks:
  * the block at blockIndex, falling back to the BUBBLE when the index is gone

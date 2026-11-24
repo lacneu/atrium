@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { AlertTriangle } from "lucide-react";
@@ -12,6 +12,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -49,6 +50,8 @@ import { CURATABLE_FILES, isCurationCandidate } from "../../../convex/lib/curati
 import { instanceTabGate } from "../capabilities";
 import { unsupportedInstanceLabel } from "./compatView";
 import "./confTabs.css";
+import { useFitLevel } from "@/lib/useFitLevel";
+import { measureCloneWidths } from "@/lib/measureClone";
 
 // Settings › Fichiers d'agent (CONF-4c). Read (+ admin write) of an agent's
 // workspace files over the bridge. Visible with `agents.files.read` OR admin;
@@ -261,6 +264,25 @@ export function AgentFilesTab() {
     () => new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }),
     [locale],
   );
+  // A file's row on one line where it fits, else on two (name and its actions,
+  // then the size gauge) — MEASURED: the rows on one line, cloned off-screen,
+  // against the list's width. At 430 px the one line needed 424 in 390 and the
+  // edit button was cut.
+  const listRef = useRef<HTMLDivElement>(null);
+  const listLevel = useFitLevel(
+    () => {
+      const list = listRef.current;
+      if (list === null) return null;
+      const [oneLine] = measureCloneWidths(
+        list,
+        [(clone) => clone.setAttribute("data-layout", "line")],
+        "oc-afiles__measure",
+      );
+      return { available: list.clientWidth, required: [oneLine] };
+    },
+    () => [listRef.current],
+    [listing, locale, isAdmin],
+  );
 
   if (me === undefined || options === undefined) {
     return <p className="oc-admin__hint">{m.common_loading()}</p>;
@@ -332,7 +354,11 @@ export function AgentFilesTab() {
         <p className="oc-admin__hint">{m.afiles_empty()}</p>
       ) : (
         <>
-          <div className="oc-afiles__list">
+          <div
+            ref={listRef}
+            className="oc-afiles__list"
+            data-layout={listLevel === 0 ? "line" : "two-level"}
+          >
             {listing.files.map((f) => {
               const pct = gaugePct(f.size);
               const warn = pct >= GAUGE_WARN_PCT;
@@ -652,7 +678,9 @@ function AgentFileEditor({
                 {m.afiles_save_error()}
               </p>
             ) : null}
-            <div className="oc-afiles__editor-foot">
+            {/* Its footer, pinned at the foot of the dialog as every layer's is (lot 29):
+                a house foot scrolled away with the source, "Save" out of view. */}
+            <DialogFooter className="oc-afiles__editor-foot flex-row">
               <span className={`oc-afiles__count${over ? " is-over" : ""}`}>
                 {m.afiles_chars({
                   count: charFmt.format(draft.length),
@@ -668,7 +696,7 @@ function AgentFileEditor({
                   {saving ? m.conf_applying() : m.afiles_save()}
                 </Button>
               ) : null}
-            </div>
+            </DialogFooter>
           </>
         )}
 
@@ -913,36 +941,40 @@ function CurationReviewDialog({
               value={rejectComment}
               onChange={(e) => setRejectComment(e.target.value)}
             />
-            <div className="oc-afiles__review-actions">
-              <Button
-                variant="ghost"
-                onClick={() => setRejecting(false)}
-                disabled={busy !== null}
-              >
-                {m.afiles_curation_reject_cancel()}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => void doReject(false)}
-                disabled={busy !== null}
-              >
-                {busy === "reject"
-                  ? m.conf_applying()
-                  : m.afiles_curation_reject_only()}
-              </Button>
-              <Button
-                variant="default"
-                onClick={() => void doReject(true)}
-                disabled={busy !== null}
-              >
-                {busy === "reject"
-                  ? m.conf_applying()
-                  : m.afiles_curation_reject_relaunch()}
-              </Button>
-            </div>
           </div>
+        ) : null}
+        {/* One footer for both steps, pinned at the dialog's foot as every layer's is
+            (lot 29): a house foot scrolled out of view with the proposal. */}
+        {rejecting ? (
+          <DialogFooter className="oc-afiles__review-actions">
+            <Button
+              variant="ghost"
+              onClick={() => setRejecting(false)}
+              disabled={busy !== null}
+            >
+              {m.afiles_curation_reject_cancel()}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void doReject(false)}
+              disabled={busy !== null}
+            >
+              {busy === "reject"
+                ? m.conf_applying()
+                : m.afiles_curation_reject_only()}
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => void doReject(true)}
+              disabled={busy !== null}
+            >
+              {busy === "reject"
+                ? m.conf_applying()
+                : m.afiles_curation_reject_relaunch()}
+            </Button>
+          </DialogFooter>
         ) : (
-          <div className="oc-afiles__review-actions">
+          <DialogFooter className="oc-afiles__review-actions">
             <Button
               variant="outline"
               onClick={() => setRejecting(true)}
@@ -959,7 +991,7 @@ function CurationReviewDialog({
                 ? m.conf_applying()
                 : m.afiles_curation_approve()}
             </Button>
-          </div>
+          </DialogFooter>
         )}
       </DialogContent>
     </Dialog>

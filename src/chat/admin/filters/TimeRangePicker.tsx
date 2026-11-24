@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Popover as PopoverPrimitive } from "radix-ui";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Clock, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -114,92 +114,92 @@ export function TimeRangePicker({
     localInputToMs(fromDraft) !== null && localInputToMs(toDraft) !== null;
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
-      <PopoverPrimitive.Trigger asChild>
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="oc-timerange__trigger">
           <Clock />
           {rangeLabel(value)}
         </Button>
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Portal>
-        <PopoverPrimitive.Content
-          align="end"
-          sideOffset={6}
-          className="oc-timerange__panel oc-overlay-layer rounded-lg border border-border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
-        >
-          <div className="oc-timerange__cols">
-            {/* Absolute panel (left) */}
-            <div className="oc-timerange__absolute">
-              <div className="oc-timerange__section-title">
-                {m.timerange_absolute()}
-              </div>
-              <label className="oc-field">
-                <span className="oc-field__label">{m.timerange_from()}</span>
-                <Input
-                  type="datetime-local"
-                  value={fromDraft}
-                  onChange={(e) => setFromDraft(e.target.value)}
-                />
-              </label>
-              <label className="oc-field">
-                <span className="oc-field__label">{m.timerange_to()}</span>
-                <Input
-                  type="datetime-local"
-                  value={toDraft}
-                  onChange={(e) => setToDraft(e.target.value)}
-                />
-              </label>
-              <Button
-                size="sm"
-                className="oc-timerange__apply"
-                disabled={!absoluteValid}
-                onClick={applyAbsolute}
-              >
-                {m.timerange_apply()}
-              </Button>
+      </PopoverTrigger>
+      {/* The shared content (its layer, its height cap, the focus rule of every
+          layer); the panel's own size and padding come from its class. */}
+      <PopoverContent
+        align="end"
+        sideOffset={6}
+        className="oc-timerange__panel oc-overlay-layer rounded-lg border-border"
+      >
+        <div className="oc-timerange__cols">
+          {/* Absolute panel (left) */}
+          <div className="oc-timerange__absolute">
+            <div className="oc-timerange__section-title">
+              {m.timerange_absolute()}
             </div>
-
-            {/* Relative quick list (right) */}
-            <div className="oc-timerange__relative">
-              <div className="oc-timerange__search">
-                <Search className="oc-timerange__search-icon" aria-hidden />
-                <Input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={m.timerange_search_placeholder()}
-                  aria-label={m.timerange_search_aria()}
-                />
-              </div>
-              <ul className="oc-timerange__list">
-                {filteredPresets.length === 0 ? (
-                  <li className="oc-timerange__empty">{m.timerange_empty()}</li>
-                ) : (
-                  filteredPresets.map((p) => {
-                    const active =
-                      value.kind === "relative" &&
-                      value.from === p.from &&
-                      value.to === "now";
-                    return (
-                      <li key={p.from}>
-                        <button
-                          type="button"
-                          className={
-                            "oc-timerange__option" +
-                            (active ? " is-active" : "")
-                          }
-                          onClick={() => pickRelative(p.from)}
-                        >
-                          {p.label}
-                        </button>
-                      </li>
-                    );
-                  })
-                )}
-              </ul>
-            </div>
+            <label className="oc-field">
+              <span className="oc-field__label">{m.timerange_from()}</span>
+              <Input
+                type="datetime-local"
+                value={fromDraft}
+                onChange={(e) => setFromDraft(e.target.value)}
+              />
+            </label>
+            <label className="oc-field">
+              <span className="oc-field__label">{m.timerange_to()}</span>
+              <Input
+                type="datetime-local"
+                value={toDraft}
+                onChange={(e) => setToDraft(e.target.value)}
+              />
+            </label>
+            <Button
+              size="sm"
+              className="oc-timerange__apply"
+              disabled={!absoluteValid}
+              onClick={applyAbsolute}
+            >
+              {m.timerange_apply()}
+            </Button>
           </div>
-        </PopoverPrimitive.Content>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+
+          {/* Relative quick list (right) */}
+          <div className="oc-timerange__relative">
+            <div className="oc-timerange__search">
+              <Search className="oc-timerange__search-icon" aria-hidden />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={m.timerange_search_placeholder()}
+                aria-label={m.timerange_search_aria()}
+              />
+            </div>
+            <ul className="oc-timerange__list">
+              {filteredPresets.length === 0 ? (
+                <li className="oc-timerange__empty">{m.timerange_empty()}</li>
+              ) : (
+                filteredPresets.map((p) => {
+                  const active =
+                    value.kind === "relative" &&
+                    value.from === p.from &&
+                    value.to === "now";
+                  return (
+                    <li key={p.from}>
+                      <button
+                        type="button"
+                        className={
+                          "oc-timerange__option" +
+                          (active ? " is-active" : "")
+                        }
+                        onClick={() => pickRelative(p.from)}
+                      >
+                        {p.label}
+                      </button>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -1416,7 +1416,7 @@ export function ThemeShowroom() {
       </Section>
 
       <Section title="Card">
-        <Card className="w-80">
+        <Card className="w-full max-w-80">
           <CardHeader>
             <CardTitle>Instance</CardTitle>
             <CardDescription>Non-secret metadata only.</CardDescription>

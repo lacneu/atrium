@@ -558,11 +558,20 @@ describe("convertConvexMessage — display group place (phase 5)", () => {
       continues: false,
       firstId: "p",
       groupText: "Je délègue.\n\nFini.",
+      members: [
+        { id: "p", live: false },
+        { id: "msg1", live: false },
+      ],
     }).metadata?.custom as Record<string, unknown>;
     expect(meta.groupFollows).toBe(true);
     expect(meta.groupContinues).toBe(false);
     expect(meta.groupText).toBe("Je délègue.\n\nFini.");
     expect(meta.groupFirstId).toBe("p");
+    // Every member, in order: the blocks the group's one ⋯ lists (lot 21).
+    expect(meta.groupMembers).toEqual([
+      { id: "p", live: false },
+      { id: "msg1", live: false },
+    ]);
   });
 
   it("a bubble shown alone carries no group", () => {
@@ -571,6 +580,7 @@ describe("convertConvexMessage — display group place (phase 5)", () => {
     expect(meta.groupContinues).toBe(false);
     expect(meta.groupText).toBeNull();
     expect(meta.groupFirstId).toBeNull();
+    expect(meta.groupMembers).toBeNull();
   });
 });
 
