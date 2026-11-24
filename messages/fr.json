@@ -2849,6 +2849,8 @@
   "reasoning_title_duration": "Réfléchi pendant {duration}",
   "reasoning_expand": "Afficher la réflexion",
   "reasoning_collapse": "Masquer la réflexion",
+  "reasoning_zone_steps_one": "1 étape",
+  "reasoning_zone_steps_many": "{count} étapes",
   "reasoning_region_aria": "Réflexion du modèle",
   "reasoning_loading": "Lecture de la réflexion…",
   "reasoning_unavailable": "Cette réflexion n'est plus disponible.",

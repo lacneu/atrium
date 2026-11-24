@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.104.2] — A turn's reasoning and actions read as one thread, open by default
+
+Frontend release: only the interface changes. Nothing to migrate; the bridge and the Convex
+functions are those of 0.104.0. The `v0.104.1` tag was placed on the 0.104.0 commit and
+published nothing: 0.104.2 follows 0.104.0.
+
+- **Reasoning is shown without a click.** When a conversation shows the model's reasoning, the
+  thoughts of a reply are open by default, while the reply is written and afterwards. They used
+  to fold as soon as the answer started, so each one had to be opened by hand.
+- **One thread for the work of a turn.** The thoughts and the actions of a reply sit along a
+  single thin line, under one "Reasoning" header that folds the whole zone (folded, it gives
+  the number of steps). A thought is plain muted text, with no icon, title or chevron of its
+  own. An action — a command, a file read, a search — is one light line without a box, with
+  the icon of its kind on the line; it stays closed and opens on a click.
+- **The answer stands apart.** The line ends before the answer, which starts at the bubble's
+  left edge in full-contrast text; everything behind the line is the agent's work.
+
+**Known limits.** A single thought can no longer be folded on its own, only its zone. Each
+thought on view is now read from the server, where only an opened one used to be: on a very
+long conversation with reasoning shown this reads more, and was not measured. The action line
+of a group with a failed call still ends with a check next to "1 failed". Checked in a browser
+on a real conversation at computer and phone widths for the action lines; the thoughts
+themselves were checked on a rendering bench with the application's own components, not on a
+conversation served by a gateway.
+
 ## [0.104.0] — The reply's live text comes from the gateway's chat stream, and a turn cut by a restart says so
 
 Feature and reliability release, with one privacy fix and a frontend made for phones and

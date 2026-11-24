@@ -2849,6 +2849,8 @@
   "reasoning_title_duration": "Thought for {duration}",
   "reasoning_expand": "Show reasoning",
   "reasoning_collapse": "Hide reasoning",
+  "reasoning_zone_steps_one": "1 step",
+  "reasoning_zone_steps_many": "{count} steps",
   "reasoning_region_aria": "Model reasoning",
   "reasoning_loading": "Reading the reasoning…",
   "reasoning_unavailable": "This reasoning is no longer available.",

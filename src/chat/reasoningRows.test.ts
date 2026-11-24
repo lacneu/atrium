@@ -18,7 +18,7 @@ import type { ToolActivityPart } from "./toolActivityView";
 type Content = Array<{
   type: string;
   text?: string;
-  data?: { text?: string; open?: boolean; key?: string; capped?: boolean; row?: { messageId: string; entryId: string } };
+  data?: { text?: string; live?: boolean; key?: string; capped?: boolean; row?: { messageId: string; entryId: string } };
 }>;
 
 function rowsBubble(extra: Partial<ConvexMessageView> = {}): ConvexMessageView {
@@ -60,15 +60,15 @@ describe("rowSegments: reasoning above its row, work notes marked", () => {
 });
 
 describe("convertMessage: three natures, three renderings", () => {
-  it("reasoning block (folded: the answer follows), work note, answer", () => {
+  it("reasoning block (settled: the answer follows), work note, answer", () => {
     const content = convertConvexMessage(rowsBubble()).content as Content;
     expect(content.map((c) => [c.type, c.text ?? c.data?.text])).toEqual([
       ["data-thinking", undefined],
       ["data-commentary", "Je lance la commande."],
       ["text", "Nous sommes lundi."],
     ]);
-    // The block names the row it reads its text from when opened (codex pass 1).
-    expect(content[0]!.data).toMatchObject({ open: false, row: { messageId: "m1", entryId: "r2" } });
+    // The block names the row it reads its text from while on view (codex pass 1).
+    expect(content[0]!.data).toMatchObject({ live: false, row: { messageId: "m1", entryId: "r2" } });
   });
 
   it("a message's reasoning cut to nothing by its budget still shows its block, marked cut", () => {
