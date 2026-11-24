@@ -261,6 +261,10 @@ import {
 import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
+import { ModelFallbackNotice } from "./ModelFallbackNotice";
+import { GatewayNotices } from "./GatewayNotices";
+import { TurnInterruptionNotice } from "./TurnInterruptionNotice";
+import { turnInterrupted, type TurnInterruption } from "./turnInterruptionView";
 import { usageBadgeView, type ProviderUsageView } from "./usageView";
 import {
   assistantEmptyState,
@@ -3624,6 +3628,10 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     (msg) => (msg.metadata?.custom as { status?: string } | undefined)?.status,
   );
   // A steer segment answers nothing by itself: no empty-state verdict on it.
+  const interrupted = useMessage((msg) => {
+    const meta = msg.metadata?.custom as { interruption?: TurnInterruption; status?: string } | undefined;
+    return turnInterrupted(meta?.interruption, meta?.status);
+  });
   const steerSegment = useMessage(
     (msg) =>
       (msg.metadata?.custom as { steerSegment?: boolean } | undefined)?.steerSegment === true,
@@ -3738,7 +3746,9 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     );
     return () => window.clearTimeout(t);
   }, [recheckAt]);
-  if (state.kind === "none" || steerSegment) return null;
+  // A turn the gateway cut says so itself (TurnInterruptionNotice): "returned nothing"
+  // under it would blame the agent for the gateway's restart.
+  if (state.kind === "none" || steerSegment || interrupted) return null;
 
   // PROJECTION `on`: ONE waiting signal, the thread's (TurnActivityIndicator, quiet: a
   // static mark, no animation), anchored under this bubble and ended by the resume itself
@@ -4132,11 +4142,20 @@ function AssistantMessage() {
               condensed older memory, which is conversation-level information,
               not tool telemetry. Renders null on the (vast) majority of turns. */}
           <CompactionNotice />
+          {/* Model fallback marker — same standing: which model answered is about
+              the conversation, not about a tool. Null on almost every turn. */}
+          <ModelFallbackNotice />
           {showSource ? (
             <MessageSource />
           ) : (
             <MessagePrimitive.Parts components={assistantComponents} />
           )}
+          {/* The gateway's own status notices for this reply (a usage line, a
+              diagnostic): under the answer, never inside it. Null on almost every turn. */}
+          <GatewayNotices />
+          {/* A turn the gateway cut (a restart, a stop): what happened, under the work
+              it interrupted. Null on almost every turn. */}
+          <TurnInterruptionNotice />
           {/* Empty-bubble guard: a settled turn that delegated to a sub-agent and
               returned no text renders a clear waiting/generic note here (where the
               answer would be) instead of a blank bubble. The FAILED case is owned

@@ -84,7 +84,7 @@ export function ToolActivity() {
               argsText={p.argsText}
               inputFromTranscript={p.inputFromTranscript}
               result={p.result}
-              // ToolCard's phaseClass understands the bridge phases directly
+              // ToolCard's toolCardPhase understands the bridge phases directly
               // ("started"/"running"/"completed"/"error") via status.type.
               status={p.phase ? { type: p.phase } : undefined}
               turnSettled={

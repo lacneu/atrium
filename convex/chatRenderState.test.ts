@@ -44,6 +44,10 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
     expect(normalizeMessageErrorCode("gateway_timeout")).toBe("gateway_timeout");
     // Newly allowlisted infra + gateway-errorKind classes reach the obs MCP.
     expect(normalizeMessageErrorCode("connection_lost")).toBe("connection_lost");
+    // An announced gateway STOP is its own class, apart from an announced restart: the
+    // diagnostic surface and the finalize trace must name it, not say "unknown".
+    expect(normalizeMessageErrorCode("gateway_stopping")).toBe("gateway_stopping");
+    expect(normalizeMessageErrorCode("gateway_restarting")).toBe("gateway_restarting");
     expect(normalizeMessageErrorCode("context_length")).toBe("context_length");
     expect(normalizeMessageErrorCode("rate_limit")).toBe("rate_limit");
     // A sub-agent row's class for a spawn the gateway refused: collapsed to "unknown",

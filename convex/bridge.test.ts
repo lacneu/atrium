@@ -538,7 +538,7 @@ describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently 
           ],
           status: "pending",
         });
-        // NO bridgeHealth doc -> maxPayloadInternal returns null (old/cold bridge).
+        // NO bridgeHealth doc -> inboundLimitsInternal returns null (old/cold bridge).
         return { outboxId, chatId };
       });
 
@@ -1338,6 +1338,8 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     t: ReturnType<typeof convexTest>,
     files: Array<{ bytes: number[]; filename: string; mimeType: string }>,
     maxPayload?: number,
+    ceilings?: { attachmentMaxBytes: number; attachmentMaxImageBytes: number },
+    kind?: "openclaw" | "hermes",
   ) {
     return await t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
@@ -1354,6 +1356,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
         name: "primary",
         gatewayUrl: "ws://gw:18790",
         bridgeUrl: "http://b:9",
+        ...(kind ? { kind } : {}),
         config: { inboundMediaMode: "shared-fs" },
       });
       const chatId = await ctx.db.insert("chats", {
@@ -1372,7 +1375,26 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
           reachable: true,
           checkedAt: now,
           maxPayload,
-          targets: [],
+          targets: ceilings
+            ? [
+                {
+                  key: "primary:alice:u",
+                  instanceName: "primary",
+                  canonical: "u",
+                  agentId: "alice",
+                  gatewayHost: "gw:18790", // the instance row's gateway
+                  state: "connected",
+                  lastOkAt: now,
+                  lastErrorCode: null,
+                  lastErrorAt: null,
+                  attempts: 1,
+                  okCount: 1,
+                  errorCount: 0,
+                  maxPayload,
+                  ...ceilings,
+                },
+              ]
+            : [],
         });
       }
       return await ctx.db.insert("outbox", {
@@ -1390,6 +1412,8 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
   async function dispatchSharedFs(
     files: Array<{ bytes: number[]; filename: string; mimeType: string }>,
     maxPayload?: number,
+    ceilings?: { attachmentMaxBytes: number; attachmentMaxImageBytes: number },
+    kind?: "openclaw" | "hermes",
   ) {
     const t = convexTest(schema, modules);
     const prevSecret = process.env.BRIDGE_SHARED_SECRET;
@@ -1398,7 +1422,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     const origFetch = globalThis.fetch;
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     try {
-      const outboxId = await seedSharedFsAttachments(t, files, maxPayload);
+      const outboxId = await seedSharedFsAttachments(t, files, maxPayload, ceilings, kind);
       await t.action(internal.bridge.dispatch, { outboxId });
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
@@ -1442,6 +1466,35 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     expect(typeof body.referenceAttachments[0].url).toBe("string");
     expect(body.referenceAttachments[0].content).toBeUndefined();
     expect(body.attachments?.map((a) => a.fileName)).toEqual(["pic.png"]);
+  });
+
+  test("shared-fs: a tool-read file over the gateway's PER-ATTACHMENT ceiling rides BY REFERENCE though the frame could carry it", async () => {
+    // The gateway refuses a native attachment over `policy.attachments.maxBytes` (and
+    // the whole send with it). In shared-fs mode a size is never a refusal: the file is
+    // streamed to the shared volume instead, and the small one beside it stays native.
+    const body = await dispatchSharedFs(
+      [
+        { bytes: [1, 2, 3, 4, 5, 6, 7, 8, 9], filename: "big.pdf", mimeType: "application/pdf" },
+        { bytes: [1, 2, 3], filename: "small.txt", mimeType: "text/plain" },
+      ],
+      26214400,
+      { attachmentMaxBytes: 8, attachmentMaxImageBytes: 8 },
+    );
+    expect(body.referenceAttachments.map((a) => a.fileName)).toEqual(["big.pdf"]);
+    expect(body.attachments?.map((a) => a.fileName)).toEqual(["small.txt"]);
+  });
+
+  test("shared-fs: that by-reference decision is NOT taken on a ceiling the instance has outlived (now Hermes, same name)", async () => {
+    // The snapshot still holds the OpenClaw gateway's 8-byte ceiling under the name;
+    // the instance is Hermes now. The 9-byte file rides as the frame alone decides.
+    const body = await dispatchSharedFs(
+      [{ bytes: [1, 2, 3, 4, 5, 6, 7, 8, 9], filename: "big.pdf", mimeType: "application/pdf" }],
+      26214400,
+      { attachmentMaxBytes: 8, attachmentMaxImageBytes: 8 },
+      "hermes",
+    );
+    expect(body.referenceAttachments).toEqual([]);
+    expect(body.attachments?.map((a) => a.fileName)).toEqual(["big.pdf"]);
   });
 
   test("shared-fs: an undecodable image (svg) stays a REFERENCE however small — the gateway would hand it to the model as an image", async () => {
@@ -1973,5 +2026,225 @@ describe("failDispatch — session visibility / settings refusals", () => {
       );
       expect(scheduled.filter((f) => f.name.includes("turnRetry")), code).toHaveLength(0);
     }
+  });
+});
+
+// The gateway's PER-ATTACHMENT ceilings (hello-ok `policy.attachments`, OpenClaw
+// 2026.8.1+): decoded-size limits per file, an image more tightly (upstream
+// src/gateway/chat-attachment-policy.ts; refused with `size > limit`,
+// src/media/attachment-processor.ts and chat-attachments.ts). A file under the frame
+// limit and over its ceiling used to be POSTed, sent, then refused by the gateway.
+describe("dispatch — the gateway's per-attachment ceilings", () => {
+  const MAXP = 26214400;
+  /** Leading bytes of real files: the gateway sniffs them, the declared type is not asked. */
+  const MAGIC: Record<string, number[]> = {
+    png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d],
+    jpeg: [0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1],
+    caf: [0x63, 0x61, 0x66, 0x66, 0, 1, 0, 0, 0x64, 0x65, 0x73, 0x63],
+  };
+
+  async function dispatchOne(opts: {
+    bytes: number;
+    mimeType: string;
+    /** What the bytes really are (their leading signature). Default: what `mimeType`
+     *  names, when it is one of the formats below. */
+    format?: "png" | "jpeg" | "caf" | "zeros";
+    ceilings: { attachmentMaxBytes: number | null; attachmentMaxImageBytes: number | null } | null;
+    /** The instance whose health target carries them (default: the routed one). */
+    onInstance?: string;
+    /** Age of the health snapshot (default: fresh). */
+    snapshotAgeMs?: number;
+    /** The routed instance's own row, as it is NOW (default: none — env-served OpenClaw). */
+    instanceRow?: { kind?: "openclaw" | "hermes"; gatewayUrl: string };
+  }) {
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://127.0.0.1:0";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const { outboxId, chatId } = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        if (opts.instanceRow) await ctx.db.insert("instances", { name: "primary", ...opts.instanceRow });
+        const chatId = await ctx.db.insert("chats", { userId, archived: false, updatedAt: now });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: "",
+          updatedAt: now,
+        });
+        const body = new Uint8Array(opts.bytes);
+        body.set((MAGIC[opts.format ?? opts.mimeType.split("/")[1] ?? "zeros"] ?? []).slice(0, opts.bytes));
+        const storageId = await ctx.storage.store(new Blob([body]));
+        const outboxId = await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-ceiling",
+          messageId,
+          text: "",
+          attachmentIds: [storageId],
+          attachments: [{ storageId, filename: "f", mimeType: opts.mimeType }],
+          status: "pending",
+        });
+        await ctx.db.insert("bridgeHealth", {
+          key: "singleton",
+          reachable: true,
+          checkedAt: now - (opts.snapshotAgeMs ?? 0),
+          maxPayload: MAXP,
+          targets: opts.ceilings
+            ? [
+                {
+                  key: `${opts.onInstance ?? "primary"}:alice:u`,
+                  instanceName: opts.onInstance ?? "primary",
+                  canonical: "u",
+                  agentId: "alice",
+                  gatewayHost: "gw",
+                  state: "connected",
+                  lastOkAt: now,
+                  lastErrorCode: null,
+                  lastErrorAt: null,
+                  attempts: 1,
+                  okCount: 1,
+                  errorCount: 0,
+                  maxPayload: MAXP,
+                  ...opts.ceilings,
+                },
+              ]
+            : [],
+        });
+        return { outboxId, chatId };
+      });
+      await t.action(internal.bridge.dispatch, { outboxId });
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      const msgs = await messagesOf(t, chatId);
+      return {
+        status: row?.status,
+        posted: fetchSpy.mock.calls.length,
+        tooLarge: msgs.some((m) => m.error === "ATTACHMENT_TOO_LARGE"),
+      };
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  }
+
+  const CEILINGS = { attachmentMaxBytes: 5000, attachmentMaxImageBytes: 1000 };
+
+  test("an image over the IMAGE ceiling fails the send, never POSTed — though it fits the frame and the file ceiling", async () => {
+    const r = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: CEILINGS });
+    expect(r).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("a NON-image declared image/png is judged on the FILE ceiling, as the gateway judges it", async () => {
+    // A CAF voice memo declared image/png: the gateway sniffs audio/x-caf. Over the image
+    // ceiling, under the file one — it is sent.
+    const sent = await dispatchOne({ bytes: 2000, mimeType: "image/png", format: "caf", ceilings: CEILINGS });
+    expect(sent).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const over = await dispatchOne({ bytes: 5001, mimeType: "image/png", format: "caf", ceilings: CEILINGS });
+    expect(over).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("a real image declared application/octet-stream is judged on the IMAGE ceiling: the bytes decide", async () => {
+    const r = await dispatchOne({ bytes: 1001, mimeType: "application/octet-stream", format: "png", ceilings: CEILINGS });
+    expect(r).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("an image exactly AT the ceiling is sent (the gateway refuses only `size > limit`)", async () => {
+    const r = await dispatchOne({ bytes: 1000, mimeType: "image/png", ceilings: CEILINGS });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
+  });
+
+  test("a non-image of the same size faces the FILE ceiling, not the image one", async () => {
+    const ok = await dispatchOne({ bytes: 1001, mimeType: "application/pdf", ceilings: CEILINGS });
+    expect(ok).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const over = await dispatchOne({ bytes: 5001, mimeType: "application/pdf", ceilings: CEILINGS });
+    expect(over).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("THE FIRST SEND of an instance is never refused on ANOTHER instance's ceiling", async () => {
+    // Another instance advertises 1000 bytes; the routed one ("primary") has no target
+    // yet — its ceiling is unknown. The file is POSTed: the send that would create its
+    // target must not be the one a foreign limit prevents.
+    const r = await dispatchOne({ bytes: 2000, mimeType: "application/pdf", ceilings: CEILINGS, onInstance: "other" });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const image = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: CEILINGS, onInstance: "other" });
+    expect(image).toEqual({ status: "sent", posted: 1, tooLarge: false });
+  });
+
+  test("an image also faces a FILE ceiling smaller than the image one (the gateway checks both)", async () => {
+    const r = await dispatchOne({
+      bytes: 2000,
+      mimeType: "image/png",
+      ceilings: { attachmentMaxBytes: 1000, attachmentMaxImageBytes: 5000 },
+    });
+    expect(r).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("RECONFIGURED under the same name, OpenClaw → Hermes: the stored ceiling is not applied to the Hermes send", async () => {
+    // The snapshot still carries the OpenClaw gateway's ceilings under "primary" (host
+    // "gw"); the instance row now says Hermes. A file over that ceiling is POSTed.
+    const hermes = { kind: "hermes" as const, gatewayUrl: "http://gw" };
+    const pdf = await dispatchOne({ bytes: 5001, mimeType: "application/pdf", ceilings: CEILINGS, instanceRow: hermes });
+    expect(pdf).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const image = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: CEILINGS, instanceRow: hermes });
+    expect(image).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    // Control: the same row as OpenClaw, same host — the ceiling applies.
+    const openclaw = await dispatchOne({
+      bytes: 5001,
+      mimeType: "application/pdf",
+      ceilings: CEILINGS,
+      instanceRow: { kind: "openclaw", gatewayUrl: "ws://gw" },
+    });
+    expect(openclaw).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("RE-POINTED at another OpenClaw gateway under the same name: the old host's ceiling is not applied", async () => {
+    const r = await dispatchOne({
+      bytes: 5001,
+      mimeType: "application/pdf",
+      ceilings: CEILINGS,
+      instanceRow: { kind: "openclaw", gatewayUrl: "ws://another-gw:18789" },
+    });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
+  });
+
+  test("a stale snapshot vouches for nothing: the file is sent, the gateway decides", async () => {
+    const r = await dispatchOne({
+      bytes: 1001,
+      mimeType: "image/png",
+      ceilings: CEILINGS,
+      snapshotAgeMs: 4 * 60 * 1000,
+    });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
+  });
+
+  test("only the image ceiling known (the default gateway): a file of any size under the frame is sent", async () => {
+    const onlyImage = { attachmentMaxBytes: null, attachmentMaxImageBytes: 1000 };
+    const pdf = await dispatchOne({ bytes: 50_000, mimeType: "application/pdf", ceilings: onlyImage });
+    expect(pdf).toEqual({ status: "sent", posted: 1, tooLarge: false });
+    const image = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: onlyImage });
+    expect(image).toEqual({ status: "failed", posted: 0, tooLarge: true });
+  });
+
+  test("no ceiling known (an older gateway or bridge): nothing is refused on it", async () => {
+    const r = await dispatchOne({ bytes: 1001, mimeType: "image/png", ceilings: null });
+    expect(r).toEqual({ status: "sent", posted: 1, tooLarge: false });
   });
 });

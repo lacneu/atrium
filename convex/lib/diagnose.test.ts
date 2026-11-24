@@ -440,6 +440,24 @@ describe("actionForErrorCode", () => {
     expect(actionForErrorCode("BRIDGE_UNREACHABLE")).toMatch(/BRIDGE_URL/);
     expect(actionForErrorCode("GATEWAY_TIMEOUT")).toMatch(/OPENCLAW_GATEWAY_URL/);
   });
+  test("an announced STOP is not told as a restart, at either moment", () => {
+    // The gateway's `shutdown` carries `restartExpectedMs` for a restart only; a plain
+    // stop does not say it is coming back, so no remediation may tell anyone to wait
+    // for "the restart".
+    const stopping = actionForErrorCode("GATEWAY_STOPPING");
+    const midStream = actionForErrorCode("gateway_stopping");
+    for (const a of [stopping, midStream]) {
+      expect(a).not.toBe(actionForErrorCode("WEIRD"));
+      expect(a).toMatch(/stop/i);
+      expect(a).not.toMatch(/after the restart|restart was intended/i);
+      expect(a).not.toMatch(/nothing reached the agent/i);
+    }
+    expect(stopping).not.toBe(actionForErrorCode("GATEWAY_RESTARTING"));
+    expect(midStream).not.toBe(actionForErrorCode("gateway_restarting"));
+    expect(stopping).not.toBe(midStream);
+    expect(stopping).toMatch(/unproven/i);
+  });
+
   test("the two NAMED connection ends point at DIFFERENT investigations", () => {
     // The whole point of naming them: waiting out an announced restart and chasing
     // read pressure on the bridge have nothing in common. A shared generic
@@ -466,9 +484,11 @@ describe("actionForErrorCode", () => {
     for (const a of [restarting, midStream]) {
       expect(a).not.toMatch(/nothing reached the agent/i);
     }
-    // …and the mid-stream text must not promise a recovery that a long announced
-    // absence skips (the turn is then closed with no poll left).
-    expect(midStream).toMatch(/budget|no poll/i);
+    // …and the mid-stream text describes what happens now: the turn is left to the
+    // transcript (resumed or settled from it), with no poll and no recovery budget —
+    // the wording of the mechanism that was retired must not come back.
+    expect(midStream).toMatch(/transcript/i);
+    expect(midStream).not.toMatch(/9 min|recovery budget|polls the session/i);
     const midStreamSat = actionForErrorCode("connection_saturated");
     expect(midStreamSat).not.toBe(saturated);
     expect(midStreamSat).toMatch(/incomplete|dropped/i);

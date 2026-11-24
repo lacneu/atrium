@@ -31,6 +31,7 @@ import {
   type ChainFacts,
   type GroupUnit,
   type LaunchFact,
+  type RecoveryFact,
   type TaskStart,
 } from "./lib/delegationChain";
 import { docBytes } from "./lib/bubbleProjectionStore";
@@ -93,6 +94,7 @@ async function loadFacts(
 ): Promise<ChainFacts> {
   const launchesOfChild = new Map<string, LaunchFact[]>();
   const taskStarts = new Map<string, TaskStart[]>();
+  const recoveries = new Map<string, RecoveryFact[]>();
   const unknown = new Set<string>();
   const overflow = new Set<string>();
   let probes = 0;
@@ -105,7 +107,34 @@ async function loadFacts(
       if (seen.has(runId)) continue;
       seen.add(runId);
       const ref = deliveryParentRef(runId);
-      if (ref === null) continue;
+      if (ref === null) {
+        // Not a delivery: the gateway's restart recovery of another run, if its entry —
+        // the `user` row of this very run (`sendId`) — says so. One bounded probe.
+        if (out()) {
+          unknown.add(runId);
+          continue;
+        }
+        probes++;
+        const entries = (
+          await ctx.db
+            .query("transcriptRows")
+            .withIndex("by_chat_send", (q) => q.eq("chatId", chatId).eq("sendId", runId))
+            .take(LAUNCHES_PER_CHILD + 1)
+        ).map((r) => metered(meter, r));
+        if (entries.length > LAUNCHES_PER_CHILD) {
+          unknown.add(runId);
+          continue;
+        }
+        const facts = entries.flatMap((r) =>
+          r.recoversRunId !== undefined
+            ? [{ resumedRunId: r.recoversRunId, sessionKey: r.sessionKey, instanceName: r.instanceName }]
+            : [],
+        );
+        if (facts.length === 0) continue;
+        recoveries.set(runId, facts);
+        next.push(...facts.map((f) => f.resumedRunId));
+        continue;
+      }
       if (ref.kind === "task") {
         if (!taskStarts.has(ref.taskId) && !overflow.has(ref.taskId)) {
           if (out()) {
@@ -168,7 +197,7 @@ async function loadFacts(
     level = next;
   }
   // Runs still to walk past the depth are left unread: the rules stop at the same depth.
-  return { launchesOfChild, taskStarts, unknown, overflow };
+  return { launchesOfChild, taskStarts, recoveries, unknown, overflow };
 }
 
 /** Recompute the display groups of the chat's most recent bubbles; returns how many

@@ -61,6 +61,8 @@ export type FinalizeCause =
   | "connection_lost"
   /** The gateway announced its own restart on the way out. */
   | "gateway_restarting"
+  /** The gateway announced a plain stop on the way out (no restart promised). */
+  | "gateway_stopping"
   /** Frames were dropped because one end could not keep up. */
   | "connection_saturated"
   | "external";
@@ -96,6 +98,7 @@ export const FINALIZE_CAUSES = [
   "session_reset",
   "connection_lost",
   "gateway_restarting",
+  "gateway_stopping",
   "connection_saturated",
   "external",
 ] as const satisfies readonly FinalizeCause[];

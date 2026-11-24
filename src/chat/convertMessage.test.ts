@@ -573,3 +573,56 @@ describe("convertConvexMessage — display group place (phase 5)", () => {
     expect(meta.groupFirstId).toBeNull();
   });
 });
+
+describe("the model-fallback marker rides the bubble's metadata", () => {
+  it("an active fallback carries the model that answered and the one selected", () => {
+    const meta = customMeta(
+      makeMessage({
+        text: "BENCH_FALLBACK_OK",
+        parts: [
+          { kind: "model_fallback", state: "active", model: "openai/gpt-6.1-sol", selected: "openai/gpt-5.5", at: 1 },
+        ],
+      }),
+    );
+    expect(meta.modelFallback).toStrictEqual({
+      state: "active",
+      model: "openai/gpt-6.1-sol",
+      selected: "openai/gpt-5.5",
+    });
+  });
+
+  it("a cleared one carries the selected model only, and never enters the reply's content", () => {
+    const message = makeMessage({
+      text: "REPLAY_OK",
+      parts: [{ kind: "model_fallback", state: "cleared", model: "openai/gpt-5.5", selected: "stale", at: 1 }],
+    });
+    expect(customMeta(message).modelFallback).toStrictEqual({ state: "cleared", model: "openai/gpt-5.5" });
+    expect(contentTypes(message)).toStrictEqual(["text"]);
+  });
+
+  it("a bubble with no such part carries none", () => {
+    expect("modelFallback" in customMeta(makeMessage({ text: "hello" }))).toBe(false);
+  });
+});
+
+describe("the gateway's status notices ride the bubble's metadata, never its content", () => {
+  it("are listed in order, apart from the reply", () => {
+    const message = makeMessage({
+      text: "BENCH_FALLBACK_OK",
+      parts: [
+        { kind: "gateway_notice", text: "Usage: 1230 in / 10 out", at: 1 },
+        { kind: "gateway_notice", text: "Diagnostics: ok", at: 2 },
+      ],
+    });
+    expect(customMeta(message).gatewayNotices).toStrictEqual(["Usage: 1230 in / 10 out", "Diagnostics: ok"]);
+    expect(contentTypes(message)).toStrictEqual(["text"]);
+    const text = (convertConvexMessage(message).content as ReadonlyArray<{ type: string; text?: string }>)
+      .map((p) => p.text ?? "")
+      .join("");
+    expect(text).not.toContain("Usage:");
+  });
+
+  it("a bubble without one carries none", () => {
+    expect("gatewayNotices" in customMeta(makeMessage({ text: "hello" }))).toBe(false);
+  });
+});

@@ -1067,7 +1067,11 @@ async function settleEstimatedPlanIfIdle(
         kind: "plan",
         steps: steps.map((st) => ({ ...st, status: "completed" as const })),
         estimated: true,
-        stamp: Date.now(),
+        // The closed checklist is the same plan, as of the same instant: it keeps that
+        // plan's stamp (bridge clock, SECONDS — lib/planOrder.ts) and wins on insertion
+        // order. A stamp of its own from this server's clock in milliseconds outranked
+        // every plan a later run published in this bubble.
+        ...(current.part.stamp !== undefined ? { stamp: current.part.stamp } : {}),
       },
       ...(current.announceRun !== undefined
         ? { announceRun: current.announceRun }

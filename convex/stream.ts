@@ -69,6 +69,7 @@ import { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
 import { isExplicitTerminal, utf8Bytes } from "./lib/bubbleProjection";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
+import { GATEWAY_NOTICES_PER_BUBBLE } from "./lib/modelFallback";
 import { currentPlanIndex, usablePlanStamp } from "./lib/planOrder";
 
 // ── ATOMIC ingest authorization (cross-gateway barrier) ──────────────────────
@@ -6426,6 +6427,189 @@ export const splitSegment = internalMutation({
  * the first. The text joins the run's last bubble; when the run left none (its first
  * terminal had nothing to show), a bubble is created for it.
  */
+/**
+ * The bubble a RUN-KEYED fact goes on (a model fallback, a gateway status notice): the
+ * gateway states these after the run's work, so the bubble is usually settled already.
+ *
+ * The bubble the bridge names, when that is an answer of this chat — the bridge keeps,
+ * for every run a turn owned (the run it was sent as, a run it adopted on the gateway's
+ * word), the bubble that turn wrote, so the named bubble may carry another run's id.
+ * Without a name, the run's own answer in this chat (and session, when given). In both
+ * cases a bubble bound to another instance is not this bridge's to touch. Null when the
+ * run left no bubble: the caller writes nothing, and never creates one.
+ */
+async function runBubbleFor(
+  ctx: MutationCtx,
+  a: {
+    chatId: Id<"chats">;
+    runId: string;
+    messageId?: Id<"messages">;
+    turnSessionKey?: string;
+    boundInstanceName?: string;
+  },
+): Promise<Doc<"messages"> | null> {
+  await assertChatBound(ctx, a.chatId, a.boundInstanceName);
+  const answerHere = (m: Doc<"messages"> | null): m is Doc<"messages"> =>
+    m !== null &&
+    m.chatId === a.chatId &&
+    m.role === "assistant" &&
+    (a.boundInstanceName === undefined ||
+      m.boundInstance === undefined ||
+      m.boundInstance === a.boundInstanceName);
+  const named = a.messageId === undefined ? null : await ctx.db.get(a.messageId);
+  if (answerHere(named)) return named;
+  // The run's answer: its last segment when the run was cut at steered inputs.
+  const ofRun = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", a.chatId).eq("runId", a.runId))
+    .order("desc")
+    .take(8);
+  return (
+    ofRun.find(
+      (m) =>
+        answerHere(m) &&
+        (a.turnSessionKey === undefined || m.turnSessionKey === undefined || m.turnSessionKey === a.turnSessionKey),
+    ) ?? null
+  );
+}
+
+/**
+ * A MODEL FALLBACK the gateway stated for a run -> a marker on that run's bubble
+ * (`runBubbleFor`). It writes ONE part and touches nothing else — not the text, not the
+ * status, not the finalize stamps — and never creates a bubble.
+ */
+export const noteModelFallback = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    runId: v.string(),
+    messageId: v.optional(v.id("messages")),
+    turnSessionKey: v.optional(v.string()),
+    state: v.union(v.literal("active"), v.literal("cleared")),
+    model: v.string(),
+    selected: v.optional(v.string()),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, a) => {
+    const target = await runBubbleFor(ctx, a);
+    if (target === null) return null;
+    const now = Date.now();
+    const part = {
+      kind: "model_fallback" as const,
+      state: a.state,
+      model: a.model,
+      ...(a.state === "active" && a.selected !== undefined ? { selected: a.selected } : {}),
+      at: now,
+    };
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", target._id))
+      .collect();
+    const held = parts.find((p) => p.part.kind === "model_fallback");
+    if (held !== undefined) {
+      const same =
+        held.part.kind === "model_fallback" &&
+        held.part.state === part.state &&
+        held.part.model === part.model &&
+        held.part.selected === part.selected;
+      // A retransmit changes nothing — not even the bubble's `updatedAt`.
+      if (same) return target._id;
+      await ctx.db.patch(held._id, { part });
+    } else {
+      await ctx.db.insert("messageParts", {
+        messageId: target._id,
+        order: parts.reduce((m, e) => Math.max(m, e.order + 1), 0),
+        part,
+      });
+    }
+    await ctx.db.patch(target._id, { updatedAt: now });
+    return target._id;
+  },
+});
+
+/**
+ * A STATUS NOTICE of the gateway for a run -> a notice line on that run's bubble
+ * (`runBubbleFor`). The answer's text is never touched and no bubble is created: the
+ * gateway sends these beside the answer ("status notices … do not define the terminal
+ * reply they accompany", upstream). A notice already on the bubble is not written twice;
+ * past the per-bubble bound, further ones are dropped.
+ */
+export const noteGatewayNotice = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    runId: v.string(),
+    messageId: v.optional(v.id("messages")),
+    turnSessionKey: v.optional(v.string()),
+    text: v.string(),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, a) => {
+    const target = await runBubbleFor(ctx, a);
+    if (target === null) return null;
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", target._id))
+      .collect();
+    const notices = parts.filter((p) => p.part.kind === "gateway_notice");
+    if (notices.some((p) => p.part.kind === "gateway_notice" && p.part.text === a.text)) return target._id;
+    if (notices.length >= GATEWAY_NOTICES_PER_BUBBLE) return target._id;
+    const now = Date.now();
+    await ctx.db.insert("messageParts", {
+      messageId: target._id,
+      order: parts.reduce((m, e) => Math.max(m, e.order + 1), 0),
+      part: { kind: "gateway_notice" as const, text: a.text, at: now },
+    });
+    await ctx.db.patch(target._id, { updatedAt: now });
+    return target._id;
+  },
+});
+
+/** How long the key of a late final's write is kept: a key serves the retries of ONE
+ *  write — the writer's own (seconds) and the bridge's later passes (the next frames). */
+export const LATE_FINAL_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+/** Expired keys deleted per recorded write (the sweep is paid by the writes themselves). */
+const LATE_FINAL_KEY_SWEEP = 16;
+/** A write key as the bridge mints it (a uuid); anything else is not a key. */
+const LATE_FINAL_KEY_MAX_CHARS = 128;
+
+/**
+ * EVERY keyed late final records its key with the bubble it wrote into — opened or joined
+ * — in its own transaction: the op is retried by the bridge, and a repeat with no record
+ * would act a second time (a second bubble; or, the joined bubble deleted meanwhile, a
+ * bubble for a text its reader removed). The chat's purge finds these records through the
+ * projection's marker (`transcriptSeenAt` — "the projection wrote something for this
+ * conversation"), so a conversation that does not carry it yet (its transcript reads
+ * failed so far) is given it here, with the record. The chat's keys no retry can still
+ * carry are forgotten on the way (oldest first, bounded per write).
+ */
+async function recordLateFinalKey(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+  chatId: Id<"chats">,
+  key: string,
+  messageId: Id<"messages">,
+  now: number,
+): Promise<void> {
+  if (chat !== null && !transcriptStoredText(chat)) await ctx.db.patch(chatId, { transcriptSeenAt: now });
+  const stale = await ctx.db
+    .query("lateFinalWrites")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .take(LATE_FINAL_KEY_SWEEP);
+  for (const s of stale) if (s.createdAt < now - LATE_FINAL_KEY_TTL_MS) await ctx.db.delete(s._id);
+  await ctx.db.insert("lateFinalWrites", { chatId, writeKey: key, messageId, createdAt: now });
+}
+
+/**
+ * A DISTINCT late final of a settled run (CU-8): joined to the run's bubble when the
+ * bridge names one, else a settled bubble of its own.
+ *
+ * `writeKey` (the bridge's name for THIS write, the same across its retries) makes the
+ * OPENING idempotent: the bubble a key opened is remembered (`lateFinalWrites`), and a
+ * repeat of that write is answered with it — never with another turn's bubble of the same
+ * run and text, whose write carries another key. Without a key (an older bridge) every
+ * call that names no bubble opens one, as before.
+ */
 export const appendLateFinal = internalMutation({
   args: {
     chatId: v.id("chats"),
@@ -6434,15 +6618,41 @@ export const appendLateFinal = internalMutation({
     messageId: v.optional(v.id("messages")),
     text: v.string(),
     turnSessionKey: v.optional(v.string()),
+    writeKey: v.optional(v.string()),
     ...boundArg,
   },
   returns: v.union(v.id("messages"), v.null()),
-  handler: async (ctx, { chatId, runId, messageId, text, turnSessionKey, boundInstanceName }) => {
+  handler: async (ctx, { chatId, runId, messageId, text, turnSessionKey, writeKey, boundInstanceName }) => {
     const add = text.trim().slice(0, LATE_FINAL_MAX_CHARS);
     if (add === "") return null;
     await assertChatBound(ctx, chatId, boundInstanceName);
-    const existing = messageId === undefined ? null : await ctx.db.get(messageId);
+    const key = writeKey !== undefined && writeKey !== "" && writeKey.length <= LATE_FINAL_KEY_MAX_CHARS ? writeKey : undefined;
     const now = Date.now();
+    // A REPEAT of a write that opened a bubble: that bubble is its destination.
+    const opened =
+      key === undefined
+        ? null
+        : await ctx.db
+            .query("lateFinalWrites")
+            .withIndex("by_chat_key", (q) => q.eq("chatId", chatId).eq("writeKey", key))
+            .first();
+    if (opened !== null) {
+      const bubble = await ctx.db.get(opened.messageId);
+      // Deleted since (by its reader): the write landed, and nothing is opened again.
+      if (bubble === null || bubble.chatId !== chatId || bubble.role !== "assistant") return null;
+      await assertMessageBound(ctx, bubble, boundInstanceName);
+      // …and its own session's only: a key answers the session that recorded it.
+      if (!bubbleInScope(bubble, { sessionKey: turnSessionKey })) return null;
+      if (bubble.text.includes(add)) return bubble._id;
+      // A LONGER view of the text this write opened the bubble with (the bridge's debt
+      // grew between two passes) replaces it; anything else is added, as for any join.
+      await ctx.db.patch(bubble._id, {
+        text: bubble.text.trim() === "" || add.startsWith(bubble.text) ? add : `${bubble.text}\n\n${add}`,
+        updatedAt: now,
+      });
+      return bubble._id;
+    }
+    const existing = messageId === undefined ? null : await ctx.db.get(messageId);
     if (
       existing !== null &&
       existing.chatId === chatId &&
@@ -6452,6 +6662,13 @@ export const appendLateFinal = internalMutation({
       // The bubble's OWN bridge only: in a conversation several instances serve, the
       // chat check alone would let bridge A write into a bubble bridge B settled.
       await assertMessageBound(ctx, existing, boundInstanceName);
+      // …and its own session only: a bubble another session of this gateway settled is
+      // not joined, whatever id the bridge names (nothing is written).
+      if (!bubbleInScope(existing, { sessionKey: turnSessionKey })) return null;
+      // A keyed JOIN records its key too, with its outcome: its answer can be lost and the
+      // bubble deleted before the bridge asks again — the repeat is then answered from
+      // the record (nothing), never by opening a bubble for a text that was already shown.
+      if (key !== undefined) await recordLateFinalKey(ctx, await ctx.db.get(chatId), chatId, key, existing._id, now);
       // Idempotent: a retransmit of the same final finds its text already there.
       if (existing.text.includes(add)) return existing._id;
       await ctx.db.patch(existing._id, {
@@ -6479,6 +6696,51 @@ export const appendLateFinal = internalMutation({
       finalizedAt: now,
     });
     await ctx.db.patch(chatId, { updatedAt: now, lastAssistantAt: now });
+    if (key !== undefined) await recordLateFinalKey(ctx, chat, chatId, key, created, now);
     return created;
+  },
+});
+
+/**
+ * TEXT A RUN SENT AFTER ITS BUBBLE SETTLED. A turn can close before its run's `chat`
+ * terminal — the run's definitive `lifecycle` error leaves before the gateway flushes the
+ * paced chat buffer and sends the terminal that carries it (src/gateway/server-chat.ts,
+ * `finalizeLifecycleEvent` → `emitChatTerminal`). The bridge offers that text here.
+ *
+ * It is taken ONLY as a strict extension of what this message of this run holds: the
+ * settled bubble gains its missing tail, and nothing else about it moves — no status, no
+ * error, no verdict, no part. Anything else is refused (false): a stale or rewritten view,
+ * another run's bubble, a bubble still streaming, one the transcript already recomposed
+ * from its rows (`rowLayout`: the durable rows are then the authority).
+ *
+ * IDEMPOTENT: a repeat of a write that landed finds exactly its text there and is answered
+ * as written (true). The bridge retries a write whose answer it lost, and reads `false` as
+ * "this text is not in the bubble": answering a landed write `false` made it join the
+ * text a second time, as a late final.
+ */
+export const completeSettledText = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    runId: v.string(),
+    text: v.string(),
+    ...boundArg,
+  },
+  returns: v.boolean(),
+  handler: async (ctx, { messageId, runId, text, boundInstanceName }) => {
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant") return false;
+    await assertMessageBound(ctx, message, boundInstanceName);
+    if (message.status === "streaming" || message.runId !== runId) return false;
+    if (message.rowLayout !== undefined) return false;
+    if (text === message.text) return true;
+    if (
+      text.length > SEGMENT_TEXT_MAX_CHARS ||
+      text.length <= message.text.length ||
+      !text.startsWith(message.text)
+    ) {
+      return false;
+    }
+    await ctx.db.patch(messageId, { text, updatedAt: Date.now() });
+    return true;
   },
 });

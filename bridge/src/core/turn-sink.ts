@@ -21,8 +21,13 @@
 // aborted->aborted). Every other run.status is intermediate and dropped.
 
 import type { SessionFillSource } from "./context-budget.js";
-import { EVENT_REASONING, EVENT_WIDGET, type NormalizedEvent } from "./events.js";
-import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
+import {
+  EVENT_GATEWAY_SEQ_REPORT,
+  EVENT_REASONING,
+  EVENT_WIDGET,
+  type NormalizedEvent,
+} from "./events.js";
+import { ConvexIngestError, type ConvexWriter, type FinalizeStatus, type ToolPart } from "../convex-writer.js";
 import { announcedChildKey } from "../providers/openclaw/run-families.js";
 import { cronPartFromTool } from "./cron-part.js";
 import {
@@ -222,6 +227,17 @@ function boundRisk(v: {
     redacted: v.redacted,
   };
 }
+
+/**
+ * What became of the write of a fact about a run (a fallback marker, a status notice):
+ *  - `written`   — it is on the run's bubble (or the writer keeps no such thing);
+ *  - `no_bubble` — Convex ANSWERED that the run has no bubble: nothing to write on;
+ *  - `failed`    — the write did not land: the writer's bounded retries of a transient
+ *                  failure ran out, or Convex refused the request outright (a 4xx, which
+ *                  is not retried). Nothing is known about the bubble; the fact is
+ *                  dropped, and traced once, here (`traceRunFactDropped`).
+ */
+export type RunFactWrite = "written" | "no_bubble" | "failed";
 
 export class TurnSink {
   /** A back-off clear whose POST did not land. The normalizer consumes its own flag on
@@ -489,10 +505,10 @@ export class TurnSink {
   // overflow reads causally at a glance ("40% pre-turn + 66 tool calls ->
   // overflow") instead of needing a manual reconstruction.
   private toolCallCount = 0;
-  // Frame-loss events observed during THIS turn (see core/events EVENT_FRAME_GAP).
-  // Rides the per-turn pressure trace so "this reply may be missing a piece" is
-  // answerable after the fact, per turn, instead of only as a live signal.
-  private framesLostThisTurn = 0;
+  // The gateway's sequence reports seen during THIS turn (see core/events
+  // EVENT_GATEWAY_SEQ_REPORT). A count for triage, not a loss: no frame of the turn is
+  // known missing because of them, so it forces no trace of its own.
+  private gatewaySeqReportsThisTurn = 0;
   // update_plan calls observed on a DELIVERY run this turn (item-derived —
   // the plan content never reaches those runs' wire). Applied ONCE at turn
   // end: the advance must know whether the turn spawned a further child
@@ -682,12 +698,80 @@ export class TurnSink {
     return this.lastSettled;
   }
 
+  /**
+   * A model fallback the gateway stated for a run -> the marker on that run's bubble:
+   * `messageId` when the caller knows it, otherwise Convex finds the run's bubble.
+   * Three outcomes, never two (see RunFactWrite): a write that FAILED says nothing about
+   * whether the bubble exists. It opens no turn and changes no bubble's state; a marker
+   * never fails a turn. Called off the frame path (RunManager's detached chain).
+   */
+  async writeRunFallback(
+    fallback: { runId: string; state: "active" | "cleared"; model: string; selected?: string },
+    messageId: string | null,
+  ): Promise<RunFactWrite> {
+    if (this.writer.noteModelFallback === undefined) return "written";
+    try {
+      const marked = await this.writer.noteModelFallback(this.chatId, {
+        runId: fallback.runId,
+        messageId,
+        sessionKey: this.sessionKey ?? null,
+        state: fallback.state,
+        model: fallback.model,
+        ...(fallback.state === "active" && fallback.selected !== undefined && fallback.selected !== ""
+          ? { selected: fallback.selected }
+          : {}),
+      });
+      return typeof marked === "string" ? "written" : "no_bubble";
+    } catch (e) {
+      this.traceRunFactDropped("a model fallback marker", fallback.runId, e);
+      return "failed";
+    }
+  }
+
+  /**
+   * A status notice the gateway sent beside a run's answer (see
+   * ConvexWriter.noteGatewayNotice) -> a notice line on that run's bubble, addressed
+   * like `writeRunFallback`, with the same three outcomes. Never the answer's text,
+   * never a bubble of its own.
+   */
+  async writeRunNotice(runId: string, messageId: string | null, text: string): Promise<RunFactWrite> {
+    if (this.writer.noteGatewayNotice === undefined) return "written";
+    try {
+      const noticed = await this.writer.noteGatewayNotice(this.chatId, {
+        runId,
+        messageId,
+        sessionKey: this.sessionKey ?? null,
+        text,
+      });
+      return typeof noticed === "string" ? "written" : "no_bubble";
+    } catch (e) {
+      this.traceRunFactDropped("a gateway notice", runId, e);
+      return "failed";
+    }
+  }
+
+  /** The ONE trace of a run fact that will not be shown, with what really happened: a
+   *  refusal (Convex answered 4xx — an older deployment that does not know the op, say)
+   *  is not a failure to reach it. */
+  private traceRunFactDropped(what: string, runId: string, err: unknown): void {
+    const status = err instanceof ConvexIngestError ? err.status : null;
+    const refused = status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429;
+    console.warn(
+      `[run-facts] ${what} dropped: ${
+        refused ? `Convex refused it (HTTP ${status}, not retried)` : "its write failed"
+      } run=${runId.slice(0, 60)}:`,
+      errForLog(err),
+    );
+  }
+
   /** A DISTINCT late final of a settled run (CU-8): joins `messageId` (that run's
    *  bubble), or opens a settled bubble of its own when the run left none. */
   async writeLateFinal(
     runId: string,
     messageId: string | null,
     text: string,
+    /** The caller's key for THIS write, kept across its retries (convex-writer.ts). */
+    writeKey?: string,
   ): Promise<string | null> {
     return (await this.writer.appendLateFinal?.({
       chatId: this.chatId,
@@ -695,7 +779,22 @@ export class TurnSink {
       messageId,
       text,
       sessionKey: this.sessionKey ?? null,
+      ...(writeKey !== undefined ? { writeKey } : {}),
     })) ?? null;
+  }
+
+  /**
+   * The settled bubble's text, COMPLETED by text its run sent after the turn closed
+   * (Normalizer.settledCompletion). Never a turn event: nothing is reopened, the status,
+   * the error and the verdict stay as the terminal wrote them. Convex is the judge — it
+   * takes the text only as a strict extension of what that message of that run holds.
+   * The bubble is NAMED by the caller (the run's own record, RunManager `settledRuns`):
+   * a turn may have begun since, and nothing of this sink's turn is read or moved.
+   * False: the message does not hold the text.
+   */
+  async completeSettledText(messageId: string, runId: string, text: string): Promise<boolean> {
+    if (this.writer.completeSettledText === undefined) return false;
+    return await this.writer.completeSettledText({ messageId, runId, text });
   }
 
   /**
@@ -830,7 +929,7 @@ export class TurnSink {
     this.compactionReason = null;
     this.compactionRefused = false;
     this.toolCallCount = 0;
-    this.framesLostThisTurn = 0;
+    this.gatewaySeqReportsThisTurn = 0;
     this.planAdvancesThisTurn = 0;
     this.lastPlanEmptyThisTurn = false;
     this.lastPlanStamp = undefined;
@@ -1783,40 +1882,25 @@ export class TurnSink {
           await this.writer.noteMediaUndelivered(messageId, this.chatId);
           break;
         }
-        case "frame.gap": {
-          // Frames were LOST between the gateway and this turn (see core/events).
-          // Observe-only on purpose: the turn keeps running and everything that
-          // did arrive stays valid — the reply may simply be missing a piece, and
-          // that possibility must be VISIBLE instead of being discovered by the
-          // user. Counters only, never content.
-          // Accumulate the frames ACTUALLY missing, not the number of reports: a
-          // single gap can swallow many frames (expected 2, received 5 = three
-          // lost), and undercounting would understate exactly the incidents that
-          // matter most (codex P2).
-          const missing = asNumber(event.missing);
-          this.framesLostThisTurn += missing !== null && missing > 0 ? missing : 1;
-          // NOT awaited (codex P2): noteFrameGap already posts off the per-message
-          // chain, but awaiting it here would let a slow/unavailable Convex delay
-          // the deltas and the finalize by the write timeout — a diagnostic must
-          // never stall the stream it describes.
+        case EVENT_GATEWAY_SEQ_REPORT: {
+          // The gateway's report about its own per-run numbering (see core/events):
+          // recorded under its own name, never as a frame this turn lost.
+          this.gatewaySeqReportsThisTurn++;
+          // NOT awaited: a slow or unavailable Convex must not delay the deltas and
+          // the finalize by the write timeout — a diagnostic never stalls the stream.
           void this.writer
-            .noteFrameGap?.(
+            .noteGatewaySeqReport?.(
               this.chatId,
               {
-                source: asString(event.source) || "unknown",
                 expected: asNumber(event.expected),
                 received: asNumber(event.received),
-                missing,
+                runId: asString(event.runId) || null,
               },
-              // ATTRIBUTABLE: this path only ever carries the GATEWAY's own
-              // report, which names the run it lost frames for — so charging it
-              // to this turn is sound. Connection-level envelope holes never
-              // reach here (see session.ts).
               messageId,
             )
             ?.catch((e: unknown) =>
               console.error(
-                "[frame-gap] trace skipped (non-fatal):",
+                "[gateway-seq] trace skipped (non-fatal):",
                 errForLog(e),
               ),
             );
@@ -2668,11 +2752,6 @@ export class TurnSink {
       // its telemetry would otherwise be silently dropped (codex P2).
       this.pendingDiagStopReason !== null ||
       this.pendingDiagUsage !== null ||
-      // A FRAME LOSS must force the trace too (codex P2): a spontaneous turn has
-      // no pre-turn describe and may carry no other diagnostic, so the per-turn
-      // "frames were lost" counter would never ship — exactly on the turns whose
-      // reply is most likely to look truncated.
-      this.framesLostThisTurn > 0 ||
       // Same reasoning for a gateway-TRUNCATED final: it is the direct answer to
       // "why does this reply stop mid-sentence", and it must ship even on a turn
       // with no other diagnostic.
@@ -2722,11 +2801,10 @@ export class TurnSink {
           // describe: that would be another session state presented as this turn's.
           pressureSource: this.pressure !== null ? "presend_describe" : "absent",
           turnOrigin,
-          // Frames LOST during this turn (0 on the overwhelming majority). A
-          // non-zero value is the honest answer to "why does this reply look
-          // truncated" — the measure did not exist before this lot.
-          ...(this.framesLostThisTurn > 0
-            ? { framesLost: this.framesLostThisTurn }
+          // How many sequence reports the gateway sent about this turn's runs
+          // (absent when none). Not frames lost: see EVENT_GATEWAY_SEQ_REPORT.
+          ...(this.gatewaySeqReportsThisTurn > 0
+            ? { gatewaySeqReports: this.gatewaySeqReportsThisTurn }
             : {}),
           ...(this.pendingTruncatedFinals > 0
             ? { finalTruncated: this.pendingTruncatedFinals }

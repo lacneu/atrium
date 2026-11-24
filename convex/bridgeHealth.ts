@@ -20,7 +20,12 @@ import { internal } from "./_generated/api";
 import { requireActive, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { bridgeHealthTarget } from "./schema";
-import { maxRawInboundBytes } from "./lib/attachmentLimits";
+import {
+  attachmentCeilingFor,
+  attachmentCeilingsOf,
+  maxRawInboundBytes,
+  type AttachmentCeilings,
+} from "./lib/attachmentLimits";
 import {
   resolveBridgeUrlForDispatch,
   resolveHealthPollTargets,
@@ -71,6 +76,8 @@ export function normalizeTarget(raw: unknown): {
   localRefusalCount: number;
   gatewayVersion: string | null;
   maxPayload: number | null;
+  attachmentMaxBytes: number | null;
+  attachmentMaxImageBytes: number | null;
 } | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
@@ -125,6 +132,104 @@ export function normalizeTarget(raw: unknown): {
     // reports each target's own cap, so the poller keeps them distinct (not one
     // URL-level value copied onto every target). null on a pre-this-release bridge.
     maxPayload: num(o.maxPayload),
+    // This instance's per-attachment ceilings; null on an older bridge, or when the
+    // gateway advertises none.
+    attachmentMaxBytes: num(o.attachmentMaxBytes),
+    attachmentMaxImageBytes: num(o.attachmentMaxImageBytes),
+  };
+}
+
+/** What an instance is RIGHT NOW, from its own row: its provider and its gateway URL
+ *  (null when it has no row — a single env-served OpenClaw deployment). */
+export interface CurrentGateway {
+  provider: string;
+  gatewayUrl: string | null;
+}
+
+/** The non-secret host[:port] of a gateway URL — the bridge's own `gatewayHostOf`
+ *  (bridge/src/core/health.ts), which is what a health target's `gatewayHost` holds. */
+export function gatewayHostOf(gatewayUrl: string): string {
+  try {
+    return new URL(gatewayUrl).host || gatewayUrl;
+  } catch {
+    return gatewayUrl;
+  }
+}
+
+/** Read what `instanceName` currently is. No row is an OpenClaw gateway, the convention
+ *  the dispatch itself uses (`instance?.kind ?? "openclaw"`). */
+async function currentGatewayOf(
+  ctx: QueryCtx,
+  instanceName: string | null | undefined,
+): Promise<CurrentGateway | null> {
+  if (instanceName == null) return null;
+  const row = await ctx.db
+    .query("instances")
+    .withIndex("by_name", (q) => q.eq("name", instanceName))
+    .first();
+  return { provider: row?.kind ?? "openclaw", gatewayUrl: row?.gatewayUrl ?? null };
+}
+
+/**
+ * The gateway's per-attachment ceilings for ONE named instance, or null when they are
+ * not known — and an unknown ceiling refuses nothing (lib/attachmentLimits.ts).
+ *
+ * Known means: this instance's OWN targets carry them, all alike (the bridge publishes
+ * the instance's value on each), in a snapshot that is fresh. Never another instance's,
+ * never a minimum across instances — instance B's first send must not be refused on
+ * instance A's limit, which would also prevent the send that makes B's known — and
+ * nothing at all for a reader that names no instance.
+ *
+ * And never across a RECONFIGURATION: the snapshot is keyed by the instance's name,
+ * which survives the instance being pointed at another gateway or another provider. A
+ * stored ceiling applies only to what the instance IS NOW (`current`, read from its row
+ * by the caller): an OpenClaw gateway, at the host the ceiling was read from. A name
+ * that now designates a Hermes gateway, or another OpenClaw gateway, has no ceiling
+ * until its own is read.
+ */
+export function resolveAttachmentCeilings(
+  doc: Doc<"bridgeHealth">,
+  instanceName: string | null | undefined,
+  now: number,
+  current: CurrentGateway | null | undefined,
+): AttachmentCeilings | null {
+  if (instanceName == null || !doc.reachable || now - doc.checkedAt > STALE_MS) return null;
+  if (current == null || current.provider !== "openclaw") return null;
+  const mine = doc.targets.filter((t) => t.instanceName === instanceName);
+  if (
+    current.gatewayUrl !== null &&
+    mine.some((t) => t.gatewayHost !== gatewayHostOf(current.gatewayUrl as string))
+  ) {
+    return null;
+  }
+  const own = mine.map((t) => attachmentCeilingsOf(t));
+  const first = own[0];
+  if (first === undefined || first === null) return null;
+  const agree = own.every(
+    (c) => c !== null && c.maxBytes === first.maxBytes && c.maxImageBytes === first.maxImageBytes,
+  );
+  return agree ? first : null;
+}
+
+/** What the dispatch needs of the health snapshot for the routed instance, in ONE read:
+ *  the frame limit (the instance's own, else the conservative document minimum, else
+ *  null) and the per-attachment ceilings (the instance's own, or unknown). */
+export function resolveInboundLimits(
+  doc: Doc<"bridgeHealth"> | null,
+  instanceName: string | null | undefined,
+  now: number,
+  current: CurrentGateway | null | undefined,
+): { maxPayload: number | null; attachmentCeilings: AttachmentCeilings | null } {
+  if (doc === null) return { maxPayload: null, attachmentCeilings: null };
+  const own =
+    instanceName != null
+      ? doc.targets.find(
+          (t) => t.instanceName === instanceName && typeof t.maxPayload === "number",
+        )?.maxPayload
+      : undefined;
+  return {
+    maxPayload: own ?? doc.maxPayload ?? null,
+    attachmentCeilings: resolveAttachmentCeilings(doc, instanceName, now, current),
   };
 }
 
@@ -146,6 +251,9 @@ export interface Availability {
    *  composer rejects bigger files upfront). null when maxPayload is not yet known
    *  -> the composer fails OPEN (the bridge frame guard is the backstop). */
   maxInboundBytes: number | null;
+  /** Max RAW bytes of an inline IMAGE: the gateway's per-attachment image ceiling
+   *  (never above `maxInboundBytes`). null when the gateway advertises none. */
+  maxInboundImageBytes: number | null;
   /** GLOBAL view only (no chatId): how many configured instances currently fail
    *  their discovery poll on a transport error — the settings-tab badge shows
    *  amber ("bridge up, gateways unreachable") instead of a green dot during a
@@ -208,6 +316,10 @@ export function computeAvailability(
   // it cannot deadlock — a legit per-instance lockout. null/undefined = unknown
   // (no discovery row yet) → fail OPEN.
   instanceReachable?: boolean | null,
+  // What the instance IS NOW (its row): the per-attachment ceilings of the snapshot are
+  // applied only to an OpenClaw gateway at the host they were read from. Absent ⇒ no
+  // ceiling (the frame cap alone).
+  currentGateway?: CurrentGateway | null,
 ): Availability {
   if (doc === null)
     return {
@@ -217,6 +329,7 @@ export function computeAvailability(
       reason: null,
       checkedAt: null,
       maxInboundBytes: null,
+      maxInboundImageBytes: null,
     };
   const stale = now - doc.checkedAt > STALE_MS;
   const scoped =
@@ -257,15 +370,25 @@ export function computeAvailability(
       ? (scoped.find((t) => typeof t.maxPayload === "number")?.maxPayload ??
         docMaxPayload)
       : docMaxPayload;
+  const ceilings = resolveAttachmentCeilings(doc, instanceName, now, currentGateway);
+  const frameCap =
+    scopedMaxPayload !== null ? maxRawInboundBytes(scopedMaxPayload) : null;
+  const fileCeiling = ceilings?.maxBytes ?? null;
+  const maxInboundBytes =
+    frameCap === null || fileCeiling === null ? frameCap : Math.min(frameCap, fileCeiling);
+  const imageCeiling = attachmentCeilingFor(true, ceilings);
   return {
     known: true,
     available,
     degraded: anyTargetError,
     reason,
     checkedAt: doc.checkedAt,
-    // Derived from the gateway-announced maxPayload — never a hardcoded size.
-    maxInboundBytes:
-      scopedMaxPayload !== null ? maxRawInboundBytes(scopedMaxPayload) : null,
+    // Derived from the gateway-announced maxPayload — never a hardcoded size — and
+    // narrowed by the gateway's own per-attachment ceilings where they are KNOWN for
+    // this instance (never for a read that names none).
+    maxInboundBytes,
+    maxInboundImageBytes:
+      imageCeiling === null ? null : Math.min(imageCeiling, maxInboundBytes ?? imageCeiling),
   };
 }
 
@@ -553,6 +676,7 @@ export const getBridgeAvailability = query({
       agentId,
       canonical,
       instanceReachable,
+      await currentGatewayOf(ctx, instanceName),
     );
     if (chatId) return availability;
     // GLOBAL view (the settings-tab badge): surface how many polled instances
@@ -571,29 +695,22 @@ export const availabilityInternal = internalQuery({
     computeAvailability(await readDoc(ctx), Date.now()),
 });
 
-/** Internal (no auth): the gateway's last-reported WS frame limit (maxPayload), or
- *  null if unknown. The dispatch derives the inbound-attachment cap from it to fail
- *  an over-cap attachment with a clear error instead of silently dropping it. */
-export const maxPayloadInternal = internalQuery({
+/** Internal (no auth): the routed instance's inbound limits — the gateway's WS frame
+ *  limit and its per-attachment ceilings — in one read of the health snapshot
+ *  (resolveInboundLimits). The dispatch fails an attachment the gateway would refuse
+ *  with a clear error instead of dropping it or sending a frame refused whole. */
+export const inboundLimitsInternal = internalQuery({
   args: { instanceName: v.optional(v.union(v.string(), v.null())) },
-  handler: async (ctx, { instanceName }): Promise<number | null> => {
-    const doc = await readDoc(ctx);
-    if (doc === null) return null;
-    // Prefer the routed instance's OWN frame limit (Model M): find a target for
-    // this instance that reported a maxPayload. Fall back to the doc-level (MIN
-    // across instances — conservative), then null (the dispatch uses the default).
-    if (instanceName != null) {
-      for (const t of doc.targets) {
-        if (
-          t.instanceName === instanceName &&
-          typeof t.maxPayload === "number"
-        ) {
-          return t.maxPayload;
-        }
-      }
-    }
-    return doc.maxPayload ?? null;
-  },
+  handler: async (
+    ctx,
+    { instanceName },
+  ): Promise<{ maxPayload: number | null; attachmentCeilings: AttachmentCeilings | null }> =>
+    resolveInboundLimits(
+      await readDoc(ctx),
+      instanceName,
+      Date.now(),
+      await currentGatewayOf(ctx, instanceName),
+    ),
 });
 
 /**
@@ -613,7 +730,10 @@ export const bridgeStatusInternal = internalQuery({
     const isSole = instances.length === 1;
     const rows = [];
     for (const inst of instances) {
-      const avail = computeAvailability(doc, now, inst.name);
+      const avail = computeAvailability(doc, now, inst.name, undefined, undefined, undefined, {
+        provider: inst.kind ?? "openclaw",
+        gatewayUrl: inst.gatewayUrl,
+      });
       // A bridge is reachable for this instance iff it has its own bridgeUrl, or is the
       // env-served / sole instance — the same scoped routing dispatch + sync use.
       const bridgeUrlConfigured =

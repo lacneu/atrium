@@ -481,3 +481,40 @@ describe("deliveryIdentityKey — what makes two delivery runs the SAME delivery
     expect(deliveryIdentityKey(undefined)).toBeNull();
   });
 });
+
+describe("chainRoot — the gateway's restart recovery continues the run it resumes", () => {
+  const R = "a784bc6d-61a0-48df-a1b7-a7b3ecaab9fd";
+  const withRecovery = (over: Partial<{ sessionKey: string; instanceName: string; resumed: string[] }> = {}): ChainFacts => ({
+    ...facts([]),
+    recoveries: new Map([
+      [R, (over.resumed ?? [P]).map((resumedRunId) => ({ resumedRunId, sessionKey: over.sessionKey ?? SK, ...(over.instanceName !== undefined ? { instanceName: over.instanceName } : {}) }))],
+    ]),
+  });
+
+  test("a recovery run's root is the run its entry resumes", () => {
+    expect(chainRoot(R, SK, withRecovery())).toBe(P);
+  });
+  test("no recovery fact: its own root", () => {
+    expect(chainRoot(R, SK, facts([]))).toBe(R);
+  });
+  test("a fact read in ANOTHER session, or by another instance: own root", () => {
+    expect(chainRoot(R, SK, withRecovery({ sessionKey: "agent:alice:other" }))).toBe(R);
+    expect(chainRoot(R, { sessionKey: SK, instanceName: "prod" }, withRecovery({ instanceName: "intruder" }))).toBe(R);
+  });
+  test("two entries naming different runs (ambiguous): own root", () => {
+    expect(chainRoot(R, SK, withRecovery({ resumed: [P, "webchat-" + "b".repeat(64)] }))).toBe(R);
+  });
+  test("a recovery of a delivery run joins that delivery's chain", () => {
+    const delivery = announce("a", "run-a");
+    const f: ChainFacts = { ...facts([[P, "a", "run-a"]]), recoveries: new Map([[R, [{ resumedRunId: delivery, sessionKey: SK }]]]) };
+    expect(chainRoot(R, SK, f)).toBe(P);
+  });
+  test("the interrupted bubble and the recovery's, consecutive, are one group", () => {
+    const units: GroupUnit[] = [
+      { id: "m1", role: "assistant", runId: P, sessionKey: SK },
+      { id: "m2", role: "assistant", runId: R, sessionKey: SK },
+    ];
+    const resolver = new ChainResolver(withRecovery());
+    expect(groupMessages(units, (run, scope) => resolver.root(run, scope))).toEqual(new Map([["m1", "m1"], ["m2", "m1"]]));
+  });
+});

@@ -3,7 +3,7 @@
 // Model M: pollBridgeHealth fans out to each instance's OWN bridge and AGGREGATES
 // into the singleton — union of targets (each forced to its instance + tagged with
 // that bridge's maxPayload), reachable = any reachable, doc.maxPayload = MIN. And
-// maxPayloadInternal resolves the cap per ROUTED instance (the precise per-instance
+// inboundLimitsInternal resolves the cap per ROUTED instance (the precise per-instance
 // frame limit), falling back to the doc-level min, then null.
 
 import { convexTest } from "convex-test";
@@ -13,7 +13,11 @@ import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
-function healthBody(instanceName: string, maxPayload: number) {
+function healthBody(
+  instanceName: string,
+  maxPayload: number,
+  ceilings?: { attachmentMaxBytes: number; attachmentMaxImageBytes: number },
+) {
   return new Response(
     JSON.stringify({
       status: "ok",
@@ -21,6 +25,7 @@ function healthBody(instanceName: string, maxPayload: number) {
       maxPayload,
       targets: [
         {
+          ...(ceilings ?? {}),
           key: `${instanceName}:main:alice`,
           instanceName,
           canonical: "alice",
@@ -96,7 +101,7 @@ describe("pollBridgeHealth — multi-instance aggregation (Model M)", () => {
     expect(doc?.maxPayload).toBe(10000000);
   });
 
-  test("maxPayloadInternal resolves the cap per ROUTED instance, else the doc MIN, else null", async () => {
+  test("inboundLimitsInternal resolves the cap per ROUTED instance, else the doc MIN, else null", async () => {
     const t = convexTest(schema, modules);
     delete process.env.BRIDGE_URL;
     await t.run(async (ctx) => {
@@ -119,12 +124,59 @@ describe("pollBridgeHealth — multi-instance aggregation (Model M)", () => {
     }) as unknown as typeof fetch;
     await t.action(internal.bridgeHealth.pollBridgeHealth, {});
 
-    const cap = (instanceName: string | null) =>
-      t.query(internal.bridgeHealth.maxPayloadInternal, { instanceName });
+    const cap = async (instanceName: string | null) =>
+      (await t.query(internal.bridgeHealth.inboundLimitsInternal, { instanceName })).maxPayload;
     expect(await cap("olivier")).toBe(26214400); // its OWN frame limit
     expect(await cap("jerome")).toBe(10000000); // its OWN frame limit
     expect(await cap("ghost")).toBe(10000000); // unknown instance → doc MIN
     expect(await cap(null)).toBe(10000000); // no instance → doc MIN
+  });
+
+  test("the per-attachment ceilings stay with the instance that advertised them", async () => {
+    const t = convexTest(schema, modules);
+    delete process.env.BRIDGE_URL;
+    await t.run(async (ctx) => {
+      for (const name of ["olivier", "jerome", "hermes"]) {
+        await ctx.db.insert("instances", {
+          name,
+          gatewayUrl: `ws://gw-${name}`, // the host each bridge reports for its target
+          bridgeUrl: `http://b-${name}:8787`,
+        });
+      }
+    });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const u = String(input);
+      if (u.startsWith("http://b-olivier:8787")) {
+        return healthBody("olivier", 26214400, { attachmentMaxBytes: 1048576, attachmentMaxImageBytes: 1048576 });
+      }
+      if (u.startsWith("http://b-jerome:8787")) {
+        return healthBody("jerome", 26214400, { attachmentMaxBytes: 5000000, attachmentMaxImageBytes: 4000000 });
+      }
+      // A bridge whose target carries no ceiling (Hermes; a gateway before 2026.8.1).
+      if (u.startsWith("http://b-hermes:8787")) return healthBody("hermes", 26214400);
+      throw new Error(`unexpected url ${u}`);
+    }) as unknown as typeof fetch;
+    await t.action(internal.bridgeHealth.pollBridgeHealth, {});
+
+    const doc = await t.run((ctx) =>
+      ctx.db
+        .query("bridgeHealth")
+        .withIndex("by_key", (q) => q.eq("key", "singleton"))
+        .unique(),
+    );
+    // No document-level ceiling exists: nothing a reader without an instance could
+    // apply to the wrong one.
+    expect(doc).not.toHaveProperty("attachmentMaxBytes");
+    expect(doc).not.toHaveProperty("attachmentMaxImageBytes");
+    const ceilings = async (instanceName: string | null) =>
+      (await t.query(internal.bridgeHealth.inboundLimitsInternal, { instanceName })).attachmentCeilings;
+    expect(await ceilings("olivier")).toEqual({ maxBytes: 1048576, maxImageBytes: 1048576 });
+    expect(await ceilings("jerome")).toEqual({ maxBytes: 5000000, maxImageBytes: 4000000 });
+    // Hermes never inherits an OpenClaw ceiling…
+    expect(await ceilings("hermes")).toBeNull();
+    // …nor does an instance with no target yet (its first send), nor a read without one.
+    expect(await ceilings("ghost")).toBeNull();
+    expect(await ceilings(null)).toBeNull();
   });
 
   test("one instance DOWN: the other stays reachable (no shared fate)", async () => {
@@ -159,9 +211,11 @@ describe("pollBridgeHealth — multi-instance aggregation (Model M)", () => {
     expect(doc?.targets.map((tg) => tg.instanceName)).toEqual(["olivier"]);
     // olivier's cap still resolves; jerome falls back to the doc-level value.
     expect(
-      await t.query(internal.bridgeHealth.maxPayloadInternal, {
-        instanceName: "olivier",
-      }),
+      (
+        await t.query(internal.bridgeHealth.inboundLimitsInternal, {
+          instanceName: "olivier",
+        })
+      ).maxPayload,
     ).toBe(26214400);
   });
 

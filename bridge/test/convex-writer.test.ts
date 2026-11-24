@@ -11,7 +11,8 @@
 import { describe, expect, test, vi } from "vitest";
 import { sleep } from "./helpers/sleep.js";
 import { Readable } from "node:stream";
-import { HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
+import {
+  lateFinalAskedOnce, HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
 import {
   MEDIA_TOO_LARGE_CODE,
   type MediaFetcher,
@@ -1207,6 +1208,28 @@ describe("the session-state clear is retried too (idempotent by construction)", 
   });
 });
 
+describe("a settled bubble's completion is retried too (idempotent in Convex)", () => {
+  test("a 503 once, then success: the text lands with no second offer from the gateway", async () => {
+    // The gateway does not send a run's chat terminal again: one flaky POST lost its text
+    // for good. Convex answers a repeat of a write that landed as written
+    // (convex/stream.ts `completeSettledText`), so the retry cannot join the text twice.
+    const bodies: string[] = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      bodies.push(init.body);
+      if (bodies.length === 1) {
+        return { ok: false, status: 503, text: async () => "unavailable" } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true, applied: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+
+    expect(await w.completeSettledText({ messageId: "m1", runId: "runA", text: "Hello world" })).toBe(true);
+
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+  });
+});
+
 describe("the PLAN clear is retried too (idempotent by construction)", () => {
   test("a transient failure is retried: a lost clear strands the superseded checklist", async () => {
     // The mutation writes a run-keyed TOMBSTONE, so a replay whose first write landed
@@ -2117,6 +2140,30 @@ describe("0.102.1 — the close of a socket is a best-effort SHORTCUT to the rec
       vi.useRealTimers();
     }
   });
+
+  test("an announced restart's delay rides the request; without one the field is absent", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.resumeStreams("c1", 1500);
+    await w.resumeStreams("c2", null);
+    await w.resumeStreams("c3");
+    // The shutdown the gateway announced rides it too: a restart, a stop, or nothing.
+    await w.resumeStreams("c4", 1500, "restart");
+    await w.resumeStreams("c5", null, "stop");
+    await w.resumeStreams("c6", null, null);
+    expect(bodies.filter((b) => b.op === "resumeStreams")).toEqual([
+      { op: "resumeStreams", chatId: "c1", restartExpectedMs: 1500 },
+      { op: "resumeStreams", chatId: "c2" },
+      { op: "resumeStreams", chatId: "c3" },
+      { op: "resumeStreams", chatId: "c4", restartExpectedMs: 1500, shutdown: "restart" },
+      { op: "resumeStreams", chatId: "c5", shutdown: "stop" },
+      { op: "resumeStreams", chatId: "c6" },
+    ]);
+  });
 });
 
 describe("0.102.1 (Codex pass 2) — startAssistant states a projected turn", () => {
@@ -2131,5 +2178,72 @@ describe("0.102.1 (Codex pass 2) — startAssistant states a projected turn", ()
     await w.startAssistant("c1", "r2", "k", null);
     expect(bodies[0]).toMatchObject({ op: "startAssistant", projectedTurn: true });
     expect(bodies[1]).not.toHaveProperty("projectedTurn");
+  });
+});
+
+describe("a late final is NAMED by its write (the key makes it repeatable)", () => {
+  const args = { chatId: "c1", runId: "r1", messageId: null, text: "Hello", sessionKey: "k" };
+  const scripted = (answers: Array<() => Response>) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    let n = 0;
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return answers[Math.min(n++, answers.length - 1)]!();
+    }) as unknown as typeof fetch;
+    return { w: writerWith(fetchImpl), bodies };
+  };
+  const ok = () => new Response(JSON.stringify({ messageId: "m1" }), { status: 200 });
+  const unknownOp = () => new Response(JSON.stringify({ ok: false, error: "unknown op" }), { status: 400 });
+
+  test("with a key: the keyed op, re-posted identically on a transient failure", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const { w, bodies } = scripted([() => new Response("busy", { status: 503 }), ok]);
+      const p = w.appendLateFinal({ ...args, writeKey: "key-1" });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(await p).toBe("m1");
+      expect(bodies).toEqual([
+        { op: "appendLateFinalKeyed", ...args, writeKey: "key-1" },
+        { op: "appendLateFinalKeyed", ...args, writeKey: "key-1" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  test("without a key: the unkeyed op, ONE attempt, and its failure says it was asked once", async () => {
+    const { w, bodies } = scripted([() => new Response("busy", { status: 503 })]);
+    const err = await w.appendLateFinal(args).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(bodies).toEqual([{ op: "appendLateFinal", ...args }]);
+    expect(lateFinalAskedOnce(err)).toBe(true);
+  });
+
+  test("a Convex from before the keyed op refuses it: asked once the old way, never a second unkeyed attempt", async () => {
+    const { w, bodies } = scripted([unknownOp, () => new Response("busy", { status: 503 })]);
+    const err = await w.appendLateFinal({ ...args, writeKey: "key-1" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(bodies.map((b) => [b.op, "writeKey" in b])).toEqual([
+      ["appendLateFinalKeyed", true],
+      ["appendLateFinal", false],
+    ]);
+    expect(lateFinalAskedOnce(err)).toBe(true);
+  });
+
+  test("any OTHER refusal of the keyed op is the write's own answer: no unkeyed attempt behind it", async () => {
+    const { w, bodies } = scripted([() => new Response(JSON.stringify({ error: "invalid body" }), { status: 400 })]);
+    const err = await w.appendLateFinal({ ...args, writeKey: "key-1" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(bodies).toHaveLength(1);
+    expect(err).toBeInstanceOf(Error);
+    expect(lateFinalAskedOnce(err)).toBe(false);
   });
 });

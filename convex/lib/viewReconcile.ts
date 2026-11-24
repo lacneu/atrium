@@ -32,6 +32,20 @@ const ROW_PHASE = { result: "completed", error: "error" } as const;
 
 type ToolLike = { kind: "tool"; name: string; phase: string; toolCallId?: string };
 
+/**
+ * The phase a card takes once a row has spoken of its call — the view's rule
+ * (`reconcileToolParts`). A call-only row says no outcome: the live phase stands.
+ * A row's `result` only says no error was READ from it (lib tool-error: its flags and its
+ * output text). A failure the live stream reported is a known fact the row's silence does
+ * not undo (0.101.2 audit; the Control UI's live card keeps its activity outcome,
+ * ui/src/lib/chat/tool-cards.ts:132-141 `isToolCardError`). A row's `error` always wins.
+ */
+export function phaseFromRow(livePhase: string, rowStatus: "call" | "result" | "error"): string {
+  if (rowStatus === "call") return livePhase;
+  if (rowStatus === "result" && livePhase === "error") return livePhase;
+  return ROW_PHASE[rowStatus];
+}
+
 /** The tool cards of a bubble once its rows have spoken: each live card keeps its payloads,
  *  takes the row's outcome when a row carries one; a call a row names and no live part
  *  shows is added from the row (in row order, after the live ones). */
@@ -49,13 +63,9 @@ export function reconcileToolParts<P extends { kind: string }>(
     if (tool.toolCallId === undefined) return p;
     seen.add(tool.toolCallId);
     const row = fromRows.get(tool.toolCallId);
-    if (row === undefined || row.status === "call") return p;
-    // A row's `result` only says no error was READ from it (lib tool-error: its flags and its
-    // output text). A failure the live stream reported is a known fact the row's silence
-    // does not undo (0.101.2 audit; the Control UI's live card keeps its activity outcome,
-    // ui/src/lib/chat/tool-cards.ts:132-141 `isToolCardError`). A row's `error` always wins.
-    if (row.status === "result" && tool.phase === "error") return p;
-    return { ...p, phase: ROW_PHASE[row.status] } as P;
+    if (row === undefined) return p;
+    const phase = phaseFromRow(tool.phase, row.status);
+    return phase === tool.phase ? p : ({ ...p, phase } as P);
   });
   for (const [toolCallId, row] of fromRows) {
     if (seen.has(toolCallId)) continue;

@@ -728,3 +728,25 @@ describe("the layout bounds (LAYOUT_MAX_*)", () => {
     expect(cut.tools).toBeGreaterThan(0);
   });
 });
+
+describe("a turn the gateway cut, resumed by its own recovery", () => {
+  const cut = (rows: PlanRow[], over: Partial<PlanBubble> = {}) =>
+    planProjection(
+      view({
+        runIds: ["R"],
+        rowsOfRun: new Map([["R", rows]]),
+        liveBubbleOf: new Map([[segmentKey("R", 0), "m1"]]),
+        bubbles: new Map([["m1", bubble("m1", { runIds: ["R"], ...over })]]),
+        runs: new Map([["R", settled({ status: "persisted" })]]),
+      }),
+    ).rewrite[0];
+  test("only a bubble whose run the recovery resumed is kept when it shows nothing", () => {
+    // Rows that decide and show nothing make the bubble vanish (CU-21)…
+    const silent = [row("a", 1, { runId: "R", items: [], hasBlocks: true, stopReason: "toolUse", visible: false })];
+    expect(cut(silent)?.vanish).toBe(true);
+    expect(cut(silent)?.stated).toBeUndefined();
+    // …unless the gateway's recovery resumed its run: the interruption is said there.
+    expect(cut(silent, { recovered: true })?.vanish).toBeUndefined();
+    expect(cut(silent, { recovered: true })?.stated).toBe(true);
+  });
+});

@@ -22,7 +22,7 @@
         },
         "seq": {
           "status": "handled",
-          "by": "handleChat dedup key component; NOTE: no ordering/gap detection (ordered WS transport)"
+          "by": "handleChat dedup key component, and the run order of the chat stream: the freshness mark no shrink may be at or below (normalizer chatFrameIsFresh), and the proof that an unmarked shorter `message` follows the frame that wrote the bubble (chatRewriteInOrder)"
         },
         "state": {
           "status": "handled",
@@ -38,7 +38,20 @@
         },
         "replace": {
           "status": "handled",
-          "by": "normalizer handleChat: replace:true on a bare deltaText takes the snapshot (replace) path"
+          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex when the frame is fresh (run seq above every chat text applied for the run; never for a run adopted into the turn); a rewrite to the empty text clears the bubble; a bare `deltaText` marked replace takes the same path",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const rewrite = payload.replace === true;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/live-text-authority.test.ts",
+            "note": "Read in the v2026.9.36 sources (server-chat-state.ts takeBufferDelta, server-methods/chat-broadcast.ts broadcastChatFrame, server-chat-live-text.ts chatWireProjection: a replacement always keeps `message` on the wire) and captured on the bench (2026.9.36 run 2026-11-08T17-17-24-387Z, settle-chain-no-synthesis: six replace deltas, one 950 -> 8 characters; 2026.9.33 run 2026-10-25T21-54-56-216Z), replayed from test/fixtures/live-text-frames.json against a writer enforcing the anti-regression guard and proven by neutralization. The golden corpus holds no replace frame yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.33",
+            "2026.9.36"
+          ]
         },
         "usage": {
           "status": "ignored",
@@ -114,8 +127,8 @@
           "by": "handleChat terminalizes aborted -> finalize(aborted)"
         },
         "message": {
-          "status": "ignored",
-          "why": "an aborted turn carries no reply to persist"
+          "status": "handled",
+          "by": "handleChat applyTerminalMessage: the buffered answer an aborted terminal carries is the bubble's text (never a shrink); when the turn closed before this terminal it completes the settled bubble as a strict extension (Normalizer.settledCompletion -> Convex completeSettledText)"
         },
         "stopReason": {
           "status": "handled",
@@ -152,7 +165,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat error-reason fallback (textFromMessage)"
+          "by": "handleChat: with `errorMessage`, the buffered answer the terminal carries is the bubble's text unless it only restates the error (applyTerminalMessage; after an early close, Normalizer.settledCompletion); without `errorMessage`, the error-reason fallback (textFromMessage)"
         },
         "errorMessage": {
           "status": "handled",

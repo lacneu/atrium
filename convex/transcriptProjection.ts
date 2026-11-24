@@ -86,6 +86,7 @@ import {
 } from "./lib/bubbleProjectionStore";
 import { drainNextQueued, SESSION_ACTIVE_FRESH_MS } from "./lib/outboxQueue";
 import { scheduleRegroup } from "./displayGroups";
+import { isRecoveryEntry, resolveRecovery, tellRecoveredBubble } from "./lib/restartRecovery";
 import { displayReport } from "./messages";
 import { utf8Bytes } from "./lib/bubbleProjection";
 import {
@@ -584,6 +585,9 @@ async function retractUnreadLiveRows(
     await ctx.db.patch(d._id, { liveOnly: undefined, retracted: true, hidden: true, updatedAt: a.now });
     count++;
     if (d.runId !== undefined && d.role.toLowerCase() !== "user") runs.add(d.runId);
+    // A retracted recovery entry no longer states which run it resumed: that run's
+    // bubble is read again (lib/restartRecovery.ts).
+    if (d.recoversRunId !== undefined) runs.add(d.recoversRunId);
   }
   return { runs: [...runs], count };
 }
@@ -740,6 +744,14 @@ async function upsertRows(
         });
         updated++;
       }
+    }
+    // PROJECTION `on`: the gateway's restart-recovery entry names, by its place, the run
+    // it resumes (lib/restartRecovery.ts). Read again while unresolved: the row before it
+    // may be stored by this very apply.
+    if (a.origin !== undefined && isRecoveryEntry(next) && (stored === null || stored.recoversRunId === undefined)) {
+      budget.queries++;
+      const entry = await ctx.db.get(rowId);
+      if (entry !== null) await resolveRecovery(ctx, a, entry, budget);
     }
     // PROJECTION `on` (phase 5): the launches the row states, as identities — the proof a
     // delivery run joins its launcher by (lib/delegationChain.ts). Idempotent per row.
@@ -1658,6 +1670,24 @@ async function projectAll(
   }
 }
 
+/** A run's bubble is told what the rows say of its recovery (lib/restartRecovery.ts
+ *  `tellLater`): the one place this feature reads a message, one run per transaction. */
+export const noteRunRecovery = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    instanceName: v.string(),
+    runId: v.string(),
+    withdraw: v.optional(v.string()),
+    below: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { chatId, sessionKey, instanceName, runId, withdraw, below }) => {
+    await tellRecoveredBubble(ctx, { chatId, sessionKey, instanceName }, runId, withdraw, below);
+    return null;
+  },
+});
+
 /** The continuation of a projection one mutation could not finish (phase 4). The floor
  *  and coverage holes are read again from the session's cursor: a newer read may have
  *  moved them, and they are what the projection must honour now. */
@@ -1975,6 +2005,13 @@ export const purgeChatRowTexts = internalMutation({
         .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
         .take(500);
       for (const r of releases) await ctx.db.delete(r._id);
+      // …and the keys of its late finals' writes (stream.ts `appendLateFinal` sets the
+      // marker with the first key it records).
+      const lateKeys = await ctx.db
+        .query("lateFinalWrites")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .take(500);
+      for (const k of lateKeys) await ctx.db.delete(k._id);
       // …and the files its rows carried, copied once (final design step 2): each record
       // goes, and its blob with it when nothing else holds it (lib/blobs).
       const moreFiles = await purgeChatFiles(ctx, chatId);
@@ -1983,6 +2020,7 @@ export const purgeChatRowTexts = internalMutation({
         admissions.length === 500 ||
         spawns.length === 500 ||
         releases.length === 500 ||
+        lateKeys.length === 500 ||
         moreFiles
       ) {
         await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, { chatId, markPurged });

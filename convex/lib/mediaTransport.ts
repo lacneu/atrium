@@ -106,7 +106,8 @@ export interface PlannedAttachment {
  *     (the raster images are reserved first, whatever their position, so a document
  *     placed before a photo can never push the photo over the frame), and a
  *     reference otherwise. Files are admitted in order: the first ones that fit go
- *     native, the rest by reference — never a refusal for size;
+ *     native, the rest by reference — never a refusal for size. One the gateway would
+ *     refuse on its own per-attachment ceiling is a reference too;
  *   - an EMPTY file, or one whose size is unknown, is a reference: the gateway
  *     refuses an empty payload outright (`empty-payload`, the whole turn with it),
  *     and a size we cannot read is a size we cannot budget.
@@ -115,6 +116,10 @@ export function planAttachmentTransports(opts: {
   inboundMediaMode: "inline" | "shared-fs";
   attachments: readonly PlannedAttachment[];
   maxPayload: number;
+  /** The gateway's per-attachment decoded-size ceiling (`policy.attachments.maxBytes`),
+   *  when known: a tool-read file over it is refused as a native attachment, so it goes
+   *  by reference like one the frame cannot carry. */
+  attachmentMaxBytes?: number | null;
 }): AttachmentTransport[] {
   if (opts.inboundMediaMode !== "shared-fs") {
     return opts.attachments.map(() => "inline");
@@ -127,6 +132,9 @@ export function planAttachmentTransports(opts: {
     if (isModelNativeMime(a.mimeType)) return "inline";
     if (isImageMime(a.mimeType)) return "reference";
     if (a.size === null || !Number.isFinite(a.size) || a.size <= 0) {
+      return "reference";
+    }
+    if (typeof opts.attachmentMaxBytes === "number" && a.size > opts.attachmentMaxBytes) {
       return "reference";
     }
     const next = reserved + base64ByteLength(a.size);

@@ -168,6 +168,9 @@ export type PlanBubble = {
   /** Closed by the stuck-stream WATCHDOG, not by a terminal (lib/streamOrphan
    *  `isWatchdogOrphan`): its runs' end settles it like a streaming bubble (0.102.1). */
   orphaned?: boolean;
+  /** The gateway's own recovery resumed this bubble's run (`interruption.recoveryRunId`,
+   *  or the rows read by this pass name it): never removed for showing nothing else. */
+  recovered?: true;
 };
 
 export type RunFacts = {
@@ -191,6 +194,8 @@ export type RunFacts = {
    *  the cursor (`gaps`), which qualifies the report. */
   gapped?: true;
   status?: RunStatus;
+  /** Every row of the run was loaded and it has NONE of its own (it wrote nothing). */
+  empty?: true;
   /** The error the gateway recorded for the run (`sessionInfo.lastRunError`, step 4). */
   errorText?: string;
 };
@@ -257,6 +262,9 @@ export type ProjectionPlan = {
     vanish?: true;
     /** An `error` bubble with no error text: the text the transcript states (step 4). */
     errorText?: string;
+    /** The gateway's recovery resumed the bubble's run (the rows name it — the message
+     *  itself may not say it yet): never dropped for showing nothing else. */
+    stated?: true;
   }>;
 };
 
@@ -547,6 +555,13 @@ export function rowError(rows: readonly PlanRow[]): string | undefined {
   return found;
 }
 
+/** The rows that COUNT: a row a covering durable read retracted is not in the transcript
+ *  (never rendered) and decides nothing of what precedes a recovery entry
+ *  (lib/restartRecovery.ts). */
+export function countedRows<T extends { retracted?: boolean }>(rows: readonly T[]): T[] {
+  return rows.filter((r) => r.retracted !== true);
+}
+
 /** The terminal a bubble takes when its runs are over (null: not ours to set). An error
  *  or a timeout is the row's when a row states its error text (step 4); otherwise only the
  *  live terminal has the gateway's message, and it is left to it (and to the stuck-stream
@@ -697,9 +712,14 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       const stated = rowError(rows) ?? runError(facts);
       if (stated !== undefined) write.errorText = stated;
     }
+    // A bubble whose run the gateway's recovery resumed is never removed for showing
+    // nothing else: it is where the interruption is said.
+    const stated = bubble.recovered === true;
+    if (stated) write.stated = true;
     // §3.3: every row the bubble showed was retracted and nothing of the transcript is left
     // in it — the text it carries exists nowhere any more.
     if (
+      !stated &&
       allSettled &&
       allCovered &&
       text === "" &&
@@ -713,7 +733,7 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
     }
     // The rows decide and show nothing (no text, no file, no card, no error): the bubble
     // goes, as an empty bubble does (CU-21) — never kept with the live text.
-    if (composable && rowsDecide && text === "" && layout.length === 0 && rowError(rows) === undefined && runError(facts) === undefined) {
+    if (!stated && composable && rowsDecide && text === "" && layout.length === 0 && rowError(rows) === undefined && runError(facts) === undefined) {
       write.vanish = true;
     }
     if (

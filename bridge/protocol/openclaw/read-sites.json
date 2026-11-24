@@ -29,9 +29,13 @@
     {
       "name": "handshake",
       "schemas": ["HelloOk", "ConnectParams"],
-      "sites": [{ "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connect" }],
+      "sites": [
+        { "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connectOnce" },
+        { "file": "src/providers/openclaw/inbound-silence.ts", "fn": "readTickIntervalMs" },
+        { "file": "src/core/attachment-limits.ts", "fn": "readAttachmentCeilings" }
+      ],
       "exceptions": [
-        { "field": "HelloOk.type", "site": { "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connect" }, "receivers": ["frame"], "why": "`frame.type` at this site is the response ENVELOPE's discriminant (res / event), read before the hello-ok payload; the payload's own `type` is not read" }
+        { "field": "HelloOk.type", "site": { "file": "src/providers/openclaw/openclaw-client.ts", "fn": "connectOnce" }, "receivers": ["frame"], "why": "`frame.type` at this site is the response ENVELOPE's discriminant (res / event), read before the hello-ok payload; the payload's own `type` is not read" }
       ]
     },
     {

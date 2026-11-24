@@ -52,18 +52,19 @@ describe("a hook relay is not a compaction verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
         messages: ["a hook printed this"],
       }),
     ).toBe(false);
     // …and the same shape WITHOUT the relay marker is still a failure.
     expect(
-      compactionFailedForGood({ phase: "end", completed: false, willRetry: false }),
+      compactionFailedForGood({ phase: "end", completed: false, willRetry: false, outcome: "failed" }),
     ).toBe(true);
   });
 
   it("a real failure still does", () => {
     expect(
-      compactionFailedForGood({ phase: "end", completed: false, willRetry: false }),
+      compactionFailedForGood({ phase: "end", completed: false, willRetry: false, outcome: "failed" }),
     ).toBe(true);
   });
 

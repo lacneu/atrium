@@ -543,6 +543,26 @@ describe("anomaly detection", () => {
     expect(res.detected).toContain("assistant.cause.session_gone");
   });
 
+  test("an announced gateway STOP raises its own cause, apart from a restart", async () => {
+    // At the detector, like its neighbours: the code must both pass the trace allowlist
+    // (KNOWN_ERROR_CODES) and own a class, or a stop counts as a generic stream error.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      for (let i = 0; i < 2; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - i * 1000,
+          correlationId: `chat:gateway-stopping-${i}`,
+          meta: { phase: "finalize", streamStatus: "error", errorCode: "gateway_stopping" },
+        });
+      }
+    });
+    const res = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(res.detected).toContain("assistant.cause.gateway_stopping");
+    expect(res.detected).not.toContain("assistant.cause.gateway_restarting");
+  });
+
   test("an auth-profile COOLDOWN raises its own cause, end to end from the trace", async () => {
     // Asserted at the DETECTOR, not on the map: an entry in CAUSE_ANOMALY_KINDS proves
     // nothing if the code never reaches the trace — which is exactly what happened

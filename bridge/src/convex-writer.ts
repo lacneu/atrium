@@ -512,14 +512,21 @@ export interface ConvexWriter {
     /** The settling segment's whole text (authoritative, like a finalize's). */
     text?: string,
   ): Promise<string | null>;
-  /** PROJECTION `on` (phase 3, CU-8): a distinct late final of a settled run. */
+  /** PROJECTION `on` (phase 3, CU-8): a distinct late final of a settled run. `writeKey`
+   *  names THIS write (the same across its retries): with it the write may be asked
+   *  again — a failure it could not ask again is marked (`lateFinalAskedOnce`). */
   appendLateFinal?(args: {
     chatId: string;
     runId: string;
     messageId: string | null;
     text: string;
     sessionKey: string | null;
+    writeKey?: string | null;
   }): Promise<string | null>;
+  /** Text the run sent after its bubble settled: written only as a strict extension of
+   *  that message's text (internal.stream.completeSettledText). True: the message holds
+   *  this text (written now, or by an earlier attempt). False: refused. */
+  completeSettledText?(args: { messageId: string; runId: string; text: string }): Promise<boolean>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
   /** The bubble the TRANSCRIPT made for a run (projection `on`, codex phase 4 pass 21):
@@ -640,9 +647,10 @@ export interface ConvexWriter {
        *  three models with different windows run on one instance, so a fill
        *  recorded without its owner cannot be checked against anything. */
       model?: string | null;
-      /** Frames lost during the turn (omitted when none) — the per-turn
-       *  counterpart of the live `openclaw.frame_gap` traces. */
-      framesLost?: number;
+      /** Sequence reports the gateway sent about the turn's runs (omitted when
+       *  none) — the per-turn count of the `openclaw.gateway_seq_report` traces.
+       *  Not frames lost. */
+      gatewaySeqReports?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
       /** The same count BY REASON, raw. Convex allowlists it. */
@@ -690,7 +698,11 @@ export interface ConvexWriter {
   sweepStreams?(): Promise<void>;
   /** 0.102.1 — a conversation socket closed: ask Convex to have this chat's projected
    *  bubbles still streaming re-asked of the gateway (best-effort shortcut). */
-  resumeStreams?(chatId: string): Promise<void>;
+  resumeStreams?(
+    chatId: string,
+    restartExpectedMs?: number | null,
+    shutdown?: "restart" | "stop" | null,
+  ): Promise<void>;
   /** inline widget descriptor -> internal.stream.addPart(kind:widget). Resolves to
    *  whether the widget LANDED on the message (Convex refuses a view this
    *  conversation does not own, widgets switched off, a stale generation). */
@@ -732,9 +744,11 @@ export interface ConvexWriter {
   /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
    *  the agent generated media (codex imageGeneration) but the turn delivered none. */
   noteMediaUndelivered(messageId: string, chatId: string): Promise<void>;
-  /** FRAME LOSS diagnostic (see core/events EVENT_FRAME_GAP) -> an
-   *  `openclaw.frame_gap` trace. Counters only, never content. OPTIONAL so the
-   *  test fakes and the talk-consult facade stay valid without it. */
+  /** FRAME LOSS diagnostic -> an `openclaw.frame_gap` trace: a hole in the envelope
+   *  `seq` of a socket (providers/openclaw/frame-seq.ts). Counters only, never content.
+   *  Connection-level: the envelope seq names neither session nor run, and the same
+   *  socket also carries sub-agent frames, so the loss is never charged to a turn.
+   *  OPTIONAL so the test fakes and the talk-consult facade stay valid without it. */
   noteFrameGap?(
     chatId: string,
     data: {
@@ -743,11 +757,43 @@ export interface ConvexWriter {
       received: number | null;
       missing: number | null;
     },
-    /** The turn that lost the frames — ONLY when the loss is attributable.
-     *  The gateway's own `seq gap` report carries a runId, so it is; a hole in
-     *  the per-CONNECTION envelope seq is not (the same socket also carries
-     *  sub-agent frames, so charging it to the active parent reply would
-     *  fabricate a "truncated answer" diagnostic). Omitted = connection-level. */
+  ): Promise<void>;
+  /** A run was answered by another model than the one selected, or the session is back
+   *  on its selected one (see providers/openclaw/model-fallback.ts) -> a marker on that
+   *  run's bubble. `messageId` is the bubble when the bridge knows it; null lets Convex
+   *  find the run's bubble (it never creates one). Model names only, never the
+   *  provider's reasons. Resolves to the bubble that was marked, or null when the run
+   *  has none (yet). OPTIONAL so the test fakes stay valid without it. */
+  noteModelFallback?(
+    chatId: string,
+    data: {
+      runId: string;
+      messageId: string | null;
+      sessionKey: string | null;
+      state: "active" | "cleared";
+      model: string;
+      selected?: string;
+    },
+  ): Promise<string | null>;
+  /** A STATUS NOTICE the gateway sent beside a run's answer (a `chat` final whose blocks
+   *  are all marked `openclawStatusNotice`) -> a notice line on that run's bubble, never
+   *  part of the answer's text and never a bubble of its own. Addressed like
+   *  `noteModelFallback`; resolves to the bubble, or null when the run has none. */
+  noteGatewayNotice?(
+    chatId: string,
+    data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
+  ): Promise<string | null>;
+  /** The gateway's report about its own per-run numbering (see core/events
+   *  EVENT_GATEWAY_SEQ_REPORT) -> an `openclaw.gateway_seq_report` trace. Not a frame
+   *  loss. Counters and the run the report names; `messageId` is the turn that saw it.
+   *  OPTIONAL for the same reason. */
+  noteGatewaySeqReport?(
+    chatId: string,
+    data: {
+      expected: number | null;
+      received: number | null;
+      runId: string | null;
+    },
     messageId?: string | null,
   ): Promise<void>;
   /** message.final -> internal.stream.finalize. */
@@ -990,6 +1036,22 @@ export class ConvexIngestError extends Error {
   }
 }
 
+/**
+ * A late final whose write was asked WITHOUT a key (the caller had none, or this Convex
+ * predates the keyed op) and failed: it must not be asked again — a repeat of an unkeyed
+ * write that did land opens a second bubble. The error says so to whoever would retry.
+ */
+function markAskedOnce(err: unknown): Error {
+  const e = err instanceof Error ? err : new Error(String(err));
+  (e as { askedOnce?: true }).askedOnce = true;
+  return e;
+}
+
+/** Was this failed late-final write one that cannot be asked again (`markAskedOnce`)? */
+export function lateFinalAskedOnce(err: unknown): boolean {
+  return (err as { askedOnce?: unknown } | null)?.askedOnce === true;
+}
+
 /** What a re-hydration asks Convex for, beyond the chat and the turn to exclude. */
 export interface RehydrationRequest {
   /** The agent the history is FOR: its own replies are marked as its own, and the
@@ -1090,7 +1152,7 @@ type IngestOp =
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
   | { op: "calibrate" }
   | { op: "sweepStreams" }
-  | { op: "resumeStreams"; chatId?: string }
+  | { op: "resumeStreams"; chatId?: string; restartExpectedMs?: number; shutdown?: "restart" | "stop" }
   | ({
       op: "appendDelta";
       messageId: string;
@@ -1226,17 +1288,48 @@ type IngestOp =
       fetchMs?: number;
       uploadMs?: number;
     }
-  // FRAME LOSS (content-free) -> an `openclaw.frame_gap` trace. `source`:
-  // "gateway" = its own `seq gap` report on the agent stream; "envelope" = our
-  // per-connection envelope-seq check. Counters only; no DB write, no part.
+  // FRAME LOSS (content-free) -> an `openclaw.frame_gap` trace: a hole in a socket's
+  // envelope seq. `source`: "envelope" = this conversation's socket, "speaker_gap" /
+  // "speaker_closed" = a participant's speaker socket. Counters only; no DB write, no part.
   | {
       op: "frameGapTrace";
       chatId: string;
-      messageId?: string;
       source: string;
       expected?: number;
       received?: number;
       missing?: number;
+    }
+  // A model fallback stated for a run -> a marker part on that run's bubble (found by
+  // `messageId`, else by the run). Never creates a bubble.
+  | {
+      op: "modelFallback";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      state: "active" | "cleared";
+      model: string;
+      selected?: string;
+    }
+  // A status notice of the gateway for a run -> a notice part on that run's bubble
+  // (found like `modelFallback`). Never creates a bubble.
+  | {
+      op: "gatewayNotice";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      text: string;
+    }
+  // The gateway's report about its own per-run numbering (content-free) -> an
+  // `openclaw.gateway_seq_report` trace. Not a frame loss.
+  | {
+      op: "gatewaySeqReportTrace";
+      chatId: string;
+      messageId?: string;
+      runId?: string;
+      expected?: number;
+      received?: number;
     }
   // Re-hydration decision (content-free) -> `openclaw.rehydrate` trace keyed
   // chatId:outboxId. Message-less (its own correlation key) -> doPost, not enqueue.
@@ -1320,6 +1413,17 @@ type IngestOp =
       text: string;
       sessionKey: string | null;
     }
+  | {
+      op: "appendLateFinalKeyed";
+      chatId: string;
+      runId: string;
+      messageId: string | null;
+      text: string;
+      sessionKey: string | null;
+      /** The bridge's key for THIS write, the same across its retries. */
+      writeKey: string;
+    }
+  | { op: "completeSettledText"; messageId: string; runId: string; text: string }
   // A child's session row as read from the gateway (0.101.4).
   | {
       op: "applySubAgentRowStatus";
@@ -1648,6 +1752,26 @@ export class HttpConvexWriter implements ConvexWriter {
     // segment it opened (convex/stream.ts `splitSegment`), so a lost answer is retried
     // instead of leaving the turn on the settled segment (codex pass 4).
     "splitSegment",
+    // FACTS ABOUT A RUN (a fallback marker, a status notice): Convex keeps one marker
+    // per bubble and one line per notice text, so a repeat of a write that landed
+    // changes nothing (convex/stream.ts `noteModelFallback`, `noteGatewayNotice`). They
+    // are written off the frame path, one at a time (RunManager `factsTail`): the
+    // back-off below delays the next fact, never a turn.
+    "modelFallback",
+    "gatewayNotice",
+    // THE COMPLETION OF A SETTLED BUBBLE: Convex takes the text only as a strict
+    // extension of what the message holds, and answers a repeat of a write that landed
+    // as written (convex/stream.ts `completeSettledText`) — so a lost answer is retried
+    // without the text being joined twice. Not retrying lost the text for good: the
+    // gateway does not send a run's chat terminal again. Written off the frame path
+    // (RunManager `completionTail`): the back-off delays the next completion, never a
+    // turn.
+    "completeSettledText",
+    // A LATE FINAL, NAMED BY ITS WRITE: Convex remembers the bubble a write key opened
+    // and answers a repeat with it (convex/stream.ts `appendLateFinal`, table
+    // `lateFinalWrites`); a join into a named bubble never adds a text it already holds.
+    // The UNKEYED op stays out of this set: a repeat of it opens a second bubble.
+    "appendLateFinalKeyed",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -2330,8 +2454,20 @@ export class HttpConvexWriter implements ConvexWriter {
    * projected bubble still streaming), so a lost or early request costs a cycle, never a
    * bubble.
    */
-  resumeStreams(chatId: string): Promise<void> {
-    return this.doPost({ op: "resumeStreams", chatId })
+  resumeStreams(
+    chatId: string,
+    restartExpectedMs?: number | null,
+    shutdown?: "restart" | "stop" | null,
+  ): Promise<void> {
+    // An ANNOUNCED restart: Convex's first question waits for the delay the gateway gave.
+    // The announced shutdown itself is kept on the turn's bubble (an older Convex ignores
+    // the field).
+    return this.doPost({
+      op: "resumeStreams",
+      chatId,
+      ...(typeof restartExpectedMs === "number" ? { restartExpectedMs } : {}),
+      ...(shutdown === "restart" || shutdown === "stop" ? { shutdown } : {}),
+    })
       .then(() => undefined)
       .catch((e) => {
         console.warn("[resume] reconnection shortcut failed (non-fatal; the next cycle asks):", errForLog(e));
@@ -2665,12 +2801,10 @@ export class HttpConvexWriter implements ConvexWriter {
       received: number | null;
       missing: number | null;
     },
-    messageId?: string | null,
   ): Promise<void> {
     await this.doPost({
       op: "frameGapTrace",
       chatId,
-      ...(messageId ? { messageId } : {}),
       source: data.source,
       ...(data.expected !== null ? { expected: data.expected } : {}),
       ...(data.received !== null ? { received: data.received } : {}),
@@ -2678,6 +2812,73 @@ export class HttpConvexWriter implements ConvexWriter {
     }).catch((e) =>
       console.error(
         "[frame-gap] trace skipped (non-fatal):",
+        errForLog(e),
+      ),
+    );
+  }
+
+  /** Off the per-message chain: the bubble it names is already written (a live turn's
+   *  open bubble, or a settled run's), and a marker must not delay the turn's own ops. */
+  async noteModelFallback(
+    chatId: string,
+    data: {
+      runId: string;
+      messageId: string | null;
+      sessionKey: string | null;
+      state: "active" | "cleared";
+      model: string;
+      selected?: string;
+    },
+  ): Promise<string | null> {
+    const ack = await this.doPostWithRetry<{ messageId?: string | null }>({
+      op: "modelFallback",
+      chatId,
+      runId: data.runId,
+      ...(data.messageId !== null ? { messageId: data.messageId } : {}),
+      ...(data.sessionKey !== null ? { sessionKey: data.sessionKey } : {}),
+      state: data.state,
+      model: data.model,
+      ...(data.selected !== undefined ? { selected: data.selected } : {}),
+    });
+    return typeof ack?.messageId === "string" ? ack.messageId : null;
+  }
+
+  /** Same contract as `noteModelFallback`. */
+  async noteGatewayNotice(
+    chatId: string,
+    data: { runId: string; messageId: string | null; sessionKey: string | null; text: string },
+  ): Promise<string | null> {
+    const ack = await this.doPostWithRetry<{ messageId?: string | null }>({
+      op: "gatewayNotice",
+      chatId,
+      runId: data.runId,
+      ...(data.messageId !== null ? { messageId: data.messageId } : {}),
+      ...(data.sessionKey !== null ? { sessionKey: data.sessionKey } : {}),
+      text: data.text,
+    });
+    return typeof ack?.messageId === "string" ? ack.messageId : null;
+  }
+
+  /** Same contract as `noteFrameGap`: off the per-message chain, errors swallowed. */
+  async noteGatewaySeqReport(
+    chatId: string,
+    data: {
+      expected: number | null;
+      received: number | null;
+      runId: string | null;
+    },
+    messageId?: string | null,
+  ): Promise<void> {
+    await this.doPost({
+      op: "gatewaySeqReportTrace",
+      chatId,
+      ...(messageId ? { messageId } : {}),
+      ...(data.runId !== null ? { runId: data.runId } : {}),
+      ...(data.expected !== null ? { expected: data.expected } : {}),
+      ...(data.received !== null ? { received: data.received } : {}),
+    }).catch((e) =>
+      console.error(
+        "[gateway-seq] trace skipped (non-fatal):",
         errForLog(e),
       ),
     );
@@ -2927,9 +3128,37 @@ export class HttpConvexWriter implements ConvexWriter {
     messageId: string | null;
     text: string;
     sessionKey: string | null;
+    writeKey?: string | null;
   }): Promise<string | null> {
-    const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinal", ...args });
-    return ack.messageId ?? null;
+    const { writeKey, ...write } = args;
+    if (typeof writeKey === "string" && writeKey !== "") {
+      try {
+        // NAMED, so it can be asked again (IDEMPOTENT_OPS): Convex answers a repeat with
+        // the bubble the first one opened.
+        const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinalKeyed", ...write, writeKey });
+        return ack.messageId ?? null;
+      } catch (err) {
+        // A Convex from before the keyed op refuses it WHOLE (unknown op: nothing was
+        // written). The write is then asked the old way — once, since that Convex opens a
+        // bubble at every call that names none.
+        if (!(err instanceof ConvexIngestError) || err.status !== 400 || !/unknown op/.test(err.message)) throw err;
+      }
+    }
+    try {
+      const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinal", ...write });
+      return ack.messageId ?? null;
+    } catch (err) {
+      throw markAskedOnce(err);
+    }
+  }
+
+  async completeSettledText(args: {
+    messageId: string;
+    runId: string;
+    text: string;
+  }): Promise<boolean> {
+    const ack = await this.post<{ applied?: boolean }>({ op: "completeSettledText", ...args });
+    return ack.applied === true;
   }
 
   async updateRunId(messageId: string, runId: string): Promise<void> {

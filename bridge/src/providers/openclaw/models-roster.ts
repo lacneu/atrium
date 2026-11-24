@@ -282,7 +282,7 @@ export function modelsListTakesOwner(gatewayVersion: string | null): boolean | n
 const MODELS_FAILURE_TTL_MS = 60_000;
 /** How long a SUCCESSFUL roster is served without being re-asked. The real
  *  invalidation is the connection's own signal (openclaw-client.ts): `config.changed`,
- *  or an envelope frame gap — a `dropIfSlow` broadcast that was lost consumed a `seq`,
+ *  a `chat.metadata.changed` that names a stale catalogue, or an envelope frame gap — a `dropIfSlow` broadcast that was lost consumed a `seq`,
  *  and the gap detector already sees that. This bound is belt-and-braces for whatever
  *  neither signal covers, and it never blocks a turn: past it the cached roster is
  *  served as is and refreshed in the background. */
@@ -665,10 +665,10 @@ export async function refreshAfterConfigChange(
     if (session.connection.isClosed) return none;
     await publishSessionMeta(session, writer, described, roster);
     const rosterEpoch = rosterEpochOf(session.connection, owner);
-    console.log(`[roster] chat=${session.chatId} refreshed after config.changed hash=${notice.hash ?? "?"}: ${roster?.models.length ?? "no"} model(s), roster epoch ${rosterEpoch}`);
+    console.log(`[roster] chat=${session.chatId} refreshed after ${notice.origin ?? "config.changed"} hash=${notice.hash ?? "?"}: ${roster?.models.length ?? "no"} model(s), roster epoch ${rosterEpoch}`);
     return { published: true, rosterEpoch };
   } catch (err) {
-    console.error(`[roster] chat=${session.chatId} refresh after config.changed skipped (non-fatal):`, errForLog(err));
+    console.error(`[roster] chat=${session.chatId} refresh after ${notice.origin ?? "config.changed"} skipped (non-fatal):`, errForLog(err));
     return none;
   }
 }

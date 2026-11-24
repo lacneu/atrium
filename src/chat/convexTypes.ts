@@ -97,6 +97,20 @@ export type ConvexMessagePartView =
       /** A reasoning cut at write to the message's budget: only its first part is kept. */
       textCapped?: true;
     }
+  // Model fallback marker: the run behind this bubble was answered by another model
+  // than the one selected (`active`), or the session is back on its selected one
+  // (`cleared`). `model` is the name the notice prints. Model names only.
+  | {
+      kind: "model_fallback";
+      state: "active" | "cleared";
+      model: string;
+      /** The model that was asked for, while a fallback holds. */
+      selected?: string;
+      at: number;
+    }
+  // A status notice the gateway sent beside the answer (a usage line, a diagnostic): its
+  // own sentence, shown as a notice line under the reply — never part of the answer.
+  | { kind: "gateway_notice"; text: string; at: number }
   // Gateway context-compaction marker: the gateway summarized this session's
   // older context during the turn (content-free — phase + timestamp only).
   // Rendered as the always-visible "context optimized" note on the message.
@@ -243,6 +257,10 @@ export interface ConvexMessageView {
   /** ASSISTANT rows, projection `on` (phase 5): the delegation chain's display group —
    *  consecutive bubbles sharing it read as one answer (src/chat/displayGroups.ts). */
   displayGroupId?: string;
+  /** ASSISTANT rows, projection `on`: what is known of a turn the gateway cut — the
+   *  shutdown it announced on the turn's socket, its own recovery run, the calls the cut
+   *  left without a result (src/chat/turnInterruptionView.ts decides what is said). */
+  interruption?: { shutdown?: "restart" | "stop"; recoveryRunId?: string; cutCallIds?: string[] };
   /** ASSISTANT rows, projection `on` (final design step 3): the transcript rows the
    *  bubble shows, in display order — each row's span of `text`, its files, its tool
    *  cards. Absent on a bubble the rows never composed (text + parts rendering). */
@@ -372,6 +390,18 @@ export function isCronPart(
 
 export function isWidgetPart(p: ConvexMessagePartView): p is WidgetPartView {
   return p.kind === "widget";
+}
+
+export function isModelFallbackPart(
+  p: ConvexMessagePartView,
+): p is Extract<ConvexMessagePartView, { kind: "model_fallback" }> {
+  return p.kind === "model_fallback";
+}
+
+export function isGatewayNoticePart(
+  p: ConvexMessagePartView,
+): p is Extract<ConvexMessagePartView, { kind: "gateway_notice" }> {
+  return p.kind === "gateway_notice";
 }
 
 export function isCompactionPart(

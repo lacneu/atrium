@@ -457,10 +457,17 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 408,
-  ignored: 791,
-  gaps: 888,
+  handled: 409,
+  ignored: 792,
+  gaps: 886,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  TRANSPORT FRAMES (2026-11-20): `ShutdownEvent.restartExpectedMs` is handled — its
+   *  absence now names a plain stop (`gateway_stopping`) instead of a restart — and
+   *  `HelloOk.policy` gains two readers, `tickIntervalMs` (the connection-silence watch)
+   *  and `attachments` (the per-attachment ceilings). `TickEvent.ts` moves from gap to
+   *  ignored: the tick's arrival is what the watch reads, never its clock. Two gaps
+   *  leave the list.
    *
    *  APPROVAL AND QUESTION READERS (0.103.6 integration, 2026-11-08): the read sites now
    *  name every function that reads an approval snapshot, a presentation, a question record
@@ -1350,7 +1357,6 @@ export const COVERAGE_SUMMARY = {
     "SessionsStorageParams",
     "SessionsStorageStatusResult.agents",
     "SessionsStorageStatusResult.maintenance",
-    "ShutdownEvent.restartExpectedMs",
     "SkillCuratorLiveEntry.archivedReason",
     "SkillCuratorLiveEntry.createdAtMs",
     "SkillCuratorLiveEntry.lastUsedAtMs",
@@ -1395,7 +1401,6 @@ export const COVERAGE_SUMMARY = {
     "TalkClientTranscriptParams.text",
     "TalkClientTranscriptParams.timestamp",
     "TalkClientTranscriptParams.voiceSessionId",
-    "TickEvent.ts",
     "UserChannelIdentity.accountId",
     "UserChannelIdentity.channelId",
     "UserChannelIdentity.senderId",

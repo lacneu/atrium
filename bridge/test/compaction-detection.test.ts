@@ -60,13 +60,14 @@ function lifecycleFrame(
 function assistantFrame(sessionId: string, text: string): unknown {
   return {
     type: "event",
-    event: "agent",
+    event: "chat",
     payload: {
       runId: RUN,
       sessionKey: SESSION_KEY,
       sessionId,
-      stream: "assistant",
-      data: { text, delta: text },
+      state: "delta",
+      deltaText: text,
+      message: { role: "assistant", content: [{ type: "text", text }] },
     },
   };
 }
@@ -852,6 +853,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1,
     );
@@ -874,6 +876,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1,
     );
@@ -903,6 +906,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
         messages: ["a hook printed this"],
       }),
       1,
@@ -922,6 +926,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1,
     );
@@ -959,6 +964,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       2,
     );
@@ -975,6 +981,7 @@ describe("normalizer emits the session-overfull verdict", () => {
         phase: "end",
         completed: false,
         willRetry: false,
+        outcome: "failed",
       }),
       1_700_000_000,
     );

@@ -78,6 +78,9 @@ export const KNOWN_ERROR_CODES = [
   // The gateway ANNOUNCED its restart before closing (`event:"shutdown"`) — a
   // known maintenance window rather than an unexplained drop.
   "gateway_restarting",
+  // …or a plain STOP (the notice carried no `restartExpectedMs`): the gateway did not
+  // say it was coming back.
+  "gateway_stopping",
   // The bridge's own normalized transient classes — curated codes the finalize path
   // persists as `errorCode` (turnRetry keys its bounded auto-retry on them). They
   // were missing here, so the trace filter dropped them and their lost turns could

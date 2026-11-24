@@ -36,6 +36,7 @@ import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import { attachRosterPolicy, attachSharingRefresh } from "./providers/openclaw/models-roster.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
+import type { AttachmentCeilings } from "./core/attachment-limits.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import type { BridgeConfig } from "./config.js";
 import { mediaIdentityHeaders, type MediaFetcherProvider } from "./core/media-fetcher-provider.js";
@@ -72,6 +73,9 @@ const CONNECTION_LOST_CODE: FinalizeCause = "connection_lost";
 // connection_lost because the honest message differs ("it is coming back", and
 // often when) and because a restart RESUMES the run gateway-side.
 const GATEWAY_RESTARTING_CODE: FinalizeCause = "gateway_restarting";
+// …or a plain STOP (`shutdown` with no `restartExpectedMs`): the gateway did not
+// say it was coming back, so the reader must not be told to wait for its return.
+const GATEWAY_STOPPING_CODE: FinalizeCause = "gateway_stopping";
 // The gateway hung up with `1008 "slow consumer"`: our receive buffer passed its
 // ceiling, so it had already been DROPPING frames before cutting us off. Distinct
 // from a network blip — the reply was provably incomplete, and the remedy is on
@@ -276,6 +280,13 @@ export interface LiveTarget {
   /** Gateway WS frame limit (policy.maxPayload) from this session's handshake —
    *  the authoritative inbound-attachment ceiling, surfaced for /health. */
   maxPayload: number | null;
+  /** The gateway's per-attachment ceilings (policy.attachments) from the same
+   *  handshake; null or absent when it advertised none. */
+  attachmentCeilings?: AttachmentCeilings | null;
+  /** Whether that socket still vouches for them (it heard no config change since). */
+  attachmentCeilingsVouched?: boolean;
+  /** When that socket's handshake was read (ms). */
+  handshakeAt?: number;
 }
 
 class Session implements BridgeSession {
@@ -392,9 +403,11 @@ class Session implements BridgeSession {
     // Recorded at CONNECTION (= chat) level, deliberately NOT charged to the
     // turn in flight (codex P2): the envelope seq names neither session nor run,
     // and this same socket also carries SUB-AGENT frames — so blaming the active
-    // reply would fabricate a "this answer is truncated" diagnostic. The
-    // gateway's OWN `seq gap` report does name its run and IS charged to the turn
-    // (normalizer -> sink). Fire-and-forget: a diagnostic never delays a turn.
+    // reply would fabricate a "this answer is truncated" diagnostic. (The
+    // gateway's own `seq gap` report is a different thing — its internal per-run
+    // numbering, not a frame lost here — and travels as its own event, see
+    // core/events EVENT_GATEWAY_SEQ_REPORT.) Fire-and-forget: a diagnostic never
+    // delays a turn.
     // The model roster follows the gateway's config WITHOUT a turn: the roster policy
     // (models-roster.ts) turns the connection's `config.changed` into an invalidation
     // and a refresh that pushes the roster to Convex; a frame gap moves the epoch in the
@@ -520,7 +533,11 @@ class Session implements BridgeSession {
         // reconnection instead of deciding from its own. Convex decides from its state
         // (a projected bubble of this chat still streaming is asked of the gateway; none,
         // nothing), and the request is held until acknowledged (convex-writer).
-        void writer.resumeStreams?.(chatId);
+        // …after the delay an announced restart gave: until then the gateway is down by
+        // its own word (the notice precedes the close; the end is not classified yet here).
+        // …and with WHAT it announced (a restart, a stop): should the turn turn out cut,
+        // its bubble says by what — a fact of this socket, known nowhere else.
+        void writer.resumeStreams?.(chatId, connection.announcedRestartMs ?? null, connection.announcedShutdown ?? null);
       });
     }
   }
@@ -1050,6 +1067,7 @@ class Session implements BridgeSession {
    */
   private static namedKind(cause: string): string | null {
     return cause === GATEWAY_RESTARTING_CODE ||
+      cause === GATEWAY_STOPPING_CODE ||
       cause === CONNECTION_SATURATED_CODE
       ? cause
       : null;
@@ -1059,6 +1077,8 @@ class Session implements BridgeSession {
     switch (this.connection.connectionEnd?.kind) {
       case "gateway_restarting":
         return GATEWAY_RESTARTING_CODE;
+      case "gateway_stopping":
+        return GATEWAY_STOPPING_CODE;
       case "slow_consumer":
       // OUR side of the same fact: frames were dropped because one end could not
       // keep up. The reader's message is identical, so the cause is too.
@@ -1705,7 +1725,7 @@ export class SessionRegistry {
     //    stream carries `{phase, willRetry, completed}` and no cause;
     //  - the CAUSE of the compactions ATRIUM itself performs: the pre-send guard
     //    labels its own compaction `pre_compaction` and the rotation it produces
-    //    carries that label (normalizer.notePresendCompactionCause);
+    //    carries that label (the send's `presendCompactionCause`, RunManager.beginTurn);
     //  - the guard's own REFUSAL class, on the guard's own trace.
     // What stays UNOBSERVABLE: the cause of a compaction the GATEWAY decided on its
     // own (an overflow it hit, a memory threshold it crossed). That needs a
@@ -1774,6 +1794,9 @@ export class SessionRegistry {
         instanceName: session.instanceName,
         gatewayVersion: session.connection.gatewayVersion,
         maxPayload: session.connection.maxPayload,
+        attachmentCeilings: session.connection.attachmentCeilings ?? null,
+        attachmentCeilingsVouched: session.connection.attachmentCeilingsVouched === true,
+        handshakeAt: session.connection.handshakeAt ?? 0,
       });
     }
     return out;

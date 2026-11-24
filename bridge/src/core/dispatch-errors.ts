@@ -67,6 +67,7 @@ export type DispatchErrorCode =
   | "GATEWAY_TIMEOUT" // request timed out waiting on the gateway
   | "GATEWAY_DISCONNECTED" // socket closed / unreachable mid-request
   | "GATEWAY_RESTARTING" // the gateway ANNOUNCED its restart, then closed (event:"shutdown")
+  | "GATEWAY_STOPPING" // the gateway ANNOUNCED a plain stop (no restartExpectedMs), then closed
   | "CONNECTION_SATURATED" // closed with 1008 "slow consumer": frames were being dropped
   | "ATTACHMENT_TOO_LARGE" // gateway refused an attachment over a size/staging cap
   | "ATTACHMENT_REJECTED" // gateway could not parse/stage the attachment (e.g. its base64 validator overflowed)
@@ -346,6 +347,7 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
 export const LOST_RESPONSE_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "GATEWAY_DISCONNECTED",
   "GATEWAY_RESTARTING",
+  "GATEWAY_STOPPING",
   "CONNECTION_SATURATED",
 ]);
 
@@ -537,6 +539,9 @@ export function classifyGatewayError(
   // "socket closed".
   if (/\[gateway_restarting\]/.test(msg)) {
     return "GATEWAY_RESTARTING";
+  }
+  if (/\[gateway_stopping\]/.test(msg)) {
+    return "GATEWAY_STOPPING";
   }
   if (/\[slow_consumer\]|\[inbound_overflow\]/.test(msg)) {
     // Both directions of the same fact: one end could not keep up and the link was

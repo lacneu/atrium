@@ -276,7 +276,13 @@ describe("enrichHealthSnapshot (additive compat fields)", () => {
     // Per-target: every legacy field intact + the additive gatewayVersion.
     const before = plain.targets[0]!;
     const after = enriched.targets[0]!;
-    expect(after).toEqual({ ...before, gatewayVersion: null, maxPayload: null });
+    expect(after).toEqual({
+      ...before,
+      gatewayVersion: null,
+      maxPayload: null,
+      attachmentMaxBytes: null,
+      attachmentMaxImageBytes: null,
+    });
   });
 
   test("maps gatewayVersion from the live session sharing the canonical", () => {

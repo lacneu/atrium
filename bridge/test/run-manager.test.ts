@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
+import { assistantAsChat } from "./helpers/chat-stream.js";
 import type {
   ConvexWriter,
   FinalizeStatus,
@@ -184,7 +185,9 @@ function frames(scenario: string): unknown[] {
   if (!s) {
     throw new Error(`unknown scenario: ${scenario}`);
   }
-  return s.frames;
+  // Text carried on the `assistant` stream only is replayed as the `chat` delta the
+  // gateway publishes beside it (the bubble's text is read from that stream alone).
+  return scenario === "lifecycle-error" ? assistantAsChat(s.frames) : s.frames;
 }
 
 /** An own-session chat delta carrying `text` (visible content: it opens the bubble). */
@@ -443,15 +446,11 @@ describe("run-manager -> convex-writer mapping", () => {
     ]);
   });
 
-  it("legacy agent deltas accumulate as appendDelta; the silence asks, never ends the turn", async () => {
+  it("assistant-stream text writes nothing; the silence asks, never ends the turn", async () => {
     const { writer, manager } = await drive("agent-assistant-delta-legacy", {
       advanceToFinalize: true,
     });
-    expect(writer.calls[0]).toEqual(["startAssistant", CHAT_ID, OWN_RUN]);
-    const deltas = writer.calls
-      .filter((c) => c[0] === "appendDelta")
-      .map((c) => (c as ["appendDelta", string, string])[2]);
-    expect(deltas).toEqual(["Hello ", "world"]);
+    expect(writer.calls.filter((c) => c[0] === "appendDelta" || c[0] === "setSnapshot")).toEqual([]);
     // The capture ends on a lifecycle `end` and no chat terminal: no grace closes the
     // turn on a timer — the transcript's fact (or the run's terminal) does.
     expect(manager.isFinalized).toBe(false);
@@ -622,7 +621,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
           runId: "bg-run",
           sessionKey: SESSION_KEY,
           stream: "compaction",
-          data: { phase: "end", completed: false, willRetry: false },
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
         },
       },
       clock.tick(),
@@ -643,7 +642,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
         runId: OWN_RUN,
         sessionKey: SESSION_KEY,
         stream: "compaction",
-        data: { phase: "end", completed: false, willRetry: false },
+        data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
       },
     };
     await manager.feed(compactionEnd, clock.tick());
@@ -656,6 +655,69 @@ describe("compaction verdicts across the ack (G-28)", () => {
     await manager.beginTurn(clock.tick(), OWN_RUN);
     await manager.feed(chatDelta(OWN_RUN, "Bonjour"), clock.tick());
     expect(JSON.stringify(writer.calls)).toContain("addCompactionPart");
+  });
+
+  it("a BACKGROUND compaction verdict read before the ack is written once, not again at the replay", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    manager.armReplayBuffer();
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "bg-run",
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
+        },
+      },
+      clock.tick(),
+    );
+    const verdicts = () => writer.calls.filter((c) => JSON.stringify(c).includes("setSessionOverfull")).length;
+    expect(verdicts()).toBe(1);
+    // The frame went on to the pre-ack buffer; replayed, it is the same frame, foreign
+    // to the turn — its verdict is not a second one.
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+    expect(verdicts()).toBe(1);
+    expect(JSON.stringify(writer.calls)).not.toContain("addCompactionPart");
+  });
+
+  it("…nor when the replayed turn has already closed by the time the frame is replayed", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    manager.armReplayBuffer();
+    await manager.feed(chatDelta(OWN_RUN, "Bonjour"), clock.tick());
+    await manager.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "Bonjour" }] },
+        },
+      },
+      clock.tick(),
+    );
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "bg-run",
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
+        },
+      },
+      clock.tick(),
+    );
+    const verdicts = () => writer.calls.filter((c) => JSON.stringify(c).includes("setSessionOverfull")).length;
+    expect(verdicts()).toBe(1);
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+    expect(manager.turnActive).toBe(false);
+    expect(verdicts()).toBe(1);
   });
 
   it("codex P2: a BACKGROUND compaction verdict is captured even during an active turn", async () => {
@@ -672,7 +734,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
           runId: "bg-run",
           sessionKey: SESSION_KEY,
           stream: "compaction",
-          data: { phase: "end", completed: false, willRetry: false },
+          data: { phase: "end", completed: false, willRetry: false, outcome: "failed" },
         },
       },
       clock.tick(),
@@ -706,7 +768,7 @@ describe("compaction verdicts across the ack (G-28)", () => {
     });
     await manager.feed(compaction({ phase: "start" }), clock.tick());
     await manager.feed(
-      compaction({ phase: "end", completed: false, willRetry: false }),
+      compaction({ phase: "end", completed: false, willRetry: false, outcome: "failed" }),
       clock.tick(),
     );
     await manager.beginTurn(clock.tick(), OWN_RUN);

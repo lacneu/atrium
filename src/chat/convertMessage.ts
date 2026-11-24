@@ -3,6 +3,8 @@ import {
   ConvexMessagePartView,
   ConvexMessageView,
   isCompactionPart,
+  isModelFallbackPart,
+  isGatewayNoticePart,
   isFilePart,
   isMediaPart,
   isWidgetPart,
@@ -15,6 +17,7 @@ import {
   type PlanPartView,
 } from "./convexTypes";
 import type { ToolActivityPart } from "./toolActivityView";
+import type { ModelFallbackMeta } from "./modelFallbackView";
 import {
   buildTurnFlow,
   type AnchoredActivity,
@@ -364,6 +367,11 @@ export function convertConvexMessage(
   // always visible (it explains the agent's shortened memory + a long wait),
   // never gated behind the tools toggle.
   let compaction: { phase: string; at: number; reason?: string } | null = null;
+  // Model fallback marker (at most one per bubble, kept by Convex). Rendered by
+  // ModelFallbackNotice, always visible like the compaction marker.
+  let modelFallback: ModelFallbackMeta | null = null;
+  // The gateway's status notices for this bubble, in arrival order (GatewayNotices).
+  const gatewayNotices: string[] = [];
   // PROJECTION `on` (final design step 3): a bubble the transcript rows composed is shown
   // row by row — text, the row's files, its tool cards (rowLayoutView.ts). Null for every
   // other bubble, which keeps the rendering below unchanged.
@@ -445,6 +453,14 @@ export function convertConvexMessage(
         phase: p.phase,
         at: p.at,
         ...(typeof p.reason === "string" && p.reason ? { reason: p.reason } : {}),
+      };
+    } else if (isGatewayNoticePart(p)) {
+      if (typeof p.text === "string" && p.text.trim() !== "") gatewayNotices.push(p.text);
+    } else if (isModelFallbackPart(p)) {
+      modelFallback = {
+        state: p.state,
+        model: p.model,
+        ...(p.state === "active" && typeof p.selected === "string" && p.selected ? { selected: p.selected } : {}),
       };
     }
   });
@@ -762,6 +778,16 @@ export function convertConvexMessage(
         // Gateway context-compaction marker for this turn (null = none) —
         // rendered by CompactionNotice above the reply body.
         compaction,
+        // Model fallback marker for this bubble's run — rendered by
+        // ModelFallbackNotice above the reply body. Absent on a bubble without one, so
+        // what such a bubble converts to is unchanged.
+        ...(modelFallback !== null ? { modelFallback } : {}),
+        // The gateway's status notices — rendered by GatewayNotices under the reply,
+        // never inside it. Absent on a bubble without one, for the same reason.
+        ...(gatewayNotices.length > 0 ? { gatewayNotices } : {}),
+        // A turn the gateway cut (a restart, a stop): what is known of it — rendered by
+        // TurnInterruptionNotice under the bubble's work. Absent on every other bubble.
+        ...(message.interruption !== undefined ? { interruption: message.interruption } : {}),
         // L2: count of READY downloadable document attachments for this turn —
         // drives the subtle "joints" badge on the Sources chip.
         attachedDocCount: message.attachedDocCount ?? 0,

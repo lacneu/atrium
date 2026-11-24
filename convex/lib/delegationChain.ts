@@ -13,6 +13,9 @@
 //    row — table `transcriptSpawns`);
 //  - a TASK START: run P's async tool result names `taskId` (structured, on the live tool
 //    frame — `subAgents.startRunId`; chat.history strips the details, design §14.1);
+//  - a RECOVERY: after a gateway restart cut run P, the gateway's own restart recovery
+//    resumed it as a NEW run whose entry follows P's rows (lib/restartRecovery.ts — the
+//    entry's `recoversRunId`);
 //  - a DELIVERY run's own id: `announce:v1:<childSessionKey>:<childRunId>`
 //    (src/agents/announce-idempotency.ts:13-19), `announce:requester-settle:…:<childRunIds>
 //    [:yield-N][:retry-N]` (src/agents/subagents/registry/subagent-requester-settle-
@@ -24,6 +27,9 @@
 //                          or without `yield-N`: upstream wakes the requester in both cases,
 //                          and the no-yield wake is the run spawn-parallel-merge lost;
 //  - parentOf(task)      = the unique run that started the task;
+//  - parentOf(recovery)  = the unique run its entry resumes (the Control UI shows the two
+//                          as two turns around a notice; Atrium reads the recovery's answer
+//                          as the continuation of the turn the reader asked for);
 //  - chainRoot(R)        = R when it has no parent, else chainRoot(parentOf(R));
 //  - a GROUP is a maximal run of CONSECUTIVE displayed assistant bubbles of one session with
 //    one chain root (the Control UI groups consecutive items of one run,
@@ -80,6 +86,9 @@ export type LaunchFact = {
   instanceName?: string;
 };
 
+/** One recovery fact (a restart-recovery entry's `recoversRunId`, as identities). */
+export type RecoveryFact = { resumedRunId: string; sessionKey: string; instanceName?: string };
+
 /** One task start (a `subAgents` task row's `startRunId`, with the instance that wrote it). */
 export type TaskStart = { startRunId: string; instanceName?: string };
 
@@ -88,6 +97,8 @@ export type TaskStart = { startRunId: string; instanceName?: string };
  *  facts could not all be read within the bounds, codex phase 5 pass 1 #5): no chain. */
 export type ChainFacts = {
   launchesOfChild: ReadonlyMap<string, readonly LaunchFact[]>;
+  /** By RECOVERY run: the run(s) its entry says it resumes, with the scope that read it. */
+  recoveries?: ReadonlyMap<string, readonly RecoveryFact[]>;
   taskStarts: ReadonlyMap<string, readonly (TaskStart | string)[]>;
   /** Runs whose facts the loader could not finish reading: never chained. */
   unknown?: ReadonlySet<string>;
@@ -191,7 +202,15 @@ export class ChainResolver {
     const self: Walk = { root: runId, height: 0 };
     if (this.facts.unknown?.has(runId) === true) return self;
     const ref = deliveryParentRef(runId);
-    if (ref === null) return self;
+    if (ref === null) {
+      // The gateway's restart recovery of another run: it continues that run's turn.
+      const resumed = distinct(
+        (this.facts.recoveries?.get(runId) ?? [])
+          .filter((f) => f.sessionKey === scope.sessionKey && sameInstance(f.instanceName, scope.instanceName))
+          .map((f) => f.resumedRunId),
+      );
+      return resumed.length === 1 ? this.up(resumed[0]!, scope) : self;
+    }
     if (ref.kind === "announce") {
       const launcher = this.launcherOf(ref.childRunId, scope, ref.childSessionKey);
       return launcher === null ? self : this.up(launcher, scope);

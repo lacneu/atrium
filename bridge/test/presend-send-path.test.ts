@@ -657,19 +657,17 @@ describe("a guard-initiated compaction names its own cause", () => {
     expect(second.some((e) => e.type === "context.compaction")).toBe(true);
   });
 
-  it("the guard tells the normalizer, on the real send path", async () => {
+  it("the guard's cause travels with the send's own turn, on the real send path", async () => {
     const { gw, session, writer } = await harness({
       describe: [at(97), at(30)],
       compact: { payload: { ok: true, compacted: true } },
     });
-    const seen: string[] = [];
-    const rm = session.runManager as unknown as {
-      notePresendCompactionCause: (r: string) => void;
-    };
-    const original = rm.notePresendCompactionCause.bind(rm);
-    rm.notePresendCompactionCause = (r: string) => {
-      seen.push(r);
-      original(r);
+    const seen: Array<string | null | undefined> = [];
+    const rm = session.runManager;
+    const begin = rm.beginTurn.bind(rm);
+    rm.beginTurn = (now, ackRunId, ctx) => {
+      seen.push(ctx?.presendCompactionCause);
+      return begin(now, ackRunId, ctx);
     };
     await performSend(session, body, writer, null, null);
 
@@ -684,14 +682,16 @@ describe("a guard-initiated compaction names its own cause", () => {
         payload: { ok: true, compacted: false, reason: "no transcript" },
       },
     });
-    const seen: string[] = [];
-    const rm = session.runManager as unknown as {
-      notePresendCompactionCause: (r: string) => void;
+    const seen: Array<string | null | undefined> = [];
+    const rm = session.runManager;
+    const begin = rm.beginTurn.bind(rm);
+    rm.beginTurn = (now, ackRunId, ctx) => {
+      seen.push(ctx?.presendCompactionCause);
+      return begin(now, ackRunId, ctx);
     };
-    rm.notePresendCompactionCause = (r: string) => seen.push(r);
     await performSend(session, body, writer, null, null);
 
-    expect(seen).toEqual([]);
+    expect(seen).toEqual([undefined]);
   });
 });
 

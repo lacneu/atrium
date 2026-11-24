@@ -92,20 +92,25 @@ export const EVENT_PLAN_ADVANCE = "plan.advance";
 //   { type: "context.compaction", phase: "preflight" | "midturn" }
 export const EVENT_CONTEXT_COMPACTION = "context.compaction";
 
-// FRAME LOSS — the one thing that was structurally invisible. Two independent
-// sources, both content-free (counters only, safe to trace):
-//   - "gateway": the gateway's own per-run diagnostic (`stream:"error"`,
-//     `data.reason:"seq gap"`) — it noticed a hole in the agent events it was
-//     forwarding and told us. Pinned upstream (server-chat.agent-events.test.ts).
-//   - "envelope": OUR detection on the per-connection envelope `seq`. The
-//     gateway drops frames to a slow consumer while STILL advancing that counter
-//     (server-broadcast.ts), so a hole is the only trace a dropped frame leaves.
-//     TARGETED broadcasts carry NO seq — their absence must never read as a hole.
-// Observe-only by construction: a lost frame must never fail a turn (the frames
-// that did arrive stay valid), so the sink only records a diagnostic.
-//   { type: "frame.gap", source: "gateway" | "envelope",
-//     expected: number|null, received: number|null, missing: number|null }
-export const EVENT_FRAME_GAP = "frame.gap";
+// THE GATEWAY'S SEQUENCE REPORT — not a frame loss.
+//
+// The gateway's agent-event handler compares the seq of the event it is handling with
+// the last one IT handled for that run, and when they are not consecutive it broadcasts
+// `{stream:"error", data:{reason:"seq gap", expected, received}}` (upstream
+// src/gateway/server-chat.ts). That seq is the runtime's per-run emission counter
+// (src/infra/agent-events.ts), which also counts emissions the handler never sees. Both
+// counters live inside the gateway: `received < expected` is a seq it had already
+// passed, `received > expected` emissions it did not handle. Neither is a frame dropped
+// on the way to this bridge, and the Control UI reads none of it.
+//
+// A frame the gateway dropped for THIS socket leaves a hole in the per-connection
+// envelope `seq` instead (providers/openclaw/frame-seq.ts). That is reported at
+// connection level, straight to the writer (session.ts), and is never an event of a turn.
+//
+// Observe-only: counters and the run the report names, never content.
+//   { type: "gateway.seq_report", expected: number|null, received: number|null,
+//     runId: string|null }
+export const EVENT_GATEWAY_SEQ_REPORT = "gateway.seq_report";
 
 /**
  * A normalized event. Intentionally permissive ({ type } + arbitrary fields):

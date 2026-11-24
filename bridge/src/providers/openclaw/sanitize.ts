@@ -317,6 +317,40 @@ export function sanitizeText(
   return out.join("\n");
 }
 
+const LIVE_LINE_BREAK_RE = /[\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029]/;
+const LIVE_WORD_STOP_RE = /[\s`)>]/;
+
+/**
+ * How much of a STILL-GROWING text can be shown without being taken back.
+ *
+ * `sanitizeText` rewrites a server path to its basename and drops a `MEDIA:` directive
+ * line, and both only happen once the text is complete enough to match. Shown as it
+ * grew, `/home/node/.openclaw/media/outbound/` was printed and then replaced by the
+ * file's name: a text that got SHORTER, which the reader sees and Convex refuses as a
+ * regression. The tail that may still become one of those is held back — a last line
+ * that is, or begins like, a `MEDIA:` directive; else a last word that opens with `/`
+ * (after an opening quote or parenthesis) — until the character that ends it arrives.
+ * A final text is never cut by the caller.
+ *
+ * STATED LIMIT: a path written INSIDE a longer word, and a `path:` label line (dropped
+ * whole once complete), are not seen here; their rewrite still shortens the text when
+ * it lands. So does the one line break before a directive that gets dropped: it is
+ * shown (a tool card is anchored on the line it opens) and goes with the directive.
+ */
+export function liveStableLength(text: string): number {
+  let lineStart = text.length;
+  while (lineStart > 0 && !LIVE_LINE_BREAK_RE.test(text[lineStart - 1]!)) lineStart--;
+  const line = text.slice(lineStart);
+  if (line !== "" && (line.startsWith("MEDIA:") || "MEDIA:".startsWith(line))) {
+    return lineStart;
+  }
+  let wordStart = text.length;
+  while (wordStart > lineStart && !LIVE_WORD_STOP_RE.test(text[wordStart - 1]!)) wordStart--;
+  let pathStart = wordStart;
+  while (pathStart < text.length && "\"'(".includes(text[pathStart]!)) pathStart++;
+  return text[pathStart] === "/" ? pathStart : text.length;
+}
+
 /**
  * Sanitize a raw OpenClaw frame for the deprecated `openclaw.frame`
  * passthrough: recursively strip server paths from every string. Mirrors the
@@ -326,6 +360,25 @@ export function sanitizeText(
  *
  * `mediaSessionKey` is accepted for signature parity but unused.
  */
+/**
+ * How much of a text may be PERSISTED when its turn closes before the run's chat
+ * terminal: more text can still arrive and complete the bubble, and the completion must
+ * extend what was written. Stricter than `liveStableLength`, because what it leaves out
+ * is written back when no completion comes: the last word is held as soon as it contains
+ * a `/` (a server path can sit behind a prefix, `file=/home/…`), and so is a last line
+ * that is only a `path:` / `chemin:` label — the label line disappears whole once its
+ * path is complete.
+ */
+export function settledStableLength(text: string): number {
+  let end = liveStableLength(text);
+  let wordStart = end;
+  while (wordStart > 0 && !/\s/.test(text[wordStart - 1]!)) wordStart--;
+  if (text.slice(wordStart, end).includes("/")) end = wordStart;
+  let lineStart = end;
+  while (lineStart > 0 && !LIVE_LINE_BREAK_RE.test(text[lineStart - 1]!)) lineStart--;
+  return /^\s*(?:path|chemin)\s*:\s*`?\s*$/i.test(text.slice(lineStart, end)) ? lineStart : end;
+}
+
 export function sanitizeFrame(value: unknown, _opts?: { mediaSessionKey?: string }): unknown {
   if (typeof value === "string") {
     return sanitizeText(value);

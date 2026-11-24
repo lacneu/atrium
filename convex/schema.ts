@@ -208,6 +208,28 @@ export const messagePart = v.union(
     // rather than imply a pre-emptive threshold compaction.
     reason: v.optional(v.string()),
   }),
+  // The run behind this bubble was answered by ANOTHER MODEL than the one selected
+  // (`active`), or the session is back on its selected one (`cleared`) — the gateway's
+  // own statement, made after the run's work. `model` is the name the marker prints
+  // (the active model, or the selected one once cleared), `selected` the model that was
+  // asked for while a fallback holds. Model names only — a config-class `provider/model`
+  // slug, bounded at write — never the provider's reasons. At most one per bubble.
+  v.object({
+    kind: v.literal("model_fallback"),
+    state: v.union(v.literal("active"), v.literal("cleared")),
+    model: v.string(),
+    selected: v.optional(v.string()),
+    at: v.number(),
+  }),
+  // A STATUS NOTICE the gateway sent beside this bubble's answer (a `chat` final whose
+  // blocks are all marked `openclawStatusNotice`: a usage line, a diagnostic). The
+  // gateway's own sentence, shown as a notice line — never part of the answer's text.
+  // Sanitized and bounded by the bridge, bounded again at write; a few per bubble.
+  v.object({
+    kind: v.literal("gateway_notice"),
+    text: v.string(),
+    at: v.number(),
+  }),
   // Provenance report (provenance/v1, docs/PROVENANCE_CONTRACT.md): what a
   // gateway context-injecting plugin (conversational memory / document RAG)
   // fed the LLM for THIS turn. Emitted by the plugin on its gateway-scoped
@@ -308,6 +330,13 @@ export const bridgeHealthTarget = v.object({
   // (maxPayloadInternal). Optional: a pre-this-release bridge / unreached instance
   // omits it (the dispatch falls back to the doc-level value, then the default).
   maxPayload: v.optional(v.union(v.number(), v.null())),
+  // This instance's gateway PER-ATTACHMENT decoded-size ceilings (hello-ok
+  // policy.attachments, OpenClaw 2026.8.1+): any file, and an image — published by the
+  // bridge only while a live socket of that instance vouches for them. Optional/null:
+  // unknown, and an unknown ceiling refuses nothing. Per instance ONLY: there is no
+  // document-level value, a limit must never reach an instance it was not read from.
+  attachmentMaxBytes: v.optional(v.union(v.number(), v.null())),
+  attachmentMaxImageBytes: v.optional(v.union(v.number(), v.null())),
   // Per-instance gateway VERSION reported by THIS instance's bridge /health, shown
   // on the connection row. Optional: a pre-this-release bridge / unreached instance
   // omits it.
@@ -2315,6 +2344,34 @@ export default defineSchema({
     // still correct it (complete → error). Absent once confirmed or corrected, and on
     // every bubble an explicit terminal settled — that outcome is never overridden.
     closeInferred: v.optional(v.boolean()),
+    // ASSISTANT rows of a projected conversation, while STREAMING with no socket of the
+    // bridge on them: the retry chain a socket close started (stuckStreams.
+    // continueResumeChain holds its state table). `at`: when the gateway is asked next —
+    // it names the one link in charge; `since`: the latest close; `closes`: the closes
+    // noted, so that an answer to a question asked before a newer close does not end the
+    // chain. Absent: no chain in flight.
+    resumeChain: v.optional(
+      v.object({ at: v.number(), since: v.number(), closes: v.number() }),
+    ),
+    // ASSISTANT rows of a projected conversation: what is KNOWN of a turn the gateway cut
+    // (a restart, a stop), as facts — never an error of the reader's making. `shutdown`:
+    // the gateway announced it on the turn's socket before that socket closed (the
+    // bridge's report, stuckStreams.resumeChatStreams). `recoveryRunId`: the gateway's own
+    // restart recovery resumed the turn — its entry (`provenance.sourceTool:
+    // "main_session_restart_recovery"`) follows this run's rows, and that run answers
+    // (lib/restartRecovery.ts), read from the rows at every projection pass.
+    // `cutCallIds`: the tool calls the cut left without a result, proven by the rows
+    // right before the entry (`cutCallsBefore`) — set and removed with `recoveryRunId`.
+    // `shutdown` is removed when the turn resumes live. The reader is told of the
+    // interruption when `recoveryRunId` is set, and only then: `shutdown` chooses the
+    // words (a restart, a stop), it never states an interruption by itself.
+    interruption: v.optional(
+      v.object({
+        shutdown: v.optional(v.union(v.literal("restart"), v.literal("stop"))),
+        recoveryRunId: v.optional(v.string()),
+        cutCallIds: v.optional(v.array(v.string())),
+      }),
+    ),
     // ASSISTANT rows of a projected conversation (phase 5, design §14): the DISPLAY GROUP
     // this bubble belongs to — the id of the group's first message — when consecutive
     // bubbles of one delegation chain show as one (convex/lib/delegationChain.ts). A
@@ -2724,6 +2781,25 @@ export default defineSchema({
     releasedAt: v.number(),
   }).index("by_chat_run", ["chatId", "runId"]),
 
+  // THE BUBBLE A LATE FINAL'S WRITE OPENED, BY THE KEY OF THAT WRITE (stream.ts
+  // `appendLateFinal`). A late final of a run that left no bubble opens one, and a repeat
+  // of that write (its answer lost) cannot be told from another turn's late final by its
+  // run id or its text — the bridge names the WRITE, and this says which bubble that
+  // write opened. Ids only. Bounded: a key serves the retries of one write (seconds to
+  // minutes), so the chat's keys older than `LATE_FINAL_KEY_TTL_MS` are deleted when a
+  // later one is recorded. Recording one marks the conversation (`transcriptSeenAt`) in
+  // the same transaction, which is what its deletion reads to purge them
+  // (transcriptProjection.purgeChatRowTexts).
+  lateFinalWrites: defineTable({
+    chatId: v.id("chats"),
+    writeKey: v.string(),
+    messageId: v.id("messages"),
+    createdAt: v.number(),
+  })
+    // The chat's keys, oldest first (creation order): the retention sweep and the purge.
+    .index("by_chat", ["chatId"])
+    .index("by_chat_key", ["chatId", "writeKey"]),
+
   runBubbles: defineTable({
     chatId: v.id("chats"),
     runId: v.string(),
@@ -2800,6 +2876,11 @@ export default defineSchema({
     stopReason: v.optional(v.string()),
     provenanceKind: v.optional(v.string()),
     provenanceSourceTool: v.optional(v.string()),
+    // Set by Convex (`on`) on the gateway's restart-recovery entry (a `user` row of the
+    // RECOVERY run): the run it resumes — the run of the row right before it in the
+    // transcript (lib/restartRecovery.ts; upstream keeps that link in its session store
+    // only). Absent until that row is stored.
+    recoversRunId: v.optional(v.string()),
     // A stream segment `chat.history` split out of its transcript row (same id and seq,
     // `openclawStreamFallback.source: "segment"`): keyed apart, shown before its owner.
     streamSegment: v.optional(v.boolean()),
@@ -2835,6 +2916,8 @@ export default defineSchema({
     // Projection `on` (phase 4): the user rows that STEERED into a run cut its bubble
     // into segments (CU-20) — one bounded range per run.
     .index("by_chat_steer_target", ["chatId", "steerTargetRunId", "seq"])
+    // …and the recovery entry that resumed a run, if any (one probe per projected run).
+    .index("by_chat_recovers", ["chatId", "recoversRunId"])
     // …and the rows a bubble shows, in transcript order (its text is recomposed from them).
     .index("by_message_seq", ["messageId", "seq"]),
 

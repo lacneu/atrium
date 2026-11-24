@@ -96,6 +96,12 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "uploadsInFlightUntil",
   // Whether its outcome was inferred (projection `on`): settlement state.
   "closeInferred",
+  // The retry chain asking the gateway about its run (a socket closed on it): scheduling
+  // state of the source deployment, meaningless anywhere else.
+  "resumeChain",
+  // What is known of a turn the SOURCE deployment's gateway cut, and the run that resumed
+  // it there: gateway state of that deployment, named by its run ids.
+  "interruption",
   // Service correlates waiting for the outcome (projection `on`): settlement state.
   "statusJobsDeferred",
   // Who ends the live turn — the gateway, never the stuck-stream watchdog (0.102.1):

@@ -9,10 +9,11 @@
 //
 // One RunManager handles one OpenClaw session (one chat).
 
+import { randomUUID } from "node:crypto";
 import type { PresendDescribeOutcome } from "../../core/pressure-telemetry.js";
-import { Normalizer } from "./normalizer.js";
+import { Normalizer, type SettledCompletion } from "./normalizer.js";
 import { protocolDrift } from "./protocol-drift.js";
-import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
+import { TurnSink, type OutboundScan, type RunFactWrite } from "../../core/turn-sink.js";
 import type { SessionFillSource } from "../../core/context-budget.js";
 import type { FinalizeCause } from "../../core/finalize-causes.js";
 import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
@@ -24,8 +25,10 @@ import {
   isRelayOwnedTalkRun,
   isTalkConsultRunId,
 } from "../../core/talk-consult.js";
-import type { ConvexWriter } from "../../convex-writer.js";
+import { lateFinalAskedOnce, type ConvexWriter } from "../../convex-writer.js";
 import { EVENT_SESSION_OVERFULL, type BridgeEvent } from "../../core/events.js";
+import { modelFallbackFromFrame, type ModelFallback } from "./model-fallback.js";
+import { sanitizeText } from "./sanitize.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   parseProvenanceFrame,
@@ -45,6 +48,20 @@ import { errForLog } from "../../core/log-safe-error.js";
 // Cap on the pre-ack frame stash (see `pendingFrames`): bounds memory if a
 // dispatch fails and beginTurn never drains it. Generous — a whole turn's worth.
 const MAX_PENDING_FRAMES = 1000;
+/** A status notice is one line of the gateway's own text; anything longer is cut. */
+const MAX_GATEWAY_NOTICE_CHARS = 2000;
+
+/** Something the gateway states about a run that is not the run's content. */
+type RunFact = { kind: "fallback"; fallback: ModelFallback } | { kind: "notice"; text: string };
+
+/** A run's facts still to write, oldest first. */
+interface RunFactQueue {
+  facts: RunFact[];
+  /** A turn owning the run has ended: "no bubble" is then Convex's last word. */
+  settled: boolean;
+  /** A write pass for this run is queued and has not started: another is not stacked. */
+  scheduled: boolean;
+}
 // Cap on the ANNOUNCE stash: it can hold a WHOLE late report streamed during a
 // long user turn (deltas + tools), so it is much larger than the pre-ack cap.
 // Overflow is logged loudly (a truncated report must never be silent) — the
@@ -85,6 +102,47 @@ interface RunLane {
   queued: number;
 }
 
+/** A settled run's bubble (null: none) and whole visible text. */
+type SettledRecord = { messageId: string | null; text: string };
+/** A settled bubble's write queue (see `RunManager.offerCompletion`): the completion it
+ *  is owed — the latest text offered for that bubble, null when the queue was opened by
+ *  a late final and nothing is owed — the record of the turn that settled it, and how
+ *  many write passes failed. */
+interface KeptCompletion {
+  runId: string;
+  offer: SettledCompletion | null;
+  record: SettledRecord;
+  failures: number;
+  scheduled: boolean;
+  /** The offer whose debt is SETTLED (written, joined, or dropped): a later pass — one
+   *  that only has what waits behind to write — does not ask for it again. */
+  settledOffer: SettledCompletion | null;
+  /** The key of this debt's last-resort join (see `LateFinal.writeKey`): one per bubble
+   *  owed, the same across the passes that ask for it again. */
+  joinKey: string;
+  /** Late finals for the same bubble, in arrival order: written once the debt is
+   *  settled (see `RunManager.writeCompletion`). */
+  behind: LateFinal[];
+}
+/** A `chat` final of a settled run (CU-8): the run, its visible text and its record. */
+interface LateFinal {
+  runId: string;
+  text: string;
+  settled: SettledRecord;
+  /** THIS late final's write, named once: the same key at every attempt to write it, a
+   *  different one for another late final — even of the same run with the same text.
+   *  Convex answers a repeat with the bubble the first attempt opened. */
+  writeKey: string;
+  /** Write passes that failed while it waited in a bubble's queue. */
+  failures?: number;
+}
+/** What became of a write on the completion chain. `refused` is an ANSWER (Convex holds
+ *  something else; nothing to add; no bubble to join) — `failed` is no answer at all,
+ *  and the write can be asked again — `lost` is no answer either, from a write that
+ *  cannot be asked again (a Convex from before write keys: a repeat would open a second
+ *  bubble). */
+type SettledWriteOutcome = "written" | "refused" | "failed" | "lost";
+
 export class RunManager {
   private readonly normalizer: Normalizer;
   private readonly sink: TurnSink;
@@ -106,19 +164,28 @@ export class RunManager {
   // PRE-ACK frame stash: response frames (delta/snapshot/tool/media/final) can
   // arrive on the shared socket BEFORE the chat.send `res` ack lands, while the
   // sink is still inactive — feed() would otherwise DROP them and lose the start
-  // (or all) of a streaming response. Buffer them (bounded) and REPLAY through
-  // the freshly-reset+seeded normalizer in beginTurn. The normalizer's runId
-  // filter (ownRunIds seeded from the ack) drops any foreign-run frame on replay.
+  // (or all) of a streaming response. Buffer them (bounded) and REPLAY them in
+  // beginTurn, each through the unit a live frame takes once the turn is open. The
+  // normalizer's runId filter (ownRunIds seeded from the ack) drops any foreign-run
+  // frame on replay.
   private pendingFrames: { frame: unknown; now: number }[] = [];
   // A frame was REFUSED by the pre-ack cap since the last arm: the upcoming turn's
   // stream is known to be incomplete (consumed by beginTurn).
   private pendingFramesOverflowed = false;
   // The buffer is ARMED only for the chat.send -> ack window (armReplayBuffer is
-  // called right before the request; beginTurn disarms after draining). Outside
+  // called right before the request; beginTurn disarms it as it takes the frames). Outside
   // that window an inactive feed() drops non-provenance frames as before, so a
   // late/background frame arriving AFTER a turn finalizes is NEVER buffered and
   // can never be replayed into the next turn (no stale-frame leak).
   private replayArmed = false;
+  // Set while beginTurn replays the pre-ack frames, resolved when the last one has been
+  // processed. The replay hands each frame to the SAME unit a live frame takes, one after
+  // the other, so it spans several awaits: a frame (or a tick) arriving meanwhile is
+  // younger than every frame being replayed and waits here for its turn.
+  private replayGate: Promise<void> | null = null;
+  // Frames whose chat-scoped compaction verdict was written at arrival: a frame that
+  // went on to the pre-ack buffer is not a second verdict when it is replayed.
+  private readonly idleVerdictRead = new WeakSet<object>();
   // ANNOUNCE frames that arrived while a REAL dispatch was in flight (or while a
   // real turn streamed): they must not open a spontaneous turn mid-send (the real
   // beginTurn would clobber it) NOR ride the pre-ack buffer (the replay seeds
@@ -417,10 +484,9 @@ export class RunManager {
     if (first !== undefined) this.heldInputs.get(first)!.answered = true;
   }
 
-  /** The visible text of a DISTINCT late final of a settled run (CU-8), or null. */
-  private lateFinalFor(
-    frame: unknown,
-  ): { runId: string; text: string; settled: { messageId: string | null; text: string } } | null {
+  /** A `chat` final of a settled run that is not the open turn's (CU-8): the run, its
+   *  visible text and its record — or null. */
+  private lateFinalFor(frame: unknown): LateFinal | null {
     if (typeof frame !== "object" || frame === null) return null;
     const f = frame as { event?: unknown; payload?: Record<string, unknown> };
     if (f.event !== "chat" || f.payload?.state !== "final") return null;
@@ -430,7 +496,80 @@ export class RunManager {
     if ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)) {
       return null;
     }
-    const text = visibleFinalText(f.payload?.message);
+    return { runId: rid, text: visibleFinalText(f.payload?.message), settled: record, writeKey: randomUUID() };
+  }
+
+  /**
+   * Join what a late final ADDS to its settled run's bubble, compared with the record as
+   * it is NOW. Null: it adds nothing, nothing was asked. Otherwise the outcome of the
+   * write: `refused` when there is no bubble to join and none could be opened.
+   * Idempotent in Convex under its `writeKey` (`appendLateFinal`): an addition the bubble
+   * already holds is not appended again, and a write that OPENED a bubble is answered
+   * with that bubble when it is asked again — so `failed` can be asked again. `lost`: the
+   * write went without a key (an older Convex) and cannot.
+   */
+  private async joinLateFinal(late: LateFinal): Promise<SettledWriteOutcome | null> {
+    const settled = late.settled;
+    const add = this.lateAddition(late.text, settled);
+    if (add === null) return null;
+    const opened = settled.messageId === null;
+    let into: string | null;
+    try {
+      into = await this.sink.writeLateFinal(late.runId, settled.messageId, add, late.writeKey);
+    } catch (e) {
+      this.completionFailure = e;
+      return lateFinalAskedOnce(e) ? "lost" : "failed";
+    }
+    if (into === null) return "refused";
+    settled.messageId = into;
+    settled.text = settled.text === "" ? add : `${settled.text}\n\n${add}`;
+    console.log(
+      `[final] a distinct late final joined the settled run's bubble (CU-8) run=${late.runId.slice(0, 60)}${opened ? " (new bubble)" : ""}`,
+    );
+    return "written";
+  }
+
+  /**
+   * A DISTINCT late final (CU-8) on the frame path: put in its bubble's queue, never
+   * awaited — its write is retried by the writer (its key makes it repeatable), and a
+   * frame must not wait a minute for a text beside the turn. A bubble with no queue gets
+   * one with nothing owed at its head (keyed by the run's record, so two finals of a run
+   * that left no bubble share it and the second is compared with what the first wrote).
+   * Both bounds refuse the newcomer.
+   */
+  private queueLateFinal(late: LateFinal): void {
+    const queue = this.keptCompletions.get(late.settled);
+    if (queue !== undefined) {
+      if (queue.behind.length < RunManager.MAX_BEHIND_A_COMPLETION) {
+        queue.behind.push(late);
+      } else {
+        console.error(
+          `[final] late final DROPPED: ${RunManager.MAX_BEHIND_A_COMPLETION} already wait in its bubble's queue run=${late.runId.slice(0, 60)}`,
+        );
+      }
+      return;
+    }
+    if (this.keptCompletions.size >= RunManager.MAX_KEPT_COMPLETIONS) {
+      console.error(
+        `[final] late final DROPPED: ${RunManager.MAX_KEPT_COMPLETIONS} settled bubbles already have a write queue run=${late.runId.slice(0, 60)}`,
+      );
+      return;
+    }
+    this.keptCompletions.set(late.settled, {
+      runId: late.runId,
+      offer: null,
+      record: late.settled,
+      failures: 0,
+      scheduled: false,
+      settledOffer: null,
+      joinKey: randomUUID(),
+      behind: [late],
+    });
+    this.scheduleCompletion(late.settled);
+  }
+
+  /** What a late terminal text adds to a settled run's record, or null. */
+  private lateAddition(text: string, record: { text: string }): string | null {
     if (text === "") return null;
     const settled = normText(record.text);
     const add = normText(text);
@@ -441,9 +580,17 @@ export class RunManager {
     // it: only the addition joins the bubble (the reply is already there).
     if (settled !== "" && add.includes(settled)) {
       const extra = textBeyond(text, record.text);
-      return extra === "" ? null : { runId: rid, text: extra, settled: record };
+      return extra === "" ? null : extra;
     }
-    return { runId: rid, text, settled: record };
+    return text;
+  }
+
+  /** The settled run's whole visible text: the earlier segments (cut at steers) + the
+   *  last bubble's. */
+  private settledRunText(): string {
+    const earlier = this.normalizer.segmentPrefixText;
+    const last = this.sink.lastSettledBubble?.text ?? "";
+    return earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`;
   }
 
   /** A turn began and its settlement is not recorded yet (see noteIfSettled). */
@@ -457,17 +604,24 @@ export class RunManager {
   private noteIfSettled(): void {
     if (this.settleUnrecorded && !this.sink.active) {
       this.settleUnrecorded = false;
-      const b = this.sink.lastSettledBubble;
-      // The run's whole visible text: the earlier segments (cut at steers) + the last.
-      const earlier = this.normalizer.segmentPrefixText;
-      const last = b?.text ?? "";
       const record = {
-        messageId: b?.messageId ?? null,
-        text: earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`,
+        messageId: this.sink.lastSettledBubble?.messageId ?? null,
+        text: this.settledRunText(),
       };
       for (const id of this.normalizer.ownRunIds) {
         this.settledRuns.delete(id);
         this.settledRuns.set(id, record);
+        // The window this turn's early close opened is for THIS record: a later turn
+        // re-using the run id gets another record, and another window.
+        const window = this.normalizer.settledWindowOf(id);
+        if (window !== undefined && !this.windowRecords.has(window)) {
+          this.windowRecords.set(window, record);
+        }
+      }
+      // The turn is over: what its runs still have queued goes on the bubble it left
+      // (or on the one Convex finds for the run).
+      for (const id of this.normalizer.ownRunIds) {
+        if (this.runFacts.has(id)) this.scheduleRunFacts(id, true);
       }
       while (this.settledRuns.size > RunManager.MAX_SETTLED_RUNS) {
         this.settledRuns.delete(this.settledRuns.keys().next().value as string);
@@ -595,12 +749,6 @@ export class RunManager {
 
   /** True while a turn is actively driving the sink — gates whether
    *  currentMessageId belongs to a LIVE turn (vs the last finished one). */
-  /** The pre-send guard compacted this session before the turn (W2): the cause of
-   *  the rotation that follows is ours, and the marker may say so. */
-  notePresendCompactionCause(reasonClass: string): void {
-    this.normalizer.notePresendCompactionCause(reasonClass);
-  }
-
   get turnActive(): boolean {
     return this.sink.active;
   }
@@ -615,7 +763,7 @@ export class RunManager {
    *  must treat this as live too — resetting here would wipe the session of
    *  the turn the gateway is about to start (codex P1, pass 13). */
   get dispatchInFlight(): boolean {
-    return this.replayArmed;
+    return this.replayArmed || this.replayGate !== null;
   }
 
   /**
@@ -627,7 +775,7 @@ export class RunManager {
    */
   get liveWork(): "turn in progress" | "dispatch in flight" | "delivery pending" | null {
     if (this.sink.active || this.sink.finalizing) return "turn in progress";
-    if (this.replayArmed) return "dispatch in flight";
+    if (this.dispatchInFlight) return "dispatch in flight";
     if (this.pendingAnnounce.length > 0) return "delivery pending";
     return null;
   }
@@ -685,6 +833,7 @@ export class RunManager {
     this.replayArmed = false;
     this.pendingFrames = [];
     this.pendingFramesOverflowed = false;
+    this.scheduleWaitingRunFacts();
     if (this.pendingAnnounce.length > 0) {
       // `now` MUST be the session's own clock (the normalizer arms its recv
       // deadlines against it — an epoch value would park them forever).
@@ -752,6 +901,10 @@ export class RunManager {
       /** The pre-send guard COMPACTED this session right before this send (W2):
        *  makes a `context_length` failure retryable exactly once. */
       compactedBeforeSend?: boolean;
+      /** …and the cause that compaction gives the rotation it produces (W2): the marker
+       *  of THIS turn may say why. Carried by the send, never kept beside the turns — a
+       *  cause no rotation consumed would name a later turn's compaction. */
+      presendCompactionCause?: string | null;
       /** Projection `on`, `interrupt` send: the foreground turn is replaced. The
        *  gateway aborts its run; its bubble settles as stopped. */
       interruptActive?: boolean;
@@ -830,6 +983,7 @@ export class RunManager {
     this.currentSpontaneousRun =
       turnContext?.spontaneous === true ? ackRunId : null;
     this.noteIfSettled();
+    this.reofferCompletions();
     this.settleUnrecorded = true;
     this.turnEpoch++;
     this.normalizer.beginTurn(now);
@@ -841,6 +995,9 @@ export class RunManager {
     }
     this.normalizer.noteExpectedSessionId(
       turnContext?.expectedSessionId ?? null,
+    );
+    this.normalizer.notePresendCompactionCause(
+      turnContext?.presendCompactionCause ?? null,
     );
     this.frameTally.clear();
     this.frameSampled.clear();
@@ -874,43 +1031,55 @@ export class RunManager {
         matched.map((p) => ({ type: "provenance", part: p.part })),
       );
     }
-    // Replay response frames that raced ahead of the ack, in arrival order,
-    // through the now-active sink + seeded normalizer — so the start of a
-    // streaming response is never lost. Foreign-run frames are filtered by the
-    // normalizer's runId guard; the buffer is drained either way.
+    // Replay the frames that raced ahead of the ack, in arrival order, each through the
+    // unit a LIVE frame takes after its observation (`feedObserved`): lanes, the
+    // completion of a settled bubble, the held text, a late final, the routing, the
+    // settle record. A replayed sequence then writes what the same sequence writes when
+    // it arrives after this point — the turn it opens can also close inside the replay,
+    // and what follows its close is read as what follows a close. They were observed and
+    // classified when they arrived (`feedInner`), which is not done again.
+    //
+    // DISARMED FIRST: the buffer is being drained, and a replayed frame must not be put
+    // back into it (foreign-run frames reach the normalizer's own admission, as live).
+    // The dispatch stays in flight for its readers until the gate opens.
     const raced = this.pendingFrames;
     this.pendingFrames = [];
-    // ENQUEUE ALL OF THEM SYNCHRONOUSLY, then await. Awaiting inside the loop would
-    // yield between two replayed frames, and a live frame arriving in that gap would
-    // take the next slot in the chain — the reply's middle landing before its start
-    // (measured: `one, four, two, three`). The chain orders what is enqueued; this
-    // loop is what decides the enqueue order, so it must not pause halfway.
-    // …and STOP at the first failure, as the sequential loop did (codex P2): when an
-    // apply fails, `beginTurn` rejects and /send treats the whole send as failed —
-    // letting the queued remainder keep writing into a turn the caller is about to
-    // fail would be a new behavior, not a preserved one. The flag is set by the
-    // rejection of the unit before the next one produces (they run in chain order).
-    let replayFailed = false;
-    const replayed = raced.map(({ frame, now: frameNow }) => {
-      this.tallyFrame(frame);
-      return this.applyOrdered(() =>
-        replayFailed ? [] : this.normalizer.feed(frame, frameNow),
-      ).catch((err) => {
-        // The PRE-ACK path reaches the normalizer without going through `feed()` above,
-        // so it needs its own report — with the exact frame that failed, which is the
-        // only thing that tells an operator which shape broke the send.
-        protocolDrift.observeException(frame, err, "pre-ack-replay");
-        replayFailed = true;
-        throw err;
-      });
-    });
-    await Promise.all(replayed);
+    this.replayArmed = false;
     if (raced.length > 0) {
+      // ONE FRAME AT A TIME, each awaited: a frame's decisions are taken on what the
+      // frames before it left (a close opens the window its next delta completes). The
+      // order against LIVE frames, which the synchronous enqueue used to give (measured
+      // without it: `one, four, two, three`), is given by the gate — `feed` and `tick`
+      // wait behind it, so nothing younger is read before the replay ends.
+      let release!: () => void;
+      this.replayGate = new Promise<void>((resolve) => (release = resolve));
+      try {
+        for (const { frame, now: frameNow } of raced) {
+          try {
+            // The one reading that depends on what the frames before it did (see
+            // `runFactsFor`): a notice beside an answer the replay has just settled.
+            const facts = this.runFactsFor(frame, true);
+            if (facts !== null) this.noteRunFacts(facts.runId, facts.facts);
+            else await this.feedObserved(frame, frameNow);
+          } catch (err) {
+            // STOP at the first failure (codex P2): `beginTurn` rejects and /send treats
+            // the whole send as failed — the remainder must not keep writing into a turn
+            // the caller is about to fail. Reported with the exact frame that failed,
+            // which is the only thing that tells an operator which shape broke the send.
+            protocolDrift.observeException(frame, err, "pre-ack-replay");
+            throw err;
+          }
+        }
+      } finally {
+        this.replayGate = null;
+        release();
+      }
       this.dumpTallyOnce();
     }
-    // Disarm: between turns (sink inactive, NOT armed) feed() drops non-provenance
-    // frames, so a late/background frame can't accumulate and replay later.
-    this.replayArmed = false;
+    // Facts that arrived before the ACK waited for it: this run's for its bubble, which
+    // the replay may just have opened (a turn it also finished drains at its settle);
+    // any other run's for the dispatch to stop being in flight.
+    this.scheduleWaitingRunFacts();
     // The replay itself can FINALIZE the turn (a whole response raced the ack):
     // deliver any announce stashed during the send window now — no later
     // feed/tick is guaranteed once the loop goes idle (codex P2). No-op while
@@ -933,10 +1102,13 @@ export class RunManager {
     runId: string,
     segmentPrefix?: string,
   ): Promise<void> {
+    // Behind a pre-ack replay, like a frame: no turn is resumed between two replayed frames.
+    if (this.replayGate !== null) await this.behindReplay();
     if (this.sink.active || this.sink.finalizing) return;
     this.spontaneousReplayCopy = [];
     this.currentSpontaneousRun = null;
     this.noteIfSettled();
+    this.reofferCompletions();
     this.settleUnrecorded = true;
     this.turnEpoch++;
     this.normalizer.beginTurn(now);
@@ -1144,6 +1316,7 @@ export class RunManager {
     // present and future. It REPORTS AND RETHROWS: callers decide what a failed frame
     // means (a /send rejects, the loop logs and continues); the sensor only refuses to
     // let it vanish.
+    if (this.replayGate !== null) await this.behindReplay(frame);
     try {
       await this.feedInner(frame, now);
     } catch (err) {
@@ -1152,9 +1325,53 @@ export class RunManager {
     }
   }
 
+  /** A pre-ack replay in progress goes first (see `replayGate`). Called only while one
+   *  is: a frame takes no extra await otherwise (G-29).
+   *  A frame this manager hands itself back (a stash replaying through `feed` — it was
+   *  observed at its arrival) is already inside that unit and does not wait for it. */
+  private async behindReplay(frame?: unknown): Promise<void> {
+    while (
+      this.replayGate !== null &&
+      !(typeof frame === "object" && frame !== null && this.observedFrames.has(frame))
+    ) {
+      await this.replayGate;
+    }
+  }
+
+  /**
+   * Frames this manager has already observed. EVERY frame is observed and classified
+   * exactly once, at arrival; a frame that comes back through `feed` — the announce
+   * stash and the preemption copy replay through it — is recognised here and neither
+   * observed nor classified again.
+   *
+   * Keyed by the frame OBJECT, weakly: the stashes keep the frame they were handed and
+   * hand the same object back, so its identity is the one thing every stash and replay
+   * path already carries — no stash changes shape, a stash added later inherits the rule
+   * without knowing it, and the mark dies with the frame. A wrapper would have had to be
+   * unwrapped at each of the entry points that take a raw frame.
+   *
+   * What is decided here cannot be decided twice: "a notice-only final after its run's
+   * final" is true of any final seen a second time.
+   */
+  private readonly observedFrames = new WeakSet<object>();
+
   private async feedInner(frame: unknown, now: number): Promise<void> {
-    // Observe-only protocol-drift classification (never gates the frame).
-    protocolDrift.observe(frame);
+    const carried = typeof frame === "object" && frame !== null;
+    if (!carried || !this.observedFrames.has(frame)) {
+      if (carried) this.observedFrames.add(frame);
+      // Observe-only protocol-drift classification (never gates the frame).
+      protocolDrift.observe(frame);
+      // FACTS ABOUT A RUN that are not a turn's content (a model fallback, the
+      // gateway's status notices) are taken HERE, at arrival — before the lanes, the
+      // stashes and the turn's pipeline — so the same frame is read the same way
+      // whether it comes during its turn, before the ACK or after the terminal, and
+      // can neither become a turn's content nor open or close one.
+      const facts = this.runFactsFor(frame);
+      if (facts !== null) {
+        this.noteRunFacts(facts.runId, facts.facts);
+        return;
+      }
+    }
     await this.feedObserved(frame, now);
   }
 
@@ -1167,31 +1384,502 @@ export class RunManager {
     await this.feedPipeline(frame, now);
   }
 
-  /** The turn's own pipeline for a frame (a lane hands back what it held here). */
-  private async feedPipeline(frame: unknown, now: number): Promise<void> {
-    const late = this.lateFinalFor(frame);
-    if (late !== null) {
-      const settled = late.settled;
-      const opened = settled.messageId === null;
-      try {
-        const into = await this.sink.writeLateFinal(late.runId, settled.messageId, late.text);
-        if (into !== null) {
-          settled.messageId = into;
-          settled.text = settled.text === "" ? late.text : `${settled.text}\n\n${late.text}`;
-        }
-        console.log(
-          `[final] a distinct late final joined the settled run's bubble (CU-8) run=${late.runId.slice(0, 60)}${opened ? " (new bubble)" : ""}`,
+  // --- FACTS ABOUT A RUN ------------------------------------------------------------
+  //
+  // A model fallback, its clearing, and the gateway's status notices say something about
+  // a RUN after (or beside) its work. They are best-effort METADATA: they never delay,
+  // block or reorder a turn's content. `runFactsFor` reads the frame at arrival and
+  // `noteRunFacts` appends what it states to the run's ordered queue — both synchronous,
+  // and all the frame path ever does. The WRITES are detached from it: one chain
+  // (`factsTail`) writes the queues, oldest fact first, on the run's bubble — at once
+  // when the bubble exists, when it opens or when the turn settles otherwise. A fact is
+  // never written ahead of one still queued for its run, so the last one received is the
+  // last one written.
+  //
+  // Nothing is retried here. The writer retries a transient failure itself, bounded
+  // (convex-writer.ts `doPostWithRetry`: these two ops are idempotent in Convex); a write
+  // that still fails, or that Convex refuses, drops that one fact with one trace
+  // (TurnSink.writeRunFallback / writeRunNotice) and the next one goes on.
+  //
+  // A manager that is dropped (its session closed) leaves its chain to finish by itself:
+  // a write already started completes or times out in the writer, whose timers do not
+  // hold the process; the passes queued behind it only read this object's own memory,
+  // and facts still waiting for a bubble are never written.
+
+  /** Per-run queues, by run (insertion-ordered: the oldest run is dropped first). */
+  private readonly runFacts = new Map<string, RunFactQueue>();
+  /** Runs the gateway stated a fallback for and whose notice final is still expected
+   *  (bounded): the first status notice that follows is that fallback in words. */
+  private readonly fallbackStatedRuns = new Set<string>();
+  /** Runs whose `chat` final has been seen (bounded): a notice-only final after it is
+   *  beside the answer, not the answer. */
+  private readonly finalSeenRuns = new Set<string>();
+  /** Serializes the writes: one fact at a time, in the order they were queued. Never
+   *  awaited by a frame; it cannot reject. */
+  private factsTail: Promise<void> = Promise.resolve();
+  private static readonly MAX_RUN_FACT_RUNS = 32;
+  private static readonly MAX_RUN_FACTS_PER_RUN = 16;
+  private static readonly MAX_REMEMBERED_RUNS = 200;
+
+  private static remember(set: Set<string>, key: string, cap: number): void {
+    set.delete(key);
+    set.add(key);
+    while (set.size > cap) set.delete(set.values().next().value as string);
+  }
+
+  /**
+   * What a frame states about a run of this session, or null when it is the turn's own
+   * material.
+   *
+   * A model fallback (model-fallback.ts) always is. A `chat` final is when it carries
+   * nothing but status notices — blocks the gateway marks `openclawStatusNotice`
+   * (2026.9.6+, src/gateway/server-methods/chat-assistant-content.ts) — AND the run's
+   * final has already been seen, or the run is settled: upstream sends such notices in a
+   * final of their own after the answer's ("status notices remain visible but do not
+   * define the terminal reply they accompany"). A notice-only final that is the run's
+   * FIRST final is its reply (a command's answer) and stays the turn's.
+   *
+   * Decided from the order of arrival, not from the turn's state at that instant: the
+   * answer and its notice may both precede the ACK.
+   *
+   * `replayed`: the frame comes back from the pre-ACK buffer, where it went because it
+   * was not a fact when it arrived. The order of arrival has been read (and this very
+   * frame counted as a final): only what could not be known then is asked again — the
+   * run has SETTLED since, on a frame replayed before this one (a lifecycle error, an
+   * aborted terminal), and a notice-only final after that is beside the answer, as it
+   * is when the same frames arrive during the turn.
+   */
+  private runFactsFor(frame: unknown, replayed = false): { runId: string; facts: RunFact[] } | null {
+    const fallback = modelFallbackFromFrame(frame, this.sessionKey);
+    if (fallback !== null) return { runId: fallback.runId, facts: [{ kind: "fallback", fallback }] };
+    if (typeof frame !== "object" || frame === null) return null;
+    const f = frame as { event?: unknown; payload?: Record<string, unknown> };
+    if (f.event !== "chat" || f.payload?.state !== "final") return null;
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    if (rid === null) return null;
+    const answered =
+      (!replayed && this.finalSeenRuns.has(rid)) ||
+      (this.settledRuns.has(rid) &&
+        !((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)));
+    if (!replayed) RunManager.remember(this.finalSeenRuns, rid, RunManager.MAX_REMEMBERED_RUNS);
+    if (!answered) return null;
+    const content = (f.payload.message as { content?: unknown } | undefined)?.content;
+    if (!Array.isArray(content) || content.length === 0) return null;
+    const facts: RunFact[] = [];
+    for (const block of content) {
+      if (typeof block !== "object" || block === null) return null;
+      const b = block as { type?: unknown; text?: unknown; openclawStatusNotice?: unknown };
+      if (b.type !== "text" || typeof b.text !== "string" || b.openclawStatusNotice !== true) {
+        return null;
+      }
+      facts.push({ kind: "notice", text: b.text });
+    }
+    return { runId: rid, facts };
+  }
+
+  /** Queue what a frame states about `runId` and schedule its writing. Synchronous: the
+   *  frame that stated it is done here. */
+  private noteRunFacts(runId: string, stated: RunFact[]): void {
+    let facts = stated;
+    if (facts.some((fact) => fact.kind === "fallback")) {
+      RunManager.remember(this.fallbackStatedRuns, runId, RunManager.MAX_REMEMBERED_RUNS);
+    } else if (this.fallbackStatedRuns.delete(runId)) {
+      // The fallback notice is built first and PREPENDED to the run's reply payloads
+      // (src/auto-reply/reply/agent-runner-result-payloads.ts): after a fallback the
+      // gateway stated for this run, the first notice is that fallback in words —
+      // which the bubble's fallback marker already says. Decided in arrival order,
+      // whether or not either of them has been written yet.
+      facts = facts.slice(1);
+    }
+    const queue: RunFactQueue = this.runFacts.get(runId) ?? {
+      facts: [],
+      // A run already settled when its first fact arrives will get no later settle.
+      settled:
+        this.settledRuns.has(runId) && !(this.sink.active && this.normalizer.ownRunIds.has(runId)),
+      scheduled: false,
+    };
+    const before = queue.facts.length;
+    for (const fact of facts) {
+      if (fact.kind === "notice") {
+        const text = sanitizeText(fact.text).trim().slice(0, MAX_GATEWAY_NOTICE_CHARS);
+        if (text === "") continue;
+        queue.facts.push({ kind: "notice", text });
+      } else {
+        queue.facts.push(fact);
+      }
+    }
+    if (queue.facts.length === before) return;
+    // Bounded, oldest first — and said, because a dropped fact is a marker or a notice
+    // the reader will not see.
+    if (queue.facts.length > RunManager.MAX_RUN_FACTS_PER_RUN) {
+      const dropped = queue.facts.splice(0, queue.facts.length - RunManager.MAX_RUN_FACTS_PER_RUN);
+      console.warn(
+        `[run-facts] ${dropped.length} fact(s) dropped, oldest first (per-run bound ${RunManager.MAX_RUN_FACTS_PER_RUN}) run=${runId.slice(0, 60)}`,
+      );
+    }
+    this.runFacts.delete(runId);
+    this.runFacts.set(runId, queue);
+    while (this.runFacts.size > RunManager.MAX_RUN_FACT_RUNS) {
+      const oldest = this.runFacts.keys().next().value as string;
+      const lost = this.runFacts.get(oldest)?.facts.length ?? 0;
+      this.runFacts.delete(oldest);
+      console.warn(
+        `[run-facts] ${lost} fact(s) dropped with their run, the oldest waiting (bound ${RunManager.MAX_RUN_FACT_RUNS} runs) run=${oldest.slice(0, 60)}`,
+      );
+    }
+    this.scheduleRunFacts(runId, false);
+  }
+
+  /**
+   * Queue a write pass for `runId`'s facts on the detached chain. `settled`: a turn
+   * owning the run just ended. Returns at once; nothing on the frame path waits for it.
+   * One pass per run waits at a time: a frame arriving while the chain is held by a slow
+   * write stacks nothing.
+   */
+  private scheduleRunFacts(runId: string, settled: boolean): void {
+    const queue = this.runFacts.get(runId);
+    if (queue === undefined) return;
+    if (settled) queue.settled = true;
+    if (queue.scheduled) return;
+    queue.scheduled = true;
+    this.factsTail = this.factsTail
+      .then(() => {
+        queue.scheduled = false;
+        return this.writeRunFacts(runId, queue);
+      })
+      .catch((err: unknown) => {
+        console.error("[run-facts] a write pass failed (non-fatal):", errForLog(err));
+      });
+  }
+
+  /**
+   * Write `runId`'s queued facts on its bubble, oldest first. The outcome of a write
+   * (RunFactWrite) decides what follows:
+   *  - written: next fact;
+   *  - failed — after the writer's own retries, or refused outright: that fact is
+   *    dropped (the sink traced why) and the next one goes on;
+   *  - no bubble — Convex's ANSWER: for a settled run it is final, the run showed
+   *    nothing and its facts are dropped, and said; for any other run the bubble may
+   *    still come — the fact goes back to the head of its queue and the queue waits
+   *    for the bubble to open or the turn to settle.
+   */
+  private async writeRunFacts(runId: string, queue: RunFactQueue): Promise<void> {
+    let waitedFor: SettledRecord | undefined;
+    while (this.runFacts.get(runId) === queue && queue.facts.length > 0) {
+      const live = this.sink.active && this.normalizer.ownRunIds.has(runId);
+      // While the run is the live turn's, its bubble is the turn's — once it is open.
+      const known = live
+        ? this.sink.currentMessageId
+        : (this.lanes.get(runId)?.messageId ?? this.settledRuns.get(runId)?.messageId ?? null);
+      if (live && known === null) return;
+      // A DISPATCH IS IN FLIGHT and the run is not the open turn's: until the ACK names
+      // the turn's run, nothing says whether this fact is beside the bubble the run
+      // settled earlier or the first word of the turn about to open on the same run id
+      // — written now, it went on the earlier bubble. It waits for the turn to begin
+      // (or the send to fail), which schedules every queue again.
+      if (!live && this.dispatchInFlight) return;
+      // The settled run left no bubble, and a write queued for it may OPEN one (a late
+      // final, a refused completion's join): asked now, Convex would answer "no bubble"
+      // and the fact would be dropped beside a bubble about to exist. It waits for that
+      // queue's pass — once: a write that keeps failing does not hold the facts.
+      const record = live ? undefined : this.settledRuns.get(runId);
+      if (known === null && record !== undefined && record !== waitedFor && this.keptCompletions.has(record)) {
+        waitedFor = record;
+        await this.completionsIdle();
+        continue;
+      }
+      // Taken out before the write: the per-run bound may drop the head meanwhile. And
+      // "settled" as it stood when Convex was ASKED: its answer is about that instant.
+      const fact = queue.facts.shift()!;
+      const settled = queue.settled;
+      // `known` null: a run this bridge holds no bubble for (the transcript made it,
+      // or the frame preceded the turn) — Convex looks the run's bubble up.
+      const outcome: RunFactWrite =
+        fact.kind === "fallback"
+          ? await this.sink.writeRunFallback(fact.fallback, known)
+          : await this.sink.writeRunNotice(runId, known, fact.text);
+      if (outcome !== "no_bubble") continue;
+      queue.facts.unshift(fact);
+      if (settled && this.runFacts.get(runId) === queue) {
+        console.warn(
+          `[run-facts] ${queue.facts.length} fact(s) dropped: the run left no bubble to carry them run=${runId.slice(0, 60)}`,
         );
-      } catch (e) {
-        console.error("[final] late final not written (non-fatal):", errForLog(e));
+        this.runFacts.delete(runId);
       }
       return;
+    }
+    if (this.runFacts.get(runId) === queue && queue.facts.length === 0) this.runFacts.delete(runId);
+  }
+
+  /** The live turn's bubble may just have opened: schedule what waited for it. */
+  private scheduleLiveRunFacts(): void {
+    if (this.runFacts.size === 0 || !this.sink.active || this.sink.currentMessageId === null) return;
+    for (const runId of this.runFacts.keys()) {
+      if (this.normalizer.ownRunIds.has(runId)) this.scheduleRunFacts(runId, false);
+    }
+  }
+
+  /** The dispatch is no longer in flight: every queue is given a pass again. */
+  private scheduleWaitingRunFacts(): void {
+    for (const runId of this.runFacts.keys()) this.scheduleRunFacts(runId, false);
+  }
+
+  /** Resolves once every write pass queued so far is done (tests, orderly teardown). */
+  async runFactsIdle(): Promise<void> {
+    let tail: Promise<void>;
+    do {
+      tail = this.factsTail;
+      await tail;
+    } while (tail !== this.factsTail);
+  }
+
+  /** The turn's own pipeline for a frame (a lane hands back what it held here). */
+  private async feedPipeline(frame: unknown, now: number): Promise<void> {
+    // Decided SYNCHRONOUSLY, and never awaited: a frame takes no extra await before the
+    // ordered path below (G-29), whatever a settled bubble's write is doing.
+    this.reofferCompletions();
+    const completion = this.normalizer.settledCompletion(frame as never);
+    if (completion !== null) {
+      this.offerCompletion(completion);
+      return;
+    }
+    // The gateway moved on: a bubble takes the text it was closed without.
+    for (const rest of this.normalizer.settledRemainders(frame as never)) {
+      this.offerCompletion(rest);
+    }
+    const late = this.lateFinalFor(frame);
+    if (late !== null) {
+      // THAT bubble has a queue: this final goes to its tail, whatever its head is
+      // doing, and is compared with what the bubble holds only when its turn comes.
+      // No queue: the record is what the bubble holds, and a final that adds nothing to
+      // it is an ordinary frame.
+      if (this.keptCompletions.has(late.settled) || this.lateAddition(late.text, late.settled) !== null) {
+        this.queueLateFinal(late);
+        return;
+      }
     }
     try {
       await this.feedRouted(frame, now);
     } finally {
       this.noteIfSettled();
     }
+    this.scheduleLiveRunFacts();
+  }
+
+  // --- THE COMPLETION OF A SETTLED BUBBLE ---------------------------------------------
+  //
+  // Text a run sent after its bubble settled — before that run's chat terminal (a
+  // definitive `lifecycle` error, a net) — completes THAT RUN's bubble
+  // (Normalizer.settledCompletion), whatever turn is open by then. Never a turn event:
+  // no status, no terminal, no phase.
+  //
+  // `offerCompletion` is all the frame path does, synchronously: the run is owed the
+  // text (`keptCompletions`, one per run, the latest text wins) and a write pass is
+  // queued on a chain of its own (`completionTail`), like the facts about a run. A frame
+  // never waits for that chain — nor does a DISTINCT late final (CU-8,
+  // `queueLateFinal`): every write to a settled bubble goes through its queue.
+  //
+  // ONE QUEUE PER BUBBLE (`keptCompletions`, by the bubble's record): the debt if there
+  // is one, then the late finals that arrived for the same bubble while the queue
+  // existed (the first of them opens the queue when nothing is owed). The queue is
+  // listed from its first entry until it is DRAINED — the debt settled (written,
+  // joined, or dropped after its passes) and what waited behind it written — and "is
+  // there a queue for this bubble?" is the one question the frame path asks to route a
+  // late final. They are written when the debt is settled, never between two passes,
+  // each compared with the record as the writes before it left it: what awaiting the
+  // write on the frame path used to guarantee, kept by the queue's order.
+  //
+  // Two bounds, and neither can reorder what it does not drop: at most
+  // `MAX_KEPT_COMPLETIONS` bubbles have a queue (the completion or the late final of one
+  // more is dropped, and said — no queue is ever removed to make room), and at most
+  // `MAX_BEHIND_A_COMPLETION` finals wait in one (one more is dropped, and said).
+  //
+  // A pass that FAILS — past the writer's own bounded retries (convex-writer.ts
+  // `IDEMPOTENT_OPS`: a repeat of a completion that landed is answered as written) —
+  // leaves the text owed. It is offered again when something already happens: the next
+  // frame of the connection, a turn beginning. No timer here. After
+  // `MAX_COMPLETION_PASSES` failed passes the text is dropped, and said.
+
+  /** What settled bubbles are still owed, by DESTINATION — the record of the turn that
+   *  settled the bubble (insertion-ordered, bounded). Never by run id: a run id can
+   *  settle a second bubble while the first is still owed its text. */
+  private readonly keptCompletions = new Map<SettledRecord, KeptCompletion>();
+  /** The record each early close's window completes (see `noteIfSettled`). */
+  private readonly windowRecords = new WeakMap<object, SettledRecord>();
+  /** Serializes the writes to settled bubbles. Never awaited by a frame; cannot reject. */
+  private completionTail: Promise<void> = Promise.resolve();
+  /** Why the last write to a settled bubble failed (for the trace of whoever asked). */
+  private completionFailure: unknown = null;
+  private static readonly MAX_COMPLETION_PASSES = 3;
+  private static readonly MAX_KEPT_COMPLETIONS = 32;
+  private static readonly MAX_BEHIND_A_COMPLETION = 8;
+
+  /** The bubble `offer`'s window settled is owed `offer.text`. Synchronous. */
+  private offerCompletion(offer: SettledCompletion): void {
+    // The destination is the WINDOW's: the record of the turn whose early close opened
+    // it, whatever record the run id names by now.
+    const record = this.windowRecords.get(offer.window);
+    if (record === undefined) return;
+    const kept = this.keptCompletions.get(record);
+    if (kept !== undefined) {
+      // Same bubble: the latest text wins, it is the gateway's later view of one buffer.
+      kept.offer = offer;
+    } else {
+      // The bound is on the bubbles with a queue, and it refuses the NEWCOMER: a queue
+      // lives until it is drained (its debt settled, what waited behind it written),
+      // so no bound ever takes a queue away from under the finals routed to it.
+      if (this.keptCompletions.size >= RunManager.MAX_KEPT_COMPLETIONS) {
+        console.warn(
+          `[final] a settled bubble's completion was dropped: ${RunManager.MAX_KEPT_COMPLETIONS} bubbles are already owed one run=${offer.runId.slice(0, 60)}`,
+        );
+        return;
+      }
+      this.keptCompletions.set(record, {
+        runId: offer.runId,
+        offer,
+        record,
+        failures: 0,
+        scheduled: false,
+        settledOffer: null,
+        joinKey: randomUUID(),
+        behind: [],
+      });
+    }
+    this.scheduleCompletion(record);
+  }
+
+  /** Queue a write pass for every completion still owed and not already queued: what a
+   *  failed pass left. Synchronous, and nothing when nothing is owed. */
+  private reofferCompletions(): void {
+    if (this.keptCompletions.size === 0) return;
+    for (const record of this.keptCompletions.keys()) this.scheduleCompletion(record);
+  }
+
+  private scheduleCompletion(record: SettledRecord): void {
+    const kept = this.keptCompletions.get(record);
+    if (kept === undefined || kept.scheduled) return;
+    kept.scheduled = true;
+    this.completionTail = this.completionTail
+      .then(() => {
+        kept.scheduled = false;
+        return this.writeCompletion(kept);
+      })
+      .catch((err: unknown) => {
+        console.error("[final] a completion pass failed (non-fatal):", errForLog(err));
+      });
+  }
+
+  /**
+   * Write what a settled bubble is owed. Every write of the pass has one of three
+   * outcomes (`SettledWriteOutcome`), and the debt is discharged only by `written` or by
+   * the refusal of its LAST resort:
+   *  - the completion, WRITTEN: the normalizer's reference and the run's record follow
+   *    the bubble;
+   *  - the completion, REFUSED (Convex holds a text this one does not extend — the
+   *    sanitiser rewrote something already persisted; or the run left no bubble): the
+   *    text is never dropped, what it ADDS to the run's record is joined as a late final
+   *    is (CU-8) — the last resort. Joined, or nothing to add, or no bubble to join:
+   *    discharged;
+   *  - either write FAILED: the text stays owed (see above), under one bounded counter.
+   *    The next pass asks both again; both are idempotent in Convex.
+   */
+  private async writeCompletion(kept: KeptCompletion): Promise<void> {
+    const { record, runId } = kept;
+    while (this.keptCompletions.get(record) === kept) {
+      const offer = kept.offer;
+      if (offer !== null && kept.settledOffer !== offer) {
+        let outcome = await this.completeSettled(record, runId, offer);
+        if (outcome === "written") {
+          this.normalizer.noteCompletionWritten(offer);
+          // The run's record follows its bubble (what a later distinct final is compared with).
+          record.text = offer.earlier === null ? offer.text : `${offer.earlier}\n\n${offer.text}`;
+        } else if (outcome === "refused") {
+          // The last resort, under the debt's own key: a run that left no bubble has one
+          // OPENED by this join, and Convex answers a repeat of it with that bubble.
+          const whole = offer.earlier === null ? offer.text : `${offer.earlier}\n\n${offer.text}`;
+          outcome = (await this.joinLateFinal({ runId, text: whole, settled: record, writeKey: kept.joinKey })) ?? "refused";
+          if (outcome === "lost") {
+            console.error(
+              `[final] a settled run's late text was not written, and is not asked again (this Convex cannot tell a repeat of the write) run=${runId.slice(0, 60)}:`,
+              errForLog(this.completionFailure),
+            );
+          }
+        }
+        const dropped = outcome === "failed" && ++kept.failures >= RunManager.MAX_COMPLETION_PASSES;
+        if (outcome === "failed") {
+          console.error(
+            `[final] a settled bubble's completion was not written (pass ${kept.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${dropped ? "DROPPED: the bubble keeps the text it settled with" : "kept, offered again at the next frame"} run=${runId.slice(0, 60)}:`,
+            errForLog(this.completionFailure),
+          );
+          // Still owed: what waits behind it for the same bubble waits too.
+          if (!dropped) return;
+        }
+        // This text is SETTLED (written, joined, or dropped). A newer text offered
+        // meanwhile is the debt now (the same text, once written, is done).
+        if (kept.offer !== offer && !(outcome === "written" && kept.offer?.text === offer.text)) continue;
+        kept.settledOffer = kept.offer;
+      }
+      // What waited behind the debt, in order. A final whose write failed stays at the
+      // head of the queue, owed like the debt was: the pass ends, and the next one
+      // (the next frame, a turn beginning) asks for it again.
+      if (!(await this.writeBehind(kept))) return;
+      // A text offered, or a final queued, while the last write was answered: the queue
+      // is not drained.
+      if (kept.settledOffer !== kept.offer || kept.behind.length > 0) continue;
+      if (this.keptCompletions.get(record) === kept) this.keptCompletions.delete(record);
+      return;
+    }
+  }
+
+  /** The late finals that waited behind a settled debt, oldest first, each compared
+   *  with the bubble as the writes before it left it. The debt is still listed while
+   *  they are written, so one arriving meanwhile queues behind them. False: the head's
+   *  write failed and it stays owed (bounded like a debt: `MAX_COMPLETION_PASSES`
+   *  failed passes, then dropped and said) — nothing behind it is written before it. */
+  private async writeBehind(kept: KeptCompletion): Promise<boolean> {
+    for (let late = kept.behind[0]; late !== undefined; late = kept.behind[0]) {
+      const outcome = await this.joinLateFinal(late);
+      if (outcome === "failed") {
+        late.failures = (late.failures ?? 0) + 1;
+        const dropped = late.failures >= RunManager.MAX_COMPLETION_PASSES;
+        console.error(
+          `[final] a late final in a settled bubble's queue was not written (pass ${late.failures}/${RunManager.MAX_COMPLETION_PASSES}) — ${dropped ? "DROPPED" : "kept, asked again at the next frame"} run=${late.runId.slice(0, 60)}:`,
+          errForLog(this.completionFailure),
+        );
+        if (!dropped) return false;
+      } else if (outcome === "lost") {
+        console.error("[final] late final not written (non-fatal):", errForLog(this.completionFailure));
+      }
+      if (kept.behind[0] === late) kept.behind.shift();
+    }
+    return true;
+  }
+
+  /** The completion write itself. No bubble to complete is a refusal. */
+  private async completeSettled(
+    record: SettledRecord,
+    runId: string,
+    offer: SettledCompletion,
+  ): Promise<SettledWriteOutcome> {
+    if (record.messageId === null) return "refused";
+    try {
+      return (await this.sink.completeSettledText(record.messageId, runId, offer.text))
+        ? "written"
+        : "refused";
+    } catch (e) {
+      this.completionFailure = e;
+      return "failed";
+    }
+  }
+
+  /** Resolves once every write to a settled bubble queued so far is done (tests,
+   *  orderly teardown). */
+  async completionsIdle(): Promise<void> {
+    let tail: Promise<void>;
+    do {
+      tail = this.completionTail;
+      await tail;
+    } while (tail !== this.completionTail);
   }
 
   /** A run of the session that opens a spontaneous (deferred) turn of its own: the
@@ -1251,13 +1939,20 @@ export class RunManager {
         return;
       }
       if (announceRun !== null) {
-        if (this.replayArmed || this.sink.finalizing) {
+        if (this.replayArmed || this.replayGate !== null || this.sink.finalizing) {
           // A real dispatch is in flight (replayArmed), OR the previous
           // turn's finalize is still writing its tail: in Convex the merged
           // message is still `streaming`, so opening this announce NOW would
           // fail the reopen's streaming gate and fall to a fresh bubble
           // (live incident 2026-07-14: back-to-back parallel deliveries).
           // Stash — flushed right after the finalize settles.
+          //
+          // OR A PRE-ACK REPLAY IS RUNNING (replayGate): this is the one place a
+          // spontaneous turn begins — reached by a replayed frame itself, and by the
+          // announce flush a replayed close triggers — and no turn begins between two
+          // replayed frames: what the closed run sent after its close (its flushed
+          // text, its chat terminal) is still in the buffer. `beginTurn` flushes the
+          // stash once the replay is over.
           this.stashAnnounceFrame(frame, now);
           return;
         }
@@ -1310,6 +2005,7 @@ export class RunManager {
       // active without the announce's own terminal. Ordering, not a proven fix.
       const idleVerdict = idleCompactionVerdict(frame, this.sessionKey);
       if (idleVerdict !== null) {
+        if (!this.noteIdleVerdictRead(frame)) return;
         await this.sink.apply([
           {
             type: EVENT_SESSION_OVERFULL,
@@ -1405,6 +2101,7 @@ export class RunManager {
       if (foreign) {
         const verdict = idleCompactionVerdict(frame, this.sessionKey);
         if (verdict !== null) {
+          if (!this.noteIdleVerdictRead(frame)) return;
           await this.sink.apply([
             {
               type: EVENT_SESSION_OVERFULL,
@@ -1463,8 +2160,20 @@ export class RunManager {
     }
   }
 
+  /** False when this frame's chat-scoped compaction verdict was already written (the
+   *  frame is replaying from the pre-ack buffer): one verdict per frame. */
+  private noteIdleVerdictRead(frame: unknown): boolean {
+    if (typeof frame !== "object" || frame === null) return true;
+    if (this.idleVerdictRead.has(frame)) return false;
+    this.idleVerdictRead.add(frame);
+    return true;
+  }
+
   /** Resolve expired normalizer deadlines; apply any emitted events. */
   async tick(now: number): Promise<void> {
+    // Behind a pre-ack replay, like a frame: a deadline is judged on what the replayed
+    // frames leave, not between two of them.
+    if (this.replayGate !== null) await this.behindReplay();
     if (!this.sink.active) {
       // Between turns: drain announce frames stashed while a real turn streamed
       // (the other flush point beside feed(); whichever fires first wins).

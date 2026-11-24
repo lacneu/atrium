@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
 import {
   BookOpen,
   Check,
+  CircleDot,
   Globe,
   LoaderCircle,
   Pencil,
@@ -16,6 +17,7 @@ import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
 import type { ToolActivityPart } from "./toolActivityView";
 import { activityBlock, type ActivityNode } from "./activityBlock";
+import { blockInterrupted, interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
 import {
   activityLabel,
   dominantFamily,
@@ -43,11 +45,12 @@ const FAMILY_ICON: Record<ToolFamily, typeof Wrench> = {
 
 interface FlowMeta {
   status?: string;
+  interruption?: TurnInterruption;
 }
 
 /** A rows block's cards, nested under their parent (activityBlock.ts): a node's children
  *  are shown inside its card, once it is open. */
-function NodeCard({ node, settled }: { node: ActivityNode; settled: boolean }) {
+function NodeCard({ node, settled, cut }: { node: ActivityNode; settled: boolean; cut: ReadonlySet<string> }) {
   const p = node.part;
   return (
     <ToolCard
@@ -58,9 +61,10 @@ function NodeCard({ node, settled }: { node: ActivityNode; settled: boolean }) {
       result={p.result}
       status={p.phase ? { type: p.phase } : undefined}
       turnSettled={settled}
+      turnInterrupted={p.toolCallId !== undefined && cut.has(p.toolCallId)}
       nested={
         node.children.length > 0
-          ? node.children.map((c) => <NodeCard key={c.part.toolCallId} node={c} settled={settled} />)
+          ? node.children.map((c) => <NodeCard key={c.part.toolCallId} node={c} settled={settled} cut={cut} />)
           : undefined
       }
     />
@@ -73,6 +77,14 @@ export function InlineTurnActivity(props: {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as FlowMeta | undefined)?.status,
   );
+  // The gateway cut this turn: the calls it is PROVEN to have left without a result were
+  // interrupted, never "completed" (turnInterruptionView.ts). Selected as one string: a
+  // selector must return a stable value.
+  const cutKey = useMessage((msg) => {
+    const meta = msg.metadata?.custom as FlowMeta | undefined;
+    return [...interruptedCalls(meta?.interruption, meta?.status)].join("\u0000");
+  });
+  const cut = useMemo(() => new Set(cutKey === "" ? [] : cutKey.split("\u0000")), [cutKey]);
   const [expanded, setExpanded] = useState(false);
   // Tools OFF = the CLEAN view (user decision, revising the earlier
   // always-visible plan): no activity rows at all — the working label under
@@ -105,7 +117,16 @@ export function InlineTurnActivity(props: {
       {shown.length > 1 ? (
         <span className="oc-flowact__count">{shown.length}</span>
       ) : null}
-      <Check size={13} className="oc-actrow__status-icon" aria-hidden />
+      {blockInterrupted(parts, cut) ? (
+        // One call of the block was cut by the gateway: the header is not a clean "done".
+        // Same quiet glyph and word as the interrupted card (ToolCard).
+        <span className="inline-flex items-center" title={m.tools_status_interrupted()}>
+          <CircleDot size={13} className="oc-actrow__status-icon" aria-hidden />
+          <span className="sr-only">{m.tools_status_interrupted()}</span>
+        </span>
+      ) : (
+        <Check size={13} className="oc-actrow__status-icon" aria-hidden />
+      )}
     </>
   );
   return (
@@ -128,7 +149,7 @@ export function InlineTurnActivity(props: {
       {expanded && block !== null ? (
         <div className="oc-toolact__detail">
           {block.roots.map((node) => (
-            <NodeCard key={node.part.toolCallId} node={node} settled={settled} />
+            <NodeCard key={node.part.toolCallId} node={node} settled={settled} cut={cut} />
           ))}
         </div>
       ) : expanded ? (
@@ -143,6 +164,7 @@ export function InlineTurnActivity(props: {
               result={p.result}
               status={p.phase ? { type: p.phase } : undefined}
               turnSettled={status !== undefined && status !== "streaming"}
+              turnInterrupted={p.toolCallId !== undefined && cut.has(p.toolCallId)}
             />
           ))}
         </div>

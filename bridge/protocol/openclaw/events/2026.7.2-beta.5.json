@@ -4,9 +4,9 @@
   "catalogue": "event-catalogue.json",
   "counts": {
     "total": 44,
-    "handled": 5,
+    "handled": 6,
     "gap": 22,
-    "ignored": 17
+    "ignored": 16
   },
   "events": {
     "connect.challenge": {
@@ -39,7 +39,7 @@
     },
     "shutdown": {
       "status": "handled",
-      "by": "connection-end.ts — names the GATEWAY_RESTARTING cause instead of a bare socket close",
+      "by": "connection-end.ts — names the announced end instead of a bare socket close: GATEWAY_RESTARTING when the notice carries restartExpectedMs, GATEWAY_STOPPING when it does not (a plain stop)",
       "anchor": {
         "file": "src/providers/openclaw/connection-end.ts",
         "token": "eventPayload(frame, \"shutdown\")"
@@ -94,8 +94,12 @@
       "why": "Channel presence for chat surfaces (who is online). Atrium is not a chat client and no turn depends on it."
     },
     "tick": {
-      "status": "ignored",
-      "why": "Periodic clock broadcast carrying no turn state."
+      "status": "handled",
+      "by": "openclaw-client onMessage — proof of life for the connection-silence watch (inbound-silence.ts): the gateway's periodic tick is what keeps an idle socket from being closed after twice hello-ok.policy.tickIntervalMs of silence (any inbound frame counts, as in the gateway's own clients). Its payload (`ts`) is not read; the frame is queued unchanged and the normalizer drops it.",
+      "anchor": {
+        "file": "src/providers/openclaw/openclaw-client.ts",
+        "token": "silenceWatch?.noteInbound()"
+      }
     },
     "health": {
       "status": "ignored",

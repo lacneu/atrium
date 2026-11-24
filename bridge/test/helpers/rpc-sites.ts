@@ -50,8 +50,10 @@ export function requestCallSites(): {
   // the bridge would actually write) while excluding parentheses and newlines so the
   // match cannot run away. Excluding braces made the generic case silently unmatched.
   const CALL = String.raw`\.request(?:\?\.)?\s*(?:<[^()\n]*>\s*)?\(`;
+  // A method name may carry a hyphen: upstream has `last-heartbeat`, `set-heartbeats`,
+  // `system-presence` (server-methods/system.ts).
   const LITERAL = new RegExp(
-    `${CALL}\\s*(?:/\\*[\\s\\S]*?\\*/\\s*)?(?://[^\\n]*\\n\\s*)*"([a-zA-Z0-9._]+)"`,
+    `${CALL}\\s*(?:/\\*[\\s\\S]*?\\*/\\s*)?(?://[^\\n]*\\n\\s*)*"([a-zA-Z0-9._-]+)"`,
     "g",
   );
   const ANY = new RegExp(CALL, "g");

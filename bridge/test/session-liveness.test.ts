@@ -286,6 +286,34 @@ describe("Session consume loop — crash self-heal (Mars robustness)", () => {
     reg.closeAll();
   });
 
+  it("a crash finalize names an announced STOP apart from an announced restart", async () => {
+    // The gateway's `shutdown` notice carries `restartExpectedMs` for a restart only
+    // (connection-end.ts): the turn's durable cause must keep that difference.
+    for (const [kind, cause] of [
+      ["gateway_stopping", "gateway_stopping"],
+      ["gateway_restarting", "gateway_restarting"],
+    ] as const) {
+      const conn = Object.assign(fakeConnControllable(), {
+        connectionEnd: { kind, restartExpectedMs: null, reasonPresent: true },
+      });
+      vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { writer, finalized } = fakeWriter();
+      const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
+      const s = await reg.acquire(ROUTING);
+      await new Promise((r) => setTimeout(r, 5));
+      await s.runManager.beginTurn(1000, "run-1");
+      conn.crash(new Error("iterator exploded mid-turn"));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(JSON.stringify(finalized), kind).toContain(`"${cause}"`);
+      if (kind === "gateway_stopping") {
+        expect(JSON.stringify(finalized)).not.toContain("gateway_restarting");
+      }
+      reg.closeAll();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("closes the connection BEFORE awaiting the (slow) turn finalize, so a concurrent acquire can't reuse the dead-consumer session", async () => {
     const conn = fakeConnControllable();
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(

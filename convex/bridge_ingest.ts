@@ -32,6 +32,7 @@ import { hashKey } from "./lib/apikeys";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { compactionReasonClass } from "./lib/compactionReasons";
 import { finalizeCauseClass } from "./lib/finalizeCause";
+import { isGatewayNoticeText, isModelFallbackLabel } from "./lib/modelFallback";
 import {
   gatewayVersionLabel,
   pressureVerdict,
@@ -200,6 +201,58 @@ async function traceIngest(
   }
 }
 
+/** A run id as the gateway mints them: a bounded plain token (letters, digits and the
+ *  separators its families use). Anything else is not stored. */
+const TRACE_RUN_ID = /^[A-Za-z0-9:._@-]{1,256}$/;
+
+/**
+ * The gateway's sequence report -> an `openclaw.gateway_seq_report` trace.
+ *
+ * The gateway's agent-event handler compares the seq of the event it handles with the
+ * last one it handled for that run; the seq itself is the runtime's per-run emission
+ * counter, which also counts emissions that handler never sees. `behind` = a seq it had
+ * already passed, `ahead` = emissions it did not handle. Both counters are the
+ * gateway's: nothing here says a frame was lost on the way to the bridge. Counters, the
+ * run the report names and the turn that saw it — never content.
+ */
+async function traceGatewaySeqReport(
+  ctx: ActionCtx,
+  body: {
+    op: string;
+    chatId: string;
+    messageId?: unknown;
+    runId?: unknown;
+    expected?: unknown;
+    received?: unknown;
+  },
+): Promise<void> {
+  const counter = (v: unknown): number | null =>
+    typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+  const expected = counter(body.expected);
+  const received = counter(body.received);
+  const messageId = typeof body.messageId === "string" && body.messageId ? body.messageId : null;
+  const runId = typeof body.runId === "string" && TRACE_RUN_ID.test(body.runId) ? body.runId : null;
+  await traceIngest(ctx, {
+    kind: "openclaw.gateway_seq_report",
+    chatId: body.chatId,
+    ...(runId !== null ? { runId } : {}),
+    correlationId: messageId !== null ? `${body.chatId}:${messageId}` : body.chatId,
+    meta: {
+      op: body.op,
+      ...(messageId !== null ? { messageId } : {}),
+      ...(expected !== null ? { expected } : {}),
+      ...(received !== null ? { received } : {}),
+      direction:
+        expected === null || received === null || received === expected
+          ? "unknown"
+          : received < expected
+            ? "behind"
+            : "ahead",
+      ok: true,
+    },
+  });
+}
+
 // NOTE: this file exports the ingest httpAction plus the `storageMeta`
 // internalQuery (above). httpActions run in the DEFAULT Convex runtime (fetch +
 // ctx.storage are available; Node built-ins are NOT).
@@ -226,7 +279,10 @@ type IngestOp =
   // 0.102.1 — a conversation's gateway socket closed (every close, Codex pass 4): that
   // chat's projected bubbles still streaming are asked of the gateway. Without `chatId`
   // (a bridge of the first passes): the instance's projected bubbles.
-  | { op: "resumeStreams"; chatId?: string }
+  // `restartExpectedMs`: the gateway announced a restart before closing, and how long it
+  // said it would take — the first question waits for it.
+  // `shutdown`: the gateway announced the close itself — a restart or a plain stop.
+  | { op: "resumeStreams"; chatId?: string; restartExpectedMs?: number; shutdown?: "restart" | "stop" }
   // `rec*` fields are present only while a turn is being recorded (bridge tags the
   // flush): recSessionId is the turn's recording session (Convex records only if it
   // still matches the active one), bridgeSentAt (t1) + bridgeSkew feed segment A,
@@ -334,10 +390,11 @@ type IngestOp =
       fetchMs?: number;
       uploadMs?: number;
     }
-  // Content-free FRAME-LOSS diagnostic: frames were lost between the gateway and
-  // a turn (the gateway's own `seq gap` report, or our envelope-seq detection).
-  // Counters and a source label only — no frame, no content. No DB write, no
-  // part: it records an `openclaw.frame_gap` trace.
+  // Content-free FRAME-LOSS diagnostic: a hole in the envelope seq of one of the
+  // bridge's sockets (`source`: envelope, speaker_gap, speaker_closed). Counters and a
+  // source label only — no frame, no content. No DB write, no part: it records an
+  // `openclaw.frame_gap` trace. `source: "gateway"` and `messageId` are what a bridge up
+  // to 0.103.6 sent for the gateway's sequence report: recorded as that report.
   | {
       op: "frameGapTrace";
       chatId: string;
@@ -346,6 +403,41 @@ type IngestOp =
       expected?: number;
       received?: number;
       missing?: number;
+    }
+  // A model fallback the gateway stated for a run (the run was answered by another
+  // model, or the session is back on its selected one): a marker part on that run's
+  // bubble — `messageId` when the bridge knows it, else found by the run. Model names
+  // only. Never creates a bubble.
+  | {
+      op: "modelFallback";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      state: string;
+      model: string;
+      selected?: string;
+    }
+  // A status notice the gateway sent beside a run's answer: a notice part on that run's
+  // bubble, addressed like `modelFallback`. Never the answer's text, never a new bubble.
+  | {
+      op: "gatewayNotice";
+      chatId: string;
+      runId: string;
+      messageId?: string;
+      sessionKey?: string;
+      text: string;
+    }
+  // The gateway's report about its own per-run numbering (`reason:"seq gap"`): two
+  // counters inside the gateway, not a frame lost on the way to the bridge. Records an
+  // `openclaw.gateway_seq_report` trace; no DB write, no part.
+  | {
+      op: "gatewaySeqReportTrace";
+      chatId: string;
+      messageId?: string;
+      runId?: string;
+      expected?: number;
+      received?: number;
     }
   // Content-free re-hydration DECISION trace (no DB write, no message part): records
   // WHY a dispatch did/didn't re-inject history as an `openclaw.rehydrate` trace keyed
@@ -404,8 +496,11 @@ type IngestOp =
       compactionReason?: string;
       /** The gateway REFUSED to compact rather than failing at it. */
       compactionRefused?: boolean;
-      /** Frames lost during the turn (omitted when none) — the per-turn
-       *  counterpart of the live `openclaw.frame_gap` traces. */
+      /** Sequence reports the gateway sent about the turn's runs (omitted when
+       *  none) — the per-turn count of the `openclaw.gateway_seq_report` traces. */
+      gatewaySeqReports?: number;
+      /** What a bridge up to 0.103.6 sent for those same reports, summed as if each
+       *  were lost frames. Accepted on the wire, never stored. */
       framesLost?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
@@ -501,6 +596,20 @@ type IngestOp =
       text: string;
       sessionKey?: string | null;
     }
+  // The same write, NAMED: `writeKey` is the bridge's key for this one late final, the
+  // same across its retries — a repeat is answered with the bubble the first one opened
+  // (stream.appendLateFinal). A separate op, so that a bridge retrying it against a
+  // Convex from before it is REFUSED (unknown op) instead of opening a bubble per retry.
+  | {
+      op: "appendLateFinalKeyed";
+      chatId: string;
+      runId: string;
+      messageId?: string | null;
+      text: string;
+      sessionKey?: string | null;
+      writeKey: string;
+    }
+  | { op: "completeSettledText"; messageId: string; runId: string; text: string }
   | {
       op: "recoverLostReply";
       chatId?: string;
@@ -929,9 +1038,14 @@ export const ingest = httpAction(async (ctx, request) => {
       // mutation re-checks it atomically. An older bridge names no chat: its instance's
       // projected bubbles, as before. Nothing else is touched.
       if (typeof body.chatId === "string") {
+        const expected = body.restartExpectedMs;
         await ctx.runMutation(internal.stuckStreams.resumeChatStreams, {
           instanceName: boundInstanceName,
           chatId: body.chatId,
+          ...(typeof expected === "number" && Number.isFinite(expected) && expected >= 0
+            ? { restartExpectedMs: expected }
+            : {}),
+          ...(body.shutdown === "restart" || body.shutdown === "stop" ? { shutdown: body.shutdown } : {}),
         });
       } else {
         await ctx.runMutation(internal.stuckStreams.sweepInstanceStreams, {
@@ -1247,25 +1361,23 @@ export const ingest = httpAction(async (ctx, request) => {
       return json({ ok: true });
     }
     case "frameGapTrace": {
-      // FRAME LOSS between the gateway and a turn — the measure that did not
-      // exist before. Two sources: "gateway" (its own `seq gap` report on the
-      // agent stream) and "envelope" (our per-connection envelope-seq check).
-      // NO DB write and NO message part: the loss is a diagnostic, and a lost
-      // frame must never be able to fail a turn. Counters only, so nothing to
-      // redact by construction.
+      // An older bridge's sequence report, sent through this op: it is not a frame gap.
+      if (body.source === "gateway") {
+        await traceGatewaySeqReport(ctx, body);
+        return json({ ok: true });
+      }
+      // FRAME LOSS on one of the bridge's sockets (a hole in its envelope seq). NO DB
+      // write and NO message part: the loss is a diagnostic, and a lost frame must never
+      // be able to fail a turn. Counters only, so nothing to redact by construction.
+      // Correlated to the CHAT alone: the envelope seq names neither session nor run,
+      // and the same socket also carries sub-agent frames, so blaming the active reply
+      // would be a fabricated diagnostic.
       await traceIngest(ctx, {
         kind: "openclaw.frame_gap",
         chatId: body.chatId,
-        // Correlated to the TURN only when the loss is attributable to one (the
-        // gateway's own report carries a runId); a connection-level envelope hole
-        // correlates to the CHAT alone — the same socket also carries sub-agent
-        // frames, so blaming the active reply would be a fabricated diagnostic.
-        correlationId: body.messageId
-          ? `${body.chatId}:${body.messageId}`
-          : body.chatId,
+        correlationId: body.chatId,
         meta: {
           op: body.op,
-          ...(body.messageId ? { messageId: body.messageId } : {}),
           source: body.source,
           ...(body.expected !== undefined ? { expected: body.expected } : {}),
           ...(body.received !== undefined ? { received: body.received } : {}),
@@ -1273,6 +1385,86 @@ export const ingest = httpAction(async (ctx, request) => {
           ok: true,
         },
       });
+      return json({ ok: true });
+    }
+    case "modelFallback": {
+      if (
+        typeof body.chatId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        (body.state !== "active" && body.state !== "cleared") ||
+        !isModelFallbackLabel(body.model) ||
+        (body.selected !== undefined && !isModelFallbackLabel(body.selected))
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const marked = await ctx.runMutation(internal.stream.noteModelFallback, {
+        chatId: body.chatId as Id<"chats">,
+        runId: body.runId,
+        ...(typeof body.messageId === "string" && body.messageId !== ""
+          ? { messageId: body.messageId as Id<"messages"> }
+          : {}),
+        ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
+          ? { turnSessionKey: body.sessionKey }
+          : {}),
+        state: body.state,
+        model: body.model,
+        ...(body.selected !== undefined ? { selected: body.selected } : {}),
+        boundInstanceName,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        correlationId: marked ?? body.chatId,
+        meta: {
+          op: body.op,
+          ...(marked !== null ? { messageId: marked } : {}),
+          // The state only: a model name is gateway text, kept out of traces.
+          state: body.state,
+          ok: marked !== null,
+          ...(marked === null ? { reason: "no_bubble_for_run" } : {}),
+        },
+      });
+      return json({ ok: true, messageId: marked });
+    }
+    case "gatewayNotice": {
+      if (
+        typeof body.chatId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        !isGatewayNoticeText(body.text)
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const noticed = await ctx.runMutation(internal.stream.noteGatewayNotice, {
+        chatId: body.chatId as Id<"chats">,
+        runId: body.runId,
+        ...(typeof body.messageId === "string" && body.messageId !== ""
+          ? { messageId: body.messageId as Id<"messages"> }
+          : {}),
+        ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
+          ? { turnSessionKey: body.sessionKey }
+          : {}),
+        text: body.text,
+        boundInstanceName,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        correlationId: noticed ?? body.chatId,
+        meta: {
+          op: body.op,
+          ...(noticed !== null ? { messageId: noticed } : {}),
+          // Its size only: the text is the gateway's, kept out of traces.
+          textChars: body.text.length,
+          ok: noticed !== null,
+          ...(noticed === null ? { reason: "no_bubble_for_run" } : {}),
+        },
+      });
+      return json({ ok: true, messageId: noticed });
+    }
+    case "gatewaySeqReportTrace": {
+      await traceGatewaySeqReport(ctx, body);
       return json({ ok: true });
     }
     case "mediaTrace": {
@@ -1472,10 +1664,13 @@ export const ingest = httpAction(async (ctx, request) => {
           // Tool calls this turn: the mid-turn growth driver (a hard overflow at
           // a low pre-turn fill reads causally: many tool results accumulated).
           ...(typeof body.toolCalls === "number" ? { toolCalls: body.toolCalls } : {}),
-          // Frames LOST during the turn (absent when none): the honest answer to
-          // "why does this reply look truncated". Counter only.
-          ...(typeof body.framesLost === "number"
-            ? { framesLost: body.framesLost }
+          // Sequence reports the gateway sent about the turn's runs (absent when
+          // none). Counter only. An older bridge's `framesLost` counted these same
+          // reports as lost frames: it is deliberately not carried.
+          ...(typeof body.gatewaySeqReports === "number" &&
+          Number.isSafeInteger(body.gatewaySeqReports) &&
+          body.gatewaySeqReports > 0
+            ? { gatewaySeqReports: body.gatewaySeqReports }
             : {}),
           // Chat finals the gateway CUT at its display cap before sending them
           // (absent when none). Counter only — the text stays out of traces.
@@ -1658,13 +1853,16 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ messageId: next });
     }
-    case "appendLateFinal": {
+    case "appendLateFinal":
+    case "appendLateFinalKeyed": {
       if (
         typeof body.chatId !== "string" ||
         typeof body.runId !== "string" ||
         body.runId === "" ||
         body.runId.length > 256 ||
-        typeof body.text !== "string"
+        typeof body.text !== "string" ||
+        (body.op === "appendLateFinalKeyed" &&
+          (typeof body.writeKey !== "string" || body.writeKey === "" || body.writeKey.length > 128))
       ) {
         return json({ error: "invalid body" }, 400);
       }
@@ -1678,9 +1876,28 @@ export const ingest = httpAction(async (ctx, request) => {
         ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
           ? { turnSessionKey: body.sessionKey }
           : {}),
+        ...(body.op === "appendLateFinalKeyed" ? { writeKey: body.writeKey } : {}),
         boundInstanceName,
       });
       return json({ messageId: id });
+    }
+    case "completeSettledText": {
+      if (
+        typeof body.messageId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        typeof body.text !== "string"
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const applied = await ctx.runMutation(internal.stream.completeSettledText, {
+        messageId: body.messageId as Id<"messages">,
+        runId: body.runId,
+        text: body.text,
+        boundInstanceName,
+      });
+      return json({ ok: true, applied });
     }
     case "recoverLostReply": {
       await ctx.runMutation(internal.stream.recoverLostReply, {

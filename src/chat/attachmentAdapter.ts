@@ -9,13 +9,17 @@ import type { ConvexReactClient } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { isModelNativeMime } from "../../convex/lib/mediaTransport";
+import { formatFileSize } from "./fileMetaView";
 import {
   DEFAULT_GATEWAY_MAX_PAYLOAD,
+  IMAGE_SIGNATURE_BYTES,
+  isKnownImageSignature,
   maxRawInboundBytes,
 } from "../../convex/lib/attachmentLimits";
 import { uploadProgressStore } from "./uploadProgressStore";
 import { beginAttachmentAdd, endAttachmentAdd } from "./attachmentBusy";
 import { m } from "@/paraglide/messages.js";
+import { getLocale } from "@/paraglide/runtime.js";
 
 // Attachment adapter for assistant-ui that uploads files straight into Convex
 // file storage via a short-lived signed upload URL, then carries the resulting
@@ -104,6 +108,18 @@ export function attachmentParts(
  *  slash-star as a comment opener. */
 export const IMAGE_PICKER_ACCEPT = "image/" + "*";
 
+/** Do the file's first bytes say "image" the way the gateway will read them? False
+ *  when they cannot be read: not known to be an image, the gateway decides. */
+async function hasKnownImageSignature(file: File): Promise<boolean> {
+  try {
+    return isKnownImageSignature(
+      new Uint8Array(await file.slice(0, IMAGE_SIGNATURE_BYTES).arrayBuffer()),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createConvexAttachmentAdapter(
   convex: ConvexReactClient,
   // Surface a rejection (e.g. too large) as a VISIBLE toast — assistant-ui only
@@ -140,6 +156,10 @@ export function createConvexAttachmentAdapter(
       // the gateway's maxPayload — no hardcoded size. The server reports it via
       // getBridgeAvailability.maxInboundBytes.
       let maxInboundBytes: number | null = null;
+      // The gateway's per-attachment IMAGE ceiling (hello-ok policy.attachments): an
+      // image is bounded more tightly than a file, and one over it is refused by the
+      // gateway after the upload. null = the gateway advertises none.
+      let maxInboundImageBytes: number | null = null;
       try {
         const routedAgent = getRoutedAgent?.() ?? null;
         const avail = await convex.query(
@@ -152,6 +172,7 @@ export function createConvexAttachmentAdapter(
             : {},
         );
         maxInboundBytes = avail?.maxInboundBytes ?? null;
+        maxInboundImageBytes = avail?.maxInboundImageBytes ?? null;
       } catch {
         // Availability query failed -> treat the cap as unknown (handled below).
       }
@@ -169,6 +190,7 @@ export function createConvexAttachmentAdapter(
       // it bypasses the inline maxPayload frame entirely. Use the (much larger)
       // shared-fs cap for those; images (model-native) still ride inline → capped.
       let effectiveCap = inlineCap;
+      let byReference = false;
       if (chatId && !isModelNativeMime(file.type)) {
         try {
           // The composer's CURRENT target, as for the inline cap above: the
@@ -180,10 +202,31 @@ export function createConvexAttachmentAdapter(
           });
           if (policy?.inboundMediaMode === "shared-fs") {
             effectiveCap = policy.sharedFsMaxBytes;
+            byReference = true;
           }
         } catch {
           // Policy unknown -> keep the inline cap; the server still enforces.
         }
+      }
+      // An image that rides INLINE is a gateway attachment, held to the gateway's image
+      // ceiling. The gateway decides "image" on the BYTES, not on the declared type, so
+      // the ceiling is applied here only when the file's first bytes are a known image
+      // signature — a recording declared image/png is not refused on it. One sent by
+      // reference never reaches that check.
+      if (
+        !byReference &&
+        maxInboundImageBytes !== null &&
+        file.size > maxInboundImageBytes &&
+        file.size <= effectiveCap &&
+        (await hasKnownImageSignature(file))
+      ) {
+        const locale = getLocale();
+        const message = m.attach_image_too_large({
+          size: formatFileSize(file.size, locale),
+          max: formatFileSize(maxInboundImageBytes, locale),
+        });
+        onReject?.(message);
+        throw new Error(message);
       }
       if (file.size > effectiveCap) {
         const mb = (n: number) => Math.floor(n / 1024 / 1024);

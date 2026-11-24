@@ -255,13 +255,15 @@ identical. The two broken anchors are real and are each recorded:
   — the session describe is now assembled through a shared row builder. The fields
   Atrium reads are the same ones; the assembly moved.
 
-**DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
-`delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1878`,
-the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
-Written here because it is known and unfixed, not because it was measured on the
-bench: the catalogue never elicits a retraction. It is owed a scenario before it
-can be called handled.
+**The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
+`delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
+The append path still drops any delta whose text is empty
+(`bridge/src/providers/openclaw/normalizer.ts:2023`, the `&& deltaText` guard), so
+the retraction has its own branch in `handleChat`: the bubble is cleared through a
+declared empty snapshot, as the Control UI clears its stream. It is covered by a
+deterministic test in the captured shape, not measured on the bench: the catalogue
+never elicits a retraction, and it is owed a scenario. The `assistant` stream's own
+retraction (`text: ""` with `replace`) is not read: the `chat` delta carries it.
 
 **Revision of 2026-09-12 (v2026.9.2 → v2026.9.4).** Re-verified zone by zone
 against the upstream tag (report:
@@ -336,7 +338,7 @@ spawnedBy?, seq}`:
 | `delta` | `deltaText` (required), `replace?`, `message?` (cumulative snapshot), `usage?` | per assistant stream frame, paced at 75 ms (`LIVE_TEXT_PACING_MS`); a buffered delta is flushed just before any terminal (`server-chat.ts:889-900,1054-1060`) |
 | `final` | `message?` (may be absent), `usage?`, `stopReason?` | lifecycle `end` whose terminal outcome is `done` (`server-chat.ts:598-608,1091-1118`) |
 | `aborted` | `message?` (partial text), `errorMessage?` (tool-validation summary only), `stopReason?` | terminal outcome `cancelled`/`aborted`, or direct `broadcastChatAborted` (`chat-abort.ts:436-475`) |
-| `error` | `errorMessage?`, `errorKind?`, `errorDetail?`, `usage?`, `stopReason?`, `message?` — declared; the gateway's own error payload sets neither `message` (since 2026.8.1) nor `usage` (`server-chat.ts:1112-1124`) | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:106-111,309,1720-1739`) |
+| `error` | `errorMessage?`, `errorKind?`, `errorDetail?`, `usage?`, `stopReason?`, `message?` — declared; the gateway's own error payload never sets `usage`, and sets `message` (the run's buffered text) only when the run has an assistant-transcript idempotency key and text, from 2026.9.5 (`server-chat.ts:1112-1124`) | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:106-111,309,1720-1739`) |
 
 **`stopReason` is a free-form string at the wire level** (`Type.Optional(
 Type.String())` — no wire enum). Producers: the model runtime enum
@@ -962,6 +964,19 @@ interpretation:
   content resumes, which restores the normal budget (`applyVisible` — there
   is no lifecycle `start` to key on).
 - `phase:"end", willRetry:false` restores the normal budget immediately.
+- A non-completed `end` marks the session saturated only when upstream itself
+  calls it a failure. `handleCompactionEnd` carries `outcome` and classifies
+  it (`$UP/src/agents/embedded-agent-subscribe.handlers.compaction.ts:209-214`):
+  benign when `aborted`, or `skipped` for a reason in the classes
+  `no_compactable_entries`, `below_threshold`, `already_compacted`
+  (`$UP/src/agents/embedded-agent-runner/compact-reasons.ts:57-67`). Atrium
+  transcribes that rule (`compactionFailedForGood`): `failed`, and a skip for
+  any other reason, raise the verdict and the failed marker; `aborted` raises
+  nothing and clears nothing. The Codex harness's end has no `outcome`
+  (`$UP/extensions/codex/src/app-server/event-projector-events.ts:180-192`)
+  and its `completed:false` only says the projection closed with the item
+  open: no verdict either. The Control UI reads neither key — a non-completed
+  end just removes its indicator.
 - Total silence after a `start` still settles the actionable
   `compaction_timeout` error (deadlock parity with the heuristic path).
 - A `chat:aborted` on the explicit path (active window or overflow replay)
@@ -1067,7 +1082,7 @@ reads that start as a run start and must never infer a compaction from it.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`bridge/src/providers/openclaw/openclaw-client.ts:1371-1382`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1640-1651`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).
@@ -1395,6 +1410,20 @@ owner, not the audience the gateway fixed — and an inexact rule lets one conve
 or answer another's request. Showing those approvals in the parent means consuming
 `session.approval` itself.
 
+**Three frames can describe one wait.** A run that waits in place says so on its own
+lifecycle, `waiting-approval` then `approval-resolved`, around the wait
+(`$UP/src/agents/bash-tools.exec-host-gateway.ts:1315-1337`). `stream:"approval"` is a
+different statement, written when the exec tool completes
+(`$UP/src/agents/embedded-agent-subscribe.handlers.tools.completion.ts:483-513,546-563`):
+`requested` when the exec returned instead of waiting — `status:"pending"` with the
+approval's id, or `status:"unavailable"` when nobody can be asked — and `resolved`
+(`denied` / `failed`) when the exec's result is an approval refusal, which is also how an
+in-place wait that ends refused finishes. The Control UI reads the lifecycle pair only.
+Atrium holds a turn on `waiting-approval` and on a `pending` `requested`, as one request
+under both of its names (the approval id, the tool call); an `unavailable` `requested`
+holds nothing; a `resolved` releases the request it names when it is still held, and after
+an in-place wait it arrives once the run's `approval-resolved` has already released it.
+
 **An approval is keyed by its id and its creation time**, everywhere: the bridge's memories
 of a decided approval (the observer, the turn's hold), the Convex card and the verdict Convex
 keeps for a card not recorded yet. With ids unique per request upstream, the creation time
@@ -1403,6 +1432,167 @@ card, and an `approval.get` snapshot is used only when it is the announced reque
 creation time, and the conversation's own session when the snapshot names one. A write of a
 request already recorded is that card, whatever order the writes arrive in. A resolution is
 attached to the creation time announced for its id.
+
+## 11. What a run reports beside its answer
+
+### Tool phases that end nothing
+
+**Upstream.** `stream:"tool"` carries two phases that are neither a start, nor output,
+nor a result. `input_delta` is written while the model is still streaming the arguments
+of a file-mutation call (`$UP/src/agents/embedded-agent-subscribe.handlers.messages.update.ts:75-84`):
+a diff counter, no `args`, and it precedes the call's `start`. `review` is written when an
+approval reviewer starts on, or rules on, a call — by the gateway's exec host with
+`name:"exec"` (`$UP/src/agents/bash-tools.exec-host-gateway.ts:133-171`) and by the Codex
+harness with no `name` at all
+(`$UP/extensions/codex/src/app-server/event-projector-events.ts:259-271`). The gateway
+counts both as tool progress (`$UP/src/gateway/server-chat-progress-snapshot.ts:152`), and
+the Control UI closes a card on `result` only (`$UP/ui/src/pages/chat/tool-stream.ts:623,659`).
+
+**Atrium.** Both are read as reports on a call (`isToolObservationPhase`): they close no
+card, count no tool, and leave the buffered arguments for the result. They open no card
+either — a call whose arguments are being written may never start, and a card opened
+for it would be closed as completed at the turn's terminal. Any other phase the bridge
+does not know still closes the card, so a renamed terminal cannot leave one spinning.
+Narrower than the Control UI: the live `+added −removed` stat of a running edit and the
+reviewer's line ("Guardian reviewing / approved / denied") are not shown.
+
+### The gateway's `seq gap` report
+
+**Upstream.** The gateway's agent-event handler remembers the last seq it handled for
+each run; when the next event's seq is not that plus one it broadcasts
+`{stream:"error", data:{reason:"seq gap", expected, received}}` to the session
+(`$UP/src/gateway/server-chat.ts:1422-1457`). That seq is the runtime's per-run emission
+counter (`$UP/src/infra/agent-events.ts:421-422`), which also numbers emissions the
+handler never receives, such as audit-only events
+(`$UP/src/infra/agent-events.ts:592-603`). Both counters are inside the gateway:
+`received < expected` is a seq the handler had already passed, `received > expected`
+emissions it did not handle. A frame the gateway drops for one client leaves a hole in a
+different counter, the per-connection envelope `seq`, which advances even for a dropped
+frame (`$UP/src/gateway/server-broadcast.ts:458-462`). The Control UI reads no part of the
+report.
+
+**Atrium.** The report is observed under its own name and fails nothing: an
+`openclaw.gateway_seq_report` trace per report (the two counters, their direction, the run
+the frame names) and a `gatewaySeqReports` count on the turn's pressure trace. It is not a
+frame loss: `openclaw.frame_gap` records holes in the envelope seq of the bridge's own
+sockets and nothing else, at connection level, and no turn carries a `framesLost` counter
+— the envelope seq names neither session nor run, so a hole is not charged to the reply in
+flight.
+
+### Model fallback
+
+**Upstream.** When its failover chain answers with another model than the selected one,
+the gateway emits `lifecycle` `phase:"fallback"` with the selected and active
+provider/model and the reasons (`$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:372-388`),
+and `phase:"fallback_cleared"` once the session is back on its selected model
+(`$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:399-411`). Both are emitted
+while the reply payloads are built, after the run's work: on the wire they follow the
+run's `lifecycle end` and `chat final`, with the run's seq back at 1. The Codex harness
+emits `stream:"fallback"` with `fromModel` / `toModel` when the provider reroutes a
+request (`$UP/extensions/codex/src/app-server/event-projector-events.ts:302-321`). The
+Control UI shows "Fallback active: {active model}" or "Fallback cleared: {selected
+model}" for eight seconds, ignores a fallback whose two names are equal, and does not
+read `fallback_step` (`$UP/ui/src/pages/chat/tool-stream-status.ts:303-349`). The gateway
+also adds its own notice text to the reply, as a status notice.
+
+**Atrium.** The frame is read as a fact about a run, apart from the turn's state
+(`model-fallback.ts`): it is never content of a turn and never opens, reopens or ends
+one. It becomes a marker on the bubble of the run it names — the live turn's bubble
+when the run is still that turn's, otherwise the bubble the run left, found by its run
+when the bridge does not hold it. What the gateway states about a run — a fallback, its clearing, a status notice — has
+one path: it is read when the frame arrives, queued per run in arrival order, and written
+on the run's bubble oldest first, at once when the bubble exists and as soon as it does
+otherwise (the answer and its fallback may both race the `chat.send` ACK). Nothing is
+written ahead of a fact still queued for its run, so the last one received is the one
+that stands. A frame is read once, when it arrives: a stash that hands it back later
+does not have it read again. A write has three outcomes — written; Convex answers that
+the run has no bubble, which is final once the run's turn has ended; or the write
+failed, which says nothing about the bubble: the fact keeps its place and is tried
+again on a later frame of the connection, a bounded number of times. A run that showed
+nothing gets no marker. The marker
+is kept on the bubble rather than shown for a few seconds, and prints the Control UI's
+two sentences, localized. Only model names are carried: the reasons and attempts are
+the provider's own text and are neither stored nor shown.
+
+### Status notices beside the answer
+
+**Upstream.** A reply payload can be a status notice rather than answer content — the
+fallback notice, a compaction notice, a usage line, a diagnostic, a command's reply. From
+2026.9.6 the gateway marks its text block `openclawStatusNotice`
+(`$UP/src/gateway/server-methods/chat-assistant-content.ts:218-226`). Notices produced
+with a run's reply are sent in a `chat` final of their own, after the answer's final; the
+fallback notice is the first of them, being prepended to the run's payloads
+(`$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:421-444`). It is broadcast, not
+written to the transcript. The Control UI shows it as an assistant message of its own and
+keeps it out of what identifies the run's terminal reply
+(`$UP/packages/gateway-client/src/session-projection-message-content.ts:38-50`).
+
+**Atrium.** A final that carries nothing but marked notices, once its run's final has
+been seen or its run is settled, is neither a late piece of the answer nor an answer: it
+never joins the bubble's text and never opens a bubble. It takes the same path as a
+fallback, in arrival order with it. Each notice becomes a notice line under the reply of its run, as plain text —
+except the first one after a fallback the gateway stated for that run, which the
+fallback marker already says. A run that left no bubble shows none. A final that mixes
+answer text and a notice, a notice that is a turn's only reply (a command's answer), and
+any final of a gateway that does not mark notices are read as before.
+
+### Provider retries
+
+**Upstream.** Every transient retry is emitted on the agent stream as `run_status`
+`phase:"retrying"` — by the embedded runner with its counters and reason
+(`$UP/src/agents/embedded-agent-runner/run/attempt-recovery.ts:450-466`), by the Codex
+harness with a sentence only
+(`$UP/extensions/codex/src/app-server/event-projector-events.ts:388-399`). The projection
+onto `chat` rewrites it to `starting_model` and names it a retry only when the reason is
+`rate_limit` (`$UP/src/gateway/server-chat.ts:1480-1510`). A startup phase is re-emitted
+only when it changes (`$UP/src/auto-reply/reply/agent-runner-execution.ts:242-246`), so
+none follows a retry that resumes on the same phase: in the Control UI too the retry
+label stands until the run shows activity.
+
+**Atrium.** `run_status` `retrying` publishes the same back-off phase as the `chat`
+retry status, with the counter when the frame carries a valid one (integers, 1..10) and
+without it otherwise; the gateway's sentence is not shown. It ends on the same resume
+signals (assistant text, tool progress, a preamble). A retry whose reason is
+`output_limit` — the run continuing a reply cut at its output limit — publishes nothing.
+The startup phases of the stream are not shown.
+
+## 12. A turn the gateway cut, and its own recovery
+
+### Upstream contract
+
+A gateway restart aborts the runs it interrupts; once it is back — after a restart, or a
+stop followed by a start — it resumes each interrupted main-session turn by itself
+(`$UP/src/gateway/server-startup-post-attach.ts:979-982`; no setting turns it off). It
+appends a `user` entry whose text begins `[System] Your previous turn was interrupted`
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:62`), marked
+`provenance: {kind: "internal_system", sourceTool: "main_session_restart_recovery"}`
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:453`,
+`$UP/src/sessions/input-provenance.ts:24`), and starts a NEW run that answers: a fresh
+uuid, also the entry's idempotency key
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:256,440`). Which
+run it resumes is kept in the gateway's session store only
+(`$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:392`): nothing in
+the entry, its provenance or the recovery run's frames names it. The provenance exists on
+every validated version; the sentence changed at v2026.9.36 (it no longer says "by a
+gateway restart").
+
+The Control UI shows that entry as a notice with a fixed text, between the interrupted
+work and the recovery's answer (`$UP/ui/src/pages/chat/system-notice-kinds.ts:28`); the
+notice starts a turn (`$UP/ui/src/pages/chat/chat-system-notice.ts:52`), so the two are
+never one group. A tool call the interrupted run left with no result has no outcome there
+— neither running nor failed (`$UP/ui/src/lib/chat/tool-cards.ts:178`).
+
+### Atrium behavior and verdict
+
+Same facts, one deliberate difference. The entry itself is not shown as a message; the
+bubble of the run it follows — the run of the row right before it in the transcript, the
+only link the transcript states — says that the gateway cut the turn and that the agent
+resumed it, naming a restart or a stop when the bridge saw the gateway announce one on
+the turn's socket. A call left with no result is shown as interrupted. The difference:
+the recovery's answer is grouped with the interrupted bubble (one display group), where
+the Control UI shows two turns — Atrium reads it as the continuation of the turn the
+reader asked for. With no recovery entry, the bubble states the interruption only when a
+shutdown was announced on its socket and its transcript stops before an answer.
 
 ## Conformance summary
 
@@ -1418,6 +1608,11 @@ attached to the creation time announced for its id.
 | Projection `on` deviations | **Deliberate** (§7) — no visible duplicate, files copied at once with a `gone` state, a waiting line while a child runs, stricter masking, one automatic resend of a send the gateway reports absent |
 | Reasoning and work notes | **Conformant (0.103.0)** — shown after the fact above its row when the conversation shows reasoning (per-conversation choice, per-agent Atrium default); work notes live from completed preambles; Hermes is read, never written (its setter is global) (§9) |
 | Approvals of sub-agents | **Deliberately narrower (0.103.5)** — a conversation shows and answers its own session's approvals only; upstream addresses an approval to the raising session's whole lineage, stores that audience when it registers it, and serves it on `session.approval`, which Atrium does not consume (§10) |
+| Tool phases `input_delta` / `review` | **Conformant on the card's state** — neither closes a card, counts a tool or drops its arguments; the live diff stat and the reviewer's line are not shown (§11) |
+| `seq gap` report | **Conformant** — the gateway's own numbering, observed under its own name and never counted as a lost frame; only a hole in the envelope seq is a loss (§11) |
+| Model fallback | **Conformant on what is said, kept longer** — the Control UI's two sentences as a marker on the run's bubble, also when the frame follows the run's terminal; the reasons, the attempts and the previous model are not shown (§11) |
+| Status notices | **Shown apart from the answer** — a notice-only final after the answer is a notice line on the run's bubble, never the answer's text nor a bubble; the fallback's own notice is the fallback marker (§11) |
+| Provider retries | **Conformant** for the retry itself — read from the agent stream whatever the reason, with Atrium's own wording; the run's startup phases and the provider notices are not shown (§11) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or
