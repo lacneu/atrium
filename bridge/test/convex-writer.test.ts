@@ -12,7 +12,8 @@ import { describe, expect, test, vi } from "vitest";
 import { sleep } from "./helpers/sleep.js";
 import { Readable } from "node:stream";
 import {
-  lateFinalAskedOnce, HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
+  lateFinalAskedOnce, HttpConvexWriter, bytesBucket, mergeSubAgentRecords, uploadContentType } from "../src/convex-writer";
+import { closeThenExit } from "../src/shutdown";
 import {
   MEDIA_TOO_LARGE_CODE,
   type MediaFetcher,
@@ -2251,9 +2252,18 @@ describe("a late final is NAMED by its write (the key makes it repeatable)", () 
 // A child running tools in parallel emits one record per tool frame within a millisecond.
 // Every record of a child reads and patches the same Convex row, so two in flight always
 // conflict: fired together they lost each other's optimistic-concurrency retries and Convex
-// answered 500 `occ_conflict` in bursts (prod 2026-11-16). One in flight per child.
-describe("sub-agent row writes: one in flight per child", () => {
-  type UpsertBody = { op: string; childSessionKey: string; tools?: unknown[] };
+// answered 500 `occ_conflict` in bursts (prod 2026-11-16). One in flight per child, and at
+// most ONE record waiting behind it: the next ones are folded into it.
+describe("sub-agent row writes: one in flight per child, one waiting at most", () => {
+  type UpsertBody = {
+    op: string;
+    childSessionKey: string;
+    status: string;
+    tools?: unknown[];
+    phase?: string;
+    resultText?: string;
+    childRunId?: string;
+  };
 
   /** A fetch fake that counts the requests in flight PER CHILD and releases them by hand. */
   function childFetch() {
@@ -2282,9 +2292,16 @@ describe("sub-agent row writes: one in flight per child", () => {
       });
     }) as unknown as typeof fetch;
     const settleNext = (fail = false) => pending.shift()?.settle(fail);
-    return { fetchImpl, sent, settleNext, waiting: () => pending.length, maxPerChild: () => maxPerChild };
+    const settleAll = async () => {
+      while (pending.length > 0) {
+        settleNext();
+        await sleep(0);
+      }
+    };
+    return { fetchImpl, sent, settleNext, settleAll, waiting: () => pending.length, maxPerChild: () => maxPerChild };
   }
 
+  const A = "agent:main:subagent:a";
   const record = (childSessionKey: string, toolCount: number) => ({
     chatId: "chat-1",
     childSessionKey,
@@ -2296,20 +2313,16 @@ describe("sub-agent row writes: one in flight per child", () => {
     })),
   });
 
-  test("a burst for one child is written one at a time, in arrival order", async () => {
+  test("a burst for one child: the first leaves at once, the rest leave as ONE write", async () => {
     const f = childFetch();
     const w = writerWith(f.fetchImpl);
-    const writes = [1, 2, 3, 4, 5].map((n) => w.upsertSubAgent(record("agent:main:subagent:a", n)));
-    // Only the first left; the four behind it wait for its answer.
+    const writes = [1, 2, 3, 4, 5].map((n) => w.upsertSubAgent(record(A, n)));
     await sleep(0);
     expect(f.waiting()).toBe(1);
-    while (f.waiting() > 0) {
-      f.settleNext();
-      await sleep(0);
-    }
+    await f.settleAll();
     await Promise.all(writes);
     expect(f.maxPerChild()).toBe(1);
-    expect(f.sent.map((b) => b.tools?.length)).toEqual([1, 2, 3, 4, 5]);
+    expect(f.sent.map((b) => b.tools?.length)).toEqual([1, 5]);
     expect(w.pendingSubAgentChildren).toBe(0);
   });
 
@@ -2317,17 +2330,14 @@ describe("sub-agent row writes: one in flight per child", () => {
     const f = childFetch();
     const w = writerWith(f.fetchImpl);
     const writes = [
-      w.upsertSubAgent(record("agent:main:subagent:a", 1)),
+      w.upsertSubAgent(record(A, 1)),
       w.upsertSubAgent(record("agent:main:subagent:b", 1)),
-      w.upsertSubAgent(record("agent:main:subagent:a", 2)),
+      w.upsertSubAgent(record(A, 2)),
     ];
     await sleep(0);
     // One per child in flight; the second record of `a` waits behind the first.
-    expect(f.sent.map((b) => b.childSessionKey)).toEqual(["agent:main:subagent:a", "agent:main:subagent:b"]);
-    while (f.waiting() > 0) {
-      f.settleNext();
-      await sleep(0);
-    }
+    expect(f.sent.map((b) => b.childSessionKey)).toEqual([A, "agent:main:subagent:b"]);
+    await f.settleAll();
     await Promise.all(writes);
     expect(f.maxPerChild()).toBe(1);
     expect(w.pendingSubAgentChildren).toBe(0);
@@ -2336,11 +2346,11 @@ describe("sub-agent row writes: one in flight per child", () => {
   test("a refused write is its caller's failure only: the next one of the child still goes", async () => {
     const f = childFetch();
     const w = writerWith(f.fetchImpl);
-    const first = w.upsertSubAgent(record("agent:main:subagent:a", 1)).then(
+    const first = w.upsertSubAgent(record(A, 1)).then(
       () => "ok",
       (e: unknown) => (e instanceof Error ? e.message : String(e)),
     );
-    const second = w.upsertSubAgent(record("agent:main:subagent:a", 2));
+    const second = w.upsertSubAgent(record(A, 2));
     await sleep(0);
     f.settleNext(true);
     expect(await first).toMatch(/upsertSubAgent -> HTTP 500/);
@@ -2349,5 +2359,223 @@ describe("sub-agent row writes: one in flight per child", () => {
     await second;
     expect(f.sent.map((b) => b.tools?.length)).toEqual([1, 2]);
     expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  // The frame path AWAITS a child's registration (Session.flushSubAgentObserved); a child
+  // that resumes after a `chat:error` registers again while its earlier records wait.
+  test("an awaited registration waits for the write in flight only, never for a queue", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    void w.upsertSubAgent(record(A, 1)); // in flight, stalled
+    const updates = [2, 3, 4, 5].map((n) => w.upsertSubAgent(record(A, n)));
+    let registered = false;
+    const registration = w
+      .upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "running", childRunId: "run-2", phase: "start" })
+      .then(() => {
+        registered = true;
+      });
+    await sleep(0);
+    expect(f.sent).toHaveLength(1);
+    f.settleNext(); // the stalled write answers
+    await sleep(0);
+    // ONE more write carries the four updates and the registration.
+    expect(f.sent).toHaveLength(2);
+    expect(f.sent[1]).toMatchObject({ status: "running", childRunId: "run-2", phase: "start" });
+    expect(f.sent[1]!.tools).toHaveLength(5);
+    expect(registered).toBe(false);
+    f.settleNext();
+    await registration;
+    await Promise.all(updates);
+    expect(f.sent).toHaveLength(2);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  // Hermes relays one record per `subagent.thinking` / `subagent.progress` event.
+  test("200 progress updates then `done`: the end is the NEXT write, not the 201st", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    void w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "running", phase: "thinking" });
+    const all: Array<Promise<void>> = [];
+    for (let i = 0; i < 200; i++) {
+      all.push(w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "running", phase: `progress-${i}` }));
+    }
+    all.push(w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" }));
+    await sleep(0);
+    f.settleNext();
+    await sleep(0);
+    expect(f.sent).toHaveLength(2);
+    expect(f.sent[1]).toMatchObject({ status: "done", resultText: "the answer", phase: "progress-199" });
+    f.settleNext();
+    await Promise.all(all);
+    expect(f.sent).toHaveLength(2);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("a waiting END is not replaced by a later `running` record: its content is kept, the tools are added", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    void w.upsertSubAgent(record(A, 1));
+    const end = w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" });
+    const late = w.upsertSubAgent({ ...record(A, 3), phase: "tool" });
+    await sleep(0);
+    await f.settleAll();
+    await Promise.all([end, late]);
+    expect(f.sent).toHaveLength(2);
+    expect(f.sent[1]).toMatchObject({ status: "done", resultText: "the answer" });
+    expect(f.sent[1]!.tools).toHaveLength(3);
+    // No phase after an end (the mutation ignores one on a terminal row).
+    expect(f.sent[1]!.phase).toBeUndefined();
+  });
+
+  test("a response whose body never ends is a timeout: the caller is answered, the child's next record goes", async () => {
+    vi.useFakeTimers();
+    try {
+      const bodies: UpsertBody[] = [];
+      let hang = true;
+      const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body) as UpsertBody);
+        if (hang) {
+          hang = false;
+          // Headers arrived; the body never completes.
+          return { ok: true, status: 200, json: () => new Promise(() => {}) } as unknown as Response;
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const w = writerWith(fetchImpl);
+      const first = w.upsertSubAgent(record(A, 1)).then(
+        () => "ok",
+        (e: unknown) => (e instanceof Error ? e.message : String(e)),
+      );
+      const end = w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done" });
+      await vi.advanceTimersByTimeAsync(20_001); // past WRITE_TIMEOUT_MS
+      expect(await first).toMatch(/upsertSubAgent timed out after 20000ms/);
+      await end;
+      expect(bodies.map((b) => b.status)).toEqual(["running", "done"]);
+      expect(w.pendingSubAgentChildren).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("shutdown: the drain ends only once a waiting END has been written", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    void w.upsertSubAgent(record(A, 1));
+    void w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" });
+    let drained = false;
+    let exited = false;
+    closeThenExit({
+      close: (onClosed) => onClosed(), // the inbound server closes at once
+      drain: () =>
+        w.drainSubAgentWrites().then(() => {
+          drained = true;
+        }),
+      exit: () => {
+        exited = true;
+      },
+    });
+    await sleep(0);
+    expect(exited).toBe(false);
+    f.settleNext(); // the write in flight answers: the END leaves now
+    await sleep(0);
+    expect(f.sent.map((b) => b.status)).toEqual(["running", "done"]);
+    expect(drained).toBe(false);
+    expect(exited).toBe(false);
+    f.settleNext();
+    await sleep(0);
+    expect(drained).toBe(true);
+    expect(exited).toBe(true);
+    // Nothing waiting: a drain is immediate.
+    await w.drainSubAgentWrites();
+  });
+});
+
+describe("folding two records of one child (mergeSubAgentRecords)", () => {
+  const base = { chatId: "chat-1", childSessionKey: "agent:main:subagent:a" };
+
+  test("an end is never replaced by `running`, nor `done` by `error`; `error` recovers to `done`", () => {
+    expect(mergeSubAgentRecords({ ...base, status: "done" }, { ...base, status: "running" }).status).toBe("done");
+    expect(mergeSubAgentRecords({ ...base, status: "aborted" }, { ...base, status: "running" }).status).toBe("aborted");
+    expect(mergeSubAgentRecords({ ...base, status: "running" }, { ...base, status: "error" }).status).toBe("error");
+    const kept = mergeSubAgentRecords(
+      { ...base, status: "done", resultText: "answer" },
+      { ...base, status: "error", errorMessage: "timed out", errorCode: "timeout" },
+    );
+    expect(kept).toEqual({ ...base, status: "done", resultText: "answer" });
+    const recovered = mergeSubAgentRecords(
+      { ...base, status: "error", errorMessage: "overflow", errorCode: "context_overflow", telemetry: { totalTokens: 10 } },
+      { ...base, status: "done", resultText: "answer", telemetry: { runtimeMs: 5 } },
+    );
+    expect(recovered).toEqual({
+      ...base,
+      status: "done",
+      resultText: "answer",
+      telemetry: { totalTokens: 10, runtimeMs: 5 },
+    });
+  });
+
+  test("identity is fill-only, the anchor only upgrades, the tighter deadline wins", () => {
+    const merged = mergeSubAgentRecords(
+      { ...base, status: "running", childRunId: "run-1", taskName: "first", parentMessageId: "m1", declaredTimeoutMs: 300_000 },
+      { ...base, status: "running", childRunId: "run-2", taskName: "second", parentMessageId: "m2", declaredTimeoutMs: 60_000 },
+    );
+    expect(merged).toMatchObject({ childRunId: "run-1", taskName: "first", parentMessageId: "m1", declaredTimeoutMs: 60_000 });
+    const upgraded = mergeSubAgentRecords(
+      { ...base, status: "running", parentMessageId: "m1" },
+      { ...base, status: "running", parentMessageId: "m2", anchorExact: true },
+    );
+    expect(upgraded).toMatchObject({ parentMessageId: "m2", anchorExact: true });
+    const exactStays = mergeSubAgentRecords(
+      { ...base, status: "running", parentMessageId: "m1", anchorExact: true },
+      { ...base, status: "running", parentMessageId: null },
+    );
+    expect(exactStays).toMatchObject({ parentMessageId: "m1", anchorExact: true });
+    const filled = mergeSubAgentRecords(
+      { ...base, status: "running", parentMessageId: null },
+      { ...base, status: "running", parentMessageId: "m2" },
+    );
+    expect(filled.parentMessageId).toBe("m2");
+  });
+
+  test("partial records add up: tools merge (`done` wins), config and telemetry accumulate, an end keeps its numbers", () => {
+    const merged = mergeSubAgentRecords(
+      {
+        ...base,
+        status: "running",
+        tools: [
+          { name: "exec", status: "done", toolCallId: "t1" },
+          { name: "read", status: "running", toolCallId: "t2" },
+        ],
+        sessionMeta: { model: "m" },
+        telemetry: { totalTokens: 10 },
+      },
+      {
+        ...base,
+        status: "running",
+        phase: "model",
+        tools: [
+          { name: "exec", status: "running", toolCallId: "t1" },
+          { name: "read", status: "done", toolCallId: "t2" },
+          { name: "write", status: "running", toolCallId: "t3" },
+        ],
+        sessionMeta: { thinkingLevel: "high" },
+        telemetry: { runtimeMs: 5 },
+      },
+    );
+    expect(merged.tools).toEqual([
+      { name: "exec", status: "done", toolCallId: "t1" },
+      { name: "read", status: "done", toolCallId: "t2" },
+      { name: "write", status: "running", toolCallId: "t3" },
+    ]);
+    expect(merged).toMatchObject({
+      phase: "model",
+      sessionMeta: { model: "m", thinkingLevel: "high" },
+      telemetry: { totalTokens: 10, runtimeMs: 5 },
+    });
+    const ended = mergeSubAgentRecords(
+      { ...base, status: "done", telemetry: { totalTokens: 99 } },
+      { ...base, status: "running", telemetry: { totalTokens: 1 } },
+    );
+    expect(ended.telemetry).toEqual({ totalTokens: 99 });
   });
 });
