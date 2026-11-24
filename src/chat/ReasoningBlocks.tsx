@@ -1,9 +1,10 @@
-import { useMessage } from "@assistant-ui/react";
+import { useRef, type RefObject } from "react";
 import { useQuery } from "convex/react";
 import { m } from "@/paraglide/messages.js";
 import { AgentMarkdown } from "./MarkdownText";
+import { lastRead, readWhileNear, useNearViewport } from "./nearViewport";
 import { useWorkZone } from "./WorkZone";
-import type { WorkZoneMark } from "./workZoneView";
+import { noteShown, thoughtShown, type WorkZoneMark } from "./workZoneView";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -40,13 +41,14 @@ export function ThinkingBlock({ data }: { data?: ThinkingData }) {
   const capped = data?.capped === true;
   const text = (data?.text ?? "").trim();
   const { header, folded } = useWorkZone(data?.zone);
-  if (row === undefined && text === "" && !capped) return null;
+  const block = useRef<HTMLDivElement>(null);
+  if (!thoughtShown(data)) return null;
   return (
     <>
       {header}
       {folded ? null : (
-        <div className="oc-msg__meta oc-work oc-thinking" role="region" aria-label={m.reasoning_region_aria()}>
-          {row !== undefined ? <RowReasoning messageId={row.messageId} entryId={row.entryId} /> : text !== "" ? <AgentMarkdown text={text} /> : null}
+        <div ref={block} className="oc-msg__meta oc-work oc-thinking" role="region" aria-label={m.reasoning_region_aria()}>
+          {row !== undefined ? <RowReasoning block={block} messageId={row.messageId} entryId={row.entryId} /> : text !== "" ? <AgentMarkdown text={text} /> : null}
           {capped ? <p className="oc-thinking__status">{m.reasoning_capped()}</p> : null}
         </div>
       )}
@@ -54,12 +56,19 @@ export function ThinkingBlock({ data }: { data?: ThinkingData }) {
   );
 }
 
-/** A row's reasoning, read from the row while it is on view — so a corrected reasoning is
- *  the one shown, and a folded zone costs no read. */
-function RowReasoning({ messageId, entryId }: { messageId: string; entryId: string }) {
-  const id = messageId as Id<"messages">;
-  const result = useQuery(api.messages.getRowReasoning, { messageId: id, entryId });
-  if (result === undefined) return <p className="oc-thinking__status">{m.reasoning_loading()}</p>;
+/** A row's reasoning, read from the row while its block is near what the reader sees
+ *  (nearViewport.ts) — so a corrected reasoning is the one shown, and neither a folded zone
+ *  nor a block far off screen costs a read. Once read, its text stays shown: leaving the
+ *  neighbourhood releases the subscription, never the block's height. */
+function RowReasoning({ block, messageId, entryId }: { block: RefObject<Element | null>; messageId: string; entryId: string }) {
+  const near = useNearViewport(block);
+  const read = useQuery(api.messages.getRowReasoning, readWhileNear(near, { messageId: messageId as Id<"messages">, entryId }));
+  const kept = useRef<{ row: string; value: NonNullable<typeof read> | null } | undefined>(undefined);
+  kept.current = lastRead(`${messageId}:${entryId}`, read, kept.current);
+  const result = kept.current?.value;
+  // One quiet line for a block never read — not near yet, or being read: the same line, so
+  // nearing it moves nothing before its text is there.
+  if (result === undefined) return <p className="oc-thinking__status" data-reasoning="unread">{m.reasoning_loading()}</p>;
   if (result === null) return <p className="oc-thinking__status">{m.reasoning_unavailable()}</p>;
   return (
     <>
@@ -74,7 +83,7 @@ function RowReasoning({ messageId, entryId }: { messageId: string; entryId: stri
 export function CommentaryNote({ data }: { data?: { key: string; text: string; capped?: boolean; zone?: WorkZoneMark } }) {
   const text = (data?.text ?? "").trim();
   const { header, folded } = useWorkZone(data?.zone);
-  if (text === "") return null;
+  if (!noteShown(data?.text)) return null;
   return (
     <>
       {header}

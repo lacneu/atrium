@@ -3,6 +3,7 @@ import { useMessage } from "@assistant-ui/react";
 import {
   BookOpen,
   Check,
+  CircleAlert,
   CircleDot,
   Globe,
   LoaderCircle,
@@ -18,8 +19,8 @@ import { ToolCard } from "./ToolCard";
 import { useWorkZone } from "./WorkZone";
 import type { WorkZoneMark } from "./workZoneView";
 import type { ToolActivityPart } from "./toolActivityView";
-import { activityBlock, type ActivityNode } from "./activityBlock";
-import { blockInterrupted, interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
+import { activityBlock, groupOutcome, settledGroupOutcome, type ActivityNode } from "./activityBlock";
+import { interruptedCalls, type TurnInterruption } from "./turnInterruptionView";
 import {
   activityLabel,
   dominantFamily,
@@ -112,6 +113,7 @@ export function InlineTurnActivity(props: {
       ? activityLabel(block === null || live ? parts : shown, { live })
       : block.summary;
   const Icon = FAMILY_ICON[dominantFamily(shown)];
+  const outcome = block !== null ? groupOutcome(parts, cut, block.failed) : settledGroupOutcome(parts, cut);
   const trailing = live ? (
     <LoaderCircle
       size={13}
@@ -123,7 +125,14 @@ export function InlineTurnActivity(props: {
       {shown.length > 1 ? (
         <span className="oc-flowact__count">{shown.length}</span>
       ) : null}
-      {blockInterrupted(parts, cut) ? (
+      {outcome === "failed" ? (
+        // One call of the block failed: the line is not a clean "done". The failed card's
+        // glyph (ToolCard) and the word of its outcome line.
+        <span className="inline-flex items-center" title={m.tools_outcome_failed()}>
+          <CircleAlert size={13} className="oc-actrow__status-icon oc-actrow__status-icon--failed" aria-hidden />
+          <span className="sr-only">{m.tools_outcome_failed()}</span>
+        </span>
+      ) : outcome === "interrupted" ? (
         // One call of the block was cut by the gateway: the header is not a clean "done".
         // Same quiet glyph and word as the interrupted card (ToolCard).
         <span className="inline-flex items-center" title={m.tools_status_interrupted()}>

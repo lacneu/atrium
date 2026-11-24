@@ -20,8 +20,8 @@ import {
 // tells the reasoning from the result at once. It folds the whole zone; folded, it says
 // how many steps it stands for.
 
-function useZoneOpen(key: string | undefined): boolean {
-  const chosen = useSyncExternalStore(subscribeZones, () => (key === undefined ? undefined : zoneChoice(key)));
+function useZoneOpen(zone: WorkZoneMark | undefined): boolean {
+  const chosen = useSyncExternalStore(subscribeZones, () => (zone === undefined ? undefined : zoneChoice(zone)));
   return zoneExpanded(chosen);
 }
 
@@ -55,7 +55,7 @@ function WorkZoneHeader({ zone, open }: { zone: WorkZoneMark; open: boolean }) {
         open={open}
         ariaExpanded={open}
         title={open ? m.reasoning_collapse() : m.reasoning_expand()}
-        onClick={() => chooseZone(zone.key, !open)}
+        onClick={() => chooseZone(zone, !open)}
       />
     </div>
   );
@@ -65,7 +65,7 @@ function WorkZoneHeader({ zone, open }: { zone: WorkZoneMark; open: boolean }) {
  *  visible part, and whether the reader folded the zone (the part then shows nothing). */
 export function useWorkZone(zone: WorkZoneMark | undefined): { header: ReactNode; folded: boolean } {
   const { showTools } = useUiPrefs();
-  const open = useZoneOpen(zone?.key);
+  const open = useZoneOpen(zone);
   return {
     header: zone !== undefined && zoneHeadedBy(zone, showTools) ? <WorkZoneHeader zone={zone} open={open} /> : null,
     folded: zone !== undefined && !open,

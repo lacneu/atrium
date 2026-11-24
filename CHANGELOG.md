@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.104.3] — Reasoning is read as it comes into view
+
+Frontend release: only the interface changes. Nothing to migrate; the bridge and the Convex
+functions are those of 0.104.0. It corrects 0.104.2, which opened every thought by default.
+
+- **A long conversation with reasoning shown no longer reads every thought at once.** With
+  thoughts open by default, 0.104.2 read the text of each thought of the loaded conversation
+  when it opened, far off screen included — thousands of simultaneous reads on a long one. A
+  thought is now read when it comes within one screen of what is visible, and what was read
+  stays in place when it scrolls away.
+- **A folded reasoning zone stays folded.** A zone the reader had folded could open again by
+  itself while the reply was still being written, and in one layout folding a zone folded
+  another. A zone is now known by the thoughts it holds, and a thought that joins a folded zone
+  stays folded with it.
+- **The "Reasoning" header no longer goes missing** when the first element of a zone turns out
+  to show nothing (a note that was only a widget reference).
+- **An action line with a failed call no longer ends with a check.** The collapsed line of a
+  group where a command failed shows the failure mark of its card instead.
+
+**Known limits.** The reader's fold choices last while the page is open, not across a reload.
+Reading on approach was measured in a browser on a rendering bench with the application's own
+components (27 reads at opening instead of 3,000), not on a conversation served by a gateway,
+and not in Safari.
+
 ## [0.104.2] — A turn's reasoning and actions read as one thread, open by default
 
 Frontend release: only the interface changes. Nothing to migrate; the bridge and the Convex

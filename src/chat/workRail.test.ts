@@ -45,7 +45,7 @@ describe("one label per zone, none per thought", () => {
     const src = code("WorkZone.tsx");
     expect(src).toMatch(/<Brain /);
     expect(src).toMatch(/ariaExpanded=\{open\}/);
-    expect(src).toMatch(/chooseZone\(zone\.key, !open\)/);
+    expect(src).toMatch(/chooseZone\(zone, !open\)/);
   });
 
   test("each kind of work asks its zone for the header and the fold", () => {
