@@ -36,7 +36,7 @@ const EMBEDDED_LOCK_CONFLICT_RE =
 const WRITER_CLAIM_REBOUND_RE =
   /session writer claim changed before transcript persistence/i;
 const WRITER_FENCED_COPY_RE =
-  /the transcript writer no longer owned this session/i;
+  /the transcript writer no longer owned this session|this conversation changed while openclaw was working/i;
 const ACTIVE_TURN_CLAIM_RE =
   /session .* already has an active turn claim/i;
 const SESSION_CHANGED_STARTING_RE =
@@ -45,14 +45,16 @@ const TRANSCRIPT_REBUILDING_RE =
   /session transcript is rebuilding;?\s*retry shortly/i;
 const SESSION_INITIALIZING_RE =
   /is still initializing\.?\s*retry after initialization completes/i;
+const CHAT_ADMISSION_CHANGED_RE =
+  /session preparation changed; retry|worker placement owner changed during chat admission; retry|restart-safe chat freshness was not prepared; retry/i;
 const GATEWAY_STORAGE_BUSY_RE =
-  /database is locked|database table is locked|state database was (?:busy|locked)\b|sqlite transaction admission remained busy/i;
+  /database is locked|database table is locked|state database was (?:busy|locked)\b|sqlite transaction admission remained busy|openclaw is busy saving your conversation/i;
 const GATEWAY_STORAGE_UNAVAILABLE_RE =
-  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error/i;
+  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error|couldn't save your conversation because the disk is full|doesn't have permission to save your conversation|couldn't save your conversation\. check the storage/i;
 const GATEWAY_HOST_STORAGE_FULL_RE =
   /\benospc\b|\bedquot\b|no space left on device|disk quota exceeded|could not write local session data because the disk is full|free disk space\/quota or set xdg_cache_home to a writable filesystem/i;
 const AGENT_DATABASE_CLOSED_RE =
-  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent/i;
+  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent|restart the gateway to retry admission/i;
 const PENDING_INPUT_DROPPED_RE =
   /pending input is no longer active in its admitted transcript/i;
 const FALLBACK_SUMMARY_RE =
@@ -64,9 +66,9 @@ const REMEDIATION_TAIL_RE =
 const ATTEMPT_REASON_SUFFIX_RE =
   /\s\(([a-z_]+)\)\s*\.?\s*$/;
 const PREFLIGHT_WRAPPER_HEAD_RE =
-  /^[\s⚠️]*context is too large and auto-compaction could not recover this turn\.\s*/i;
+  /^[\s⚠️]*(?:context is too large and auto-compaction could not recover this turn|this conversation is too long, and openclaw couldn't shorten it)\.\s*/i;
 const PREFLIGHT_TIMEOUT_HEAD_RE =
-  /^[\s⚠️]*context is too large and auto-compaction timed out before it could finish\.\s*/i;
+  /^[\s⚠️]*(?:context is too large and auto-compaction timed out before it could finish|this conversation is too long, and shortening it took too long)\.\s*/i;
 const WRAPPER_REASON_HEAD_RE =
   /^reason:\s*/i;
 const PREFLIGHT_WRAPPER_TAIL_RE =
@@ -78,13 +80,13 @@ const AGENT_FAILED_HEAD_RE =
 const AGENT_FAILED_TAIL_RE =
   /\.?\s*please try again, or use \/new to start a fresh session\.?\s*$/i;
 const TURN_ENDED_HEAD_RE =
-  /^\s*this turn ended before a reply:\s*/i;
+  /^\s*(?:this turn ended before a reply|your request couldn't be completed):\s*/i;
 const SOMETHING_WENT_WRONG_RE =
-  /^[\s⚠️]*something went wrong while processing your request\./i;
+  /^[\s⚠️]*(?:something went wrong while processing your request|openclaw couldn't finish this (?:request|reply))\./i;
 const LOG_TRUNCATION_MARK_RE =
   /\.\.\.\s*$/;
 const PROVIDER_INTERNAL_TEXT_RE =
-  /the ai service returned an (?:internal )?error|the ai service is temporarily (?:overloaded|unavailable)|returned an html error page|malformed_streaming_fragment|malformed fragment|an error occurred while processing your request|http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|\bupstream (?:error|connect)|server_error|overloaded_error|fetch failed|socket hang ?up|network error|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|und_err|terminated unexpectedly/i;
+  /the ai service returned an (?:internal )?error|the ai service is temporarily (?:overloaded|unavailable)|the ai service is busy\. please try again in a moment|the ai service is having trouble\. please try again in a moment|couldn't reach the ai service\. try again in a moment|returned an html error page|malformed_streaming_fragment|malformed fragment|an error occurred while processing your request|http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|\bupstream (?:error|connect)|server_error|overloaded_error|fetch failed|socket hang ?up|network error|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|und_err|terminated unexpectedly/i;
 const PROVIDER_INTERNAL_EXCLUDE_RE =
   /rate[- ]?limit|too many requests|http\s*4\d\d\b|unauthorized|forbidden|invalid[_ ](?:api[_ ]?key|request|model)|api[_ ]?key|authentication|billing|quota|insufficient|not[_ ]found|unsupported|refus|content[_ ]policy|context overflow|prompt too large/i;
 const PROVIDER_REVIEW_PAUSED_RE =
@@ -102,15 +104,15 @@ const TOKEN_REVOKED_ASSERTED_RE =
 const MODEL_LOGIN_EXPIRED_RE =
   /\bmodel login expired on the gateway\b/i;
 const BILLING_COPY_RE =
-  /\breturned a billing error\b/i;
+  /\breturned a billing error\b|\bthe ai service reported a billing problem\b/i;
 const MODEL_NOT_FOUND_COPY_RE =
-  /\bthe selected model was not found by the provider\b|\bcan'?t find the model you'?re using right now\b/i;
+  /\bthe selected model was not found by the provider\b|\bthis model was not found\. choose another model in the control ui\b|\bcan'?t find the model you'?re using right now\b/i;
 const RATE_LIMIT_COPY_RE =
-  /\bapi rate limit reached\b|\bthe model request was rate-limited\b/i;
+  /\bapi rate limit reached\b|\bthe model request was rate-limited\b|\bthe ai service needs a short break\b/i;
 const STATUS_BODY_OPEN_RE =
   /(?:^|[\s:(\[|])(?:http\s*)?[45]\d\d\b[^{"\n|]{0,40}?\{/gi;
 const SESSION_GONE_REASON_RE =
-  /(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)/;
+  /(?:(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)|openclaw couldn't shorten it\.\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)/;
 
 /** Every mirrored pattern by its bridge name — read by the lockstep test only. */
 export const MIRRORED_PATTERNS: Readonly<Record<string, RegExp>> = {
@@ -129,6 +131,7 @@ export const MIRRORED_PATTERNS: Readonly<Record<string, RegExp>> = {
   SESSION_CHANGED_STARTING_RE,
   TRANSCRIPT_REBUILDING_RE,
   SESSION_INITIALIZING_RE,
+  CHAT_ADMISSION_CHANGED_RE,
   GATEWAY_STORAGE_BUSY_RE,
   GATEWAY_STORAGE_UNAVAILABLE_RE,
   GATEWAY_HOST_STORAGE_FULL_RE,
@@ -329,13 +332,20 @@ function isSessionInitConflictText(text: string): boolean {
     SESSION_CHANGED_STARTING_RE.test(text) ||
     ACTIVE_TURN_CLAIM_RE.test(text) ||
     TRANSCRIPT_REBUILDING_RE.test(text) ||
+    CHAT_ADMISSION_CHANGED_RE.test(text) ||
     SESSION_INITIALIZING_RE.test(withoutOperatorData(text))
   );
 }
 
 function isSessionGoneText(text: string): boolean {
   const t = withoutOperatorData(text).toLowerCase();
-  if (!t.includes("auto-compaction") && !t.includes("preflight compaction")) return false;
+  if (
+    !t.includes("auto-compaction") &&
+    !t.includes("preflight compaction") &&
+    !t.includes("openclaw couldn't shorten it")
+  ) {
+    return false;
+  }
   return SESSION_GONE_REASON_RE.test(t);
 }
 

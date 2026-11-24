@@ -258,7 +258,7 @@ identical. The two broken anchors are real and are each recorded:
 **The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
 `delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
 The append path still drops any delta whose text is empty
-(`bridge/src/providers/openclaw/normalizer.ts:2023`, the `&& deltaText` guard), so
+(`bridge/src/providers/openclaw/normalizer.ts:2015`, the `&& deltaText` guard), so
 the retraction has its own branch in `handleChat`: the bubble is cleared through a
 declared empty snapshot, as the Control UI clears its stream. It is covered by a
 deterministic test in the captured shape, not measured on the bench: the catalogue
@@ -857,7 +857,10 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   lifecycle `error` (`embedded-agent-subscribe.handlers.lifecycle.ts:164-180,233`)
   and the chat error's `errorMessage` (`server-chat.ts:607,1125`). Atrium
   classifies both renderings as `session_write_conflict`; the copy's "Retry"
-  does not make it retryable. A failed run also leaves its partial text in the
+  does not make it retryable. The copy is reworded later — "This conversation
+  changed while OpenClaw was working. Check its latest messages before continuing."
+  (`failover/assistant-request-failure-copy.ts:57-58,108` at v2026.10.33) — for the same failure, and classified the same.
+  A failed run also leaves its partial text in the
   transcript as an assistant entry with `stopReason: "error"`
   (`assistant-error-transcript.ts:58-104,141-149`, same versions), returned by
   `sessions.get` with its `content` and `stopReason` intact: the bridge's
@@ -1556,7 +1559,9 @@ any final of a gateway that does not mark notices are read as before.
 harness with a sentence only
 (`$UP/extensions/codex/src/app-server/event-projector-events.ts:388-399`). The projection
 onto `chat` rewrites it to `starting_model` and names it a retry only when the reason is
-`rate_limit` (`$UP/src/gateway/server-chat.ts:1480-1510`). A startup phase is re-emitted
+`rate_limit` (`$UP/src/gateway/server-chat.ts:1480-1510`). Later the projection names five
+reasons and copies `retryAt` (`$UP/src/gateway/server-chat.ts:1288-1305` at v2026.10.33; `output_limit` among them, which is not a wait).
+A startup phase is re-emitted
 only when it changes (`$UP/src/auto-reply/reply/agent-runner-execution.ts:242-246`), so
 none follows a retry that resumes on the same phase: in the Control UI too the retry
 label stands until the run shows activity.

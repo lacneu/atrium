@@ -112,6 +112,71 @@ describe("the provider back-off counter", () => {
     expect(row?.phaseRetry).toEqual({ attempt: 2, maxAttempts: 10 });
   });
 
+  test("2026.10.33: it stores WHY the provider is waited on and UNTIL WHEN, beside the counter", async () => {
+    const t = convexTest(schema, modules);
+    for (const retryReason of ["rate_limit", "overloaded", "server_error", "timeout"] as const) {
+      const { messageId } = await seedStreamingTurn(t);
+      await t.mutation(internal.stream.setPhase, {
+        messageId,
+        phase: "retrying",
+        retry: { attempt: 2, maxAttempts: 10 },
+        retryReason,
+        retryAt: 1_800_000_060_000,
+      });
+      const row = await rowOf(t, messageId);
+      expect(row?.phaseRetry, retryReason).toEqual({
+        attempt: 2,
+        maxAttempts: 10,
+        reason: retryReason,
+        retryAt: 1_800_000_060_000,
+      });
+    }
+  });
+
+  test("…a reason outside the vocabulary and a malformed time are dropped, the counter kept", async () => {
+    // The boundary stores only the words the label has a sentence for: `output_limit` is a
+    // reply being continued, not a wait, and a bridge should never send it.
+    const t = convexTest(schema, modules);
+    for (const extra of [
+      { retryReason: "output_limit" },
+      { retryReason: "constructor" },
+      { retryAt: -5 },
+      { retryAt: Number.POSITIVE_INFINITY },
+    ]) {
+      const { messageId } = await seedStreamingTurn(t);
+      await t.mutation(internal.stream.setPhase, {
+        messageId,
+        phase: "retrying",
+        retry: { attempt: 2, maxAttempts: 10 },
+        ...extra,
+      });
+      const row = await rowOf(t, messageId);
+      expect(row?.phaseRetry, JSON.stringify(extra)).toEqual({ attempt: 2, maxAttempts: 10 });
+    }
+  });
+
+  test("…and neither survives without a sane counter, nor on another phase", async () => {
+    const t = convexTest(schema, modules);
+    const a = await seedStreamingTurn(t);
+    await t.mutation(internal.stream.setPhase, {
+      messageId: a.messageId,
+      phase: "retrying",
+      retry: { attempt: 11, maxAttempts: 11 },
+      retryReason: "overloaded",
+      retryAt: 1_800_000_060_000,
+    });
+    expect((await rowOf(t, a.messageId))?.phaseRetry).toBeUndefined();
+    const b = await seedStreamingTurn(t);
+    await t.mutation(internal.stream.setPhase, {
+      messageId: b.messageId,
+      phase: "post_processing",
+      retry: { attempt: 2, maxAttempts: 10 },
+      retryReason: "overloaded",
+      retryAt: 1_800_000_060_000,
+    });
+    expect((await rowOf(t, b.messageId))?.phaseRetry).toBeUndefined();
+  });
+
   test("the NEXT phase clears it — a resumed turn never still reads 2/10", async () => {
     const t = convexTest(schema, modules);
     const { messageId } = await seedStreamingTurn(t);
@@ -327,6 +392,39 @@ describe("the provider back-off counter", () => {
       expect(row?.phase, "a scoped clear must not touch another producer's phase").toBe(
         "awaiting_approval",
       );
+    })();
+  });
+
+  test("the ingest op forwards the reason and the time the bridge posts BESIDE the counter", () => {
+    // The HTTP hop of the 2026.10.33 back-off. The bridge posts `retryReason` / `retryAt`
+    // as siblings of `retry` (an older backend validates `retry` as the closed counter
+    // object); an op that forwarded `retry` alone would drop both with every other hop green.
+    return (async () => {
+      const t = convexTest(schema, modules);
+      const seeded = await seedIngestChat(t);
+      const res = await t.fetch("/bridge/ingest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${seeded.secret}`,
+        },
+        body: JSON.stringify({
+          op: "setPhase",
+          messageId: seeded.messageId,
+          phase: "retrying",
+          retry: { attempt: 3, maxAttempts: 10 },
+          retryReason: "server_error",
+          retryAt: 1_800_000_090_000,
+        }),
+      });
+      expect(res.status).toBe(200);
+      const row = await rowOf(t, seeded.messageId);
+      expect(row?.phaseRetry).toEqual({
+        attempt: 3,
+        maxAttempts: 10,
+        reason: "server_error",
+        retryAt: 1_800_000_090_000,
+      });
     })();
   });
 });

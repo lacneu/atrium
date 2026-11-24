@@ -3,7 +3,7 @@ import { useMessage } from "@assistant-ui/react";
 import { Check, CircleAlert, Copy, RotateCw, Square } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import { Button } from "@/components/ui/button";
-import type { MessageStatus } from "./convexTypes";
+import type { MessageStatus, PhaseRetry } from "./convexTypes";
 import { ContextLengthActions } from "./ContextLengthActions";
 import {
   runStatusView,
@@ -39,7 +39,7 @@ interface RunMeta {
   error?: string | null;
   errorCode?: string | null;
   phase?: string | null;
-  phaseRetry?: { attempt: number; maxAttempts: number } | null;
+  phaseRetry?: PhaseRetry | null;
   toolParts?: Array<{ toolName: string; phase?: string }>;
   activeToolName?: string | null;
   autoRetry?: { attempt: number; maxAttempts: number; firesAt: number } | null;
@@ -193,6 +193,10 @@ export function RunStatus() {
     interrupted,
     phaseRetry,
     difficulty,
+    // The reader's clock, for one comparison: a next-attempt time is shown only while it
+    // is still ahead. Read at render — the label states a time, it does not count down, so
+    // nothing has to tick (and the `role="status"` chip is not re-announced every second).
+    Date.now(),
   );
   // After a while waiting for the first token (slow / overloaded / reconnecting
   // backend — the client can't tell which), swap the thinking label for a

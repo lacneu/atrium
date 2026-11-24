@@ -88,6 +88,7 @@ export type { ProvenancePart } from "./core/provenance.js";
 // The cron part shape lives in core/cron-part.ts (pure contract module).
 export type { CronPart } from "./core/cron-part.js";
 import type { CronPart } from "./core/cron-part.js";
+import type { TurnRetry, TurnRetryReason } from "./core/events.js";
 // The plan part shape lives in core/plan-part.ts (pure contract module).
 export type { PlanPart } from "./core/plan-part.js";
 import type { PlanPart } from "./core/plan-part.js";
@@ -691,7 +692,7 @@ export interface ConvexWriter {
   setPhase?(
     messageId: string,
     phase: string,
-    retry?: { attempt: number; maxAttempts: number },
+    retry?: TurnRetry,
     onlyIfRetrying?: boolean,
   ): void | Promise<void | boolean>;
   /** Boot-time orphan sweep for this writer's instance (best-effort). */
@@ -1392,6 +1393,9 @@ type IngestOp =
       // Only `retrying` carries it: the provider back-off's bounded counter, so
       // the label can say 2/10 instead of an unbounded "still working".
       retry?: { attempt: number; maxAttempts: number };
+      // …and why the provider is waited on, and until when (2026.10.33), when known.
+      retryReason?: TurnRetryReason;
+      retryAt?: number;
       // A clear that may ONLY remove a back-off, never another producer's phase.
       onlyIfRetrying?: boolean;
       runId?: string | null;
@@ -2579,7 +2583,7 @@ export class HttpConvexWriter implements ConvexWriter {
   setPhase(
     messageId: string,
     phase: string,
-    retry?: { attempt: number; maxAttempts: number },
+    retry?: TurnRetry,
     onlyIfRetrying?: boolean,
   ): Promise<boolean> {
     // Best-effort hint — but RETURN the promise so an ORDER-sensitive caller
@@ -2593,7 +2597,13 @@ export class HttpConvexWriter implements ConvexWriter {
       op: "setPhase",
       messageId,
       phase,
-      ...(retry ? { retry } : {}),
+      // The counter as its own closed object, the reason and the time BESIDE it: a backend
+      // older than these two facts validates `retry` as exactly {attempt, maxAttempts} and
+      // would refuse the whole phase write for one more key inside it, while it ignores a
+      // body field it does not know. A newer bridge must never cost an older backend its label.
+      ...(retry ? { retry: { attempt: retry.attempt, maxAttempts: retry.maxAttempts } } : {}),
+      ...(retry?.reason !== undefined ? { retryReason: retry.reason } : {}),
+      ...(retry?.retryAt !== undefined ? { retryAt: retry.retryAt } : {}),
       ...(onlyIfRetrying ? { onlyIfRetrying: true } : {}),
       ...this.genTag(messageId),
     })

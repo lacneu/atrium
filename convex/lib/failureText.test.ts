@@ -53,7 +53,7 @@ describe("lockstep — the mirror's patterns ARE the bridge's", () => {
       if (literal !== re.toString()) drift.push(`${name}: bridge ${literal} ≠ mirror ${re}`);
     }
     expect(drift).toEqual([]);
-    expect(Object.keys(MIRRORED_PATTERNS).length).toBeGreaterThanOrEqual(45);
+    expect(Object.keys(MIRRORED_PATTERNS).length).toBeGreaterThanOrEqual(49);
   });
 
   it("one precedence, both sides", () => {
@@ -81,6 +81,17 @@ const EXTRA_TEXTS = [
   'MCP server "Re-authenticate with: x" failed to start.',
   'Auth profile "401: invalidated token" type mismatch for x.',
   "The AI service is temporarily overloaded. Please try again in a moment.",
+  // OpenClaw 2026.10.33 wordings, beyond the corpus: every unwrap and every operator-value
+  // reading must agree on them too.
+  "⚠️ This conversation is too long, and OpenClaw couldn't shorten it. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.",
+  "⚠️ This conversation is too long, and shortening it took too long. Try again, use /compact, or use /new to start a fresh session.",
+  "Your request couldn't be completed: session writer claim changed before transcript persistence",
+  "⚠️ OpenClaw couldn't finish this reply. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+  "⚠️ Context compaction succeeded, but the later model request still failed. OpenClaw couldn't finish this request. Check the conversation before trying again.",
+  "INVALID_REQUEST: Error: Worker placement owner changed during chat admission; retry.",
+  'Session "OpenClaw is busy saving your conversation" is archived. Restore it before starting new work.',
+  "All models failed (2): openai/a: The AI service needs a short break. Please try again in a few minutes. (rate_limit) | openai/b: OpenClaw couldn't save your conversation because the disk is full. (unknown)",
+  "Queued input was dropped (queue-cap).",
   "",
 ];
 

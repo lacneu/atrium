@@ -6,6 +6,8 @@ import {
   type RunStatusKind,
 } from "../../convex/lib/chatRenderState";
 import { classifyStoredFailureText, unwrapGatewayFailure } from "../../convex/lib/failureText";
+import { getLocale } from "@/paraglide/runtime.js";
+import type { PhaseRetry } from "./convexTypes";
 import { turnDifficultyLabel, type TurnDifficulty } from "./turnDifficultyView";
 
 // Thin localization wrapper over the SHARED pure derivation
@@ -65,11 +67,51 @@ const PHASE_LABEL: Record<string, () => string> = {
   awaiting_approval: m.runstatus_phase_awaiting_approval,
   // The agent asked the person a question or for a credential, and waits.
   awaiting_input: m.runstatus_phase_awaiting_input,
-  // The provider is rate-limiting and the gateway is backing off. The counter
+  // The provider is being waited on and the gateway is backing off. The counter
   // is supplied separately (see `phaseRetry`): this entry is the fallback for a
   // back-off frame that arrived without one, which the wire allows.
   retrying: m.runstatus_phase_retrying,
 };
+
+/** The counted back-off label per REASON (OpenClaw `ChatStatusEvent.retry.reason`, four of
+ *  its five values from 2026.10.33; the agent `run_status` stream names them on 2026.9.36
+ *  too). `timeout` is upstream's bucket for a provider that is transiently unavailable — it
+ *  "deliberately swallows generic 5xx" (src/gateway/server-chat.ts:162-163) — so its label
+ *  says unavailable, not that a clock ran out. */
+const RETRY_REASON_LABEL: Record<
+  NonNullable<PhaseRetry["reason"]>,
+  (p: { attempt: string; maxAttempts: string }) => string
+> = {
+  rate_limit: m.runstatus_phase_retrying_rate_limit,
+  overloaded: m.runstatus_phase_retrying_overloaded,
+  server_error: m.runstatus_phase_retrying_server_error,
+  timeout: m.runstatus_phase_retrying_timeout,
+};
+
+/** A next-attempt time further ahead than this is not a back-off the gateway schedules
+ *  (its provider retry delays are seconds to minutes): it is a clock that disagrees, and no
+ *  time is shown rather than a wrong one. */
+const RETRY_AT_HORIZON_MS = 60 * 60 * 1000;
+
+/** The label of a counted back-off: its reason when the gateway named one, and the time of
+ *  the next attempt while that time is still ahead of the reader's clock. */
+function retryingLabel(retry: PhaseRetry, now: number | null | undefined): string {
+  const counter = { attempt: String(retry.attempt), maxAttempts: String(retry.maxAttempts) };
+  const label =
+    retry.reason !== undefined && Object.hasOwn(RETRY_REASON_LABEL, retry.reason)
+      ? RETRY_REASON_LABEL[retry.reason](counter)
+      : m.runstatus_phase_retrying_attempt(counter);
+  const at = retry.retryAt;
+  if (typeof at !== "number" || typeof now !== "number" || at <= now || at - now > RETRY_AT_HORIZON_MS) {
+    return label;
+  }
+  const time = new Intl.DateTimeFormat(getLocale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(at));
+  return m.runstatus_phase_retrying_next_attempt({ label, time });
+}
 
 /** Coarse tool families for the working label (and the lot-C flow summaries):
  *  a stable, provider-agnostic bucketing of tool NAMES. */
@@ -152,12 +194,15 @@ export function runStatusView(
   /** The back-off counter that belongs to `phase: "retrying"`. Passed alongside
    *  the phase rather than folded into it: the bounded "2/10" is the whole
    *  value — an unbounded "retrying" says no more than the silence it replaces. */
-  phaseRetry?: { attempt: number; maxAttempts: number } | null,
+  phaseRetry?: PhaseRetry | null,
   /** The live turn's difficulty, when the agent is struggling (the verdict of
    *  convex/lib/turnDifficulty, judged by the caller at its clock). Beats the running
    *  tool and the phase: "working on view_image" is exactly the sentence that hid a
    *  fourth failed view_image. Only a phase that asks the reader to act beats it. */
   difficulty?: TurnDifficulty | null,
+  /** The caller's clock (epoch ms). Only decides whether a back-off's next-attempt time
+   *  is still ahead and worth showing; absent, no time is shown. */
+  now?: number | null,
 ): RunStatusView | null {
   const kind = runStatusKind(status, hasText, interrupted ?? false);
   if (kind === null) return null;
@@ -178,14 +223,7 @@ export function runStatusView(
       };
     }
     if (phase === "retrying" && phaseRetry) {
-      return {
-        kind,
-        label: m.runstatus_phase_retrying_attempt({
-          attempt: String(phaseRetry.attempt),
-          maxAttempts: String(phaseRetry.maxAttempts),
-        }),
-        phased: true,
-      };
+      return { kind, label: retryingLabel(phaseRetry, now), phased: true };
     }
     if (phase && PHASE_LABEL[phase]) {
       return { kind, label: PHASE_LABEL[phase](), phased: true };

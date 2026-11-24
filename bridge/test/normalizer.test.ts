@@ -1692,6 +1692,33 @@ describe("protocol-matrix gaps closed: stopReason + agent usage reach the diagno
       expect(final?.diagnosticStopReason, stopReason).toBe(stopReason);
     }
   });
+
+  it("2026.10.33: the error after a Stop whose partial reply could not be saved keeps its name", () => {
+    // A literal on the `chat` error (src/gateway/server-methods/chat-aborted-partial.ts:
+    // 239-248); the frame is the one upstream's e2e emits
+    // (ui/src/e2e/chat-stop-response-ownership.e2e.test.ts:94-100).
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage:
+            "Stopped, but a reply could not be saved to history. Copy any visible text before leaving this chat.",
+          stopReason: "aborted-partial-persistence-failed",
+        },
+      },
+      clock.tick(),
+    );
+    const final = [...events, ...normalizer.tick(clock.tick(30))].find((e) => e.type === "message.final");
+    expect(final?.diagnosticStopReason).toBe("aborted-partial-persistence-failed");
+  });
 });
 
 
@@ -2656,8 +2683,60 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     const phase = ev.find((e) => e.type === "turn.phase");
     expect(phase?.phase).toBe("retrying");
     // The COUNTER is the value: an unbounded "retrying" says no more than the
-    // silence it replaces.
-    expect(phase?.retry).toEqual({ attempt: 2, maxAttempts: 10 });
+    // silence it replaces. The reason rides with it, so the label can name the wait.
+    expect(phase?.retry).toEqual({ attempt: 2, maxAttempts: 10, reason: "rate_limit" });
+  });
+
+  it("2026.10.33: each of the four provider reasons is a back-off, with its `retryAt`", () => {
+    // `ChatStatusEventSchema.retry.reason` is a union of five from v2026.10.33
+    // (packages/gateway-protocol/src/schema/logs-chat.ts:432-438), projected with `retryAt`
+    // by src/gateway/server-chat.ts:1288-1305. The frame is the one upstream's own test
+    // builds (src/gateway/server-chat.agent-events.test.ts:586-613).
+    for (const reason of ["rate_limit", "overloaded", "server_error", "timeout"]) {
+      const { n, clock } = startTurn();
+      const retryAt = 1_800_000_000_000 + 2 * 30_000;
+      const ev = n.feed(
+        chatStatus({ phase: "starting_model", retry: { attempt: 2, maxAttempts: 10, reason, retryAt } }),
+        clock.tick(),
+      );
+      const phase = ev.find((e) => e.type === "turn.phase");
+      expect(phase?.phase, reason).toBe("retrying");
+      expect(phase?.retry, reason).toEqual({ attempt: 2, maxAttempts: 10, reason, retryAt });
+    }
+  });
+
+  it("2026.10.33: `output_limit` is a reply being continued, not a wait — no label, and none removed", () => {
+    const { n, clock } = startTurn();
+    const first = n.feed(
+      chatStatus({ phase: "starting_model", seq: 1, retry: { attempt: 1, maxAttempts: 10, reason: "output_limit" } }),
+      clock.tick(),
+    );
+    expect(first.find((e) => e.type === "turn.phase")).toBeUndefined();
+    // …and it does not end a back-off that is on screen.
+    n.feed(
+      chatStatus({ phase: "starting_model", seq: 2, retry: { attempt: 2, maxAttempts: 10, reason: "overloaded" } }),
+      clock.tick(),
+    );
+    const after = n.feed(
+      chatStatus({ phase: "starting_model", seq: 3, retry: { attempt: 3, maxAttempts: 10, reason: "output_limit" } }),
+      clock.tick(),
+    );
+    expect(after.find((e) => e.type === "turn.phase")).toBeUndefined();
+  });
+
+  it("a malformed `retryAt` costs the label its time, never its counter", () => {
+    for (const retryAt of [-1, Number.NaN, Number.POSITIVE_INFINITY, "soon", null]) {
+      const { n, clock } = startTurn();
+      const ev = n.feed(
+        chatStatus({ phase: "starting_model", retry: { attempt: 2, maxAttempts: 10, reason: "timeout", retryAt } }),
+        clock.tick(),
+      );
+      expect(ev.find((e) => e.type === "turn.phase")?.retry, String(retryAt)).toEqual({
+        attempt: 2,
+        maxAttempts: 10,
+        reason: "timeout",
+      });
+    }
   });
 
   it("a status frame WITHOUT a retry stays eventless", () => {
@@ -2723,7 +2802,7 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
       const ev = n.feed(chatStatus({ phase: "starting_model", retry }), clock.tick());
       const phase = ev.find((e) => e.type === "turn.phase");
       expect(phase?.phase, JSON.stringify(retry)).toBe("retrying");
-      expect(phase?.retry).toEqual({ attempt: retry.attempt, maxAttempts: retry.maxAttempts });
+      expect(phase?.retry).toEqual(retry);
     }
   });
 
@@ -2853,11 +2932,13 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     expect(phase?.onlyIfRetrying).toBe(true);
   });
 
-  it("a retry frame WITHOUT the contract's reason is refused", () => {
-    // The schema declares `reason: "rate_limit"` and nothing else.
+  it("a retry frame WITHOUT one of the contract's reasons is refused", () => {
+    // The schema requires `reason` and closes it: `rate_limit` alone up to 2026.9.36, a
+    // union of five from 2026.10.33. A frame naming none of them claims nothing we know.
     for (const retry of [
       { attempt: 2, maxAttempts: 10 },
-      { attempt: 2, maxAttempts: 10, reason: "overloaded" },
+      { attempt: 2, maxAttempts: 10, reason: "quota" },
+      { attempt: 2, maxAttempts: 10, reason: 7 },
     ]) {
       const { n, clock } = startTurn();
       const ev = n.feed(chatStatus({ phase: "starting_model", retry }), clock.tick());

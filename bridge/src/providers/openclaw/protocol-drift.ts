@@ -66,13 +66,14 @@ export const KNOWN_CHAT_FIELDS_BY_STATE: Readonly<
   // «unknown-state», which is the badge that should mean "the gateway sent something
   // we have never seen".
   // `retry` is NEW at 2026.9.4: {attempt, maxAttempts, reason:"rate_limit"} on a
-  // provider back-off. Two things changed with it and only one is a field — a
+  // provider back-off; 2026.10.33 widens `reason` to five values and adds `retryAt`
+  // (logs-chat.ts:428-441) — inside the object, which this table does not descend into.
+  // Two things changed with it and only one is a field — a
   // `status` frame is no longer startup-only, it now arrives MID-TURN, after
-  // tools, while the provider waits. The normalizer still reads no `status`
-  // frame (ChatStatusEvent.retry stays a gap in the manifest), but a field the
-  // vendored contract DECLARES is not drift: without this every rate-limited
-  // turn would badge a false «unknown field», which must keep meaning "the
-  // gateway sent something we have never seen".
+  // tools, while the provider waits. The normalizer reads `retry` and nothing else
+  // of a `status` frame; a field the vendored contract DECLARES is not drift: without
+  // this every rate-limited turn would badge a false «unknown field», which must keep
+  // meaning "the gateway sent something we have never seen".
   status: new Set([
     "agentId",
     "phase",

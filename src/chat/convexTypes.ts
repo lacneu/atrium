@@ -215,6 +215,16 @@ export interface ProvenanceItemView {
   context?: boolean;
 }
 
+/** The provider back-off facts of a live `retrying` phase (convex `streamingText.phaseRetry`):
+ *  the bounded counter and, when the gateway gave them (OpenClaw 2026.10.33), why the
+ *  provider is waited on and the gateway's own time for the next attempt (epoch ms). */
+export interface PhaseRetry {
+  attempt: number;
+  maxAttempts: number;
+  reason?: "rate_limit" | "overloaded" | "server_error" | "timeout";
+  retryAt?: number;
+}
+
 /**
  * A chat message as returned by `api.messages.listByChat`.
  *
@@ -308,7 +318,7 @@ export interface ConvexMessageView {
   /** The provider back-off counter belonging to `phase: "retrying"`. Declared here
    *  because the converter copies FIELDS, not the row: an undeclared one is silently
    *  dropped, which is exactly how the counter never reached the label. */
-  phaseRetry?: { attempt: number; maxAttempts: number };
+  phaseRetry?: PhaseRetry;
   /** MULTI-AGENT per-turn routing: which agent this turn was addressed to (absent on
    *  a single-agent message). The thread attributes each reply from these (an
    *  assistant without its own inherits the preceding user turn's agent); the
