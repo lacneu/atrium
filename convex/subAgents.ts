@@ -15,7 +15,7 @@
 // is public but goes through `requireOwnedChat`, so a caller only ever sees their
 // own chats' sub-agents.
 
-import { v } from "convex/values";
+import { v, type ObjectType } from "convex/values";
 import { readableToolText } from "./lib/privateToolArgs";
 import {
   action,
@@ -201,8 +201,7 @@ export function mergeSubAgentTools(
  * drains the held send (see maybeDrainOnTerminal). The drain is guarded, so the
  * LAST sub-agent to finish is the one that actually dispatches.
  */
-export const upsertSubAgent = internalMutation({
-  args: {
+const upsertSubAgentArgs = {
     chatId: v.id("chats"),
     instanceName: v.optional(v.string()),
     // INGEST AUTHORIZATION (per-bridge). When present, the write is ATOMICALLY
@@ -257,8 +256,26 @@ export const upsertSubAgent = internalMutation({
     ),
     sessionMeta: v.optional(SESSION_META),
     telemetry: v.optional(TELEMETRY),
-  },
-  handler: async (ctx, args) => {
+};
+type UpsertSubAgentArgs = ObjectType<typeof upsertSubAgentArgs>;
+
+/** What one record of a child carries beside the keys every record of a batch shares. */
+const {
+  chatId: _sharedChatId,
+  instanceName: _sharedInstanceName,
+  boundInstanceName: _sharedBoundInstanceName,
+  childSessionKey: _sharedChildSessionKey,
+  ...subAgentRecordFields
+} = upsertSubAgentArgs;
+
+/** The upsert itself, for ONE record: `upsertSubAgent` applies it once, `upsertSubAgentBatch`
+ *  once per record, in order, in one transaction. `terminalEffects`: the stored status was
+ *  terminal after this record, so the held send was drained and the estimated plan
+ *  settled (maybeDrainOnTerminal). */
+async function applySubAgentUpsert(
+  ctx: MutationCtx,
+  args: UpsertSubAgentArgs,
+): Promise<{ id: Id<"subAgents"> | null; terminalEffects: boolean }> {
     const now = Date.now();
     const existing = await ctx.db
       .query("subAgents")
@@ -293,7 +310,7 @@ export const upsertSubAgent = internalMutation({
       // content (codex P1). A patch path can't reach here for a purged chat — the cascade
       // deletes its rows, so `existing` is null and this guard catches the re-insert.
       const chat = await ctx.db.get(args.chatId);
-      if (chat === null) return null;
+      if (chat === null) return { id: null, terminalEffects: false };
       // Denormalize the inherited anchor AT BIRTH: a row born inside a
       // delivery/announce run (bornOfRun, no direct anchor) copies the
       // anchor of that run's own row. Because every row gets this treatment
@@ -404,8 +421,10 @@ export const upsertSubAgent = internalMutation({
       // First-sight TERMINAL (a child observed already finished, e.g. it ended
       // before its spawn frame was ingested): the chat may have a send held behind
       // it — drain now. A first-sight `running` child holds the chat (no drain).
-      await maybeDrainOnTerminal(ctx, args.chatId, args.status);
-      return insertedId;
+      return {
+        id: insertedId,
+        terminalEffects: await maybeDrainOnTerminal(ctx, args.chatId, args.status),
+      };
     }
 
     const terminal =
@@ -697,12 +716,64 @@ export const upsertSubAgent = internalMutation({
         { chatId: existing.chatId },
       );
     }
-    await maybeDrainOnTerminal(
-      ctx,
-      args.chatId,
-      patch.status ?? existing.status,
-    );
-    return existing._id;
+    return {
+      id: existing._id,
+      terminalEffects: await maybeDrainOnTerminal(
+        ctx,
+        args.chatId,
+        patch.status ?? existing.status,
+      ),
+    };
+}
+
+export const upsertSubAgent = internalMutation({
+  args: upsertSubAgentArgs,
+  handler: async (ctx, args) => (await applySubAgentUpsert(ctx, args)).id,
+});
+
+/** The most records one batch may carry. A record that leaves the row non-terminal reads
+ *  the row, the chat, its parent message and the authorization's point lookups — about ten
+ *  documents — so a full batch stays two orders of magnitude under a transaction's read
+ *  limits. The data-dependent part (the terminal effects) is bounded separately, below. */
+export const MAX_SUBAGENT_BATCH_RECORDS = 64;
+
+/**
+ * Several records of ONE child, applied in the order received, in ONE transaction.
+ *
+ * The bridge writes one record of a child at a time (two in flight always conflict on the
+ * row) and sends whatever arrived meanwhile as one batch. Each record goes through the
+ * SAME function as a single write, so the row ends exactly as successive writes would
+ * leave it — nothing is merged before the row's stored state is known.
+ *
+ * AT MOST ONE RUN OF THE TERMINAL EFFECTS PER TRANSACTION. A record that leaves the row
+ * terminal drains the held send and settles the estimated plan (maybeDrainOnTerminal),
+ * whose reads depend on the conversation (recent messages and their parts), not on the
+ * record. Running them once after the last record is not provably the same result (the
+ * drain reads the row's anchor and `updatedAt`, which a later record may move), so they
+ * run where a single write would run them, and the batch STOPS after the first record
+ * that ran them: `applied` says how many records were written, and the bridge sends the
+ * rest next. A transaction therefore never costs more than one single write of today plus
+ * cheap records before it.
+ */
+export const upsertSubAgentBatch = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    instanceName: v.optional(v.string()),
+    boundInstanceName: v.optional(v.string()),
+    childSessionKey: v.string(),
+    records: v.array(v.object(subAgentRecordFields)),
+  },
+  handler: async (ctx, { records, ...shared }): Promise<{ applied: number }> => {
+    if (records.length > MAX_SUBAGENT_BATCH_RECORDS) {
+      throw new Error("sub-agent batch too large");
+    }
+    let applied = 0;
+    for (const record of records) {
+      const { terminalEffects } = await applySubAgentUpsert(ctx, { ...shared, ...record });
+      applied++;
+      if (terminalEffects) break;
+    }
+    return { applied };
   },
 });
 
@@ -975,11 +1046,11 @@ async function maybeDrainOnTerminal(
   ctx: MutationCtx,
   chatId: Id<"chats">,
   status: string,
-): Promise<void> {
-  if (isTerminalStatus(status)) {
-    await drainNextQueued(ctx, chatId);
-    await settleEstimatedPlanIfIdle(ctx, chatId);
-  }
+): Promise<boolean> {
+  if (!isTerminalStatus(status)) return false;
+  await drainNextQueued(ctx, chatId);
+  await settleEstimatedPlanIfIdle(ctx, chatId);
+  return true;
 }
 
 /** How far back to look for the plan card the reader is showing. The plan lives

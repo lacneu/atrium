@@ -1016,120 +1016,48 @@ export interface SessionRosterReport {
   observedAt: number;
 }
 
-interface PendingSubAgentWrite {
+/** What a record carries on the wire beside its two keys — the same fields for the
+ *  single op and for each record of a batch. */
+function subAgentRecordFields(record: SubAgentRecord) {
+  return {
+    parentMessageId: record.parentMessageId ?? null,
+    anchorExact: record.anchorExact,
+    kind: record.kind,
+    bornOfRun: record.bornOfRun,
+    ...(record.startRunId !== undefined ? { startRunId: record.startRunId } : {}),
+    ...(record.childRunId !== undefined ? { childRunId: record.childRunId } : {}),
+    ...(record.runTimeoutSeconds !== undefined
+      ? { runTimeoutSeconds: record.runTimeoutSeconds }
+      : {}),
+    taskName: record.taskName,
+    declaredTimeoutMs: record.declaredTimeoutMs,
+    status: record.status,
+    ...(record.providerStatus !== undefined
+      ? { providerStatus: record.providerStatus }
+      : {}),
+    ...(record.rollup !== undefined ? { rollup: record.rollup } : {}),
+    resultText: record.resultText,
+    phase: record.phase,
+    errorMessage: record.errorMessage,
+    ...(record.errorCode !== undefined ? { errorCode: record.errorCode } : {}),
+    tools: record.tools,
+    sessionMeta: record.sessionMeta,
+    telemetry: record.telemetry,
+  };
+}
+
+/** One record of a child waiting to be written, and the caller that waits for it. */
+interface QueuedSubAgentWrite {
   record: SubAgentRecord;
-  waiters: Array<{ resolve: () => void; reject: (err: unknown) => void }>;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+  /** Sent in a batch that Convex stopped before this record: it goes alone next. */
+  alone?: true;
 }
 
-type SubAgentTools = NonNullable<SubAgentRecord["tools"]>;
-
-/** The Convex tool-list merge (convex/subAgents.ts `mergeSubAgentTools`): dedupe by
- *  toolCallId (else name), first-seen order, `done` wins over `running`. */
-function mergeSubAgentToolLists(
-  held: SubAgentTools | undefined,
-  next: SubAgentTools | undefined,
-): SubAgentTools | undefined {
-  if (held === undefined || next === undefined) return next ?? held;
-  const out: SubAgentTools = [];
-  const at = new Map<string, number>();
-  const keyOf = (t: SubAgentTools[number]): string => t.toolCallId ?? `name:${t.name}`;
-  for (const t of held) {
-    at.set(keyOf(t), out.length);
-    out.push({ ...t });
-  }
-  for (const t of next) {
-    const i = at.get(keyOf(t));
-    if (i === undefined) {
-      at.set(keyOf(t), out.length);
-      out.push({ ...t });
-    } else if (t.status === "done") {
-      out[i] = { ...out[i]!, name: t.name, status: "done" };
-    }
-  }
-  return out;
-}
-
-/**
- * Fold `next` into `held` — two records of ONE child, `held` observed first — into the
- * single record that leaves the row as writing `held` then `next` would.
- *
- * Records are PARTIAL (a tool frame carries the tool list and no phase, a terminal the
- * result and no tool list, a session capture only its config), so the later one cannot
- * simply replace the earlier. Each field follows the rule the Convex mutation applies to
- * an existing row (convex/subAgents.ts `upsertSubAgent`):
- *   - status: an END is never replaced by `running`, nor `done` by `error`; otherwise
- *     the later status stands;
- *   - the words of an end (providerStatus, errorMessage, errorCode) go with the status
- *     kept, and an `error` that recovered to `done` loses its failure;
- *   - identity (kind, bornOfRun, startRunId, childRunId, runTimeoutSeconds, taskName)
- *     is fill-only: the first value stands;
- *   - the anchor is filled once, then only upgraded to a correlated one;
- *   - the declared deadline: the tighter one;
- *   - resultText, rollup: the later value supplied;
- *   - phase: the later one, none after an end;
- *   - tools: merged; sessionMeta: later fields over earlier ones;
- *   - telemetry: later over earlier while running; an end keeps its own numbers.
- * Two known differences from two writes, both on paths the observer does not produce:
- * a `done` followed by an `error` no longer carries the error's words onto the row, and
- * a row BORN from a folded record takes the later record's anchor without the
- * chain-inheritance lookup the first alone would have had (a row is normally born from
- * the write in flight, which is never folded).
- */
-export function mergeSubAgentRecords(held: SubAgentRecord, next: SubAgentRecord): SubAgentRecord {
-  const heldEnded = held.status !== "running";
-  const keepHeldStatus =
-    (heldEnded && next.status === "running") || (held.status === "done" && next.status === "error");
-  const recovered = held.status === "error" && next.status === "done";
-  const endWord = <K extends "providerStatus" | "errorMessage" | "errorCode">(k: K): SubAgentRecord[K] => {
-    if (keepHeldStatus) return held[k] ?? (next.status === "running" ? next[k] : undefined);
-    return recovered ? next[k] : (next[k] ?? held[k]);
-  };
-  // The anchor: `held` fills it; `next` only when none was given, or to upgrade a
-  // fallback anchor to a correlated one.
-  const nextAnchors =
-    next.parentMessageId != null &&
-    (held.parentMessageId == null || (next.anchorExact === true && held.anchorExact !== true));
-  const anchor = nextAnchors ? next : held;
-  const merged: SubAgentRecord = {
-    chatId: held.chatId,
-    childSessionKey: held.childSessionKey,
-    parentMessageId: anchor.parentMessageId,
-    anchorExact: anchor.anchorExact,
-    kind: held.kind ?? next.kind,
-    bornOfRun: held.bornOfRun ?? next.bornOfRun,
-    startRunId: held.startRunId ?? next.startRunId,
-    childRunId: held.childRunId ?? next.childRunId,
-    runTimeoutSeconds: held.runTimeoutSeconds ?? next.runTimeoutSeconds,
-    taskName: held.taskName ?? next.taskName,
-    declaredTimeoutMs:
-      held.declaredTimeoutMs !== undefined && next.declaredTimeoutMs !== undefined
-        ? Math.min(held.declaredTimeoutMs, next.declaredTimeoutMs)
-        : (held.declaredTimeoutMs ?? next.declaredTimeoutMs),
-    status: keepHeldStatus ? held.status : next.status,
-    resultText: next.resultText ?? held.resultText,
-    phase: heldEnded ? held.phase : (next.phase ?? held.phase),
-    errorMessage: endWord("errorMessage"),
-    providerStatus: endWord("providerStatus"),
-    errorCode: endWord("errorCode"),
-    rollup: next.rollup ?? held.rollup,
-    tools: mergeSubAgentToolLists(held.tools, next.tools),
-    sessionMeta:
-      held.sessionMeta !== undefined && next.sessionMeta !== undefined
-        ? { ...held.sessionMeta, ...next.sessionMeta }
-        : (next.sessionMeta ?? held.sessionMeta),
-    telemetry:
-      held.telemetry !== undefined && next.telemetry !== undefined && (!heldEnded || recovered)
-        ? { ...held.telemetry, ...next.telemetry }
-        : heldEnded && !recovered
-          ? (held.telemetry ?? next.telemetry)
-          : (next.telemetry ?? held.telemetry),
-  };
-  // Absent stays absent: the wire shape of an unfolded record is unchanged.
-  for (const k of Object.keys(merged) as Array<keyof SubAgentRecord>) {
-    if (merged[k] === undefined) delete merged[k];
-  }
-  return merged;
-}
+/** The most records one batch carries — Convex's own bound (convex/subAgents.ts
+ *  `MAX_SUBAGENT_BATCH_RECORDS`), which refuses a larger one whole. */
+export const SUBAGENT_BATCH_MAX_RECORDS = 64;
 
 /**
  * CONVEX refused (or never answered) a write the bridge made while processing a frame.
@@ -1581,6 +1509,14 @@ type IngestOp =
       sessionMeta?: SubAgentSessionMeta;
       telemetry?: SubAgentTelemetry;
     }
+  // Several records of ONE child of ONE chat, in the order received: Convex applies the
+  // single upsert to each, in one transaction, and answers how many it wrote.
+  | {
+      op: "upsertSubAgentBatch";
+      chatId: string;
+      childSessionKey: string;
+      records: Array<Record<string, unknown>>;
+    }
   // Per-tool DETAIL (args + result) for a sub-agent call -> its own table. Keyed by
   // (childSessionKey, toolCallId). In-app user data; server-paths stripped.
   | {
@@ -1810,11 +1746,13 @@ export class HttpConvexWriter implements ConvexWriter {
   // messageId; message-less ops (startAssistant/getUploadUrl/getRehydrationContext)
   // run independently. Entries are evicted on finalize so the map stays bounded.
   private chains = new Map<string, Promise<unknown>>();
-  // The sub-agent row writes of each child with one in flight (see upsertSubAgent):
-  // the record waiting behind it, if any, and who waits for it. Keyed by
-  // childSessionKey — the key Convex resolves the row by — and shared by every
-  // session of this process, so two sockets of one conversation meet here.
-  private subAgentLanes = new Map<string, { pending: PendingSubAgentWrite | null }>();
+  // The children with a sub-agent row write in flight (see upsertSubAgent), and the
+  // records of each that arrived meanwhile, in order. Keyed by childSessionKey — the key
+  // Convex resolves the row by — and shared by every session of this writer's instance,
+  // so two sockets of one conversation meet here.
+  private subAgentLanes = new Map<string, QueuedSubAgentWrite[]>();
+  // An older Convex answered "unknown op" to a batch: records go one at a time from then on.
+  private subAgentBatchUnsupported = false;
   private subAgentIdleWaiters: Array<() => void> = [];
 
   // Delivery recorder (convex/deliveryTiming.ts). Learned ONCE per turn from the
@@ -2048,6 +1986,11 @@ export class HttpConvexWriter implements ConvexWriter {
     // followed by a body that never completes must end like any other silence. It is
     // raced, not only signalled, so the bound does not depend on the transport
     // surfacing the abort to a body read already in progress.
+    //
+    // Serialised BEFORE the deadline is armed: a body that cannot be serialised (a
+    // BigInt or a cycle in a tool's `output: unknown`) throws here, and nothing may be
+    // left ticking behind that throw.
+    const serialized = JSON.stringify(body);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
@@ -2063,7 +2006,8 @@ export class HttpConvexWriter implements ConvexWriter {
       }, WRITE_TIMEOUT_MS);
       if (typeof timer.unref === "function") timer.unref();
     });
-    const serialized = JSON.stringify(body);
+    // Never an unhandled rejection, whatever path leaves this function first.
+    deadline.catch(() => undefined);
     const exchange = async (): Promise<T> => {
       const response = await this.fetchImpl(this.url, {
         method: "POST",
@@ -3395,64 +3339,124 @@ export class HttpConvexWriter implements ConvexWriter {
     // catch) so a slow/failed observation write never delays or wedges the consume
     // loop.
     //
-    // ONE IN FLIGHT PER CHILD, ONE WAITING AT MOST. Every write of a child reads and
-    // patches the SAME Convex document, so two of them in flight always conflict: a
-    // child running tools in parallel emits one record per tool frame within a
-    // millisecond, and fired together they made each other lose every
-    // optimistic-concurrency retry (HTTP 500 occ_conflict, in bursts). A record that
-    // arrives while one is in flight waits; the next one is FOLDED into the waiting
-    // one (mergeSubAgentRecords) instead of queuing behind it. So nothing — a
-    // terminal, or the registration the frame path awaits — ever waits for more than
-    // the write in flight, and a burst costs two writes, not one per frame.
+    // ONE REQUEST IN FLIGHT PER CHILD. Every write of a child reads and patches the
+    // SAME Convex document, so two of them in flight always conflict: a child running
+    // tools in parallel emits one record per tool frame within a millisecond, and
+    // fired together they made each other lose every optimistic-concurrency retry
+    // (HTTP 500 occ_conflict, in bursts).
+    //
+    // The records that arrive during a request wait IN ORDER and leave together as
+    // one batch, which Convex applies record by record with the single write's own
+    // logic, in one transaction. Nothing is merged here: what two records amount to
+    // depends on the row's stored state, which only the mutation reads. So a terminal,
+    // or the registration the frame path awaits, waits for the request in flight and
+    // is carried by the next one — as long as no more than SUBAGENT_BATCH_MAX_RECORDS
+    // records arrived during that request; beyond, the rest follows in further
+    // requests, still one at a time and in order.
     // Children do not wait for one another. Each caller's promise settles with the
-    // write that carried its record.
+    // request that carried its record.
     const key = record.childSessionKey;
     return new Promise<void>((resolve, reject) => {
-      const waiter = { resolve, reject };
-      const lane = this.subAgentLanes.get(key);
-      if (lane === undefined) {
-        this.subAgentLanes.set(key, { pending: null });
-        // Nothing in flight for this child: sent at once.
-        this.sendSubAgentUpsert(key, record, [waiter]);
-      } else if (lane.pending === null) {
-        lane.pending = { record, waiters: [waiter] };
-      } else {
-        lane.pending.record = mergeSubAgentRecords(lane.pending.record, record);
-        lane.pending.waiters.push(waiter);
+      const entry: QueuedSubAgentWrite = { record, resolve, reject };
+      const waiting = this.subAgentLanes.get(key);
+      if (waiting !== undefined) {
+        waiting.push(entry);
+        return;
       }
+      this.subAgentLanes.set(key, []);
+      // Nothing in flight for this child: sent at once.
+      this.sendSubAgentRecords(key, [entry]);
     });
   }
 
-  private sendSubAgentUpsert(
-    key: string,
-    record: SubAgentRecord,
-    waiters: PendingSubAgentWrite["waiters"],
-  ): void {
-    // Whatever the outcome (doPost always settles): the waiting record goes, or the
+  /** Send `entries` (one child, one chat, in order) as ONE request, then the next. */
+  private sendSubAgentRecords(key: string, entries: QueuedSubAgentWrite[]): void {
+    // Whatever the outcome (doPost always settles): what waits goes next, or the
     // child's entry is removed — before the callers are answered, so none of them
     // observes a write of its child still held here.
-    const advance = (): void => {
-      const next = this.subAgentLanes.get(key)?.pending ?? null;
-      if (next !== null) {
-        this.subAgentLanes.set(key, { pending: null });
-        this.sendSubAgentUpsert(key, next.record, next.waiters);
+    const next = (unwritten: QueuedSubAgentWrite[]): void => {
+      const waiting = this.subAgentLanes.get(key) ?? [];
+      // Records the request did not write keep their place ahead of later ones.
+      if (unwritten.length > 0) waiting.unshift(...unwritten);
+      if (waiting.length === 0) {
+        this.subAgentLanes.delete(key);
+        if (this.subAgentLanes.size === 0) {
+          for (const done of this.subAgentIdleWaiters.splice(0)) done();
+        }
         return;
       }
-      this.subAgentLanes.delete(key);
-      if (this.subAgentLanes.size === 0) {
-        for (const done of this.subAgentIdleWaiters.splice(0)) done();
+      this.subAgentLanes.set(key, waiting);
+      // One batch names one chat: records of another (never produced for one child,
+      // but not this function's to assume) leave in a request of their own.
+      const chatId = waiting[0]!.record.chatId;
+      let take = 1;
+      // A record Convex left unwritten was stopped by a row that runs its terminal
+      // effects on every write: each such record ends its transaction, so sending the
+      // tail again as a batch would only re-send it once per record.
+      if (!this.subAgentBatchUnsupported && waiting[0]!.alone !== true) {
+        while (
+          take < waiting.length &&
+          take < SUBAGENT_BATCH_MAX_RECORDS &&
+          waiting[take]!.record.chatId === chatId
+        ) {
+          take++;
+        }
       }
+      this.sendSubAgentRecords(key, waiting.splice(0, take));
     };
-    void this.postSubAgentUpsert(record).then(
-      () => {
-        advance();
-        for (const w of waiters) w.resolve();
+    void this.postSubAgentRecords(entries.map((e) => e.record)).then(
+      (applied) => {
+        const unwritten = entries.slice(applied);
+        for (const e of unwritten) e.alone = true;
+        next(unwritten);
+        for (const e of entries.slice(0, applied)) e.resolve();
       },
       (err: unknown) => {
-        advance();
-        for (const w of waiters) w.reject(err);
+        // An older Convex refuses the batch op WHOLE (unknown op: nothing was written):
+        // the same records go again, one at a time, and so does everything after them.
+        if (
+          entries.length > 1 &&
+          err instanceof ConvexIngestError &&
+          err.status === 400 &&
+          /unknown op/.test(err.message)
+        ) {
+          this.subAgentBatchUnsupported = true;
+          next(entries);
+          return;
+        }
+        // The request failed: its records are its callers' failure; what waits is untouched.
+        next([]);
+        for (const e of entries) e.reject(err);
       },
     );
+  }
+
+  /** One request for `records`; resolves with how many of them Convex wrote, from the
+   *  first. One record is the single op (every Convex knows it). */
+  private async postSubAgentRecords(records: SubAgentRecord[]): Promise<number> {
+    const first = records[0]!;
+    if (records.length === 1) {
+      await this.doPost({
+        op: "upsertSubAgent",
+        chatId: first.chatId,
+        instanceName: this.instanceName ?? undefined,
+        childSessionKey: first.childSessionKey,
+        ...subAgentRecordFields(first),
+      });
+      return 1;
+    }
+    const res = await this.doPost<{ applied?: unknown }>({
+      op: "upsertSubAgentBatch",
+      chatId: first.chatId,
+      childSessionKey: first.childSessionKey,
+      records: records.map(subAgentRecordFields),
+    });
+    // Convex stops a batch after the first record that ran the terminal effects and
+    // says how many it wrote; an answer without a usable count wrote them all.
+    const applied = res?.applied;
+    return typeof applied === "number" && Number.isInteger(applied) && applied >= 1 && applied <= records.length
+      ? applied
+      : records.length;
   }
 
   /** Test/diagnostic seam: the children with a sub-agent row write in flight or waiting. */
@@ -3469,38 +3473,6 @@ export class HttpConvexWriter implements ConvexWriter {
     if (this.subAgentLanes.size === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
       this.subAgentIdleWaiters.push(resolve);
-    });
-  }
-
-  private async postSubAgentUpsert(record: SubAgentRecord): Promise<void> {
-    await this.doPost({
-      op: "upsertSubAgent",
-      chatId: record.chatId,
-      instanceName: this.instanceName ?? undefined,
-      parentMessageId: record.parentMessageId ?? null,
-      anchorExact: record.anchorExact,
-      childSessionKey: record.childSessionKey,
-      kind: record.kind,
-      bornOfRun: record.bornOfRun,
-      ...(record.startRunId !== undefined ? { startRunId: record.startRunId } : {}),
-      ...(record.childRunId !== undefined ? { childRunId: record.childRunId } : {}),
-      ...(record.runTimeoutSeconds !== undefined
-        ? { runTimeoutSeconds: record.runTimeoutSeconds }
-        : {}),
-      taskName: record.taskName,
-      declaredTimeoutMs: record.declaredTimeoutMs,
-      status: record.status,
-      ...(record.providerStatus !== undefined
-        ? { providerStatus: record.providerStatus }
-        : {}),
-      ...(record.rollup !== undefined ? { rollup: record.rollup } : {}),
-      resultText: record.resultText,
-      phase: record.phase,
-      errorMessage: record.errorMessage,
-      ...(record.errorCode !== undefined ? { errorCode: record.errorCode } : {}),
-      tools: record.tools,
-      sessionMeta: record.sessionMeta,
-      telemetry: record.telemetry,
     });
   }
 

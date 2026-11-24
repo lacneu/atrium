@@ -1534,3 +1534,91 @@ describe("the ingest route says what a settle did", () => {
     expect((await t.run((ctx) => ctx.db.get(rows[0]!._id)))!.status).toBe("allowed");
   });
 });
+
+describe("upsertSubAgentBatch keeps the single op's isolation", () => {
+  const rowsOf = (t: T, chatId: Id<"chats">) =>
+    t.run((ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .collect(),
+    );
+
+  test("a bridge's own chat: the records are applied in order, under the PROVEN instance", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const res = await post(
+      t,
+      {
+        op: "upsertSubAgentBatch",
+        chatId: a.chatId,
+        childSessionKey: "child-1",
+        records: [
+          { status: "running", phase: "start", instanceName: "bravo-SPOOFED" },
+          { status: "done", resultText: "answer" },
+        ],
+      },
+      a.secret,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, applied: 2 });
+    const rows = await rowsOf(t, a.chatId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ instanceName: "alpha", status: "done", phase: "start", resultText: "answer" });
+  });
+
+  test("another instance's chat is refused, and nothing is written", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const b = await seedInstanceWithChat(t, admin, "bravo");
+    const res = await post(
+      t,
+      { op: "upsertSubAgentBatch", chatId: b.chatId, childSessionKey: "c", records: [{ status: "running" }] },
+      a.secret,
+    );
+    expect(res.status).toBe(403);
+    expect(await rowsOf(t, b.chatId)).toHaveLength(0);
+  });
+
+  test("a child that belongs to another instance's chat is refused by its key, whatever chat the batch names", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const b = await seedInstanceWithChat(t, admin, "bravo");
+    expect(
+      (await post(t, { op: "upsertSubAgent", chatId: b.chatId, childSessionKey: "b-child", status: "running" }, b.secret)).status,
+    ).toBe(200);
+    const res = await post(
+      t,
+      { op: "upsertSubAgentBatch", chatId: a.chatId, childSessionKey: "b-child", records: [{ status: "done", resultText: "stolen" }] },
+      a.secret,
+    );
+    expect(res.status).toBe(403);
+    expect((await rowsOf(t, b.chatId))[0]).toMatchObject({ status: "running" });
+  });
+
+  test("one chat and one child per batch: a record naming another is refused with the whole batch", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const b = await seedInstanceWithChat(t, admin, "bravo");
+    const mixes: unknown[][] = [
+      [{ status: "running" }, { status: "done", chatId: b.chatId }],
+      [{ status: "running" }, { status: "done", childSessionKey: "another-child" }],
+      [],
+      Array.from({ length: 65 }, () => ({ status: "running" })),
+    ];
+    for (const records of mixes) {
+      const res = await post(
+        t,
+        { op: "upsertSubAgentBatch", chatId: a.chatId, childSessionKey: "child-1", records },
+        a.secret,
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(await rowsOf(t, a.chatId)).toHaveLength(0);
+    expect(await rowsOf(t, b.chatId)).toHaveLength(0);
+  });
+});

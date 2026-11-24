@@ -9,12 +9,12 @@
 //   - listSubAgents is OWNER-SCOPED (the per-user access boundary): the owner sees
 //     their chat's rows; a non-owner is rejected.
 
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { mergeSubAgentTools } from "./subAgents";
+import { MAX_SUBAGENT_BATCH_RECORDS, mergeSubAgentTools } from "./subAgents";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -557,5 +557,236 @@ describe("mergeSubAgentTools (Inc 4 — reorder-tolerant child-tool merge)", () 
   test("undefined incoming leaves the stored list unchanged (same reference)", () => {
     const existing = [{ name: "exec", status: "done" as const, toolCallId: "c1" }];
     expect(mergeSubAgentTools(existing, undefined)).toBe(existing);
+  });
+});
+
+// A BATCH IS SUCCESSIVE WRITES. The bridge sends the records of one child that arrived
+// during a write as one batch; folding them before the row's stored state is known gave a
+// different row in five cases a review named (the scenarios below). The batch mutation
+// applies the single write's own function per record, so each scenario is asserted as
+// "same row as the single writes", plus the one fact the folding got wrong.
+describe("subAgents.upsertSubAgentBatch: the row successive writes would leave", () => {
+  type T = TestConvex<typeof schema>;
+  type Rec = Record<string, unknown> & { status: "running" | "done" | "error" | "aborted" };
+  const TASK = "0a1b2c3d-1111-2222-3333-444455556666";
+
+  /** The row as two runs can compare it: no ids of its own, anchors by label. */
+  async function rowOf(t: T, labels: Map<string, string>) {
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD))
+        .first(),
+    );
+    if (row === null) return null;
+    const { _id, _creationTime, createdAt, updatedAt, chatId, userId, parentMessageId, gatewayRow, ...rest } = row;
+    void _id; void _creationTime; void createdAt; void updatedAt; void chatId; void userId;
+    const { readAt: _readAt, ...heldRow } = gatewayRow ?? { readAt: 0 };
+    return {
+      ...rest,
+      parent: parentMessageId === undefined ? null : (labels.get(parentMessageId) ?? "unknown"),
+      ...(gatewayRow === undefined ? {} : { gatewayRow: heldRow }),
+    };
+  }
+
+  /** Run one scenario both ways, on a fresh database each. */
+  async function bothWays(
+    prepare: (t: T, chatId: Id<"chats">, userId: Id<"users">, labels: Map<string, string>) => Promise<void>,
+    records: (labels: Map<string, string>) => Rec[],
+  ) {
+    const run = async (mode: "single" | "batch") => {
+      const t = convexTest(schema, modules);
+      const { chatId, userId } = await seedUserAndChat(t);
+      const labels = new Map<string, string>();
+      await prepare(t, chatId, userId, labels);
+      const byLabel = new Map([...labels].map(([id, label]) => [label, id]));
+      const list = records(byLabel);
+      if (mode === "single") {
+        for (const r of list) {
+          await t.mutation(internal.subAgents.upsertSubAgent, { chatId, childSessionKey: CHILD, ...r } as never);
+        }
+      } else {
+        // As the bridge does: what a transaction did not write is sent next.
+        let rest = list;
+        while (rest.length > 0) {
+          const { applied } = await t.mutation(internal.subAgents.upsertSubAgentBatch, {
+            chatId,
+            childSessionKey: CHILD,
+            records: rest,
+          } as never);
+          expect(applied).toBeGreaterThan(0);
+          rest = rest.slice(applied);
+        }
+      }
+      return await rowOf(t, labels);
+    };
+    const single = await run("single");
+    const batch = await run("batch");
+    expect(batch).toEqual(single);
+    return batch!;
+  }
+
+  const running = async (t: T, chatId: Id<"chats">) => {
+    await t.mutation(internal.subAgents.upsertSubAgent, { chatId, childSessionKey: CHILD, status: "running" });
+  };
+
+  test("error then done: the failure's words go, the recovered run's numbers stand", async () => {
+    const row = await bothWays(
+      async (t, chatId) => running(t, chatId),
+      () => [
+        { status: "error", errorMessage: "overflow", errorCode: "context_overflow", telemetry: { totalTokens: 10 } },
+        { status: "done", resultText: "answer", telemetry: { runtimeMs: 5 } },
+      ],
+    );
+    expect(row).toMatchObject({ status: "done", resultText: "answer", telemetry: { totalTokens: 10, runtimeMs: 5 } });
+    expect(row.errorMessage).toBeUndefined();
+  });
+
+  test("done then error: the status stays done, and the row carries what the second write supplied", async () => {
+    const row = await bothWays(
+      async (t, chatId) => running(t, chatId),
+      () => [
+        { status: "done", resultText: "answer" },
+        { status: "error", errorMessage: "timed out", errorCode: "timeout", providerStatus: "timeout" },
+      ],
+    );
+    expect(row).toMatchObject({ status: "done", resultText: "answer", errorMessage: "timed out", providerStatus: "timeout" });
+  });
+
+  test("a row already done, then aborted, then error: not associative, so nothing is folded", async () => {
+    const row = await bothWays(
+      async (t, chatId) => {
+        await running(t, chatId);
+        await t.mutation(internal.subAgents.upsertSubAgent, { chatId, childSessionKey: CHILD, status: "done" });
+      },
+      () => [{ status: "aborted" }, { status: "error", errorMessage: "late" }],
+    );
+    // done -> aborted is taken, aborted -> error is taken: folding the pair first gave
+    // `error` over `done`, which the mutation refuses.
+    expect(row.status).toBe("error");
+  });
+
+  test("a row the gateway holds as live: an `error` record ends nothing, the next record's phase and numbers land", async () => {
+    const row = await bothWays(
+      async (t, chatId) => {
+        await running(t, chatId);
+        await t.mutation(internal.subAgents.applySubAgentRowStatus, {
+          chatId,
+          childSessionKey: CHILD,
+          status: "running",
+          hasActiveRun: true,
+          snapshotAt: 1,
+        });
+      },
+      () => [
+        { status: "error", errorMessage: "attempt abandoned", telemetry: { totalTokens: 10 } },
+        { status: "running", phase: "start", telemetry: { runtimeMs: 5 } },
+      ],
+    );
+    expect(row).toMatchObject({ status: "running", phase: "start", telemetry: { totalTokens: 10, runtimeMs: 5 } });
+  });
+
+  test("a finished row with no numbers: the first late telemetry stands, the second is refused", async () => {
+    const row = await bothWays(
+      async (t, chatId) => {
+        await running(t, chatId);
+        await t.mutation(internal.subAgents.upsertSubAgent, { chatId, childSessionKey: CHILD, status: "done" });
+      },
+      () => [
+        { status: "running", telemetry: { totalTokens: 10 } },
+        { status: "running", telemetry: { runtimeMs: 5 } },
+      ],
+    );
+    expect(row.telemetry).toEqual({ totalTokens: 10 });
+  });
+
+  test("late chain correlation, then a fallback anchor: the inherited anchor is kept", async () => {
+    const row = await bothWays(
+      async (t, chatId, userId, labels) => {
+        const [carrierBubble, fallbackBubble] = await t.run(async (ctx) => {
+          const mk = () =>
+            ctx.db.insert("messages", {
+              chatId,
+              userId,
+              role: "assistant" as const,
+              status: "complete" as const,
+              text: "",
+              updatedAt: 1,
+            });
+          return [await mk(), await mk()];
+        });
+        labels.set(carrierBubble, "carrier-bubble");
+        labels.set(fallbackBubble, "fallback-bubble");
+        // The task whose delivery run the child is born of, anchored exactly.
+        await t.mutation(internal.subAgents.upsertSubAgent, {
+          chatId,
+          childSessionKey: `task:${TASK}`,
+          kind: "task",
+          status: "done",
+          parentMessageId: carrierBubble,
+          anchorExact: true,
+        });
+        await running(t, chatId);
+      },
+      (ids) => [
+        { status: "running", bornOfRun: `image_generate:${TASK}:ok` },
+        { status: "running", parentMessageId: ids.get("fallback-bubble") },
+      ],
+    );
+    expect(row).toMatchObject({ parent: "carrier-bubble", anchorExact: true });
+  });
+
+  test("the terminal effects run once per transaction: the batch stops after the record that ran them", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+    const records = [
+      { status: "running" as const, phase: "a" },
+      { status: "running" as const, phase: "b" },
+      { status: "done" as const, resultText: "answer" },
+      { status: "running" as const, tools: [{ name: "exec", status: "done" as const, toolCallId: "t1" }] },
+      { status: "running" as const, tools: [{ name: "read", status: "done" as const, toolCallId: "t2" }] },
+    ];
+    const send = (rest: typeof records) =>
+      t.mutation(internal.subAgents.upsertSubAgentBatch, { chatId, childSessionKey: CHILD, records: rest });
+    // Through the end; then one record of the finished row at a time.
+    expect(await send(records)).toEqual({ applied: 3 });
+    expect(await send(records.slice(3))).toEqual({ applied: 1 });
+    expect(await send(records.slice(4))).toEqual({ applied: 1 });
+    const row = await rowOf(t, new Map());
+    expect(row).toMatchObject({ status: "done", resultText: "answer", phase: "b" });
+    expect(row!.tools).toHaveLength(2);
+  });
+
+  test("bounded: more records than the cap are refused whole", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+    const records = Array.from({ length: MAX_SUBAGENT_BATCH_RECORDS + 1 }, () => ({ status: "running" as const }));
+    await expect(
+      t.mutation(internal.subAgents.upsertSubAgentBatch, { chatId, childSessionKey: CHILD, records }),
+    ).rejects.toThrow(/batch too large/);
+    expect(await rowOf(t, new Map())).toBeNull();
+    // The cap itself is taken.
+    expect(
+      await t.mutation(internal.subAgents.upsertSubAgentBatch, {
+        chatId,
+        childSessionKey: CHILD,
+        records: records.slice(1),
+      }),
+    ).toEqual({ applied: MAX_SUBAGENT_BATCH_RECORDS });
+  });
+
+  test("the same per-instance barrier as a single write: another instance's chat is refused, nothing written", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+    await t.run((ctx) => ctx.db.patch(chatId, { instanceName: "alpha" }));
+    await expect(
+      t.mutation(internal.subAgents.upsertSubAgentBatch, {
+        chatId,
+        boundInstanceName: "bravo",
+        childSessionKey: CHILD,
+        records: [{ status: "running" as const }, { status: "done" as const }],
+      }),
+    ).rejects.toThrow(/forbidden: cross-instance/);
+    expect(await rowOf(t, new Map())).toBeNull();
   });
 });
