@@ -14,6 +14,7 @@ function rig(replies: unknown[]) {
   let listener: SessionEventListener | null = null;
   const userRows: Array<{ sendId?: string; steerTargetRunId?: string }> = [];
   const dropped: string[] = [];
+  const links: Array<[string, string]> = [];
   const shadow = new TranscriptShadow({
     chatId: "c1",
     sessionKey: KEY,
@@ -29,6 +30,7 @@ function rig(replies: unknown[]) {
     },
     onUserRow: (row) => userRows.push(row),
     onInputDropped: (id) => dropped.push(id),
+    onRunLinked: (executionRunId, clientRunId) => links.push([executionRunId, clientRunId]),
     sleep: async () => {},
     now: () => 1000,
     log: () => {},
@@ -39,10 +41,21 @@ function rig(replies: unknown[]) {
       await new Promise((r) => setTimeout(r, 0));
     }
   };
-  return { shadow, userRows, dropped, flush, get listener() { return listener; } };
+  return { shadow, userRows, dropped, links, flush, get listener() { return listener; } };
 }
 
 describe("TranscriptShadow → live overlay hooks", () => {
+  it("a lifecycle sessions.changed naming a client run states the run link (2026.10.33)", async () => {
+    const r = rig([]);
+    r.shadow.configure({});
+    await r.flush();
+    // server-chat-lifecycle-publication.ts:122 — `clientRunId` only when it differs.
+    r.listener!.onSessionsChanged({ sessionKey: KEY, phase: "model", runId: "exec-1", clientRunId: "webchat-1" });
+    r.listener!.onSessionsChanged({ sessionKey: KEY, phase: "end", runId: "exec-2" });
+    r.listener!.onSessionsChanged({ sessionKey: KEY, reason: "send" });
+    expect(r.links).toEqual([["exec-1", "webchat-1"]]);
+  });
+
   it("a session.message user row reaches onUserRow with its steer target", async () => {
     const r = rig([]);
     r.shadow.configure({});
