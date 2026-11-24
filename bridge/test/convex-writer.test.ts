@@ -2247,3 +2247,107 @@ describe("a late final is NAMED by its write (the key makes it repeatable)", () 
     expect(lateFinalAskedOnce(err)).toBe(false);
   });
 });
+
+// A child running tools in parallel emits one record per tool frame within a millisecond.
+// Every record of a child reads and patches the same Convex row, so two in flight always
+// conflict: fired together they lost each other's optimistic-concurrency retries and Convex
+// answered 500 `occ_conflict` in bursts (prod 2026-11-16). One in flight per child.
+describe("sub-agent row writes: one in flight per child", () => {
+  type UpsertBody = { op: string; childSessionKey: string; tools?: unknown[] };
+
+  /** A fetch fake that counts the requests in flight PER CHILD and releases them by hand. */
+  function childFetch() {
+    const sent: UpsertBody[] = [];
+    const inFlight = new Map<string, number>();
+    let maxPerChild = 0;
+    const pending: Array<{ key: string; settle: (fail: boolean) => void }> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as UpsertBody;
+      sent.push(body);
+      const now = (inFlight.get(body.childSessionKey) ?? 0) + 1;
+      inFlight.set(body.childSessionKey, now);
+      maxPerChild = Math.max(maxPerChild, now);
+      return await new Promise<Response>((resolve) => {
+        pending.push({
+          key: body.childSessionKey,
+          settle: (fail) => {
+            inFlight.set(body.childSessionKey, (inFlight.get(body.childSessionKey) ?? 1) - 1);
+            resolve(
+              fail
+                ? new Response("OptimisticConcurrencyControlFailure", { status: 500 })
+                : new Response(JSON.stringify({ ok: true }), { status: 200 }),
+            );
+          },
+        });
+      });
+    }) as unknown as typeof fetch;
+    const settleNext = (fail = false) => pending.shift()?.settle(fail);
+    return { fetchImpl, sent, settleNext, waiting: () => pending.length, maxPerChild: () => maxPerChild };
+  }
+
+  const record = (childSessionKey: string, toolCount: number) => ({
+    chatId: "chat-1",
+    childSessionKey,
+    status: "running" as const,
+    tools: Array.from({ length: toolCount }, (_, i) => ({
+      name: "exec",
+      status: "running" as const,
+      toolCallId: `call-${i}`,
+    })),
+  });
+
+  test("a burst for one child is written one at a time, in arrival order", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const writes = [1, 2, 3, 4, 5].map((n) => w.upsertSubAgent(record("agent:main:subagent:a", n)));
+    // Only the first left; the four behind it wait for its answer.
+    await sleep(0);
+    expect(f.waiting()).toBe(1);
+    while (f.waiting() > 0) {
+      f.settleNext();
+      await sleep(0);
+    }
+    await Promise.all(writes);
+    expect(f.maxPerChild()).toBe(1);
+    expect(f.sent.map((b) => b.tools?.length)).toEqual([1, 2, 3, 4, 5]);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("children do not wait for one another", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const writes = [
+      w.upsertSubAgent(record("agent:main:subagent:a", 1)),
+      w.upsertSubAgent(record("agent:main:subagent:b", 1)),
+      w.upsertSubAgent(record("agent:main:subagent:a", 2)),
+    ];
+    await sleep(0);
+    // One per child in flight; the second record of `a` waits behind the first.
+    expect(f.sent.map((b) => b.childSessionKey)).toEqual(["agent:main:subagent:a", "agent:main:subagent:b"]);
+    while (f.waiting() > 0) {
+      f.settleNext();
+      await sleep(0);
+    }
+    await Promise.all(writes);
+    expect(f.maxPerChild()).toBe(1);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+
+  test("a refused write is its caller's failure only: the next one of the child still goes", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const first = w.upsertSubAgent(record("agent:main:subagent:a", 1)).then(
+      () => "ok",
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    const second = w.upsertSubAgent(record("agent:main:subagent:a", 2));
+    await sleep(0);
+    f.settleNext(true);
+    expect(await first).toMatch(/upsertSubAgent -> HTTP 500/);
+    await sleep(0);
+    f.settleNext();
+    await second;
+    expect(f.sent.map((b) => b.tools?.length)).toEqual([1, 2]);
+    expect(w.pendingSubAgentChildren).toBe(0);
+  });
+});

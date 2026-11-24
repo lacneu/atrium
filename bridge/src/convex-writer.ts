@@ -1690,6 +1690,10 @@ export class HttpConvexWriter implements ConvexWriter {
   // messageId; message-less ops (startAssistant/getUploadUrl/getRehydrationContext)
   // run independently. Entries are evicted on finalize so the map stays bounded.
   private chains = new Map<string, Promise<unknown>>();
+  // One sub-agent row write in flight per child (see upsertSubAgent). Keyed by
+  // childSessionKey — the key Convex resolves the row by — and shared by every
+  // session of this process, so two sockets of one conversation queue together.
+  private subAgentChains = new Map<string, Promise<void>>();
 
   // Delivery recorder (convex/deliveryTiming.ts). Learned ONCE per turn from the
   // startAssistant ack — so the per-delta hot path stays free when not recording.
@@ -3247,10 +3251,40 @@ export class HttpConvexWriter implements ConvexWriter {
     // OFF the per-message serialization chain ON PURPOSE: a sub-agent observation
     // is keyed by childSessionKey and outlives the parent turn -- there is no
     // message to key on, and putting it on a chain would block the turn's critical
-    // ordered writes. doPost runs it independently; the CALL SITE (Session.consume)
-    // fires it best-effort (void + catch) so a slow/failed observation write never
-    // delays or wedges the consume loop. The Convex upsert is reorder-tolerant (it
-    // never downgrades a terminal status), so racing records are safe.
+    // ordered writes. The CALL SITE (Session.consume) fires it best-effort (void +
+    // catch) so a slow/failed observation write never delays or wedges the consume
+    // loop.
+    //
+    // ONE IN FLIGHT PER CHILD. Every write of a child reads and patches the SAME
+    // Convex document, so two of them in flight always conflict: a child running
+    // tools in parallel emits one record per tool frame within a millisecond, and
+    // fired together they made each other lose every optimistic-concurrency retry
+    // (HTTP 500 occ_conflict, in bursts). Queued per child they cannot meet, and
+    // they land in the order the frames arrived. Children do not wait for one
+    // another. A failed write never blocks the next one of its child.
+    const key = record.childSessionKey;
+    const prev = this.subAgentChains.get(key);
+    const write = (): Promise<void> => this.postSubAgentUpsert(record);
+    // No write pending for this child: sent at once, as before.
+    const run = prev === undefined ? write() : prev.then(write);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.subAgentChains.set(key, tail);
+    // Bounded to the children with a write pending.
+    void tail.then(() => {
+      if (this.subAgentChains.get(key) === tail) this.subAgentChains.delete(key);
+    });
+    await run;
+  }
+
+  /** Test/diagnostic seam: the children with a sub-agent row write still pending. */
+  get pendingSubAgentChildren(): number {
+    return this.subAgentChains.size;
+  }
+
+  private async postSubAgentUpsert(record: SubAgentRecord): Promise<void> {
     await this.doPost({
       op: "upsertSubAgent",
       chatId: record.chatId,
