@@ -2496,6 +2496,7 @@ describe("sub-agent row writes: one request in flight per child, the rest as an 
         w.drainSubAgentWrites().then(() => {
           drained = true;
         }),
+      pending: () => w.pendingSubAgentChildren > 0,
       exit: () => {
         exited = true;
       },
@@ -2509,11 +2510,79 @@ describe("sub-agent row writes: one request in flight per child, the rest as an 
     expect(drained).toBe(false);
     expect(exited).toBe(false);
     f.settleNext();
-    await sleep(0);
+    await sleep(5);
     expect(drained).toBe(true);
     expect(exited).toBe(true);
     // Nothing waiting: a drain is immediate.
     await w.drainSubAgentWrites();
+  });
+
+  // Session.flushSubAgentObserved AWAITS a child's first record, then sends its terminal:
+  // the end of that first write ends the drain a moment before the terminal is handed over.
+  test("shutdown: a producer that awaited the drained write sends its terminal next — the exit waits for it too", async () => {
+    const f = childFetch();
+    const w = writerWith(f.fetchImpl);
+    const producer = (async () => {
+      await w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "running", phase: "start" });
+      await w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" });
+    })();
+    let exited = false;
+    closeThenExit({
+      close: (onClosed) => onClosed(),
+      drain: () => w.drainSubAgentWrites(),
+      pending: () => w.pendingSubAgentChildren > 0,
+      exit: () => {
+        exited = true;
+      },
+    });
+    await sleep(5);
+    expect(f.sent).toHaveLength(1);
+    f.settleNext(); // the first write ends: the drain ends, then the producer sends `done`
+    await sleep(5);
+    expect(f.sent.map((b) => b.status)).toEqual(["running", "done"]);
+    expect(exited).toBe(false);
+    f.settleNext();
+    await producer;
+    await sleep(5);
+    expect(exited).toBe(true);
+  });
+
+  test("a batch answered 200 without a usable count is a FAILED request: nobody is acknowledged, nothing is re-sent on a guess", async () => {
+    for (const answer of [{ ok: true, applied: 0 }, { ok: true }, { ok: true, applied: 3 }, { ok: true, applied: "2" }]) {
+      const bodies: Body[] = [];
+      const release: Array<() => void> = [];
+      const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+        const body = JSON.parse(init.body) as Body;
+        bodies.push(body);
+        await new Promise<void>((r) => release.push(r));
+        return new Response(JSON.stringify(body.op === "upsertSubAgentBatch" ? answer : { ok: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const w = writerWith(fetchImpl);
+      const outcome = (p: Promise<void>) =>
+        p.then(
+          () => "written",
+          (e: unknown) => (e instanceof Error ? e.message : String(e)),
+        );
+      void w.upsertSubAgent(progress(0));
+      const pair = [
+        outcome(w.upsertSubAgent(progress(1))),
+        outcome(w.upsertSubAgent({ chatId: "chat-1", childSessionKey: A, status: "done", resultText: "the answer" })),
+      ];
+      await sleep(0);
+      release.shift()!(); // the request in flight
+      await sleep(0);
+      release.shift()!(); // the batch
+      for (const o of await Promise.all(pair)) expect(o).toMatch(/upsertSubAgentBatch -> HTTP 200 without a usable applied count/);
+      await sleep(0);
+      // No loop: the batch was asked once, and the child's entry is gone.
+      expect(bodies.map((b) => b.op)).toEqual(["upsertSubAgent", "upsertSubAgentBatch"]);
+      expect(w.pendingSubAgentChildren).toBe(0);
+      // The child's next record goes as usual.
+      const later = outcome(w.upsertSubAgent(progress(2)));
+      await sleep(0);
+      release.shift()!();
+      expect(await later).toBe("written");
+    }
   });
 });
 

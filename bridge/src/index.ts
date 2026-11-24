@@ -317,6 +317,8 @@ async function main(): Promise<void> {
           [...served.values()].map((bundle) => bundle.writer.drainSubAgentWrites?.()),
         );
       },
+      pending: () =>
+        [...served.values()].some((bundle) => (bundle.writer.pendingSubAgentChildren ?? 0) > 0),
       exit: () => process.exit(0),
     });
     // Hard cap so a stuck close, or a write Convex never answers, never blocks the

@@ -7,27 +7,45 @@
 // its row `running` until the reaper. Nothing here adds time to a shutdown with nothing
 // waiting, and the caller's hard cap still bounds one that cannot finish.
 
+// A drain that ended is not proof nothing is left: a producer that AWAITED the write the
+// drain was waiting for sends its next record right after (Session.flushSubAgentObserved
+// awaits a child's first record, then sends its terminal). So the end of a drain is
+// followed by one turn of the event loop — the producers' continuations run — and by a
+// fresh look: anything in flight or waiting is drained again. The exit happens only at a
+// moment when nothing is.
+
 export interface ShutdownSteps {
   /** Close the inbound server; the callback fires when it has closed. */
   close: (onClosed: () => void) => void;
   /** Resolves when no write is waiting any more. A rejection counts as done. */
   drain: () => Promise<void>;
+  /** Is anything in flight or waiting right now? */
+  pending: () => boolean;
   exit: () => void;
 }
 
 export function closeThenExit(steps: ShutdownSteps): void {
   let closed = false;
-  let drained = false;
+  let draining = false;
+  const drainThenLook = (): void => {
+    draining = true;
+    const look = (): void => {
+      // Let the callers answered by that drain run before looking again.
+      setImmediate(() => {
+        draining = false;
+        settle();
+      });
+    };
+    void steps.drain().then(look, look);
+  };
   const settle = (): void => {
-    if (closed && drained) steps.exit();
+    if (!closed || draining) return;
+    if (steps.pending()) drainThenLook();
+    else steps.exit();
   };
   steps.close(() => {
     closed = true;
     settle();
   });
-  const onDrained = (): void => {
-    drained = true;
-    settle();
-  };
-  void steps.drain().then(onDrained, onDrained);
+  drainThenLook();
 }

@@ -913,6 +913,9 @@ export interface ConvexWriter {
    * shutdown). Optional: a writer that sends each record at once has nothing to drain.
    */
   drainSubAgentWrites?(): Promise<void>;
+  /** How many children have a sub-agent row write in flight or waiting (the shutdown
+   *  re-checks it once a drain has ended). */
+  readonly pendingSubAgentChildren?: number;
   /**
    * A child's session row as read from the gateway (0.101.4) — the status source once
    * present. Optional: a writer without it leaves the status to the frames.
@@ -3452,11 +3455,18 @@ export class HttpConvexWriter implements ConvexWriter {
       records: records.map(subAgentRecordFields),
     });
     // Convex stops a batch after the first record that ran the terminal effects and
-    // says how many it wrote; an answer without a usable count wrote them all.
+    // says how many it wrote. A count that is missing, zero or out of range says nothing
+    // about what was written: the request FAILED for its callers, like a write that timed
+    // out — never an acknowledgement, and nothing is sent again on a guess.
     const applied = res?.applied;
-    return typeof applied === "number" && Number.isInteger(applied) && applied >= 1 && applied <= records.length
-      ? applied
-      : records.length;
+    if (typeof applied !== "number" || !Number.isInteger(applied) || applied < 1 || applied > records.length) {
+      throw new ConvexIngestError(
+        "upsertSubAgentBatch",
+        200,
+        "Convex ingest upsertSubAgentBatch -> HTTP 200 without a usable applied count",
+      );
+    }
+    return applied;
   }
 
   /** Test/diagnostic seam: the children with a sub-agent row write in flight or waiting. */
