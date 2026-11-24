@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
   isFindableDocumentItem,
+  isNoResultContextItem,
   provenanceItemKind,
   provenancePartStructure,
+  sourceItems,
 } from "./provenance";
 import {
   ANON_HINDSIGHT_MEMORY_PART,
@@ -132,5 +134,39 @@ describe("provenancePartStructure (SOC2 diagnostic shape)", () => {
       present: ["type", "score", "file_name", "title"],
     });
     expect(planted.items[0]!.present).toContain("title");
+  });
+});
+
+describe("a search that found nothing is not a source", () => {
+  const NOTHING = [
+    "No relevant context found for the query.",
+    "Sorry, I'm not able to provide an answer to that question.[no-context]",
+  ];
+
+  test.each(NOTHING)("the canned reply %j, reported as a context item, is a no-result item", (text) => {
+    expect(isNoResultContextItem({ id: "lightrag-context", text }, "documents")).toBe(true);
+    expect(isNoResultContextItem({ id: "lightrag-context", text: `  ${text}\n` }, "documents")).toBe(true);
+    expect(sourceItems([{ id: "lightrag-context", text }], "documents")).toEqual([]);
+  });
+
+  test.each(NOTHING)("an excerpt that QUOTES %j is a source and stays one", (text) => {
+    const item = { id: "lightrag-context", text: `The server answers "${text}" when the graph is empty.` };
+    expect(isNoResultContextItem(item, "documents")).toBe(false);
+    expect(sourceItems([item], "documents")).toEqual([item]);
+  });
+
+  test("only a synthesized context item can be one: a findable document or a memory with that text stays", () => {
+    const text = NOTHING[0];
+    expect(isNoResultContextItem({ file_name: "notes.md", text }, "documents")).toBe(false);
+    expect(isNoResultContextItem({ id: "m1", text }, "memory")).toBe(false);
+  });
+
+  test("a context item whose text was not stored is kept: nothing says it is empty", () => {
+    expect(isNoResultContextItem({ id: "lightrag-context" }, "documents")).toBe(false);
+  });
+
+  test("the real items of a report survive next to a no-result one", () => {
+    const real = { file_name: "guide.md", score: 0.8 };
+    expect(sourceItems([{ id: "lightrag-context", text: NOTHING[0] }, real], "documents")).toEqual([real]);
   });
 });

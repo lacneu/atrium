@@ -41,7 +41,7 @@ import {
   loadLiveTurnDifficultyFacts,
 } from "./lib/liveTurnDifficulty";
 import { turnDifficultyVerdict, type TurnDifficulty } from "./lib/turnDifficulty";
-import { provenancePartStructure } from "./lib/provenance";
+import { provenancePartStructure, sourceItems } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
 import {
   MAX_GUEST_OWNERS_JUDGED,
@@ -269,6 +269,15 @@ type StoredProvenancePart = Extract<
  * the whole MESSAGE_WINDOW). `hasExcerpts` lets the UI decide whether
  * expanding the Sources panel should fetch getProvenanceParts.
  */
+/** A stored report as the reader is shown it: without the items that are a search that
+ *  found nothing (lib/provenance.ts), and null when none is left. The stored part is
+ *  untouched. */
+function sourceReport(part: StoredProvenancePart): StoredProvenancePart | null {
+  const items = sourceItems(part.items, part.group);
+  if (items.length === 0) return null;
+  return items.length === part.items.length ? part : { ...part, items };
+}
+
 function compactProvenancePart(part: StoredProvenancePart): StoredProvenancePart {
   let hasExcerpts = false;
   const items = part.items.map((item) => {
@@ -686,7 +695,12 @@ async function loadChatView(
               // item texts here; `hasExcerpts` tells the UI whether expanding
               // should fetch the bounded per-message detail
               // (getProvenanceParts) on demand.
-              parts.push(compactProvenancePart(part));
+              // A report with no real source left (a search that found nothing) is
+              // not a source of the reply: no Sources card for it.
+              {
+                const reported = sourceReport(part);
+                if (reported !== null) parts.push(compactProvenancePart(reported));
+              }
               break;
             case "widget":
               // A descriptor — bounded at write time (stream.addPart) — ship as-is.
@@ -1964,7 +1978,9 @@ export const getProvenanceParts = query({
     partDocs.sort((a, b) => a.order - b.order);
     const parts: StoredProvenancePart[] = [];
     for (const { part } of partDocs) {
-      if (part.kind === "provenance") parts.push(part);
+      if (part.kind !== "provenance") continue;
+      const reported = sourceReport(part);
+      if (reported !== null) parts.push(reported);
     }
     return parts;
   },

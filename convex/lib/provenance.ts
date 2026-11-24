@@ -63,6 +63,39 @@ export function isFindableDocumentItem(
   return provenanceItemKind(item, group) === "document";
 }
 
+/** The whole replies a LightRAG `/query` route gives, in HTTP 200, to a search that
+ *  found nothing (HKUDS/LightRAG `api/routers/query_routes.py` and
+ *  `PROMPTS["fail_response"]`). Knowledge plugins before 4.1.1 reported such a reply as a
+ *  one-item context report, so messages stored from them carry it. */
+const NO_RESULT_CONTEXT_TEXTS: ReadonlySet<string> = new Set([
+  "No relevant context found for the query.",
+  "Sorry, I'm not able to provide an answer to that question.[no-context]",
+]);
+
+/** Whether a provenance item is a search that FOUND NOTHING reported as a context
+ *  excerpt: a synthesized-context item whose whole text is one of the canned no-result
+ *  replies. Exact match on the trimmed text, never a substring: a real excerpt that
+ *  quotes the sentence is a source and stays one. */
+export function isNoResultContextItem(
+  item: ProvenanceItemLike,
+  group: ProvenanceGroup,
+): boolean {
+  return (
+    provenanceItemKind(item, group) === "context" &&
+    item.text !== undefined &&
+    NO_RESULT_CONTEXT_TEXTS.has(item.text.trim())
+  );
+}
+
+/** A report's items without the no-result ones. A report left with no item is not a
+ *  source of the reply and is not shown at all (the caller drops it). */
+export function sourceItems<T extends ProvenanceItemLike>(
+  items: readonly T[],
+  group: ProvenanceGroup,
+): T[] {
+  return items.filter((item) => !isNoResultContextItem(item, group));
+}
+
 // ===========================================================================
 // SOC2-safe provenance STRUCTURE — the diagnostic shape behind GET
 // /api/v1/chat-state (surfaced by the MCP). The reactive client path and the
