@@ -26,7 +26,7 @@ import {
 import { activeToolFromParts } from "./runStatusView";
 import type { DelegatedSlot } from "./assistantEmptyState";
 import { stripGatewayMediaId } from "../../convex/lib/mediaName";
-import { renderableText } from "./widgets/shortcodes";
+import { renderablePieces, renderableText } from "./widgets/shortcodes";
 import type { GroupPlace } from "./displayGroups";
 import { m } from "@/paraglide/messages.js";
 import { cardOwnership, hiddenPartStorageIds, layoutFileIds, rowSegments, type RowSegment } from "./rowLayoutView";
@@ -90,6 +90,27 @@ function thinkingContent(
 }
 
 /** 0.103.0 — the agent's work note, as a data part rendered by `CommentaryNote`. */
+/** One assistant body text as it renders (widgets/shortcodes.ts): its Markdown, and a
+ *  `data-youtube` part where the agent embedded a video — in the BODY like a widget, at
+ *  the place the shortcode held. A text the cards leave blank is dropped (it would only
+ *  be an empty paragraph); a text without a card is pushed as it is, blank or not. */
+function pushBodyText(
+  content: ContentPart[],
+  text: string,
+  renderedViewIds: ReadonlySet<string>,
+  streamingTail: boolean,
+): void {
+  const pieces = renderablePieces(text, renderedViewIds, streamingTail);
+  for (const piece of pieces) {
+    if (piece.kind === "text") {
+      if (pieces.length === 1 || piece.text.trim() !== "") content.push({ type: "text", text: piece.text });
+    } else {
+      const { kind: _kind, ...data } = piece;
+      content.push({ type: "data-youtube", data } as unknown as ContentPart);
+    }
+  }
+}
+
 function commentaryContent(key: string, text: string, capped = false): ContentPart {
   return { type: "data-commentary", data: { key, text, ...(capped ? { capped: true } : {}) } } as unknown as ContentPart;
 }
@@ -511,7 +532,7 @@ export function convertConvexMessage(
         // A note the gateway cut, whose full version could not be read, says so — as a note.
         content.push(commentaryContent(`row:${seg.entryId}`, renderableText(seg.text, renderedViewIds, false), seg.capped === true));
       } else if (seg.kind === "text") {
-        content.push({ type: "text", text: renderableText(seg.text, renderedViewIds, false) });
+        pushBodyText(content, seg.text, renderedViewIds, false);
         // The gateway cut this text and its full version could not be recovered: said so.
         if (seg.capped === true) content.push({ type: "text", text: `_${m.chat_text_capped()}_` });
       } else if (seg.kind === "cut") {
@@ -544,13 +565,11 @@ export function convertConvexMessage(
   const groupsAtCut = new Map<number, number>();
   (segments === null ? withReplies : []).forEach((seg, segIndex) => {
     if (seg.kind === "text") {
-      content.push({
-        type: "text",
-        text:
-          message.role === "assistant"
-            ? renderableText(seg.text, renderedViewIds, segIndex === streamingTailAt)
-            : seg.text,
-      });
+      if (message.role === "assistant") {
+        pushBodyText(content, seg.text, renderedViewIds, segIndex === streamingTailAt);
+      } else {
+        content.push({ type: "text", text: seg.text });
+      }
     } else if (seg.kind === "note") {
       content.push(commentaryContent(seg.key, seg.text));
     } else if (seg.kind === "delegated") {
@@ -585,7 +604,7 @@ export function convertConvexMessage(
 
   // The work notes the rows do not hold yet, then the message still being written.
   for (const n of liveNotes) content.push(commentaryContent(n.key, n.text));
-  if (liveTail !== null) content.push({ type: "text", text: renderableText(liveTail, renderedViewIds, true) });
+  if (liveTail !== null) pushBodyText(content, liveTail, renderedViewIds, true);
   // A reasoning block is live while the bubble runs and no answer follows it; settled as
   // soon as the answer begins, and on every settled bubble.
   settleThinkingBlocks(content, message.status === "streaming");

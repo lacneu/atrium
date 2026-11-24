@@ -21,6 +21,7 @@
 
 import proxyHtml from "../../../deploy/widget-sandbox/index.html?raw";
 import proxyHeaders from "../../../deploy/widget-sandbox/headers.json";
+import { YOUTUBE_PLAYER_ORIGIN } from "./youtubeVideo";
 
 // --- protocol constants (upstream wrapper and host) ------------------------------------
 
@@ -136,15 +137,26 @@ export function resolveWidgetSandboxOrigin(
  * while `srcdoc` widgets still render — a `srcdoc` document is not fetched, so it is
  * not checked against `frame-src`.
  *
- * What Atrium frames, inventoried: the widget frames only (WidgetPart — `srcdoc` in
- * simple mode, the sandbox proxy origin in dedicated mode). The document viewer and
- * the PDF reader draw on canvases and open files in new tabs; nothing else embeds a
- * frame. So: `'none'` in simple mode, the sandbox origin alone in dedicated mode
- * (the proxy's own `frame-src 'none'` then holds its inner frame). ONLY this directive
- * is set — the page's other loads are deliberately left as they are.
+ * What Atrium frames, inventoried: the widget frames (WidgetPart — `srcdoc` in simple
+ * mode, the sandbox proxy origin in dedicated mode) and the YouTube player of a video
+ * card (YouTubeVideoPart). The document viewer and the PDF reader draw on canvases and
+ * open files in new tabs; nothing else embeds a frame. So, for the widgets: no origin in
+ * simple mode, the sandbox origin alone in dedicated mode (the proxy's own
+ * `frame-src 'none'` then holds its inner frame). ONLY this directive is set — the
+ * page's other loads are deliberately left as they are.
+ *
+ * ONE MORE ORIGIN, in both modes: the YouTube player (a real navigation, so it is
+ * checked here). It is that exact origin — scheme, host, default port — and no
+ * other: not `youtube.com`, not a wildcard, not `https:`. What this costs the guard above,
+ * knowingly: a widget may now navigate itself to that one origin, so whatever it could
+ * write into a URL reaches Google's player host — and no server of the widget author's
+ * choosing, which is what the guard is for. A meta policy cannot be relaxed once
+ * inserted, so the origin is part of the policy from the first insertion.
  */
 export function pageFramePolicy(verdict: SandboxOriginVerdict): string {
-  return verdict.mode === "dedicated" ? `frame-src ${verdict.origin}` : "frame-src 'none'";
+  return verdict.mode === "dedicated"
+    ? `frame-src ${verdict.origin} ${YOUTUBE_PLAYER_ORIGIN}`
+    : `frame-src ${YOUTUBE_PLAYER_ORIGIN}`;
 }
 
 /** Marks the meta Atrium inserts, so it is inserted once. */
