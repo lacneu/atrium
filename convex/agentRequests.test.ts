@@ -10,7 +10,15 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { ANSWER_POST_TIMEOUT_MS, deleteMessageAgentRequests, SUBMIT_STALL_MS } from "./agentRequests";
-import { DEFAULT_REQUEST_TTL_MS, EXPIRY_SWEEP_GRACE_MS, questionShape } from "./lib/agentRequests";
+import {
+  boundQuestions,
+  DEFAULT_REQUEST_TTL_MS,
+  EXPIRY_SWEEP_GRACE_MS,
+  MAX_ANSWER_VALUES,
+  MAX_OPTIONS,
+  MAX_OPTIONS_TEXT,
+  questionShape,
+} from "./lib/agentRequests";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -159,6 +167,60 @@ describe("the bridge records what an agent asked", () => {
     });
     // A binding that cannot be shown truthfully: the request is not recorded at all.
     expect(bad.id).toBeNull();
+  });
+
+  test("a form question keeps every option — up to OpenClaw's own 64 — and one multi-select answer may name them all", async () => {
+    // OpenClaw 2026.10.33: `Question.options` maxItems 64 (schema/questions.ts), more
+    // than four only on a `presentation: "form"` question. Cut to four, a closed question
+    // offered four of the forty choices the agent gave, and nothing said so.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const forty = Array.from({ length: 40 }, (_, i) => ({ label: `Région ${i + 1}`, description: `zone ${i + 1}` }));
+    const res = await t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...ASK,
+      providerRequestId: "ask_form",
+      questions: [{ id: "regions", text: "Lesquelles ?", options: forty, multiSelect: true, allowOther: false, secret: false }],
+    });
+    const row = await t.run((ctx) => ctx.db.get(res.id!));
+    expect(row!.questions![0]!.options).toEqual(forty);
+    expect(MAX_OPTIONS).toBe(64);
+    expect(MAX_ANSWER_VALUES).toBe(MAX_OPTIONS);
+    // Every option picked: accepted whole, labels restored exactly.
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const out = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .action(api.agentRequests.answer, {
+        requestId: res.id!,
+        answers: [{ id: "regions", values: forty.map((o) => o.label) }],
+      });
+    expect(out).toMatchObject({ ok: true });
+    expect((await t.run((ctx) => ctx.db.get(res.id!)))!.answers).toEqual([
+      { id: "regions", values: forty.map((o) => o.label) },
+    ]);
+  });
+
+  test("a question past the option bound, or past the option-text budget, is REFUSED whole — never recorded short", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const ask = (providerRequestId: string, options: Array<{ label: string; description?: string }>) =>
+      t.mutation(internal.agentRequests.upsertFromBridge, {
+        chatId,
+        boundInstanceName: INSTANCE,
+        ...ASK,
+        providerRequestId,
+        questions: [{ id: "q", text: "?", options, multiSelect: false, allowOther: false, secret: false }],
+      });
+    const labels = (n: number) => Array.from({ length: n }, (_, i) => ({ label: `o${i}` }));
+    expect((await ask("ask_64", labels(64))).id).not.toBeNull();
+    expect((await ask("ask_65", labels(65))).id).toBeNull();
+    // Sixty-four long labels would not fit a document: bounded as a whole, refused past it.
+    const long = (chars: number) => Array.from({ length: 16 }, (_, i) => ({ label: `${i}-${"x".repeat(chars)}` }));
+    expect(boundQuestions([{ id: "q", text: "?", options: long(7000), allowOther: false }])).not.toBeNull();
+    expect(MAX_OPTIONS_TEXT).toBe(120_000);
+    expect(boundQuestions([{ id: "q", text: "?", options: long(7600), allowOther: false }])).toBeNull();
+    expect((await ask("ask_heavy", long(7600))).id).toBeNull();
   });
 
   test("an OpenClaw request without its generation is not recorded — its id alone cannot tell it from another", async () => {
@@ -1615,7 +1677,8 @@ describe("approvals and credentials", () => {
       .withIdentity({ subject: `${userId}|session` })
       .action(api.agentRequests.answer, {
         requestId: res.id!,
-        answers: [{ id: "tags", values: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }],
+        // One more than the most options a question may carry (64, OpenClaw 2026.10.33).
+        answers: [{ id: "tags", values: Array.from({ length: 65 }, (_, i) => `v${i}`) }],
       });
     expect(out).toEqual({ ok: false, reason: "AGENT_REQUEST_INVALID_ANSWER:too_many:tags" });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -1737,12 +1800,13 @@ describe("settled elsewhere, swept, deleted", () => {
       providerRequestId: "ask_race",
       questions: [{ id: "tags", text: "Tags ?", options: [], multiSelect: true, allowOther: true, secret: false }],
     });
-    const eight = ["a", "b", "c", "d", "e", "f", "g", "h"];
-    // Our 8-value answer is on the wire…
+    // The most values an answer may carry (MAX_ANSWER_VALUES).
+    const eight = Array.from({ length: MAX_ANSWER_VALUES }, (_, i) => `v${i}`);
+    // Our answer at the bound is on the wire…
     await t.run((ctx) =>
       ctx.db.patch(res.id!, { status: "submitting", resolvedByUserId: userId, answers: [{ id: "tags", values: eight }] }),
     );
-    // …and another client wins with the same eight plus a ninth.
+    // …and another client wins with the same values plus one more.
     await t.mutation(internal.agentRequests.settleFromBridge, {
       chatId,
       boundInstanceName: INSTANCE,

@@ -148,6 +148,28 @@ describe("our questions", () => {
     ]);
   });
 
+  it("a resolution recorded as option VALUES settles the card in the labels it shows (OpenClaw 2026.10.33)", async () => {
+    // `question.resolved` carries the canonical answer (`value ?? label`); Convex compares
+    // it with the answer it stored — labels — to tell ours from someone else's, and the
+    // card marks the option whose LABEL was answered.
+    const t = setup();
+    const asked = question(OURS);
+    asked.payload.questions = [
+      {
+        questionId: "format",
+        header: "Format",
+        question: "Quel format ?",
+        options: [{ label: "Document PDF", value: "pdf" }, { label: "Word" }],
+      } as (typeof asked.payload.questions)[number],
+    ];
+    await t.obs.observe(asked);
+    // The record Convex stores carries no value: the validator admits label + description.
+    expect(t.upserts[0]!.questions![0]!.options).toEqual([{ label: "Document PDF" }, { label: "Word" }]);
+    await t.obs.observe({ type: "event", event: "question.resolved", payload: { id: "ask_1", status: "answered", answers: { answers: { format: ["pdf"] } } } });
+    await t.flush();
+    expect(t.settles.map((x) => x.answers)).toEqual([[{ id: "format", values: ["Document PDF"] }]]);
+  });
+
   it("the same id asked again after its resolution is a NEW question (the gateway forgets settled ones)", async () => {
     const t = setup();
     await t.obs.observe(question(OURS, "x"));

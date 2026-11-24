@@ -3754,6 +3754,613 @@
       "literals": [
         "return \"unknown\""
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/methods/core-descriptors.ts:110,230,322",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/methods/core-descriptors.ts",
+      "lines": [
+        [
+          110,
+          110
+        ],
+        [
+          230,
+          230
+        ],
+        [
+          322,
+          322
+        ]
+      ],
+      "literals": [
+        "shareMaxAgeMs: 1_000,",
+        "shareMaxAgeMs: 1_000,",
+        "shareMaxAgeMs: 1_000,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-agent-dispatch.ts:540-542",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-agent-dispatch.ts",
+      "lines": [
+        [
+          540,
+          542
+        ]
+      ],
+      "literals": [
+        "queuedFollowup.isEnqueued() || queuedFollowup.isTerminal()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:295-301",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
+      "lines": [
+        [
+          295,
+          301
+        ]
+      ],
+      "literals": [
+        "clientRunId: params.runId,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:303-308",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
+      "lines": [
+        [
+          303,
+          308
+        ]
+      ],
+      "literals": [
+        "Queued input was dropped (${reason})."
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:234-240",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
+      "lines": [
+        [
+          234,
+          240
+        ]
+      ],
+      "literals": [
+        "payload: { runId: params.runId, status: \"accepted\" }"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-pre-admission.ts:279-282,306-309",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
+      "lines": [
+        [
+          279,
+          282
+        ],
+        [
+          306,
+          309
+        ]
+      ],
+      "literals": [
+        "respond(cached.ok, cached.payload, cached.error, { cached: true });",
+        "status: \"in_flight\" as const"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-send-ack.ts:42-46",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-send-ack.ts",
+      "lines": [
+        [
+          42,
+          46
+        ]
+      ],
+      "literals": [
+        ": \"started\";"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/agent-command-recovery-owner.ts:270-279",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/agent-command-recovery-owner.ts",
+      "lines": [
+        [
+          270,
+          279
+        ]
+      ],
+      "literals": [
+        "serializeOwner: true,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/reply-turn-admission.ts:399-401",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/reply-turn-admission.ts",
+      "lines": [
+        [
+          399,
+          401
+        ]
+      ],
+      "literals": [
+        "Only detached followups wait here"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-admission.ts:573",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-admission.ts",
+      "lines": [
+        [
+          573,
+          573
+        ]
+      ],
+      "literals": [
+        "interruptChatSendWork({"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-work-admission.ts:233",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-work-admission.ts",
+      "lines": [
+        [
+          233,
+          233
+        ]
+      ],
+      "literals": [
+        "export function interruptChatSendWork(params: {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/get-reply-run-queue.ts:17-19",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/get-reply-run-queue.ts",
+      "lines": [
+        [
+          17,
+          19
+        ]
+      ],
+      "literals": [
+        "params.queueMode === \"interrupt\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/run-orchestrator.ts:753",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run-orchestrator.ts",
+      "lines": [
+        [
+          753,
+          753
+        ]
+      ],
+      "literals": [
+        "return enqueueSession(() =>"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/subagents/registry/subagent-requester-settle-identity.ts:25-31",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/registry/subagent-requester-settle-identity.ts",
+      "lines": [
+        [
+          25,
+          31
+        ]
+      ],
+      "literals": [
+        "params.pause ? \"pause\" : undefined,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/subagents/registry/subagent-requester-settle-identity.ts:34-39",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/registry/subagent-requester-settle-identity.ts",
+      "lines": [
+        [
+          34,
+          39
+        ]
+      ],
+      "literals": [
+        "`${batchKey}:retry-${attemptIndex}`"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/subagents/announce/subagent-announce.requester-settle-message.ts:33",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce.requester-settle-message.ts",
+      "lines": [
+        [
+          33,
+          33
+        ]
+      ],
+      "literals": [
+        "A child is paused awaiting a continuation; this is not a completion."
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/internal-runtime-context.ts:34",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/internal-runtime-context.ts",
+      "lines": [
+        [
+          34,
+          34
+        ]
+      ],
+      "literals": [
+        "RUNTIME_EVENT_USER_PROMPT = \"Continue the OpenClaw runtime event.\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/approval-request-authority.ts:197-199",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/approval-request-authority.ts",
+      "lines": [
+        [
+          197,
+          199
+        ]
+      ],
+      "literals": [
+        "throw new Error(\"Approval requester authority changed\");"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-request.ts:320-322",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-request.ts",
+      "lines": [
+        [
+          320,
+          322
+        ]
+      ],
+      "literals": [
+        "createHmac(\"sha256\", key).update(requestInput).digest(\"hex\")"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-user-turn-recorder.ts:216",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-user-turn-recorder.ts",
+      "lines": [
+        [
+          216,
+          216
+        ]
+      ],
+      "literals": [
+        "chatRequestIdentity: request.requestIdentity"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-retry-comparison.ts:64-67",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-retry-comparison.ts",
+      "lines": [
+        [
+          64,
+          67
+        ]
+      ],
+      "literals": [
+        "return storedIdentity !== request.requestIdentity;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-pre-admission.ts:159-166",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
+      "lines": [
+        [
+          159,
+          166
+        ]
+      ],
+      "literals": [
+        "{ details: { reason: \"chat-request-conflict\" } },"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-pre-admission.ts:102-112",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
+      "lines": [
+        [
+          102,
+          112
+        ]
+      ],
+      "literals": [
+        "session transcript is rebuilding; retry shortly"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-constants.ts:13",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-constants.ts",
+      "lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "literals": [
+        "export const DEDUPE_TTL_MS = 5 * 60_000;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-session.ts:219",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-session.ts",
+      "lines": [
+        [
+          219,
+          219
+        ]
+      ],
+      "literals": [
+        "const clientRunId = p.idempotencyKey;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-abort-authorization.ts:110-122",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-abort-authorization.ts",
+      "lines": [
+        [
+          110,
+          122
+        ]
+      ],
+      "literals": [
+        "summary: \"aborted\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-send-request.ts:95-100",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-send-request.ts",
+      "lines": [
+        [
+          95,
+          100
+        ]
+      ],
+      "literals": [
+        "timeoutMs: GATEWAY_STARTUP_ADMISSION_WAIT_MS,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-send-queue-state.ts:356-378",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-send-queue-state.ts",
+      "lines": [
+        [
+          356,
+          378
+        ]
+      ],
+      "literals": [
+        "setState(\"unconfirmed\", UNCONFIRMED_CHAT_SEND_ERROR)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-protocol/src/schema/sessions-row.ts:276-278",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/sessions-row.ts",
+      "lines": [
+        [
+          276,
+          278
+        ]
+      ],
+      "literals": [
+        "usageReport: Type.Optional("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/session-utils-projection.ts:191-199",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/session-utils-projection.ts",
+      "lines": [
+        [
+          191,
+          199
+        ]
+      ],
+      "literals": [
+        "snapshot.usageReport?.state === \"available\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/session-utils-row.ts:180-188",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/session-utils-row.ts",
+      "lines": [
+        [
+          180,
+          188
+        ]
+      ],
+      "literals": [
+        "allowCacheLookup: false,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:432-439",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
+      "lines": [
+        [
+          432,
+          439
+        ]
+      ],
+      "literals": [
+        "Type.Literal(\"output_limit\"),"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:1291-1300",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          1291,
+          1300
+        ]
+      ],
+      "literals": [
+        "? { retryAt: evt.data.retryAt }"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-protocol/src/schema/questions.ts:74",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/questions.ts",
+      "lines": [
+        [
+          74,
+          74
+        ]
+      ],
+      "literals": [
+        "options: Type.Array(QuestionOptionSchema, { maxItems: 64 }),"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/question-validation.ts:28-33",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/question-validation.ts",
+      "lines": [
+        [
+          28,
+          33
+        ]
+      ],
+      "literals": [
+        "supports at most four standard options"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-protocol/src/schema/questions.ts:50",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/questions.ts",
+      "lines": [
+        [
+          50,
+          50
+        ]
+      ],
+      "literals": [
+        "value: Type.Optional(withSince(\"2026.9\", Type.String({ minLength: 1, maxLength: 4096 }))),"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/question-manager.ts:118-129",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/question-manager.ts",
+      "lines": [
+        [
+          118,
+          129
+        ]
+      ],
+      "literals": [
+        "return matched ? (matched.value ?? matched.label) : candidate;"
+      ]
     }
   ]
 }

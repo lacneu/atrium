@@ -140,6 +140,18 @@ function collectSpread(expression, fields, resolveIdentifier, where, ctx) {
         collectSpread(init, fields, resolveIdentifier, `spread ...${expression.text}`, ctx);
         return;
       }
+      // v2026.10.33 inlined the callee: the shape is an object LITERAL bound to a
+      // const, narrowed by `delete` and projected through `Object.entries` before
+      // the spread. Reaching this point means every other mention of the name is
+      // one of those two accounted forms (anything else refused in
+      // `resolveIdentifier`): neither can add a key, so the literal's own keys are
+      // a SUPERSET of what reaches the wire — the same guarantee the followed
+      // callee's `return {…}` gave for the 2026.9.2 layout, and what a known-field
+      // set must be. The list may name a key a `delete` removes; it cannot miss one.
+      if (init !== undefined && ts.isObjectLiteralExpression(init)) {
+        collectObjectKeys(init, fields, resolveIdentifier, `spread ...${expression.text}`, ctx);
+        return;
+      }
       throw new Error(
         `${SNAPSHOT_FN}: spread \`...${expression.text}\` has no readable declaration in ` +
           `the function's own scope — resolve it here deliberately rather than losing ` +

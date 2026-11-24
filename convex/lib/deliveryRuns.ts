@@ -76,6 +76,21 @@ const MAX_SETTLE_BATCH = 32;
  *  and it is what makes the wake carry `requireVisibleReply` (requester-settle-
  *  wake.ts:362-364, 426-432, 623-625): the run IS the yielded turn's continuation.
  *
+ *  PAUSE NOTICE (OpenClaw v2026.10.33): the grammar gains one segment,
+ *    … `:<childRunId>…` [`:yield-<N>`] [`:pause`] [`:retry-<attempt>`]
+ *  (subagent-requester-settle-identity.ts `buildRequesterSettleWakeIdentity`: `pause`
+ *  joins the batch key after the yield suffix; the retry suffix follows it). The
+ *  gateway wakes the requester because a child that owes a report called
+ *  `sessions_yield` — "A child is paused awaiting a continuation; this is not a
+ *  completion." (subagent-announce.requester-settle-message.ts). So a pause run
+ *  SETTLES NO CHILD and CONTINUES NO YIELDED TURN: it parses with an empty
+ *  `childRunIds` and a null `yieldGeneration` — every reader of those two fields
+ *  then does for it exactly what it does for a wake that names nobody (its own
+ *  bubble, no merge, no child read as finished) — and the children it names are
+ *  carried apart, under `pause`, for its identity alone (`deliveryIdentityKey`).
+ *  The key is ABSENT on every other run, so the pre-10.33 forms parse to the same
+ *  value as before.
+ *
  *  Null on anything that does not parse. An unknown trailing lane is NOT
  *  rejected here — `…:yield-1:<lane>` reads as a no-yield wake whose "id" is the
  *  lane — and it does not need to be: it then carries no yield generation, which
@@ -84,10 +99,18 @@ const MAX_SETTLE_BATCH = 32;
  *  as a guess. */
 export function parseRequesterSettleRun(
   runId: string | null | undefined,
-): { childRunIds: string[]; yieldGeneration: number | null } | null {
+): {
+  childRunIds: string[];
+  yieldGeneration: number | null;
+  pause?: { childRunIds: string[]; yieldGeneration: number | null };
+} | null {
   if (!isRequesterSettleRun(runId)) return null;
   const seg = (runId as string).split(":");
   if (/^retry-\d+$/.test(seg[seg.length - 1] ?? "")) seg.pop();
+  // The literal segment, in its one position. A child run id is a UUID or
+  // `swarm_<hex>` (CHILD_RUN_ID_RE's doc), so the word cannot be an id list.
+  const pause = seg[seg.length - 1] === "pause";
+  if (pause) seg.pop();
   let yieldGeneration: number | null = null;
   const yieldMatch = /^yield-(\d+)$/.exec(seg[seg.length - 1] ?? "");
   if (yieldMatch !== null && yieldMatch[1] !== undefined) {
@@ -100,6 +123,9 @@ export function parseRequesterSettleRun(
   if (seg.length < 4) return null;
   if (ids.length === 0 || ids.length > MAX_SETTLE_BATCH) return null;
   if (!ids.every((id) => CHILD_RUN_ID_RE.test(id))) return null;
+  if (pause) {
+    return { childRunIds: [], yieldGeneration: null, pause: { childRunIds: ids, yieldGeneration } };
+  }
   return { childRunIds: ids, yieldGeneration };
 }
 
@@ -222,6 +248,15 @@ export function followedUpChildRunIds(
  *  pass 6 #1). */
 export function deliveryIdentityKey(runId: string | null | undefined): string | null {
   const settle = parseRequesterSettleRun(runId);
-  if (settle !== null) return `settle:${[...settle.childRunIds].sort().join(",")}`;
+  if (settle !== null) {
+    // A pause notice is not the batch's delivery: its own identity, per paused cohort and
+    // rearm generation (the batch key upstream builds, minus the retry suffix), so two
+    // notices never share a bubble and neither is taken for the completion that follows.
+    if (settle.pause !== undefined) {
+      const generation = settle.pause.yieldGeneration;
+      return `settle-pause:${[...settle.pause.childRunIds].sort().join(",")}:${generation === null ? "-" : `yield-${generation}`}`;
+    }
+    return `settle:${[...settle.childRunIds].sort().join(",")}`;
+  }
   return typeof runId === "string" && isDeliveryRun(runId) ? `run:${runId}` : null;
 }

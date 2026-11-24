@@ -1714,10 +1714,13 @@ function sameDeliveryGeneration(
 ): boolean {
   if (a === undefined || b === undefined) return false;
   if (a === b) return true;
-  const sa = parseRequesterSettleRun(a);
-  const sb = parseRequesterSettleRun(b);
+  // Two settle runs of one identity: the same settled batch whatever its suffixes, or
+  // the same pause notice (which names no settled child — comparing the batches alone
+  // made every pause notice of a conversation "the same delivery").
   return (
-    sa !== null && sb !== null && batchKey(sa.childRunIds) === batchKey(sb.childRunIds)
+    parseRequesterSettleRun(a) !== null &&
+    parseRequesterSettleRun(b) !== null &&
+    deliveryIdentityKey(a) === deliveryIdentityKey(b)
   );
 }
 

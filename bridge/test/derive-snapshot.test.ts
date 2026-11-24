@@ -150,12 +150,38 @@ describe("deriveSnapshotFields", () => {
     expect(fields).toEqual(["a", "b", "c"]);
   });
 
-  it("a `delete` never unlocks reading a LITERAL initialiser as the shape", () => {
-    // Narrowing a literal leaves keys this module cannot subtract; the only thing
-    // a delete unlocks is following a local call, so a literal still refuses.
-    expect(() =>
+  it("reads a LITERAL initialiser as a SUPERSET when it is only narrowed and projected (v2026.10.33 layout)", () => {
+    // v2026.10.33 inlined the callee: `const eventFields = {…}`, then `delete`
+    // and `Object.entries(eventFields)` before the spread. Neither can add a key,
+    // so the literal's keys are the honest superset — the guarantee the followed
+    // callee gave for the 2026.9.2 layout. A deleted key stays listed (it cannot
+    // be subtracted from source); none can be missing.
+    expect(
       derive(`const ${SNAPSHOT_FN} = () => { const f = { a: 1 }; delete f.a; return { ...f }; };`),
-    ).toThrow(/no readable declaration/i);
+    ).toEqual(["a"]);
+    const fields = derive(
+      `const ${SNAPSHOT_FN} = (params) => {\n` +
+        `  const eventFields: Record<string, unknown> = { a: 1, ...(params.x == null ? {} : { b: 2 }) };\n` +
+        `  if (params.lifecycle) { for (const k of ["a"] as const) { delete eventFields[k]; } }\n` +
+        `  const session = params.s ? Object.assign(row, Object.fromEntries(Object.entries(eventFields).filter(([, v]) => v !== undefined))) : undefined;\n` +
+        `  return { ...(session ? { session } : {}), ...eventFields, c: 3 };\n` +
+        `};`,
+    );
+    expect(fields).toEqual(["a", "b", "c", "session"]);
+  });
+
+  it("a literal initialiser WRITTEN anywhere else still REFUSES", () => {
+    // The superset reading holds only because every other mention is a `delete`
+    // or a closed non-mutating reader; one write and the literal is not the shape.
+    for (const write of ["f.z = 1;", "Object.assign(f, { z: 1 });", "fill(f);"]) {
+      expect(
+        () =>
+          derive(
+            `const ${SNAPSHOT_FN} = () => { const f = { a: 1 }; delete f.a; Object.entries(f); ${write} return { ...f }; };`,
+          ),
+        write,
+      ).toThrow(/not a stable const|only uses are its declaration/i);
+    }
   });
 
   it("a `delete` beside a real mutation still REFUSES", () => {

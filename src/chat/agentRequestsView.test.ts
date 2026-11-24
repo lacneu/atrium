@@ -12,6 +12,7 @@ import {
   remaining,
   requestTone,
   setOther,
+  optionsOverflow,
   toggleOption,
   type AgentRequestView,
   dockFolded,
@@ -198,5 +199,14 @@ describe("dockFolded — the dock shows only its bar", () => {
   it("once the reader chooses, the choice holds — on any screen", () => {
     expect(dockFolded(false, true)).toBe(false);
     expect(dockFolded(true, false)).toBe(true);
+  });
+});
+
+describe("optionsOverflow — when the choices become a scrolling column", () => {
+  it("up to four options stay a row of choices; more scroll inside the card", () => {
+    // Four is what an ordinary question carries at most; an OpenClaw form question goes
+    // up to 64 and must stay readable without pushing the answer button off screen.
+    expect([0, 1, 4].map(optionsOverflow)).toEqual([false, false, false]);
+    expect([5, 40, 64].map(optionsOverflow)).toEqual([true, true, true]);
   });
 });

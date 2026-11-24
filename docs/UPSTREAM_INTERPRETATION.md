@@ -484,6 +484,11 @@ rebuilt.
 
 ## 2. Announce/delivery vs `chat.send`: session contention
 
+> **At v2026.10.33 a queued send keeps its identity**: no empty `chat final` at queue
+> admission, the reply and its terminal under the client run's own id, a replayed key
+> answered `accepted`, and a `:pause` segment in the requester-settle run id. This section
+> describes the reference tag; §13 states what the newer tag changes.
+
 ### Upstream policy — steer by default, interrupt when the mode says so
 
 The DEFAULT queue policy does not kill either side of the announce×send
@@ -537,9 +542,10 @@ resolved by:
   (`$UP/src/auto-reply/reply/session.ts:462`, turned into `abortForRestart`
   by the active turn, `reply-turn-admission.ts:305-307` — `stopReason:"restart"`).
   Atrium's bridge
-  never sets `queueMode` on its `chat.send` calls (a declared gap in
-  `protocol-drift`, inventoried by `outbound-ratchet.test.ts`), but that does
-  NOT keep its turns out of the `interrupt` path: a directive in the user's
+  sets `queueMode` on a `chat.send` only when the run policy applies
+  (`explicitQueueMode`, `bridge/src/providers/openclaw/follow-up-mode.ts`,
+  capability `followUpModes`) and sends none otherwise; a send without one is
+  NOT kept out of the `interrupt` path: a directive in the user's
   text, the session, the channel or the config still select it.
 
 **Where an announce kill could exist.** On 2026.7.x a live user turn was aborted
@@ -744,7 +750,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
 - Deliberate divergence: Atrium's queue lives in Convex (durable outbox),
   the Control UI's lives in browser state. Parallel architectures; the
   upstream followup queue (`chatQueuedTurns` cancellation identities) is not
-  modeled by Atrium. The bridge never sets `queueMode`, yet a `chat.send`
+  modeled by Atrium. Where the bridge sets no `queueMode`, a `chat.send`
   landing while a separate `announce:*` run is live IS admitted into the
   gateway followup queue on 2026.8.1+ under the default `steer` mode (an
   effective `interrupt` mode from the session, channel or config aborts the
@@ -1042,6 +1048,9 @@ lifecycle terminal, then a new `lifecycle start` on the same run id. The normali
 reads that start as a run start and must never infer a compaction from it.
 
 ## 5. `chat.send` idempotency
+
+> **At v2026.10.33** the request identity is a keyed digest persisted with the user turn, so
+> the conflict refusal outlives the RAM window; the rest of this section holds. See §13.
 
 ### Upstream derivation and dedupe window
 
@@ -1538,6 +1547,9 @@ any final of a gateway that does not mark notices are read as before.
 
 ### Provider retries
 
+> **At v2026.10.33** the `chat` retry status names five reasons, not one, and may carry the
+> time of the next attempt. See §13.
+
 **Upstream.** Every transient retry is emitted on the agent stream as `run_status`
 `phase:"retrying"` — by the embedded runner with its counters and reason
 (`$UP/src/agents/embedded-agent-runner/run/attempt-recovery.ts:450-466`), by the Codex
@@ -1594,6 +1606,120 @@ the Control UI shows two turns — Atrium reads it as the continuation of the tu
 reader asked for. With no recovery entry, the bubble states the interruption only when a
 shutdown was announced on its socket and its transcript stops before an answer.
 
+## 13. v2026.10.33, read ahead of the reference
+
+The reference tag of this document stays `v2026.9.36`, the validated ceiling. `v2026.10.33`
+is vendored beside it (`bridge/protocol/openclaw/2026.10.33/`, upstream commit
+`5196fbbf8983`), and this section states what it changes for the zones above. Everything
+here is read in the sources and unit tests of that tag: nothing has been captured on a live
+2026.10.33 gateway, and each item says what is **to prove on the bench**. Sections 1 to 12
+describe the reference tag; they are true of every gateway up to it.
+
+The vendored contract is the schema modules and the three derived catalogues. The emission
+inventory of the `agent` channel is not derived for this tag: the extractor leaves gateway
+senders unresolved there, and an inventory that cannot say what a sender puts on the channel
+is not vendored (`bridge/scripts/vendor-protocol.mjs`).
+
+### Negotiation and the method table
+
+A 2026.9.36 client is accepted as it is: `PROTOCOL_VERSION` is 4 in both tags and
+`ConnectParams` is unchanged. The method table is append-only: 46 methods added, none
+removed or renamed. `schema/skill-curator.ts` and its schemas are gone; the
+`skills.curator.*` methods remain and answer `INVALID_REQUEST`. The announced catalogue
+gains `agent.identity.changed` and `session.reaction`; the scope-guard table also gains
+`mcp.app.resourceUpdated` and `mcp.app.hostContextChanged`. Atrium reads none of the four
+(`bridge/protocol/openclaw/events/2026.10.33.json`).
+
+- Three reads can be shared between identical callers for up to one second — `models.list`, `sessions.list` and `cron.list` (`$UP/src/gateway/methods/core-descriptors.ts:110,230,322` at v2026.10.33). **To prove on the bench**, on a per-user socket: a child row read during a status transition, and `cron.list` read right after a mutation.
+
+### A queued send keeps its identity (§2)
+
+Up to the reference tag, a send admitted into the follow-up queue has its client run closed at
+once by an empty `chat final`, and its answer arrives later under the follow-up run's own id.
+At v2026.10.33:
+
+- nothing is published when the input is queued (`$UP/src/gateway/server-methods/chat-send-agent-dispatch.ts:540-542` at v2026.10.33);
+- when the follow-up run starts, the gateway binds it to the client run, so its `agent` and `chat` events carry the CLIENT run id (`$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:295-301` at v2026.10.33);
+- an input the queue drops ends in an error terminal under its own id, `Queued input was dropped (<reason>).` (`$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:303-308` at v2026.10.33);
+- the queue admission stores `{runId, status: "accepted"}` as the key's replayable response (`$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:234-240` at v2026.10.33), and a cached response is replayed before the `in_flight` answer is reached (`$UP/src/gateway/server-methods/chat-send-pre-admission.ts:279-282,306-309` at v2026.10.33): a repeated key on a queued turn reads `accepted`, where the reference tag answers `in_flight`;
+- the Control UI reads every ACK status but `in_flight`, `ok`, `timeout` and `error` as `started` (`$UP/ui/src/pages/chat/chat-send-ack.ts:42-46` at v2026.10.33);
+- a queued follow-up now waits for the direct command in front of it to finish its durable cleanup, an order rather than a preemption (`$UP/src/agents/agent-command-recovery-owner.ts:270-279` at v2026.10.33, `$UP/src/auto-reply/reply/reply-turn-admission.ts:399-401` at v2026.10.33);
+- the `interrupt` branch moved without changing: one call in the admission (`$UP/src/gateway/server-methods/chat-send-admission.ts:573` at v2026.10.33) to `interruptChatSendWork` (`$UP/src/gateway/server-methods/chat-send-work-admission.ts:233` at v2026.10.33); the reply queue's own test is a ternary (`$UP/src/auto-reply/reply/get-reply-run-queue.ts:17-19` at v2026.10.33); the session lane still holds one run (`$UP/src/agents/embedded-agent-runner/run-orchestrator.ts:753` at v2026.10.33).
+
+**Atrium.** The first ACK is still `started`, and no ACK says `queued`. The bridge reads
+`accepted` as custody, like `started` and `in_flight` (`chatSendAckHoldsInput`,
+`bridge/src/providers/openclaw/chat-send-ack.ts`): the held input is kept under the run the
+ACK names instead of being forgotten. A run answering under the client run id is the held
+input's own ack run, which the run manager already adopts. **To prove on the bench**: the
+frame a repeated key really receives; a client run admitted then silent for the whole run
+in front of it; that a queued entry is never read as over while it waits; the classification
+of the dropped-input terminal; the terminal of each entry in `collect` mode.
+
+- The requester-settle run id gains a segment: the batch key is the ids, then `yield-N`, then `pause` (`$UP/src/agents/subagents/registry/subagent-requester-settle-identity.ts:25-31` at v2026.10.33), and `:retry-K` follows it, now also on a pause notice (`$UP/src/agents/subagents/registry/subagent-requester-settle-identity.ts:34-39` at v2026.10.33).
+- A pause notice wakes the requester while the child has NOT finished: "A child is paused awaiting a continuation; this is not a completion." (`$UP/src/agents/subagents/announce/subagent-announce.requester-settle-message.ts:33` at v2026.10.33).
+
+**Atrium.** `parseRequesterSettleRun` (`convex/lib/deliveryRuns.ts`) reads the segment: a
+pause run settles no child and continues no yielded turn — its own bubble, no merge, no
+child read as finished — and carries its own delivery identity, per paused batch and rearm
+generation. The forms of the reference tag parse to the same value as before. **To prove on
+the bench**: a sub-agent that calls `sessions_yield` while it owes a report.
+
+- An announce that carries context fragments writes a fixed user line instead of the event text, "Continue the OpenClaw runtime event." (`$UP/src/agents/internal-runtime-context.ts:34` at v2026.10.33). Atrium reads such rows by provenance, never by text. **To prove on the bench** on the golden corpus.
+- An exec approval granted while a session is created is still refused afterwards: the requester's authority is re-checked after the decision (`$UP/src/gateway/server-methods/approval-request-authority.ts:197-199` at v2026.10.33). Atrium's mitigation (§10) stays necessary.
+
+### `chat.send` idempotency (§5)
+
+- The request identity is a keyed digest (`$UP/src/gateway/server-methods/chat-send-request.ts:320-322` at v2026.10.33), absent for a stop command and when the gateway cannot read its device identity.
+- It is persisted with the user turn as `chatRequestIdentity` (`$UP/src/gateway/server-methods/chat-user-turn-recorder.ts:216` at v2026.10.33), and a retry past the RAM window is compared with the stored value (`$UP/src/gateway/server-methods/chat-send-retry-comparison.ts:64-67` at v2026.10.33): a key reused with another TEXT is refused there, where the reference tag compares mentions and work context only.
+- The refusal is unchanged, `details.reason: "chat-request-conflict"` (`$UP/src/gateway/server-methods/chat-send-pre-admission.ts:159-166` at v2026.10.33).
+- A duplicate can now meet a retryable `UNAVAILABLE`, "session transcript is rebuilding; retry shortly" (`$UP/src/gateway/server-methods/chat-send-pre-admission.ts:102-112` at v2026.10.33).
+- Unchanged: the five-minute window (`$UP/src/gateway/server-constants.ts:13` at v2026.10.33), the key becoming the run id (`$UP/src/gateway/server-methods/chat-send-session.ts:219` at v2026.10.33), the aborted payload (`$UP/src/gateway/server-methods/chat-abort-authorization.ts:110-122` at v2026.10.33).
+- The Control UI bounds its wait for the ACK (`$UP/ui/src/pages/chat/chat-send-request.ts:95-100` at v2026.10.33) and keeps a send it could not confirm as `unconfirmed`, never resent on its own (`$UP/ui/src/pages/chat/chat-send-queue-state.ts:356-378` at v2026.10.33).
+
+**Atrium.** The stable key and the classification of the conflict by its message are
+unaffected. A re-POST whose composed text differs (a rehydration prefix, a media
+instruction) is refused for longer than before — as long as the gateway knows the key, up
+to the abort marker's sixty minutes. The bridge resends a key once after the gateway
+reports the input absent; the contract allows it, and it is a deliberate difference from the
+Control UI. **To prove on the bench**: the same key with another text after the window; how
+the rebuilding refusal is classified; the ACK latency of the asynchronous admission against
+the bridge's twenty-second wait.
+
+### The session row and the context budget (§4)
+
+- The row gains `usageReport`, `{state: "available" | "unavailable"}` (`$UP/packages/gateway-protocol/src/schema/sessions-row.ts:276-278` at v2026.10.33); with `available`, a `totalTokens` of 0 is a count the row keeps (`$UP/src/gateway/session-utils-projection.ts:191-199` at v2026.10.33).
+- The row no longer looks the model's context window up in the discovered cache (`$UP/src/gateway/session-utils-row.ts:180-188` at v2026.10.33).
+
+**Atrium.** The fields the bridge reads keep their names and types. `usageReport` and the
+other new row fields are declared, not read (`bridge/protocol/openclaw/coverage/2026.10.33.json`;
+the seven the gateway flattens on the session snapshot are known to the drift sensor). A
+fresh `totalTokens` of 0 reads as an empty context, which is what it says. **To prove on the
+bench**: that the describe still carries `contextTokens` — and, after a turn,
+`contextBudgetStatus` — for the models in use, since the budget assessment is only projected
+when the two agree; the duration of a pre-send compaction and the describe that follows it.
+
+### Provider retries (§11)
+
+- The `chat` retry status names one of five reasons — `rate_limit`, `overloaded`, `server_error`, `timeout`, `output_limit` — and may carry `retryAt` (`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:432-439` at v2026.10.33; emitted at `$UP/src/gateway/server-chat.ts:1291-1300` at v2026.10.33). The reference tag declares `rate_limit` alone.
+
+**To prove on the bench**: a turn that backs off on `overloaded` or `server_error`, on both
+the `chat` status and the `run_status` stream.
+
+### Agent questions
+
+- A question carries up to 64 options (`$UP/packages/gateway-protocol/src/schema/questions.ts:74` at v2026.10.33), more than four only with `presentation: "form"` (`$UP/src/gateway/question-validation.ts:28-33` at v2026.10.33).
+- An option may declare a `value` (`$UP/packages/gateway-protocol/src/schema/questions.ts:50` at v2026.10.33); the recorded answer is `value ?? label`, an answer being read as a value first, then as a label (`$UP/src/gateway/question-manager.ts:118-129` at v2026.10.33).
+
+**Atrium.** Every option is kept and shown — more than four as a scrolling column — and a
+list past the contract's bound is not recorded rather than shown short. A picked option is
+answered with its value when it declares one, as the Control UI does, and the answers the
+gateway records are read back into labels, so the stored answer and the marked option stay
+what the person saw (`bridge/src/core/agent-requests.ts`). Not read: `answerFormat: "lines"`
+(the free-text field is one line, sent as one value), `resource` (no file picker), `allowEmpty`
+(an empty answer is refused; the question can be skipped), `defaultAnswers` (nothing is
+preselected), thumbnails and previews. **To prove on the bench**: a question whose option
+carries a value, a form question with more than four options.
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1613,6 +1739,7 @@ shutdown was announced on its socket and its transcript stops before an answer.
 | Model fallback | **Conformant on what is said, kept longer** — the Control UI's two sentences as a marker on the run's bubble, also when the frame follows the run's terminal; the reasons, the attempts and the previous model are not shown (§11) |
 | Status notices | **Shown apart from the answer** — a notice-only final after the answer is a notice line on the run's bubble, never the answer's text nor a bubble; the fallback's own notice is the fallback marker (§11) |
 | Provider retries | **Conformant** for the retry itself — read from the agent stream whatever the reason, with Atrium's own wording; the run's startup phases and the provider notices are not shown (§11) |
+| v2026.10.33, read ahead | **Read in the sources, not validated** — the replayed `accepted` ACK is custody, the `:pause` settle run has its own identity and settles no child, every question option is kept and answered by its value; everything else is to prove on the bench (§13) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or

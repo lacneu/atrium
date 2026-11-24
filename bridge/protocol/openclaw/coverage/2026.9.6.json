@@ -8231,7 +8231,7 @@
         },
         "options": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the card's choices (max 4, label + description)"
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the card's choices (label + description), every option the gateway sent: up to 64 from 2026.10.33 on, where a `presentation: \"form\"` question may carry more than four (four before); a list past that bound is not recorded rather than shown short. Convex keeps the same bound (convex/lib/agentRequests.ts MAX_OPTIONS) and the card lays more than four out as a scrolling column"
         },
         "multiSelect": {
           "status": "handled",
@@ -8263,7 +8263,7 @@
       "fields": {
         "label": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the choice label, sent back as the answer value"
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the choice label: what the card shows and Convex stores, and the answer value of an option that declares no `value`"
         },
         "description": {
           "status": "handled",

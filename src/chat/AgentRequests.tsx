@@ -69,6 +69,7 @@ import {
   isOpen,
   isWaiting,
   oneLiner,
+  optionsOverflow,
   outcomeOf,
   panelSections,
   remaining,
@@ -688,7 +689,7 @@ function QuestionBlock({
       ) : null}
       {question.options.length > 0 ? (
         <div
-          className="oc-areq__options"
+          className={`oc-areq__options${optionsOverflow(question.options.length) ? " oc-areq__options--many" : ""}`}
           role={question.multiSelect ? "group" : "radiogroup"}
           aria-labelledby={labelId}
         >

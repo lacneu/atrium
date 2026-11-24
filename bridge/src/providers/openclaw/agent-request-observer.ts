@@ -42,11 +42,13 @@ import {
   readOpenClawApprovalSnapshotOrigin,
   readOpenClawApprovalTerminal,
   readOpenClawApprovalTerminalStatus,
+  openClawAnswerLabels,
   readOpenClawQuestionRequested,
   readOpenClawQuestionResolved,
   questionShape,
   type AgentRequestRecord,
   type AgentRequestSettle,
+  type OpenClawOptionValues,
 } from "../../core/agent-requests.js";
 import { SIGHTING_EPOCH, nextSightingSeq } from "../../core/sighting-order.js";
 import {
@@ -355,7 +357,7 @@ export class OpenClawAgentRequestObserver {
       questions: q.questions,
     };
     this.noteGeneration(qKey(q.id), q.createdAtMs);
-    this.noteContent(qKey(q.id), content, seenSeq);
+    this.noteContent(qKey(q.id), content, seenSeq, q.optionValues);
     const sighting = this.newSighting(qKey(q.id));
     const secret = new Set(q.questions.filter((x) => x.secret).map((x) => x.id));
     if (secret.size > 0) this.secretQuestionIds.set(qKey(q.id), secret);
@@ -475,10 +477,13 @@ export class OpenClawAgentRequestObserver {
   /** What each recorded question request ASKED (`questionShape`) and when this process
    *  SAW it, to tell a reused id carrying another question from a replay of the same one —
    *  and to name, at its settle, WHICH generation settled. Bounded like `known`. */
-  private readonly contents = new Map<string, { shape: string; seq: number }>();
-  private noteContent(id: string, shape: string, seq: number): void {
+  private readonly contents = new Map<
+    string,
+    { shape: string; seq: number; optionValues: OpenClawOptionValues }
+  >();
+  private noteContent(id: string, shape: string, seq: number, optionValues: OpenClawOptionValues): void {
     this.contents.delete(id);
-    this.contents.set(id, { shape, seq });
+    this.contents.set(id, { shape, seq, optionValues });
     if (this.contents.size > 512) {
       const oldest = this.contents.keys().next().value;
       if (oldest !== undefined) this.contents.delete(oldest);
@@ -541,7 +546,13 @@ export class OpenClawAgentRequestObserver {
           ...generation,
           ...(seen !== undefined ? { questionShape: seen.shape, providerSeenSeq: seen.seq } : {}),
           status: r.status,
-          ...this.withoutSecrets(secret, r.answers),
+          // The gateway records canonical answers (an option's `value` when it has
+          // one); the card, its stored answer and the "ours or theirs" comparison are in
+          // labels — translated back with the options this request was asked with.
+          ...this.withoutSecrets(
+            secret,
+            r.answers === undefined ? undefined : openClawAnswerLabels(r.answers, seen?.optionValues),
+          ),
         }),
       )
       .catch((err) =>

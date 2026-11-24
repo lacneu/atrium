@@ -135,10 +135,15 @@ describe("the announced event catalogue is fully classified", () => {
         // drifts from the manifest is the hand-kept list G-68 was about, one file over:
         // it would either miss a classified family (noise on every connect) or claim one
         // that was never classified (silence exactly where the ratchet was meant to speak).
+        // …plus the families of every version vendored AHEAD of it: the bench runs the
+        // bridge against that gateway before the promise moves, and a family its ledger
+        // classifies is one someone has looked at. Versions below are never consulted.
         if (version !== DRIFT_VENDORED_VERSION) return;
-        expect([...CLASSIFIED_EVENTS].sort()).toEqual(
-          Object.keys(manifest.events).sort(),
-        );
+        const expected = new Set(Object.keys(manifest.events));
+        for (const ahead of VERSIONS.slice(VERSIONS.indexOf(DRIFT_VENDORED_VERSION) + 1)) {
+          for (const name of Object.keys(LEDGER.get(ahead)!.manifest.events)) expected.add(name);
+        }
+        expect([...CLASSIFIED_EVENTS].sort()).toEqual([...expected].sort());
       });
 
 
@@ -183,8 +188,16 @@ describe("the BROADCAST-ONLY families are fully classified", () => {
     // compares against a literal; this keeps the literal equal to the derivation.
     const ledger = LEDGER.get(DRIFT_VENDORED_VERSION);
     expect(ledger?.broadcast, "the sensor's version must carry the broadcast catalogue").toBeDefined();
-    const announced = new Set(ledger!.catalogue.events);
-    const derived = ledger!.broadcast!.events.filter((e) => !announced.has(e));
+    // The promised version's difference, plus that of every version vendored AHEAD of it
+    // (same rule as CLASSIFIED_EVENTS above); each is derived from its own two catalogues.
+    const derived = new Set<string>();
+    expect(VERSIONS).toContain(DRIFT_VENDORED_VERSION);
+    for (const v of VERSIONS.slice(VERSIONS.indexOf(DRIFT_VENDORED_VERSION))) {
+      const l = LEDGER.get(v)!;
+      expect(l.broadcast, `${v} must carry the broadcast catalogue`).toBeDefined();
+      const announced = new Set(l.catalogue.events);
+      for (const e of l.broadcast!.events) if (!announced.has(e)) derived.add(e);
+    }
     expect([...BROADCAST_ONLY_EVENTS].sort()).toEqual([...derived].sort());
   });
 

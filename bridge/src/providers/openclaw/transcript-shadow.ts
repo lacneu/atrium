@@ -40,6 +40,7 @@
 
 import type { TranscriptApplyReport, TranscriptFileToCopy } from "../../convex-writer.js";
 import type { GatewayFrame } from "./openclaw-client.js";
+import { chatSendAckHoldsInput } from "./chat-send-ack.js";
 import { protocolDrift } from "./protocol-drift.js";
 import {
   admitLiveRow,
@@ -409,14 +410,15 @@ export class TranscriptShadow {
   }
 
   /** The `chat.send` ACK. Only `ok` asks for a read (the reply is in the transcript);
-   *  `started`/`in_flight` are custody, not persistence (docs/web/webchat.md:55-56). */
+   *  `started`/`in_flight` — and `accepted`, a repeated key on a queued turn from
+   *  2026.10.33 on (chat-send-ack.ts) — are custody, not persistence
+   *  (docs/web/webchat.md:55-56). */
   noteAck(status: unknown, sendId?: string | null): void {
     if (!this.active) return;
     if (typeof sendId === "string") {
       const c = this.custody.get(sendId);
       if (c !== undefined) {
-        const accepted = status === "started" || status === "in_flight" || status === "ok";
-        c.state = accepted ? "accepted" : "failed";
+        c.state = chatSendAckHoldsInput(status) || status === "ok" ? "accepted" : "failed";
       }
     }
     if (status !== "ok") return;

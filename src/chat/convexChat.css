@@ -12132,6 +12132,21 @@ button.oc-perm__opt:disabled {
 }
 .oc-areq__qtext { font-weight: 500; white-space: pre-wrap; overflow-wrap: anywhere; }
 .oc-areq__options { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+/* A long list (a form question: up to 64 options) is one column that scrolls inside the
+   card, so the question above and the answer button below stay in view — on a phone too
+   (dvh follows the visible viewport, keyboard and browser bars included). */
+.oc-areq__options--many {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  max-height: min(19rem, 45dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.15rem 0.3rem 0.15rem 0.15rem;
+  scrollbar-gutter: stable;
+}
+.oc-areq__options--many .oc-areq__option { flex-shrink: 0; }
 .oc-areq__option {
   display: inline-flex;
   align-items: flex-start;

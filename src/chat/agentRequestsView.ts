@@ -176,6 +176,14 @@ export function toggleOption(
   return { selected: has ? [] : [label], other: has ? draft.other : "" };
 }
 
+/** More options than a row of choices reads well with: the card lays them out as one
+ *  scrolling column instead (an OpenClaw `presentation: "form"` question carries up to
+ *  64; an ordinary one, at most four). */
+export const OPTIONS_INLINE_MAX = 4;
+export function optionsOverflow(count: number): boolean {
+  return count > OPTIONS_INLINE_MAX;
+}
+
 /** Typing an "other" answer on a single-choice question deselects the options. */
 export function setOther(
   q: Pick<AgentRequestQuestionView, "multiSelect">,
