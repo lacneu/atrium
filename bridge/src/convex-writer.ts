@@ -161,6 +161,13 @@ export interface SubAgentRecord {
    *  a child that died of a context overflow is now countable, not just
    *  readable. Allowlisted at the ingest boundary. */
   errorCode?: string;
+  /** The run whose own terminal the GATEWAY classed as a timeout: the `runId` of the
+   *  child's `chat` error frame carrying `errorKind:"timeout"`. A structured fact, never
+   *  read from the sentence. On OpenClaw 2026.10.33 a child cut off while a tool ran
+   *  leaves a session row that reads `interrupted` (as a restart does); this names the
+   *  run so the row's word can be told apart (convex/lib/sessionRowStatus.ts). A
+   *  top-level field, like `runTimeoutSeconds`: an older Convex ignores it. */
+  timedOutRunId?: string;
   // The tools the CHILD called -- NAME + lifecycle status ONLY here (the cheap,
   // always-loaded summary on the subAgents doc). The full per-tool DETAIL (args +
   // result) rides on `toolPart` below and is routed to a SEPARATE table. Deduped/
@@ -1043,6 +1050,7 @@ function subAgentRecordFields(record: SubAgentRecord) {
     phase: record.phase,
     errorMessage: record.errorMessage,
     ...(record.errorCode !== undefined ? { errorCode: record.errorCode } : {}),
+    ...(record.timedOutRunId !== undefined ? { timedOutRunId: record.timedOutRunId } : {}),
     tools: record.tools,
     sessionMeta: record.sessionMeta,
     telemetry: record.telemetry,

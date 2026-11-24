@@ -6,6 +6,7 @@ import {
   SESSION_RUN_STATUSES,
   atriumStatusOfDisplay,
   isSessionRunActive,
+  rowRunTimedOut,
   sessionRowDisplay,
   sessionRowKind,
 } from "./sessionRowStatus";
@@ -71,5 +72,29 @@ describe("the badge (session-status.ts:17-37)", () => {
     ]);
     expect(atriumStatusOfDisplay("idle")).toBeNull();
     expect(atriumStatusOfDisplay("unknown")).toBeNull();
+  });
+});
+
+// OpenClaw 2026.10.33: a run cut off while a tool was executing leaves a row that reads
+// `interrupted` (src/gateway/session-lifecycle-state.ts:196-212), as a gateway restart
+// does. The run's own terminal is what tells them apart (`errorKind:"timeout"` on the
+// child's `chat` error, src/gateway/server-chat.ts:509-514), joined by the run id.
+describe("rowRunTimedOut", () => {
+  it("an `interrupted` row for the run the gateway classed as a timeout", () => {
+    expect(rowRunTimedOut({ status: "interrupted", runId: "r1" }, "r1")).toBe(true);
+  });
+
+  it("another run, or no terminal seen: the row's word stands", () => {
+    expect(rowRunTimedOut({ status: "interrupted", runId: "r2" }, "r1")).toBe(false);
+    expect(rowRunTimedOut({ status: "interrupted", runId: "r1" }, undefined)).toBe(false);
+    // A row that names no run proves nothing about which run it speaks for.
+    expect(rowRunTimedOut({ status: "interrupted" }, "r1")).toBe(false);
+    expect(rowRunTimedOut(undefined, "r1")).toBe(false);
+  });
+
+  it("only `interrupted` is refined: every other word is the gateway's own", () => {
+    for (const status of SESSION_RUN_STATUSES.filter((s) => s !== "interrupted")) {
+      expect(rowRunTimedOut({ status, runId: "r1" }, "r1"), status).toBe(false);
+    }
   });
 });

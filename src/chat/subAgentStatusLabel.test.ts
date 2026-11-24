@@ -58,6 +58,26 @@ describe("subAgentStatusView", () => {
     expect(subAgentStatusView({ ...stopped, status: "running" })).toEqual({ tone: "running", label: "en cours" });
   });
 
+  it("2026.10.33: a row read `interrupted` that Convex settled as a timeout reads « délai dépassé »", () => {
+    // The run was cut off while a tool was executing: the row says `interrupted`, the
+    // run's own terminal says timeout (convex/lib/sessionRowStatus.ts rowRunTimedOut).
+    expect(
+      subAgentStatusView({
+        status: "error",
+        providerStatus: "timeout",
+        gatewayRow: { display: "interrupted", status: "interrupted", runId: "r1" },
+      }),
+    ).toEqual({ tone: "failed", label: "délai dépassé" });
+    // The row's word alone (a restart, or a terminal Atrium did not see): as the Control UI.
+    expect(
+      subAgentStatusView({
+        status: "aborted",
+        providerStatus: "interrupted",
+        gatewayRow: { display: "interrupted", status: "interrupted", runId: "r1" },
+      }),
+    ).toEqual({ tone: "aborted", label: "interrompu" });
+  });
+
   it("without a row read: the four states and the gateway's word", () => {
     expect([subAgentStatusLabel("running"), statusTone("running")]).toEqual([m.subagents_status_running(), "running"]);
     expect([subAgentStatusLabel("done"), statusTone("done")]).toEqual([m.subagents_status_done(), "done"]);

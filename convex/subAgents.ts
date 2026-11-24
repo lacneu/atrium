@@ -36,6 +36,7 @@ import { settleChildEnd } from "./lib/subAgentSettle";
 import {
   atriumStatusOfDisplay,
   isSessionRunStatus,
+  rowRunTimedOut,
   sessionRowDisplay,
   type SessionRowDisplay,
 } from "./lib/sessionRowStatus";
@@ -219,6 +220,9 @@ const upsertSubAgentArgs = {
     /** The per-run limit the spawn declared (schema note). Bounded at the ingest
      *  boundary; fill-only here. */
     runTimeoutSeconds: v.optional(v.number()),
+    /** The run whose own terminal the gateway classed as a timeout (schema note).
+     *  Shape-checked at the ingest boundary. */
+    timedOutRunId: v.optional(v.string()),
     kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
     bornOfRun: v.optional(v.string()),
     /** TASK rows of a projected turn (phase 5, schema note): the run that started the
@@ -380,6 +384,7 @@ async function applySubAgentUpsert(
         ...(args.runTimeoutSeconds !== undefined
           ? { runTimeoutSeconds: args.runTimeoutSeconds }
           : {}),
+        ...(args.timedOutRunId !== undefined ? { timedOutRunId: args.timedOutRunId } : {}),
         kind: args.kind,
         bornOfRun: args.bornOfRun,
         taskName: args.taskName,
@@ -458,6 +463,7 @@ async function applySubAgentUpsert(
       anchorPending?: boolean;
       childRunId?: string;
       runTimeoutSeconds?: number;
+      timedOutRunId?: string;
       userId?: Id<"users">;
       declaredTimeoutMs?: number;
       taskDeadlineAt?: number;
@@ -606,6 +612,18 @@ async function applySubAgentUpsert(
       (recoveredToDone || args.errorMessage !== undefined)
     ) {
       patch.errorCode = undefined;
+    }
+    // The run whose own terminal the gateway classed as a timeout. When the row already
+    // read `interrupted` for that run (the row read landed before this frame's write),
+    // the child ran out of time: the same end applySubAgentRowStatus writes when the two
+    // arrive the other way round (convex/lib/sessionRowStatus.ts `rowRunTimedOut`).
+    if (args.timedOutRunId !== undefined) {
+      patch.timedOutRunId = args.timedOutRunId;
+      if (rowRunTimedOut(existing.gatewayRow, args.timedOutRunId)) {
+        patch.status = "error";
+        patch.providerStatus = "timeout";
+        patch.errorCode = "timeout";
+      }
     }
     // Drop a stale phase update once the child is terminal.
     if (args.phase !== undefined && !terminal) patch.phase = args.phase;
@@ -839,7 +857,11 @@ export const applySubAgentRowStatus = internalMutation({
     }
     const now = Date.now();
     const display = sessionRowDisplay({ status, hasActiveRun: args.hasActiveRun });
-    const next = atriumStatusOfDisplay(display);
+    // `gatewayRow` keeps the row as read; the STATE is the row's word unless that word is
+    // `interrupted` for the run the gateway's own terminal classed as a timeout.
+    const timedOut = rowRunTimedOut({ status, runId: args.runId }, existing.timedOutRunId);
+    const word = timedOut ? "timeout" : status;
+    const next = atriumStatusOfDisplay(timedOut ? "timeout" : display);
     const patch: {
       gatewayRow: NonNullable<typeof existing.gatewayRow>;
       updatedAt: number;
@@ -902,10 +924,10 @@ export const applySubAgentRowStatus = internalMutation({
       patch.status = next;
       // The row's own word stays beside Atrium's four states (`timeout` vs `failed`,
       // `killed` vs `interrupted`); a live row has none.
-      patch.providerStatus = next === "running" ? undefined : status;
+      patch.providerStatus = next === "running" ? undefined : word;
       const provisionalCode =
         existing.errorCode === "timeout" || existing.errorCode === SUBAGENT_NO_ACTIVITY_CODE;
-      if (display === "timeout") {
+      if (display === "timeout" || timedOut) {
         patch.errorCode = "timeout";
       } else if (display === "done") {
         // A finished child carries no failure: a provisional one is cleared.
