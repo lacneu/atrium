@@ -3549,6 +3549,11 @@ button.oc-bmk-rail__count:hover {
 .oc-actrow--failed .oc-actrow__status-icon {
   color: var(--destructive);
 }
+/* A group of calls whose line ends on a failure (InlineTurnActivity): the glyph alone is
+   tinted, as the failed card's — the line keeps the rail's quiet tone. */
+.oc-actrow__status-icon--failed {
+  color: var(--destructive);
+}
 .oc-actrow__spin {
   animation: oc-spin 1s linear infinite;
 }

@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { m } from "@/paraglide/messages.js";
+import { activityBlock, groupOutcome } from "./activityBlock";
 import { toolCardPhase } from "./ToolCard";
 import { blockInterrupted, interruptedCalls, turnInterrupted, turnInterruptionText } from "./turnInterruptionView";
 
@@ -73,5 +74,26 @@ describe("a tool call the interrupted turn left without a result", () => {
     expect(blockInterrupted([{ toolCallId: "c9", phase: "completed" }], cut)).toBe(false);
     expect(blockInterrupted([{ toolCallId: "c9", phase: "error" }], cut)).toBe(false);
     expect(blockInterrupted([{ toolCallId: "c9", phase: "start" }], new Set())).toBe(false);
+  });
+
+  // Seen on the live app: "… · 1 en échec" followed by a check.
+  it("a group that holds a failed call ends on the failure, never on a check", () => {
+    const none = new Set<string>();
+    expect(groupOutcome([{ toolCallId: "c1", phase: "completed" }, { toolCallId: "c2", phase: "error" }], none)).toBe("failed");
+    expect(groupOutcome([{ toolCallId: "c1", phase: "completed" }], none)).toBe("done");
+    // A command that completed with a nonzero exit is what the summary calls failed too.
+    const parts = [
+      { toolCallId: "c1", toolName: "read", phase: "completed", result: "ok" },
+      { toolCallId: "c2", toolName: "exec", phase: "completed", result: { status: "completed", exitCode: 2, durationMs: 5 } },
+    ];
+    const block = activityBlock(parts as never, true);
+    expect(block.summary).toContain(m.activity_summary_failed({ count: "1" }));
+    expect(block.failed).toBe(1);
+    expect(groupOutcome(parts, none, block.failed)).toBe("failed");
+  });
+  it("interrupted and failed: the failure; interrupted alone stays interrupted", () => {
+    const cut = new Set(["c9"]);
+    expect(groupOutcome([{ toolCallId: "c9", phase: "start" }, { toolCallId: "c2", phase: "error" }], cut)).toBe("failed");
+    expect(groupOutcome([{ toolCallId: "c9", phase: "start" }, { toolCallId: "c2", phase: "completed" }], cut)).toBe("interrupted");
   });
 });

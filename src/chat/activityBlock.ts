@@ -13,10 +13,12 @@ import {
   isProcessPollResultDetails,
   projectAgentActivityItem,
   resolveCompletedActivityWrappers,
+  summarizeAgentActivity,
   summarizeToolGroup,
   type ActivityItem,
 } from "./activitySummary";
 import type { ToolActivityPart } from "./toolActivityView";
+import { blockInterrupted } from "./turnInterruptionView";
 import { groupToolCalls, type ToolCallGroup } from "../vendor/upstream-activity/src/chat/tool-call-grouping";
 
 export type ActivityNode = { part: ToolActivityPart; children: ActivityNode[] };
@@ -57,7 +59,7 @@ export function activityBlock(
   parts: readonly ToolActivityPart[],
   // Kept for the callers: a settled bubble no longer changes a card's status (itemStatus).
   _settled: boolean,
-): { roots: ActivityNode[]; visible: ToolActivityPart[]; summary: string } {
+): { roots: ActivityNode[]; visible: ToolActivityPart[]; summary: string; failed: number } {
   const calls = parts.map((part) => {
     const status = itemStatus(part.phase);
     const result = resultFacts(part);
@@ -102,5 +104,22 @@ export function activityBlock(
     roots,
     visible: calls.filter((c) => !wrappers.has(c)).map((c) => c.part),
     summary: summarizeToolGroup(items),
+    // What the summary counts as failed ("1 failed"): a call that errored, a command that
+    // ended with a nonzero exit.
+    failed: summarizeAgentActivity(items).outcomes.failed,
   };
+}
+
+/** How a settled group's ONE collapsed line ends. A group holding a failed call never
+ *  reads as all done — the failures its summary counts (a projected block), or a call
+ *  that errored (any group) —, nor does one holding a call the gateway cut
+ *  (turnInterruptionView.ts). A failure is a known outcome, an interruption an unknown
+ *  one: a group with both shows the failure. */
+export function groupOutcome(
+  parts: readonly { toolCallId?: string; phase?: string; result?: unknown }[],
+  cut: ReadonlySet<string>,
+  failed = 0,
+): "failed" | "interrupted" | "done" {
+  if (failed > 0 || parts.some((p) => p.phase === "error")) return "failed";
+  return blockInterrupted(parts, cut) ? "interrupted" : "done";
 }
