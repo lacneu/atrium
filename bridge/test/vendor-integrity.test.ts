@@ -507,7 +507,7 @@ describe("vendored protocol integrity", () => {
             // with the old name over the new file reported "not found" — which
             // reads as an upstream removal and is nothing of the sort.
             const site = (
-              SNAPSHOT_SITES as { source: string; fn: string }[]
+              SNAPSHOT_SITES as { source: string; fn: string; supersetLiteral?: string }[]
             ).find((c) => c.source === rec.upstreamPath);
             if (site === undefined) {
               wrong.push(
@@ -518,9 +518,9 @@ describe("vendored protocol integrity", () => {
             rederived = (
               deriveSnapshotFields as (
                 s: string,
-                o?: { fnName?: string; sourceLabel?: string },
+                o?: { fnName?: string; sourceLabel?: string; supersetLiteral?: string },
               ) => string[]
-            )(raw, { fnName: site.fn, sourceLabel: site.source });
+            )(raw, { fnName: site.fn, sourceLabel: site.source, supersetLiteral: site.supersetLiteral });
             stored = body.fields ?? [];
           } else if (name === EMISSIONS_ARTIFACT) {
             // The WHOLE program, not one file: ~12 GB and ~70 s, which no routine test run

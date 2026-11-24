@@ -4398,6 +4398,134 @@
       "literals": [
         "return matched ? (matched.value ?? matched.label) : candidate;"
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:79-84",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          79,
+          84
+        ]
+      ],
+      "literals": [
+        "if (!isCurrent(evt)) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:109-116",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          109,
+          116
+        ]
+      ],
+      "literals": [
+        "current.chatLink !== source.chatLink ||"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:59-62",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          59,
+          62
+        ]
+      ],
+      "literals": [
+        "Session recovery source changed while awaiting earlier events"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:90-93",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          90,
+          93
+        ]
+      ],
+      "literals": [
+        "(terminal?.reason === \"cancelled\" && terminal.stopReason === \"restart\"));"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:97-120",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          97,
+          120
+        ]
+      ],
+      "literals": [
+        "const pending = previous ? previous.then(consume, consume) : consume();"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:104-106",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          104,
+          106
+        ]
+      ],
+      "literals": [
+        "return handleEvent(evt);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:117-118",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          117,
+          118
+        ]
+      ],
+      "literals": [
+        "handleEvent(evt, recovery);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:739-748",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          739,
+          748
+        ]
+      ],
+      "literals": [
+        "sendLivePayload(event, sessionKey, payload, opts),"
+      ]
     }
   ]
 }

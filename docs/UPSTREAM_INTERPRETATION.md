@@ -1620,10 +1620,9 @@ here is read in the sources and unit tests of that tag: nothing has been capture
 2026.10.33 gateway, and each item says what is **to prove on the bench**. Sections 1 to 12
 describe the reference tag; they are true of every gateway up to it.
 
-The vendored contract is the schema modules and the three derived catalogues. The emission
-inventory of the `agent` channel is not derived for this tag: the extractor leaves gateway
-senders unresolved there, and an inventory that cannot say what a sender puts on the channel
-is not vendored (`bridge/scripts/vendor-protocol.mjs`).
+The vendored contract is the schema modules, the three derived catalogues and the emission
+inventory of the `agent` channel (`agent-emissions.json`), classified in
+`bridge/protocol/openclaw/emissions/2026.10.33.json`.
 
 ### Negotiation and the method table
 
@@ -1636,6 +1635,43 @@ gains `agent.identity.changed` and `session.reaction`; the scope-guard table als
 (`bridge/protocol/openclaw/events/2026.10.33.json`).
 
 - Three reads can be shared between identical callers for up to one second — `models.list`, `sessions.list` and `cron.list` (`$UP/src/gateway/methods/core-descriptors.ts:110,230,322` at v2026.10.33). **To prove on the bench**, on a per-user socket: a child row read during a status transition, and `cron.list` read right after a mutation.
+
+### An admission stands in front of the event handler (§1)
+
+At the reference tag the gateway's handler receives each agent event from the bus and works
+it synchronously. At v2026.10.33 the function registered on the bus is an admission placed in
+front of that handler (`createAgentEventAdmission`). It hands the event on UNCHANGED — it
+neither rewrites it nor adds to it — but it can drop it and it can delay it:
+
+- **Dropped.** An event that arrives after the handler was disposed, or that belongs to a run this handler does not own, is not handed on (`$UP/src/gateway/server-chat-event-admission.ts:79-84` at v2026.10.33). An event held for a read is dropped when, once the read is done, it no longer resolves to the same chat link, session key or agent (`$UP/src/gateway/server-chat-event-admission.ts:109-116` at v2026.10.33), and when the session's stored source changed while it waited (`$UP/src/gateway/server-chat-event-admission.ts:59-62` at v2026.10.33).
+- **Delayed.** A lifecycle `start`, and a terminal cancelled for a restart, wait for an asynchronous read of the session entry (`$UP/src/gateway/server-chat-event-admission.ts:90-93` at v2026.10.33); the reference tag makes that read inside the handler, synchronously. Every later event of the SAME run is queued behind it, in order (`$UP/src/gateway/server-chat-event-admission.ts:97-120` at v2026.10.33). An event with no read to wait for and none of its run pending is handed on at once (`$UP/src/gateway/server-chat-event-admission.ts:104-106` at v2026.10.33).
+- **Not rewritten.** The handler receives the same event, with the read's verdict beside it (`$UP/src/gateway/server-chat-event-admission.ts:117-118` at v2026.10.33); that verdict only decides whether a restart-recovery lifecycle is projected, as it does at the reference tag.
+
+What this changes on the wire, read in the sources: the frames of one run keep their order,
+but they no longer leave in the same turn of the event loop as their emission, and the
+queue is per run — frames of two runs of one session, or a run's frames and a broadcast that
+does not go through the handler (`sessions.changed`, a question, an approval), can reach the
+socket in another relative order than at the reference tag. The emission inventory records
+the admission as what it is, a relay of the bus's own event. **To prove on the bench**: the
+order of a run's `lifecycle` start against the session's `sessions.changed`, and of a
+delivery run's frames against the turn that follows it.
+
+- A terminal `chat` frame can also be held: `sendLivePayload` hands a final, error or aborted frame to the transcript publication while one is pending for the run, which publishes it later by calling the same sender with the same arguments (`$UP/src/gateway/server-chat.ts:739-748` at v2026.10.33). The frame is the one that was built; only its moment changes.
+
+### What a run emits on the `agent` channel
+
+Read from the two emission inventories (`bridge/scripts/diff-agent-emissions.mjs`), by what
+the emitting code writes; each entry is classified in the registry of this tag.
+
+- **New.** A `thinking` frame of phase `persisted` (`itemId`, `messageId`, `messageRunId`): the gateway's receipt that a reasoning item reached the transcript. A Codex harness stream, `codex_app_server.diagnostic` (phases `notification`, `native_item`, `no_answer`), and a phaseless `codex_app_server.item`.
+- **New keys on known frames.** `notice` `warning` gains `kind` and `permissionMissing` (a node permission the run needed); `run_status` `retrying` gains `retryAt`; `usage` gains `usageReport`; `compaction` `end` gains `qualityDegraded`; `lifecycle` `error` gains `executionStarted`; the live `thinking` delta gains `itemId`; `assistant` gains `occurrenceId` (Codex harness).
+- **Gone.** The `run_status` phase `naming_worktree`, and the `item` emitter whose phase was computed.
+
+**Atrium.** None of the new emissions is read. The reasoning receipt, the permission notice,
+the degraded-compaction mark, the unavailable-usage mark and the time of the next retry are
+recorded as gaps with what each costs; the Codex diagnostics are not read, as the Control UI
+does not read them either. The drift sensor knows all of them, so none is reported as an
+unknown emission.
 
 ### A queued send keeps its identity (§2)
 

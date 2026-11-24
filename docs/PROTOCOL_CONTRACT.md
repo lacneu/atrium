@@ -224,13 +224,25 @@ bridge/protocol/openclaw/emissions/<version>.json          # its classification
   and no write anywhere to a property so named, by name or by literal key; otherwise the
   derivation refuses and the entry is reviewed again. At 2026.9.36 it names
   `ChatRunState.recordProgressEvent`, which copies the event (JSON round trip) and writes
-  nothing into it. A bus emission's object takes
+  nothing into it; at 2026.10.33 that type is derived from its factory, the checker reaches
+  the body itself, and the entry is not applied. A call through a CALLBACK PARAMETER (a
+  parameter of the enclosing function, or one binding of its object pattern) is read through
+  the functions it may be when all of them are in the analysed sources: the function is
+  reached by direct calls only, and at every call the argument resolves to functions with a
+  body; each must only read the object, or the call is unresolved and names the one that
+  does more. A callback that is itself a frame sender is a delivery, like any send.
+  A wrapper calling ITSELF with the parameters its template reads, each passed by its own
+  name and neither reassigned nor written into, adds no frame: the inner call sends what
+  the outer one sends. A sender used as the key of a standard `WeakMap` or `WeakSet`
+  (`get`, `set`, `has`, `delete`, `add`) goes nowhere through it — the collection never
+  calls a key and cannot hand one back; the key of a `Map`, or of a subclass, still escapes.
+  A bus emission's object takes
   the same writes and modeled effects; an effect not modeled there is a limit the soundness
   contract states. A literal stream is a fabricated frame; an agent event passed on with its
   own data (or its data plus a recorded rewrite) is a relay with its origins named; a call
   whose event or final payload cannot be evaluated is unresolved, and vendoring refuses it.
   A relay is a value of the bus's own event type (`EVENT_TYPE`, `AgentEventPayload`,
-  declared in `ROOT_SOURCE`) or of a type made from it — an intersection with it, a standard
+  declared in `ROOT_SOURCE` or re-exported by it from a sibling module) or of a type made from it — an intersection with it, a standard
   library transformation of it (`Omit<…>`, `Readonly<…>`), an alias of the sources naming
   one of these —, and its data is its own only when read from such a value: a value that
   merely has a `stream` and a `data` may be a frame the gateway made itself, and its call is

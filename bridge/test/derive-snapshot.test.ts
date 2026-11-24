@@ -16,7 +16,7 @@
 import { describe, expect, it } from "vitest";
 
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { deriveSnapshotFields, SNAPSHOT_FN } from "../scripts/lib/derive-snapshot.mjs";
+import { deriveSnapshotFields, SNAPSHOT_FN, SNAPSHOT_SITES } from "../scripts/lib/derive-snapshot.mjs";
 
 const derive = deriveSnapshotFields as (source: string) => string[];
 
@@ -150,38 +150,50 @@ describe("deriveSnapshotFields", () => {
     expect(fields).toEqual(["a", "b", "c"]);
   });
 
-  it("reads a LITERAL initialiser as a SUPERSET when it is only narrowed and projected (v2026.10.33 layout)", () => {
-    // v2026.10.33 inlined the callee: `const eventFields = {…}`, then `delete`
-    // and `Object.entries(eventFields)` before the spread. Neither can add a key,
-    // so the literal's keys are the honest superset — the guarantee the followed
-    // callee gave for the 2026.9.2 layout. A deleted key stays listed (it cannot
-    // be subtracted from source); none can be missing.
-    expect(
+  it("a `delete` never unlocks reading a LITERAL initialiser as the shape", () => {
+    // Narrowing a literal leaves keys this module cannot subtract; the only thing
+    // a delete unlocks is following a local call, so a literal still refuses.
+    expect(() =>
       derive(`const ${SNAPSHOT_FN} = () => { const f = { a: 1 }; delete f.a; return { ...f }; };`),
-    ).toEqual(["a"]);
-    const fields = derive(
-      `const ${SNAPSHOT_FN} = (params) => {\n` +
-        `  const eventFields: Record<string, unknown> = { a: 1, ...(params.x == null ? {} : { b: 2 }) };\n` +
-        `  if (params.lifecycle) { for (const k of ["a"] as const) { delete eventFields[k]; } }\n` +
-        `  const session = params.s ? Object.assign(row, Object.fromEntries(Object.entries(eventFields).filter(([, v]) => v !== undefined))) : undefined;\n` +
-        `  return { ...(session ? { session } : {}), ...eventFields, c: 3 };\n` +
-        `};`,
-    );
-    expect(fields).toEqual(["a", "b", "c", "session"]);
+    ).toThrow(/no readable declaration/i);
   });
 
-  it("a literal initialiser WRITTEN anywhere else still REFUSES", () => {
-    // The superset reading holds only because every other mention is a `delete`
-    // or a closed non-mutating reader; one write and the literal is not the shape.
-    for (const write of ["f.z = 1;", "Object.assign(f, { z: 1 });", "fill(f);"]) {
+  // v2026.10.33 inlined the callee of the snapshot (src/gateway/session-event-payload.ts
+  // :67-222): `const eventFields: Record<string, unknown> = {…}`, deleted from under
+  // `lifecycle`, projected through `Object.entries`, then spread. The literal is read as a
+  // SUPERSET there — and only there: the site names the binding (`supersetLiteral`).
+  const INLINED =
+    `const ${SNAPSHOT_FN} = (params) => {\n` +
+    `  const eventFields: Record<string, unknown> = { a: 1, ...(params.x == null ? {} : { b: 2 }) };\n` +
+    `  if (params.lifecycle) { for (const k of ["a"] as const) { delete eventFields[k]; } }\n` +
+    `  const session = params.s ? Object.assign(row, Object.fromEntries(Object.entries(eventFields).filter(([, v]) => v !== undefined))) : undefined;\n` +
+    `  return { ...(session ? { session } : {}), ...eventFields, c: 3 };\n` +
+    `};`;
+  const deriveNamed = deriveSnapshotFields as (source: string, options: { supersetLiteral?: string }) => string[];
+
+  it("reads the NAMED binding's literal as a superset (v2026.10.33 layout); a deleted key stays listed", () => {
+    expect(deriveNamed(INLINED, { supersetLiteral: "eventFields" })).toEqual(["a", "b", "c", "session"]);
+  });
+
+  it("the same layout under any other name, or with no name declared, still REFUSES", () => {
+    expect(() => derive(INLINED)).toThrow(/no readable declaration/i);
+    expect(() => deriveNamed(INLINED, { supersetLiteral: "otherFields" })).toThrow(/no readable declaration/i);
+    expect(() => deriveNamed(INLINED.replace(/eventFields/g, "renamed"), { supersetLiteral: "eventFields" })).toThrow(/no readable declaration/i);
+  });
+
+  it("the named literal WRITTEN anywhere else still REFUSES", () => {
+    for (const write of ["eventFields.z = 1;", "Object.assign(eventFields, { z: 1 });", "fill(eventFields);"]) {
       expect(
-        () =>
-          derive(
-            `const ${SNAPSHOT_FN} = () => { const f = { a: 1 }; delete f.a; Object.entries(f); ${write} return { ...f }; };`,
-          ),
+        () => deriveNamed(INLINED.replace("  return {", `  ${write}\n  return {`), { supersetLiteral: "eventFields" }),
         write,
       ).toThrow(/not a stable const|only uses are its declaration/i);
     }
+  });
+
+  it("every snapshot site that names a superset literal names it for the layout that needs it", () => {
+    expect(SNAPSHOT_SITES.filter((x: { supersetLiteral?: string }) => x.supersetLiteral !== undefined)).toEqual([
+      { source: "src/gateway/session-event-payload.ts", fn: "buildGatewaySessionSnapshot", supersetLiteral: "eventFields" },
+    ]);
   });
 
   it("a `delete` beside a real mutation still REFUSES", () => {
