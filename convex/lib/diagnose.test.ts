@@ -424,6 +424,12 @@ describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
     expect(a.suggestedAction).toMatch(/not visible from Atrium/);
     expect(a.suggestedAction).not.toMatch(/nothing was processed/i);
     expect(a.suggestedAction).not.toMatch(/before the input was promoted/i);
+    // No guarantee about what later runs read: upstream's orphan repair can hand the
+    // text to another run as context (attempt-prompt-helpers.ts, v2026.9.36). Not a turn,
+    // and possibly context — both said.
+    expect(a.suggestedAction).not.toMatch(/later runs do not read/i);
+    expect(a.suggestedAction).toMatch(/does not process the message as a turn/);
+    expect(a.suggestedAction).toMatch(/MAY still have received its text as context only/);
     expect(a.suggestedAction).toMatch(/resends/);
   });
 
