@@ -2053,6 +2053,30 @@ describe("upsertSubAgent carries the spawn's declared run limit, OUTSIDE session
   });
 });
 
+describe("upsertSubAgent carries the run the gateway classed as a timeout", () => {
+  // OpenClaw 2026.10.33: the child's session row reads `interrupted`; this id is what
+  // lets Convex tell a run cut off by its limit from a restart.
+  test("a top-level field when known, absent otherwise", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      sent.push(JSON.parse(init.body) as Record<string, unknown>);
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.upsertSubAgent({
+      chatId: "c1",
+      childSessionKey: "agent:files:subagent:x",
+      status: "error",
+      errorCode: "timeout",
+      timedOutRunId: "bf2ccba6-3dc1-47cb-9dc6-7e48965005c1",
+    });
+    await w.upsertSubAgent({ chatId: "c1", childSessionKey: "agent:files:subagent:y", status: "error" });
+    const subs = sent.filter((b) => b.op === "upsertSubAgent");
+    expect(subs[0]?.timedOutRunId).toBe("bf2ccba6-3dc1-47cb-9dc6-7e48965005c1");
+    expect("timedOutRunId" in (subs[1] ?? {})).toBe(false);
+  });
+});
+
 describe("addWidgetPart reports whether the widget LANDED", () => {
   const answering = (body: unknown) =>
     (async () => ({ ok: true, json: async () => body }) as unknown as Response) as unknown as typeof fetch;

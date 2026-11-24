@@ -3442,6 +3442,14 @@ export default defineSchema({
     // limit be told as such, with its figure, instead of the gateway's generic
     // advice to raise a config value that was not the one in force. Fill-only.
     runTimeoutSeconds: v.optional(v.number()),
+    // The run whose OWN terminal the gateway classed as a timeout: the `runId` of the
+    // child's `chat` error frame carrying `errorKind:"timeout"` (a protocol enum, never
+    // the sentence). On OpenClaw 2026.10.33 a child cut off while a tool was executing
+    // leaves a session row that reads `interrupted`, the word a gateway restart also
+    // leaves; when the row speaks for THIS run (`gatewayRow.runId`), the child ran out
+    // of time (convex/lib/sessionRowStatus.ts `rowRunTimedOut`). Replaced by a later
+    // run's own timeout; never cleared, an id that matches no row is inert.
+    timedOutRunId: v.optional(v.string()),
     // The user stopped THIS child. Distinct from `status`, which legitimately
     // keeps moving afterwards: a late terminal frame turns the row `done` and
     // carries the child's `resultText`, and without a stamp that survives it the

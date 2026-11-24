@@ -736,6 +736,8 @@ type IngestOp =
        *  gateway's requester-settle wake names (convex/lib/deliveryRuns.ts). */
       childRunId?: string;
       runTimeoutSeconds?: number;
+      /** The run whose terminal the gateway classed as a timeout (schema note). */
+      timedOutRunId?: string;
       kind?: "subagent" | "task";
       bornOfRun?: string;
       /** A TASK row of a projected turn (phase 5): the run whose tool frame started it. */
@@ -982,6 +984,10 @@ function subAgentRecordArgs(body: Extract<IngestOp, { op: "upsertSubAgent" }>) {
       body.runTimeoutSeconds <= 7 * 24 * 60 * 60
         ? body.runTimeoutSeconds
         : undefined,
+    // A run id, in the one shape upstream mints: it is compared with the row's own.
+    ...(typeof body.timedOutRunId === "string" && CHILD_RUN_ID_RE.test(body.timedOutRunId)
+      ? { timedOutRunId: body.timedOutRunId }
+      : {}),
     kind: body.kind,
     bornOfRun: body.bornOfRun,
     // Phase 5: a run id, bounded like one (lib/transcriptProjection MAX_RUN_ID_CHARS).
