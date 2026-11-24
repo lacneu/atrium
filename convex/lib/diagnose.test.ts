@@ -414,7 +414,16 @@ describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
     );
     expect(a.class).toBe("dispatch_error");
     expect(a.suggestedAction).toBe(actionForErrorCode("pending_input_dropped"));
-    expect(a.suggestedAction).toMatch(/nothing was processed/i);
+    // What is established, and no more: the send was accepted, the run made no model
+    // call, nothing re-queues it — and the cause of the branch change is NOT claimed
+    // (three prod cases on 2026.9.36 where no concurrent reply explains it).
+    expect(a.suggestedAction).toMatch(/ACCEPTED this send/);
+    expect(a.suggestedAction).toMatch(/made no model call/);
+    expect(a.suggestedAction).toMatch(/neither re-queues nor retries/);
+    expect(a.suggestedAction).toMatch(/MINUTES after the send/);
+    expect(a.suggestedAction).toMatch(/not visible from Atrium/);
+    expect(a.suggestedAction).not.toMatch(/nothing was processed/i);
+    expect(a.suggestedAction).not.toMatch(/before the input was promoted/i);
     expect(a.suggestedAction).toMatch(/resends/);
   });
 
