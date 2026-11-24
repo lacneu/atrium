@@ -159,14 +159,57 @@ describe("a zone keeps the reader's fold while the turn is written", () => {
     };
     expect(fold([thought("x1"), action("f1"), note("n1"), thought("x2")])).toEqual([false, false, false, false]);
     expect(fold([thought("x2"), action("f1"), thought("x3")])).toEqual([false, false, false]);
-    // Split by the answer: the half that holds the folded thought stays folded.
-    expect(fold([thought("x1"), text("Constat."), thought("x2")])).toEqual([undefined, false]);
+    // Split by the answer: both halves stay folded — x1 was folded with the zone it joined
+    // above. A thought that was never in a folded zone is not.
+    expect(fold([thought("x1"), text("Constat."), thought("x2")])).toEqual([false, false]);
+    expect(fold([thought("x0"), text("Constat."), thought("x2")])).toEqual([undefined, false]);
   });
 
   it("two zones that become one take the later choice", () => {
     chooseZone({ thoughtIds: ["mC:a"] }, false);
     chooseZone({ thoughtIds: ["mC:b"] }, true);
     expect(zoneChoice({ thoughtIds: ["mC:a", "mC:b"] })).toBe(true);
+  });
+});
+
+describe("a thought that joined a folded zone stays folded when set apart", () => {
+  // Second review, the exact sequence: fold [A]; B arrives in the same zone; then a piece
+  // of answer arrives between A and B.
+  it("[A] folded, then [A, B], then [A | answer | B]: B does not unfold by itself", () => {
+    const A = { entryId: "rA", start: 0, end: 0, thinking: true, blocks: true };
+    const B = { entryId: "rB", start: 0, end: 0, thinking: true, blocks: true };
+    const [onlyA] = some(zonesOf(bubble("mF", { rowLayout: [A] })));
+    chooseZone(onlyA!, false);
+    const joined = some(zonesOf(bubble("mF", { rowLayout: [A, B] })));
+    expect(joined.map((z) => z.thoughtIds)).toEqual([["mF:row:rA", "mF:row:rB"], ["mF:row:rA", "mF:row:rB"]]);
+    const answer = "Premier constat.";
+    const split = convertConvexMessage(
+      bubble("mF", { text: answer, rowLayout: [A, { entryId: "rT", start: 0, end: answer.length, blocks: true }, B] }),
+    ).content as unknown as Part[];
+    expect(split.map((p) => p.type)).toEqual(["data-thinking", "text", "data-thinking"]);
+    const [zoneA, , zoneB] = split.map(zoneOf);
+    expect(zoneB!.thoughtIds).toEqual(["mF:row:rB"]);
+    expect(zoneExpanded(zoneChoice(zoneA!))).toBe(false);
+    expect(zoneExpanded(zoneChoice(zoneB!))).toBe(false);
+    // The reader opens B again: A stays folded.
+    chooseZone(zoneB!, true);
+    expect([zoneChoice(zoneA!), zoneChoice(zoneB!)]).toEqual([false, true]);
+  });
+
+  it("a thought joins with the zone's choice as it stands: a later choice elsewhere still wins a merge", () => {
+    chooseZone({ thoughtIds: ["mG:m:a"] }, false);
+    chooseZone({ thoughtIds: ["mG:m:c"] }, true);
+    const c = [thought("a"), thought("b")];
+    markWorkZones(c, "mG:m");
+    // b took a's fold, at a's turn — older than c's choice.
+    expect(zoneChoice({ thoughtIds: ["mG:m:b"] })).toBe(false);
+    expect(zoneChoice({ thoughtIds: ["mG:m:b", "mG:m:c"] })).toBe(true);
+  });
+
+  it("a zone the reader never chose on records nothing", () => {
+    const c = [thought("a"), thought("b")];
+    markWorkZones(c, "mH:m");
+    expect(zoneChoice(zoneOf(c[0]!)!)).toBeUndefined();
   });
 });
 

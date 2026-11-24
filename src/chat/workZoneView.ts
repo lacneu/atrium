@@ -1,6 +1,6 @@
 // A WORK ZONE of an assistant bubble: a run of the turn's work — the model's thoughts, the
-// agent's work notes, its activity groups — between two pieces of the answer. Pure, so the
-// rules are tested without a render.
+// agent's work notes, its activity groups — between two pieces of the answer. No render
+// needed, so the rules are tested without one.
 //
 // WHAT IS WORK IS READ FROM THE PART'S TYPE, never guessed from its place: a thought is a
 // `data-thinking` part and a work note a `data-commentary` part (the nature the bridge
@@ -86,6 +86,7 @@ export function markWorkZones<T extends { type: string }>(content: T[], messageI
     const thinking = members.filter((x) => x.kind === "thinking");
     if (thinking.length === 0) return;
     const thoughtIds = thinking.map((x) => `${messageId}:${parts[x.at]!.data?.key ?? x.at}`);
+    inheritZoneChoice(thoughtIds);
     const proseHeadAt = members.find((x) => x.kind !== "action")!.at;
     const zone = {
       key: thoughtIds[0]!,
@@ -136,6 +137,12 @@ export function zoneExpanded(chosen: boolean | undefined): boolean {
 // arriving before or inside it, an earlier thought, a piece of answer that splits it in two
 // (both halves keep the fold), two zones becoming one (the later choice). And two zones
 // never share a fold: no thought is in both.
+// A THOUGHT THAT JOINS A ZONE THE READER CHOSE ON TAKES THAT CHOICE, when the zone is
+// composed (`markWorkZones`, at each conversion — not at the click alone, nor at a render
+// that may not happen): a thought that arrived folded with its zone stays folded when a
+// piece of answer later sets it apart. It takes the choice as it stands (same turn), so the
+// zone reads the same before and after, no listener is told, and nothing re-renders. The
+// store holds one entry per thought of a zone the reader chose on, and no more.
 // What it does not survive, declared: a thought whose own key changes — a live reasoning
 // part (`p<index>`) replaced by the transcript row that persists it (`row:<entryId>`), or
 // a stored part inserted before it — and a reload of the page.
@@ -150,6 +157,15 @@ export function zoneChoice(zone: Pick<WorkZoneMark, "thoughtIds">): boolean | un
     if (c !== undefined && (last === undefined || c.turn > last.turn)) last = c;
   }
   return last?.open;
+}
+function inheritZoneChoice(thoughtIds: readonly string[]): void {
+  let last: { open: boolean; turn: number } | undefined;
+  for (const id of thoughtIds) {
+    const c = chosenByThought.get(id);
+    if (c !== undefined && (last === undefined || c.turn > last.turn)) last = c;
+  }
+  if (last === undefined) return;
+  for (const id of thoughtIds) if (!chosenByThought.has(id)) chosenByThought.set(id, last);
 }
 export function chooseZone(zone: Pick<WorkZoneMark, "thoughtIds">, open: boolean): void {
   turns += 1;

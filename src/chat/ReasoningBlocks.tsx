@@ -63,9 +63,9 @@ export function ThinkingBlock({ data }: { data?: ThinkingData }) {
 function RowReasoning({ block, messageId, entryId }: { block: RefObject<Element | null>; messageId: string; entryId: string }) {
   const near = useNearViewport(block);
   const read = useQuery(api.messages.getRowReasoning, readWhileNear(near, { messageId: messageId as Id<"messages">, entryId }));
-  const kept = useRef<typeof read>(undefined);
-  const result = lastRead(read, kept.current);
-  kept.current = result;
+  const kept = useRef<{ row: string; value: NonNullable<typeof read> | null } | undefined>(undefined);
+  kept.current = lastRead(`${messageId}:${entryId}`, read, kept.current);
+  const result = kept.current?.value;
   // One quiet line for a block never read — not near yet, or being read: the same line, so
   // nearing it moves nothing before its text is there.
   if (result === undefined) return <p className="oc-thinking__status" data-reasoning="unread">{m.reasoning_loading()}</p>;
