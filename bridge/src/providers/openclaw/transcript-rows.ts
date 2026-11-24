@@ -1381,6 +1381,24 @@ export function classifySessionsChanged(payload: unknown): SessionsChangedAction
   return { reset: false, read: false, why: null };
 }
 
+/**
+ * The run link a lifecycle `sessions.changed` states, or null: `runId` is the EXECUTION
+ * run, `clientRunId` the client run the gateway broadcasts its live frames under — sent
+ * only when the two differ (src/gateway/server-chat-lifecycle-publication.ts:122 at
+ * v2026.10.33; absent through v2026.9.36). The Control UI reads the pair the same way
+ * (ui/src/lib/sessions/session-row-reconcile.ts:311-313) and correlates its live run on
+ * `clientRunId ?? runId` (ui/src/pages/chat/chat-state-events.ts:182,345).
+ */
+export function sessionsChangedRunLink(
+  payload: unknown,
+): { runId: string; clientRunId: string } | null {
+  const p = asRecord(payload);
+  const runId = projString(p?.runId);
+  const clientRunId = projString(p?.clientRunId);
+  if (runId === null || clientRunId === null || runId === clientRunId) return null;
+  return { runId, clientRunId };
+}
+
 /** The session key a session event names (`sessionKey`, a trimmed non-empty string). */
 export function sessionEventKey(payload: unknown): string | null {
   return projString(asRecord(payload)?.sessionKey);

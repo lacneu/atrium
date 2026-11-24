@@ -500,6 +500,10 @@ class Session implements BridgeSession {
         );
       },
       onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
+      // One run, two names (2026.10.33): the gateway's own statement of the link.
+      onRunLinked: (executionRunId, clientRunId) => {
+        this.runManager.noteRunLink(executionRunId, clientRunId);
+      },
       // PROJECTION `on` (final design step 2): the files Convex has no copy of yet. Called
       // only in `on` (TranscriptShadow.emitFiles).
       ...(copier === null ? {} : { copyFiles: (files) => copier.enqueue(files) }),
@@ -893,6 +897,11 @@ class Session implements BridgeSession {
         }
         nextFrame = iterator.next();
         this.lastActivityAt = now; // active turn (or live child) -> not idle, don't reap
+        // ONE RUN, ONE NAME: a frame the gateway broadcast under a linked client run
+        // (2026.10.33, a queued input's execution) is read under its execution run by
+        // EVERY reader below — the turn, the transcript's terminal observation, the
+        // sub-agent anchors — or each would know the run by a different name.
+        const frame = this.runManager.canonicalFrame(winner.value);
         // Capture the live message BEFORE the feed: the frame that FINALIZES a
         // turn clears currentMessageId inside feed(), and the observer below
         // would then see null for the turn's own final — losing the anchor an
@@ -903,11 +912,11 @@ class Session implements BridgeSession {
         // deferred run would anchor its spawns to the previous bubble.
         const preFeedMessageId =
           this.runManager.turnActive &&
-          this.runManager.frameOwnedByActiveTurn(winner.value)
+          this.runManager.frameOwnedByActiveTurn(frame)
             ? this.runManager.currentMessageId
             : null;
         try {
-          await this.runManager.feed(winner.value, now);
+          await this.runManager.feed(frame, now);
         } catch (err) {
           // NO sensor call here: `runManager.feed` reports the frame itself and rethrows
           // (C4 lives on the reader, so the voice relay and the pre-ack replay are
@@ -918,7 +927,7 @@ class Session implements BridgeSession {
         // session asks for a read. Read-only — the frame went through the feed above
         // untouched, and nothing here can change what it did.
         try {
-          this.transcriptShadow.observeFrame(winner.value);
+          this.transcriptShadow.observeFrame(frame);
         } catch (err) {
           // Shadow-only: a failure here loses a READ trigger, never a frame (the feed
           // above already consumed it), so it is logged rather than sensed.
@@ -928,10 +937,10 @@ class Session implements BridgeSession {
         // them. Awaited because the one local effect — a human now holds the turn —
         // decides the very next deadline; the network writes inside are detached.
         if (
-          OpenClawAgentRequestObserver.handles(winner.value) &&
+          OpenClawAgentRequestObserver.handles(frame) &&
           openClawAgentRequestsEnabled(this.connection.gatewayVersion)
         ) {
-          await this.agentRequests.observe(winner.value);
+          await this.agentRequests.observe(frame);
         }
         // POST-feed re-evaluation: a legitimately NEW runId admitted DURING
         // feed() (lifecycle_end / compaction adoption windows) was not in
@@ -942,7 +951,7 @@ class Session implements BridgeSession {
         // inside feed(), so only the pre-feed view holds its anchor.
         const postFeedMessageId =
           this.runManager.turnActive &&
-          this.runManager.frameOwnedByActiveTurn(winner.value)
+          this.runManager.frameOwnedByActiveTurn(frame)
             ? this.runManager.currentMessageId
             : null;
         const observeAnchor = preFeedMessageId ?? postFeedMessageId;
@@ -955,7 +964,7 @@ class Session implements BridgeSession {
           // status/heartbeat writes stay off the critical path. See flushSubAgentObserved.
           await this.flushSubAgentObserved(
             this.observer.observe(
-              winner.value,
+              frame,
               now,
               // NO unconditional fallback to currentMessageId here: the
               // anchor is null precisely when this frame does NOT belong to
@@ -975,7 +984,7 @@ class Session implements BridgeSession {
           // independent path, so a throw here is a second way to lose a frame silently.
           // Instrumenting only the feed would have covered one of two identical blind
           // spots.
-          protocolDrift.observeException(winner.value, err, "subagent-observe");
+          protocolDrift.observeException(frame, err, "subagent-observe");
           console.error(
             "session subagent observe error:",
             errForLog(err),
@@ -1006,7 +1015,7 @@ class Session implements BridgeSession {
           // THIRD frame-path site. The programme named two; this one runs on the same
           // arrived frame (anchor propagation for frames the observer never re-observes),
           // so a throw here loses a frame exactly as silently as the other two.
-          protocolDrift.observeException(winner.value, err, "subagent-anchor");
+          protocolDrift.observeException(frame, err, "subagent-anchor");
           console.error(
             "session subagent anchor error:",
             errForLog(err),

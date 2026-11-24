@@ -52,6 +52,7 @@ import {
   rowContentBytes,
   toTranscriptRow,
   runTerminalStatus,
+  sessionsChangedRunLink,
   type CappedRef,
   type HistoryRead,
   type RowDisplay,
@@ -274,6 +275,9 @@ export interface TranscriptShadowDeps {
   /** PROJECTION `on`: the gateway says it will never run this input (cancelled, or
    *  asked after its ACK and holding no receipt for it). */
   onInputDropped?: (sendId: string) => void;
+  /** The gateway stated that an execution run is broadcast under a client run
+   *  (`sessionsChangedRunLink`): one run for the live overlay. Never awaited. */
+  onRunLinked?: (executionRunId: string, clientRunId: string) => void;
   /** PROJECTION `on` (phase 4): runs the transcript proved OVER (Convex's run table — a
    *  terminal, or a fresh read that found the session idle). A foreground turn among
    *  them ends here: a fact, never a timer. Never awaited by the reconciler. */
@@ -500,6 +504,8 @@ export class TranscriptShadow {
   onSessionsChanged(payload: Record<string, unknown>): void {
     if (!this.active) return;
     this.stats.sessionsChanged++;
+    const link = sessionsChangedRunLink(payload);
+    if (link !== null) this.deps.onRunLinked?.(link.runId, link.clientRunId);
     const action = classifySessionsChanged(payload);
     if (action.reset) {
       // `sessionReset`: the old transcript's cursor and live rows name nothing in the

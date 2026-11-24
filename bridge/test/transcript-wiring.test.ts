@@ -450,3 +450,52 @@ describe("the send identity", () => {
     );
   });
 });
+
+// ONE RUN, TWO NAMES (2026.10.33): a queued input's execution is broadcast under the
+// input's client run once the gateway linked the two (chat-send-turn-adoption.ts:289-302
+// there). Every reader of the conversation's frames takes the frame under the execution
+// run — here the reconciler's terminal observation, which Convex files under the run the
+// transcript rows name (run-manager.ts `canonicalFrame`, session.ts consume loop).
+describe("a linked run is one run for every reader of the socket", () => {
+  const X = "11111111-2222-4333-8444-555555555555";
+  const C = `webchat-${"c".repeat(64)}`;
+  const agentFrame = (runId: string, stream: string, data: Record<string, unknown>) => ({
+    type: "event",
+    event: "agent",
+    payload: { sessionKey: SESSION_KEY, runId, stream, data },
+  });
+  const chatFrame = (runId: string, payload: Record<string, unknown>) => ({
+    type: "event",
+    event: "chat",
+    payload: { sessionKey: SESSION_KEY, runId, ...payload },
+  });
+  const said = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+
+  it("the terminal the reconciler posts names the EXECUTION run, and one bubble opens under it", async () => {
+    const h = await harness("2026.9.36");
+    const opened: Array<string | null> = [];
+    const open = h.writer.startAssistant.bind(h.writer);
+    (h.writer as unknown as { startAssistant: ConvexWriter["startAssistant"] }).startAssistant = async (
+      ...args: Parameters<ConvexWriter["startAssistant"]>
+    ) => {
+      opened.push(args[1]);
+      return open(...args);
+    };
+    // The first turn, answered; then an input the gateway holds (server.ts sendHeldInput).
+    await performSend(h.session, body(), h.writer, null, null);
+    h.gw.emit(chatFrame("webchat-x", { state: "final", message: said("salut") }));
+    await settle(h.session);
+    h.session.runManager.noteHeldInput(C, C, "um-2", ["webchat-x"]);
+    h.applies.length = 0;
+    // Its execution: the first frames under the execution run, the rest under the client's.
+    h.gw.emit(agentFrame(X, "run_status", { phase: "preparing_workspace" }));
+    h.gw.emit(chatFrame(C, { seq: 4, state: "delta", deltaText: "ok", message: said("ok") }));
+    h.gw.emit(agentFrame(C, "lifecycle", { phase: "end", endedAt: 1 }));
+    h.gw.emit(chatFrame(C, { seq: 1, state: "final", message: said("ok") }));
+    await settle(h.session);
+    expect(opened.filter((r) => r !== "webchat-x")).toEqual([X]);
+    const terminals = h.applies.flatMap((a) => a.terminals.map((t) => t.runId));
+    expect(terminals).toContain(X);
+    expect(terminals).not.toContain(C);
+  });
+});

@@ -304,6 +304,9 @@ export class RunManager {
        *  run that ANSWERS it (a followup's answer is a run that starts after it) —
        *  except the one the transcript proves it was steered into (steerAdoptRuns). */
       predating: ReadonlySet<string>;
+      /** The run adopted as the ANSWER to this input (never a delivery-family run), or
+       *  null: what its own ack run is the client name of, once that run speaks. */
+      answeredBy: string | null;
     }
   >();
   /** Runs of the session that are NOT the foreground turn's but into which the
@@ -324,14 +327,132 @@ export class RunManager {
   private static readonly MAX_OWNED_RUN_HISTORY = 200;
   private static readonly MAX_HELD_INPUTS = 50;
 
+  // ── ONE RUN, TWO NAMES (2026.10.33) ──────────────────────────────────────────────
+  //
+  // A queued input keeps its identity upstream from 2026.10.33: when its execution
+  // starts, the gateway links the EXECUTION run to the input's CLIENT run
+  // (src/gateway/server-methods/chat-send-turn-adoption.ts:289-302, `addChatRun(runId,
+  // { clientRunId })`) and from then on broadcasts that run's `agent` and `chat` frames
+  // under the client run id (src/gateway/server-chat.ts:1158, `chatLink?.clientRunId ??
+  // evt.runId`; src/gateway/server-chat-live-text.ts:114, the envelope's `runId` is
+  // swapped, nothing else) — pinned by src/gateway/server-methods/
+  // chat-send-queued-identity.test.ts:91-150 (each input's terminal carries its own run
+  // id). The transcript keeps the execution run (`__openclaw.runId`), which is the
+  // producer's and never a client correlation key (ui/src/pages/chat/
+  // session-message-apply.ts:82-85). Through 2026.9.36 the client run was closed at
+  // admission and never spoke again (chat-send-agent-dispatch.ts:681-691 there).
+  //
+  // The bridge holds ONE name for such a run — the transcript's — and renames the
+  // frames at the door (`canonicalFrame`), so the turn, the lanes, the run facts and
+  // every Convex write name the run the rows name. Two facts establish a link, neither
+  // of them a gateway version:
+  //   - the input's own ack run SPEAKS after a run was adopted as that input's answer
+  //     (a session runs one run at a time — its lane has one slot,
+  //     src/process/command-queue.ts:125-129 — so both are that one execution);
+  //   - the gateway says so: `sessions.changed` carrying `clientRunId` ≠ `runId`
+  //     (src/gateway/server-chat-lifecycle-publication.ts:122), what the Control UI
+  //     correlates on (ui/src/pages/chat/chat-state-events.ts:182,345). Best-effort
+  //     there (`dropIfSlow`, another socket): it can confirm or precede the first
+  //     fact, never be required.
+  // `lifecycle end`'s `terminalReceipt.runId` differs from the envelope too, but only
+  // because the swap leaves `data` alone: no reader upstream, so it founds nothing here.
+  /** Client run id → the execution run it is the wire name of (bounded, oldest first). */
+  private readonly runAliases = new Map<string, string>();
+  /** The reverse: execution run → its client name (what the gateway acts on). */
+  private readonly clientRunIds = new Map<string, string>();
+  /** The renamed copy of each frame, so one frame is one object wherever it waits. */
+  private readonly canonicalCopies = new WeakMap<object, object>();
+  private static readonly MAX_RUN_ALIASES = 100;
+
+  /** Record that `clientRunId` is the wire name of `executionRunId`. Refused when the
+   *  client run has been a turn's own run here: it then has a bubble under that name,
+   *  and renaming its later frames would split the run instead of joining it. */
+  private linkRuns(clientRunId: string, executionRunId: string): boolean {
+    if (clientRunId === executionRunId) return false;
+    const known = this.runAliases.get(clientRunId);
+    if (known !== undefined) return known === executionRunId;
+    // No chain, no loop: a name is either a client's or an execution's.
+    if (this.runAliases.has(executionRunId) || this.clientRunIds.has(clientRunId)) return false;
+    if (this.normalizer.ownRunIds.has(clientRunId) || this.ownedRunHistory.has(clientRunId)) {
+      console.warn(
+        `[run-link] refused: the client run already has a turn of its own client=${clientRunId.slice(0, 60)} execution=${executionRunId.slice(0, 60)}`,
+      );
+      return false;
+    }
+    this.runAliases.set(clientRunId, executionRunId);
+    this.clientRunIds.set(executionRunId, clientRunId);
+    while (this.runAliases.size > RunManager.MAX_RUN_ALIASES) {
+      const oldest = this.runAliases.keys().next().value as string;
+      this.clientRunIds.delete(this.runAliases.get(oldest) as string);
+      this.runAliases.delete(oldest);
+    }
+    console.log(
+      `[run-link] one run, two names: client=${clientRunId.slice(0, 60)} execution=${executionRunId.slice(0, 60)}`,
+    );
+    return true;
+  }
+
+  /** The execution run `runId` is the client name of, or null. Establishes the link the
+   *  first time an input's ack run speaks after a run was adopted as its answer. */
+  private executionRunFor(runId: string): string | null {
+    const known = this.runAliases.get(runId);
+    if (known !== undefined) return known;
+    const sendId = this.inputAckRuns.get(runId);
+    if (sendId === undefined) return null;
+    const answer = this.heldInputs.get(sendId)?.answeredBy ?? null;
+    if (answer === null) return null;
+    return this.linkRuns(runId, answer) ? answer : null;
+  }
+
+  /**
+   * The frame under the ONE name of its run: a frame the gateway broadcast under a
+   * linked client run id is returned as a copy naming the execution run; any other
+   * frame is returned as it is. Every reader of a conversation frame takes it from
+   * here, so none of them can open, close or anchor anything on the second name.
+   */
+  canonicalFrame<T>(frame: T): T {
+    if (this.runAliases.size === 0 && this.inputAckRuns.size === 0) return frame;
+    const runId = sessionRunIdFor(frame, this.sessionKey);
+    if (runId === null) return frame;
+    const execution = this.executionRunFor(runId);
+    if (execution === null) return frame;
+    const original = frame as unknown as { payload: Record<string, unknown> };
+    let copy = this.canonicalCopies.get(original);
+    if (copy === undefined) {
+      copy = { ...original, payload: { ...original.payload, runId: execution } };
+      this.canonicalCopies.set(original, copy);
+    }
+    // A frame that waited under its client name (a stash) was read once already.
+    if (this.observedFrames.has(original)) this.observedFrames.add(copy);
+    return copy as unknown as T;
+  }
+
+  /**
+   * The gateway STATED the link (`sessions.changed` with `clientRunId` ≠ `runId`).
+   * Taken only for a run this session knows from one side: the client run is the ack
+   * run of an input it holds, or the execution run is the foreground turn's (a turn
+   * resumed after a restart no longer remembers the input). Returns whether it holds.
+   */
+  noteRunLink(executionRunId: string, clientRunId: string): boolean {
+    const ours =
+      this.inputAckRuns.has(clientRunId) ||
+      ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(executionRunId));
+    return ours && this.linkRuns(clientRunId, executionRunId);
+  }
+
   /** The runs the foreground turn owns (empty when no turn is live). */
   get foregroundRunIds(): string[] {
     return this.sink.active || this.sink.finalizing ? [...this.normalizer.ownRunIds] : [];
   }
 
-  /** The run the foreground turn last heard from (the one a Stop targets), or null. */
+  /** The run the foreground turn last heard from (the one a Stop targets), or null —
+   *  under the name the GATEWAY acts on: a linked run's abort controller is registered
+   *  under its client run (src/gateway/server-methods/chat-send-admission.ts:380 at
+   *  v2026.10.33), which is also the run the Control UI stops. */
   get foregroundRunId(): string | null {
-    return this.sink.active ? this.normalizer.currentRunId : null;
+    if (!this.sink.active) return null;
+    const current = this.normalizer.currentRunId;
+    return current === null ? null : (this.clientRunIds.get(current) ?? current);
   }
 
   /** A send the gateway accepted while a turn was in the foreground (custody only). */
@@ -345,7 +466,14 @@ export class RunManager {
     const predating = new Set(predatingRunIds);
     for (const id of this.foregroundRunIds) predating.add(id);
     if (ackRunId !== null) predating.delete(ackRunId);
-    this.heldInputs.set(sendId, { ackRunId, userMessageId, steered: false, answered: false, predating });
+    this.heldInputs.set(sendId, {
+      ackRunId,
+      userMessageId,
+      steered: false,
+      answered: false,
+      predating,
+      answeredBy: null,
+    });
     if (ackRunId !== null) this.inputAckRuns.set(ackRunId, sendId);
     while (this.heldInputs.size > RunManager.MAX_HELD_INPUTS) {
       const oldest = this.heldInputs.keys().next().value as string;
@@ -459,6 +587,8 @@ export class RunManager {
     if (this.ownedRunHistory.has(rid)) return null;
     if (this.inputAckRuns.has(rid)) return rid;
     if (this.steerAdoptRuns.has(rid)) return rid;
+    // The gateway linked this run to an input's own run: it answers that input.
+    if (this.clientRunIds.has(rid)) return rid;
     // Only an input this run can answer: a run that was already live when the input
     // was accepted is not its answer (it predates it).
     if (this.waitingInputFor(rid) === undefined) return null;
@@ -476,12 +606,21 @@ export class RunManager {
 
   /** When a run is adopted for the held inputs, the oldest waiting one is its question
    *  (ack runs answer only their own input, and only if they show something). */
-  private noteRunAdopted(runId: string): void {
+  private noteRunAdopted(runId: string, delivery: boolean): void {
     if (this.inputAckRuns.has(runId)) return;
     // A run proven steered-into answers the input already marked steered.
     if (this.steerAdoptRuns.has(runId)) return;
-    const first = this.waitingInputFor(runId);
-    if (first !== undefined) this.heldInputs.get(first)!.answered = true;
+    // A run the gateway linked to an input's own run answers THAT input.
+    const client = this.clientRunIds.get(runId);
+    const linked = client === undefined ? undefined : this.inputAckRuns.get(client);
+    const first = linked ?? this.waitingInputFor(runId);
+    if (first === undefined) return;
+    const held = this.heldInputs.get(first);
+    if (held === undefined) return;
+    held.answered = true;
+    // A delivery-family run (an announce, a task delivery) is never an input's
+    // execution: the gateway links only the run it starts FOR the queued input.
+    if (!delivery) held.answeredBy = runId;
   }
 
   /** A `chat` final of a settled run that is not the open turn's (CU-8): the run, its
@@ -1307,7 +1446,7 @@ export class RunManager {
    * are all still to come).
    */
   /** Feed one raw gateway frame; apply the resulting events to Convex. */
-  async feed(frame: unknown, now: number): Promise<void> {
+  async feed(arrived: unknown, now: number): Promise<void> {
     // C4 (W9) SITS ON THE READER, not on the callers. Instrumenting catch blocks meant
     // chasing call sites, and the chase was already losing: the programme named two, the
     // session loop had three, and TWO MORE readers bypass that loop entirely — the
@@ -1316,6 +1455,8 @@ export class RunManager {
     // present and future. It REPORTS AND RETHROWS: callers decide what a failed frame
     // means (a /send rejects, the loop logs and continues); the sensor only refuses to
     // let it vanish.
+    // One run, one name — before the observation, the facts, the lanes and the routing.
+    const frame = this.canonicalFrame(arrived);
     if (this.replayGate !== null) await this.behindReplay(frame);
     try {
       await this.feedInner(frame, now);
@@ -1973,7 +2114,7 @@ export class RunManager {
         // on the first user-visible normalized event. A run that terminates
         // silent (the NO_REPLY sentinel) never creates anything — zero bubble.
         this.noteAnnounceHandled(announceRun);
-        this.noteRunAdopted(announceRun);
+        this.noteRunAdopted(announceRun, announceRunIdFor(frame, this.sessionKey) !== null);
         await this.beginTurn(now, announceRun, {
           expectedSessionId: null,
           spontaneous: true,
