@@ -30,6 +30,7 @@ import {
   ATTACHMENT_POISON_WINDOW,
   mediaQuarantineReason,
   mergeDefectAwareness,
+  unvalidatedWindowFor,
   supportedVersion,
   resolveCapabilitiesFromManifest,
   summarizeCompat,
@@ -1888,6 +1889,97 @@ describe("a rollout cannot forget a defect, whichever bridge answers first", () 
         "2026.8.2",
       ),
     ).not.toBeNull();
+  });
+
+  test("the never-benched intervals travel with the ceiling they describe, in EITHER order", () => {
+    // During a rollout one bridge still publishes ceiling 2026.9.36 and the other
+    // 2026.10.33 with its interval. Whichever answers first, the merged manifest must
+    // keep the higher ceiling AND say that 2026.10.1 … 2026.10.10 were never benched.
+    const old = {
+      providers: {
+        openclaw: {
+          supportedRange: { min: "2026.8.2", maxValidated: "2026.9.36" },
+          validatedVersions: ["2026.9.36"],
+          capabilities: { a: "2026.8.2" },
+        },
+      },
+    };
+    const raised = {
+      providers: {
+        openclaw: {
+          supportedRange: { min: "2026.8.2", maxValidated: "2026.10.33" },
+          unvalidatedWindows: [
+            { after: "2026.9.36", before: "2026.10.33", why: "never benched" },
+          ],
+          validatedVersions: ["2026.9.36", "2026.10.33"],
+          capabilities: { a: "2026.8.2" },
+        },
+      },
+    };
+    for (const [label, a, b] of [
+      ["old first", old, raised],
+      ["raised first", raised, old],
+    ] as const) {
+      const merged = mergeDefectAwareness(a, b);
+      const support = providerSupport(merged, "openclaw");
+      expect(support.range?.maxValidated, label).toBe("2026.10.33");
+      expect(unvalidatedWindowFor(support, "2026.10.5"), label).not.toBeNull();
+      expect(resolveCapabilitiesFromManifest(merged, "openclaw", "2026.10.5"), label).toEqual({
+        capabilities: { a: true },
+        versionBeyondValidated: true,
+      });
+      expect(
+        resolveCapabilitiesFromManifest(merged, "openclaw", "2026.10.33").versionBeyondValidated,
+        label,
+      ).toBe(false);
+    }
+  });
+
+  test("a malformed interval off the network neither widens nor fakes one", () => {
+    const withWindows = (unvalidatedWindows: unknown) => ({
+      providers: {
+        openclaw: {
+          supportedRange: { min: "1.0.0", maxValidated: "3.0.0" },
+          unvalidatedWindows,
+          validatedVersions: [],
+          capabilities: {},
+        },
+      },
+    });
+    for (const junk of [
+      "nope",
+      { after: "1.5.0", before: "3.0.0" },
+      [null, 7, "x"],
+      [{ after: "1.5.0" }],
+      [{ after: "x", before: "3.0.0", why: "unparseable bound" }],
+      // Inverted or empty: an interval that excludes nothing must not be kept as one.
+      [{ after: "3.0.0", before: "1.5.0", why: "inverted" }],
+      [{ after: "2.0.0", before: "2.0.0", why: "empty" }],
+    ]) {
+      const support = providerSupport(withWindows(junk), "openclaw");
+      expect(support.unvalidatedWindows, JSON.stringify(junk)).toBeUndefined();
+      expect(unvalidatedWindowFor(support, "2.5.0")).toBeNull();
+    }
+    const good = providerSupport(
+      withWindows([{ after: "1.5.0", before: "3.0.0", why: "w".repeat(1000) }]),
+      "openclaw",
+    );
+    expect(good.unvalidatedWindows).toHaveLength(1);
+    // Bounded: the reason is display text from another process.
+    expect(good.unvalidatedWindows![0]!.why.length).toBeLessThanOrEqual(300);
+    // Both bounds are exclusive, and an unreadable version is in no interval.
+    expect(unvalidatedWindowFor(good, "1.5.0")).toBeNull();
+    expect(unvalidatedWindowFor(good, "3.0.0")).toBeNull();
+    expect(unvalidatedWindowFor(good, "2.0.0")).not.toBeNull();
+    expect(unvalidatedWindowFor(good, "garbage")).toBeNull();
+    expect(unvalidatedWindowFor(good, null)).toBeNull();
+    // A flood of entries is read up to the bound and no further.
+    const many = Array.from({ length: 500 }, (_, i) => ({
+      after: `1.${i}.0`,
+      before: `1.${i}.5`,
+      why: "x",
+    }));
+    expect(providerSupport(withWindows(many), "openclaw").unvalidatedWindows!.length).toBe(16);
   });
 
   test("an unreadable ceiling never wins, in EITHER order (codex)", () => {

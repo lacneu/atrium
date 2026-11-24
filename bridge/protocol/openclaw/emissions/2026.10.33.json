@@ -1,5 +1,5 @@
 {
-  "$comment": "Classification of every emission of protocol/openclaw/2026.10.33/agent-emissions.json — meta-schema: protocol/emissions.schema.json; ratchet: test/emissions-coverage.test.ts. Each (stream, phase) pair, each data key an emitter writes, and each key a gateway rewrite adds is handled (anchor + verified proof), ignored (a deliberate exclusion, said why) or a gap (its écart identifier and impact). A new version starts from the previous registry; the ratchet lists what its inventory added or dropped. 2026.10.33: carried forward from 2026.9.36. No capture of this tag exists (it is not validated on the bench), so a golden-corpus proof names the 2026.9.36 capture that shows the pair or key (`2026.9.36/<scenario>`): what it proves is that the bridge reads that emission as written, on the tag that was captured. One stream, five (stream, phase) pairs and forty data keys are new; two pairs and two keys left.",
+  "$comment": "Classification of every emission of protocol/openclaw/2026.10.33/agent-emissions.json — meta-schema: protocol/emissions.schema.json; ratchet: test/emissions-coverage.test.ts. Each (stream, phase) pair, each data key an emitter writes, and each key a gateway rewrite adds is handled (anchor + verified proof), ignored (a deliberate exclusion, said why) or a gap (its écart identifier and impact). A new version starts from the previous registry; the ratchet lists what its inventory added or dropped. 2026.10.33: carried forward from 2026.9.36. A golden-corpus proof names the 2026.10.33 capture that shows the pair or key (the corpus promoted from the bench run that validated this tag). One stream, five (stream, phase) pairs and forty data keys are new; two pairs and two keys left.",
   "version": "2026.10.33",
   "streams": {
     "<opaque>": {
@@ -319,7 +319,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         }
       },
@@ -357,7 +357,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/agent-request-question"
+            "ref": "agent-request-question"
           }
         },
         "replace": {
@@ -1202,7 +1202,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "start": {
@@ -1214,7 +1214,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "update": {
@@ -1226,7 +1226,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/media-outbound"
+            "ref": "media-outbound"
           }
         }
       },
@@ -1256,7 +1256,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/async-task"
+            "ref": "async-task"
           }
         },
         "hideFromChannelProgress": {
@@ -1272,7 +1272,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "kind": {
@@ -1284,7 +1284,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "meta": {
@@ -1309,7 +1309,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "phase": {
@@ -1321,7 +1321,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "progressText": {
@@ -1333,7 +1333,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/yield-settle-media"
+            "ref": "yield-settle-media"
           }
         },
         "replace": {
@@ -1361,7 +1361,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "summary": {
@@ -1385,7 +1385,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         }
       }
@@ -1414,7 +1414,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/agent-request-exec-approval"
+            "ref": "agent-request-exec-approval"
           }
         },
         "end": {
@@ -1426,7 +1426,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         },
         "error": {
@@ -1481,7 +1481,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         },
         "model": {
@@ -1493,7 +1493,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         },
         "start": {
@@ -1505,7 +1505,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         },
         "waiting-approval": {
@@ -1517,7 +1517,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/agent-request-exec-approval"
+            "ref": "agent-request-exec-approval"
           }
         }
       },
@@ -1570,7 +1570,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/agent-request-exec-approval"
+            "ref": "agent-request-exec-approval"
           }
         },
         "assistantTranscriptIdempotencyKey": {
@@ -1690,7 +1690,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         },
         "previousActiveModel": {
@@ -1775,7 +1775,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         },
         "terminalDelivery": {
@@ -1812,7 +1812,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/agent-request-exec-approval"
+            "ref": "agent-request-exec-approval"
           }
         },
         "toolErrorSummary": {
@@ -1828,7 +1828,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/settle-chain-no-synthesis"
+            "ref": "settle-chain-no-synthesis"
           }
         }
       }
@@ -1951,7 +1951,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/update-plan"
+            "ref": "update-plan"
           }
         }
       },
@@ -1981,7 +1981,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/update-plan"
+            "ref": "update-plan"
           }
         },
         "explanationFormat": {
@@ -2025,7 +2025,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/update-plan"
+            "ref": "update-plan"
           }
         },
         "title": {
@@ -2096,7 +2096,7 @@
           "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
-            "token": "(maxAttempts as number) >= (attempt as number) &&"
+            "token": "const backoff = readTurnRetry(data);"
           },
           "proof": {
             "kind": "deterministic-test",
@@ -2113,7 +2113,7 @@
           "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
-            "token": "(maxAttempts as number) >= (attempt as number) &&"
+            "token": "const backoff = readTurnRetry(data);"
           },
           "proof": {
             "kind": "deterministic-test",
@@ -2144,7 +2144,7 @@
         },
         "reason": {
           "status": "handled",
-          "by": "`output_limit` is the run continuing a cut reply, not a provider being waited on: no back-off phase for it",
+          "by": "`output_limit` is the run continuing a cut reply, not a provider being waited on: no back-off phase for it; `rate_limit`, `overloaded`, `server_error` and `timeout` ride the back-off phase so the label can name the wait",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "if (data.reason === \"output_limit\") return;"
@@ -2160,9 +2160,17 @@
           "why": "the same retry counted from zero; the label uses attempt / maxAttempts, the pair the chat projection carries for a rate limit"
         },
         "retryAt": {
-          "status": "gap",
-          "gap": "N1",
-          "note": "when the next attempt of a provider retry is due (src/agents/embedded-agent-runner/run/attempt-recovery.ts, on the retrying phase; the `chat` retry status carries the same instant): Atrium shows the back-off phase and its counter, with no time of the next attempt"
+          "status": "handled",
+          "by": "when the next attempt is due: kept on the back-off phase beside the counter and the reason (readTurnRetry), so the label can say until when the provider is waited on; a non-finite or negative instant is dropped and costs the label only that detail",
+          "anchor": {
+            "file": "src/core/events.ts",
+            "token": "retryAt >= 0 ? { retryAt }"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); the frame is the one upstream's own test pins (src/gateway/server-chat.agent-events.test.ts at v2026.10.33, replayed as the fixture scenario run-status-retrying-reason-retry-at)"
+          }
         }
       }
     },
@@ -2240,7 +2248,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "review": {
@@ -2265,7 +2273,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "update": {
@@ -2277,7 +2285,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/media-outbound"
+            "ref": "media-outbound"
           }
         }
       },
@@ -2296,7 +2304,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "commandBearing": {
@@ -2333,7 +2341,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "itemId": {
@@ -2353,7 +2361,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "output": {
@@ -2386,7 +2394,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "replace": {
@@ -2406,7 +2414,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "resultContentSource": {
@@ -2443,7 +2451,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/tool-exec"
+            "ref": "tool-exec"
           }
         },
         "toolErrorSummary": {
@@ -2463,7 +2471,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         }
       },
@@ -2497,7 +2505,7 @@
           },
           "proof": {
             "kind": "golden-corpus",
-            "ref": "2026.9.36/basic-turn"
+            "ref": "basic-turn"
           }
         },
         "promptTokens": {

@@ -19,7 +19,9 @@ import {
   resolveCapabilitiesFor,
   CAPABILITIES_REQUIRING_AUTH_MODE,
   OPENCLAW_MIN_SUPPORTED,
+  openClawAgentRequestsEnabled,
   openClawBelowFloor,
+  unvalidatedWindowFor,
 } from "../src/compat.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -168,7 +170,7 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.8.2", maxValidated: "2026.9.36" });
+    expect(oc.supportedRange).toEqual({ min: "2026.8.2", maxValidated: "2026.10.33" });
     // The floor is the operator-facing constant, not a second copy of a string.
     expect(oc.supportedRange?.min).toBe(OPENCLAW_MIN_SUPPORTED);
     expect(oc.validatedVersions).toEqual([
@@ -182,7 +184,14 @@ describe("COMPAT_MANIFEST shape", () => {
       "2026.9.9",
       "2026.9.33",
       "2026.9.36",
+      "2026.10.33",
     ]);
+    // The ceiling moved from one extended-stable release to the next; what lies between
+    // them was never benched, and the manifest SAYS so rather than letting the interval
+    // claim it.
+    expect(
+      (oc.unvalidatedWindows ?? []).map((w) => [w.after, w.before]),
+    ).toEqual([["2026.9.36", "2026.10.33"]]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
     // The two releases inside the range that a STOCK gateway cannot be trusted on:
     // a delivered file poisons the session (upstream #135747). Raising the ceiling
@@ -296,6 +305,25 @@ describe("compareVersions", () => {
     expect(cmp("2026.9.36", "2026.10.1")).toBeLessThan(0);
   });
 
+  test("the next extended-stable 2026.10.33 orders above the whole 2026.9 line and the 2026.10 mainline, below 2026.11", () => {
+    // Upstream numbers its extended-stable releases .33 and up on the minor they are cut
+    // from: v2026.10.33 follows the mainline v2026.10.1 … v2026.10.10, and the mainline
+    // has since moved to 2026.11.x (v2026.11.1 … v2026.11.9).
+    const cmp = (a: string, b: string) =>
+      compareVersions(parseVersion(a)!, parseVersion(b)!);
+    expect(cmp("2026.10.33", "2026.9.36")).toBeGreaterThan(0);
+    expect(cmp("2026.10.33", "2026.9.37")).toBeGreaterThan(0);
+    expect(cmp("2026.10.33", "2026.10.10")).toBeGreaterThan(0);
+    // As strings "2026.10.33" sorts BELOW "2026.9.36" ("1" < "9"): a lexical comparator
+    // would read the new ceiling as older than the one it replaces.
+    expect("2026.10.33" < "2026.9.36").toBe(true);
+    expect(cmp("2026.10.33", "2026.11.1")).toBeLessThan(0);
+    expect(cmp("2026.10.33", "2026.11.5-beta.1")).toBeLessThan(0);
+    expect(cmp("2026.10.33", "2026.11.8")).toBeLessThan(0);
+    // A pre-release of the ceiling is NOT the ceiling.
+    expect(cmp("2026.10.33-beta.1", "2026.10.33")).toBeLessThan(0);
+  });
+
   test("a pre-release orders BEFORE its release, semver-style", () => {
     const beta = parseVersion("2026.7.1-beta.2")!;
     const release = parseVersion("2026.7.1")!;
@@ -358,21 +386,30 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
 });
 
 describe("resolveCapabilities — beyond maxValidated", () => {
-  // All STRICTLY above maxValidated, which is 2026.9.36 since 2026-11-02 — so the
-  // probe 2026.9.34 left this list (it now sits BELOW the ceiling, see the interval case
-  // below), as 2026.9.10 did at 2026.9.33 and 2026.9.9, 2026.9.8, 2026.9.7, 2026.9.6,
-  // 2026.9.5 and 2026.9.3 before it: a version that earns a GO stops being "beyond" and
-  // resolves normally. 2026.10.1 and 2026.10.2 are REAL upstream mainline releases newer
-  // than the extended-stable line, and never benched: they must keep the banner.
+  // All STRICTLY above maxValidated, which is 2026.10.33 since 2026-11-24: the 2026.11
+  // mainline (v2026.11.1 … v2026.11.9 and their betas are REAL upstream releases, never
+  // benched) and anything later. The probes that used to sit here — 2026.9.37 and the
+  // 2026.10 mainline — are now UNDER the ceiling without having earned a GO: they did not
+  // "stop being beyond" the way 2026.9.5 … 2026.9.36 did, and the never-benched-interval
+  // suite below holds them to the same verdict they had on this list.
   // The assertion below was already the frozen profile; only the NAME claimed
   // otherwise ("enables all validated capabilities" read as a grant). On the shipped
   // table the two rules coincide — see the shared-table suite for the input where
   // they do not.
-  test.each(["2026.9.37", "2026.10.0", "2026.10.1", "2026.10.2", "2027.1.1"])(
+  test.each([
+    "2026.10.34",
+    "2026.11.1",
+    "2026.11.5-beta.1",
+    "2026.11.5",
+    "2026.11.6",
+    "2026.11.7",
+    "2026.11.8",
+    "2027.1.1",
+  ])(
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      // The 2026.9.36 profile (= 2026.9.8's): the 2026.9.2 row plus the knowledge control and the
+      // The 2026.10.33 profile (= 2026.9.8's): the 2026.9.2 row plus the knowledge control and the
       // inline widgets (floored at 2026.9.6) and the queued-input cancel (2026.9.7).
       expect(resolved.capabilities).toEqual({
         ...MATRIX["2026.9.2"],
@@ -380,6 +417,9 @@ describe("resolveCapabilities — beyond maxValidated", () => {
         inlineWidgets: true,
         discardPendingInput: true,
       });
+      expect(resolved.capabilities).toEqual(
+        resolveCapabilities("openclaw", "2026.10.33").capabilities,
+      );
       expect(resolved.versionBeyondValidated).toBe(true);
     },
   );
@@ -459,7 +499,7 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
-  test("2026.9.36 is the new ceiling: inside the range, no flag", () => {
+  test("2026.9.36 stays inside the range, no flag", () => {
     const resolved = resolveCapabilities("openclaw", "2026.9.36");
     // A maintenance release of the extended-stable line whose two vendored-module
     // changes are additive and unread by the bridge (a Control UI client cap, one more
@@ -501,9 +541,21 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     },
   );
 
+  test("2026.10.33 is the new ceiling: inside the range, no flag", () => {
+    const resolved = resolveCapabilities("openclaw", "2026.10.33");
+    // The next extended-stable release. Its adaptations (the `accepted` ack, one run under
+    // two names, the rewritten failure copies, wider questions) are wire readings, not
+    // capabilities: 2026.9.36's profile, no capability carries a 2026.10.33 floor.
+    expect(resolved.capabilities).toEqual(
+      resolveCapabilities("openclaw", "2026.9.36").capabilities,
+    );
+    expect(resolved.versionBeyondValidated).toBe(false);
+  });
+
   test("exactly maxValidated is NOT beyond", () => {
+    expect(COMPAT_MANIFEST.providers.openclaw!.supportedRange!.maxValidated).toBe("2026.10.33");
     expect(
-      resolveCapabilities("openclaw", "2026.9.36").versionBeyondValidated,
+      resolveCapabilities("openclaw", "2026.10.33").versionBeyondValidated,
     ).toBe(false);
   });
 
@@ -519,6 +571,88 @@ describe("resolveCapabilities — beyond maxValidated", () => {
       expect(openClawBelowFloor(raw)).toBe(true);
     },
   );
+});
+
+// ── Under the ceiling is not the same as validated ───────────────────────────
+//
+// `maxValidated` went from 2026.9.36 to 2026.10.33: from one extended-stable release to
+// the next. The range is an interval, so the arithmetic alone would have declared
+// validated everything in between — ten mainline releases (v2026.10.1 … v2026.10.10),
+// their betas, and v2026.9.37, none of which ever met the bench. The 2026.9.34/2026.9.35
+// precedent (inside the range, no banner) does not carry over: those are backport-only
+// steps on one line, wholly inside a diff that was read. Here only the two ends were.
+describe("resolveCapabilities — the never-benched interval under the ceiling", () => {
+  const frozenAt936 = resolveCapabilities("openclaw", "2026.9.36").capabilities;
+
+  test.each([
+    // The 2026.9 line's own later maintenance release, published after 2026.9.36 was
+    // validated: it was "beyond" before the ceiling moved, and nothing has examined it.
+    "2026.9.37",
+    // The 2026.10 mainline, betas included (real upstream tags).
+    "2026.10.1-beta.1",
+    "2026.10.1",
+    "2026.10.2",
+    "2026.10.5",
+    "2026.10.10-beta.5",
+    "2026.10.10",
+    // No upstream release lives in 2026.10.11–2026.10.32; a build reporting one is not
+    // validated either.
+    "2026.10.11",
+    "2026.10.32",
+    // A pre-release of the ceiling sorts below it: the exact version validated is the
+    // release.
+    "2026.10.33-beta.1",
+  ])("%s keeps the not-validated flag and is frozen at the 2026.9.36 profile", (raw) => {
+    const resolved = resolveCapabilities("openclaw", raw);
+    expect(resolved.versionBeyondValidated).toBe(true);
+    expect(resolved.capabilities).toEqual(frozenAt936);
+    expect(COMPAT_MANIFEST.providers.openclaw!.validatedVersions).not.toContain(raw);
+  });
+
+  test("both ends of the interval are validated versions and resolve as themselves", () => {
+    for (const end of ["2026.9.36", "2026.10.33"]) {
+      expect(COMPAT_MANIFEST.providers.openclaw!.validatedVersions).toContain(end);
+      expect(resolveCapabilities("openclaw", end).versionBeyondValidated).toBe(false);
+    }
+  });
+
+  test("the 2026.9 line below the interval is untouched", () => {
+    // Production runs this line. Nothing about it moves with the ceiling.
+    for (const v of ["2026.9.1", "2026.9.9", "2026.9.33", "2026.9.34", "2026.9.35", "2026.9.36"]) {
+      expect(resolveCapabilities("openclaw", v).versionBeyondValidated, v).toBe(false);
+    }
+  });
+
+  test("every shipped interval is bounded by two validated versions, in order, under the ceiling", () => {
+    // A window is a claim about what was NOT benched; its bounds are claims about what
+    // was. An interval hanging off an unvalidated or unparseable bound would freeze a
+    // gateway at a profile nobody exercised.
+    for (const [name, provider] of Object.entries(COMPAT_MANIFEST.providers)) {
+      for (const w of provider.unvalidatedWindows ?? []) {
+        const after = parseVersion(w.after);
+        const before = parseVersion(w.before);
+        const max = parseVersion(provider.supportedRange!.maxValidated);
+        const min = parseVersion(provider.supportedRange!.min);
+        expect(after, `${name}: ${w.after}`).not.toBeNull();
+        expect(before, `${name}: ${w.before}`).not.toBeNull();
+        expect(provider.validatedVersions, name).toContain(w.after);
+        expect(provider.validatedVersions, name).toContain(w.before);
+        expect(compareVersions(after!, before!)).toBeLessThan(0);
+        expect(compareVersions(before!, max!)).toBeLessThanOrEqual(0);
+        expect(compareVersions(after!, min!)).toBeGreaterThanOrEqual(0);
+        expect(w.why.length).toBeGreaterThan(0);
+        // No validated version may sit INSIDE an interval that says nothing in it was.
+        for (const v of provider.validatedVersions) {
+          expect(unvalidatedWindowFor(provider.unvalidatedWindows, parseVersion(v)!), v).toBeNull();
+        }
+      }
+    }
+  });
+
+  test("the agent-request gate follows the same rule (frozen, still on above its floor)", () => {
+    expect(openClawAgentRequestsEnabled("2026.10.5")).toBe(true);
+    expect(openClawAgentRequestsEnabled("2026.10.33")).toBe(true);
+  });
 });
 
 describe("resolveCapabilities — edges", () => {
@@ -658,6 +792,7 @@ interface PolicyFixture {
       string,
       {
         supportedRange: { min: string; maxValidated: string } | null;
+        unvalidatedWindows?: Array<{ after: string; before: string; why: string }>;
         capabilities: Record<string, string>;
       }
     >;
@@ -688,11 +823,27 @@ describe("capability policy — frozen at the validated profile", () => {
         p.supportedRange,
         p.capabilities,
         c.version,
+        "token",
+        {},
+        p.unvalidatedWindows,
       );
       expect(resolved.capabilities).toEqual(c.capabilities);
       expect(resolved.versionBeyondValidated).toBe(c.beyond);
     });
   }
+
+  test("the table carries the never-benched-interval case, and it discriminates", () => {
+    const inside = POLICY.cases.find((c) => c.provider === "gapped" && c.version === "2.5.0");
+    expect(inside, "no inside-the-interval case in the shared table").toBeDefined();
+    expect(inside!.beyond).toBe(true);
+    expect(inside!.capabilities.gapCap).toBe(false);
+    // Without the interval the same input resolves as itself: `gapCap` on, no flag. If
+    // these two ever agree, the cases above prove nothing about the rule.
+    const p = POLICY.manifest.providers.gapped!;
+    const ignored = resolveCapabilitiesFor(p.supportedRange, p.capabilities, "2.5.0");
+    expect(ignored.capabilities.gapCap).toBe(true);
+    expect(ignored.versionBeyondValidated).toBe(false);
+  });
 });
 
 // A CAPABILITY CAN NEED MORE THAN A VERSION.

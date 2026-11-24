@@ -14,13 +14,14 @@ import { describe, expect, it } from "vitest";
 
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { consumedReadings, fidelityDiff, loadRunManager } from "../scripts/lib/replay-fidelity.mjs";
+import { GATEWAY_SEQ_REPORT_EVENT, consumedReadings, fidelityDiff, loadRunManager } from "../scripts/lib/replay-fidelity.mjs";
 // @ts-expect-error — plain .mjs script, no types (it runs under node, not tsc)
 import { parseEntries, promoteSlice, turnConnectionSlice } from "../scripts/promote-capture.mjs";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { knownKeysFromCoverage } from "../scripts/lib/anonymize-capture.mjs";
 import { readFileSync } from "node:fs";
 import { asyncTaskStartFromTool, taskChildKey } from "../src/core/async-task.js";
+import { EVENT_GATEWAY_SEQ_REPORT } from "../src/core/events.js";
 import { cronPartFromTool, isCronTool, printableCronSchedule } from "../src/core/cron-part.js";
 import { MAX_PROVENANCE_ITEMS, MAX_PROVENANCE_PARTS_PER_TURN, isProvenanceStream, parseProvenanceFrame, parseProvenanceReport } from "../src/core/provenance.js";
 
@@ -320,6 +321,56 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
       env(10, { type: "event", event: "agent", payload: { runId: RUN, sessionKey: KEY, stream: "lifecycle", seq: 1, data: { phase: "error", error: { message: "Martin overflow", errorKind: "context_length" } } } }),
     ].join("\n");
     expect(await faithful(raw)).toEqual([]);
+  });
+
+  it("the gateway's `seq gap` report promotes faithfully, and only where the replay read it", async () => {
+    // The first capture to carry one is 2026.10.33's (a send queued behind an announce):
+    // `reason` is free text everywhere else, so the report came out masked and the promotion
+    // was refused with `noteGatewaySeqReport: raw 1, promoted 0`.
+    const errorFrame = (runId: string, seq: number, data: unknown) => ({ type: "event", event: "agent", payload: { runId, sessionKey: KEY, stream: "error", seq, data } });
+    const final = env(20, { type: "event", event: "chat", payload: { runId: RUN, sessionKey: KEY, seq: 9, state: "final", message: { content: [{ type: "text", text: "Voici la suite." }] } } });
+    const raw = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(5, { type: "event", event: "agent", payload: { runId: RUN, sessionKey: KEY, stream: "lifecycle", seq: 1, data: { phase: "start" } } }),
+      env(10, errorFrame(RUN, 2, { reason: "seq gap", expected: 5, received: 6 })),
+      final,
+    ].join("\n");
+    expect(GATEWAY_SEQ_REPORT_EVENT).toBe(EVENT_GATEWAY_SEQ_REPORT);
+    expect(await faithful(raw)).toEqual([]);
+    const consumed = await consumedReadings(RunManager, parseEntries(raw), READERS);
+    // Attributed to the frame it was READ from (entry 2), not to the feed during which the
+    // sink happened to record it.
+    expect(consumed.seqReportReads).toEqual([{ entry: 2, expected: 5, received: 6 }]);
+    const promoted = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines.join("\n");
+    expect(promoted).toContain('"reason":"seq gap","expected":5,"received":6');
+    // The case really writes the report: without the frame the gate sees the loss, so `[]`
+    // above cannot hold for a capture that stopped exercising the reader.
+    const without = raw.split("\n").filter((l) => !l.includes("seq gap")).join("\n");
+    expect((await fidelityDiff(RunManager, parseEntries(raw), parseEntries(without))).join("\n")).toMatch(
+      /noteGatewaySeqReport: raw 1, promoted 0/,
+    );
+
+    // Any OTHER reason on the error stream is prose and stays masked, with its numbers.
+    const prose = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(10, errorFrame(RUN, 1, { reason: "Martin Durand overflow", expected: 5, received: 6 })),
+      final,
+    ].join("\n");
+    const proseConsumed = await consumedReadings(RunManager, parseEntries(prose), READERS);
+    expect(proseConsumed.seqReportReads).toEqual([]);
+    const prosePromoted = (promoteSlice(prose, vocabulary(), READERS, proseConsumed) as { lines: string[] }).lines.join("\n");
+    expect(prosePromoted).not.toContain("Martin");
+    expect(prosePromoted).not.toContain("seq gap");
+
+    // A counter that is a DATE is not a counter: nothing about that frame is kept verbatim.
+    const dated = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(10, errorFrame(RUN, 1, { reason: "seq gap", expected: 1_785_204_000_123, received: 6 })),
+      final,
+    ].join("\n");
+    const datedConsumed = await consumedReadings(RunManager, parseEntries(dated), READERS);
+    const datedPromoted = (promoteSlice(dated, vocabulary(), READERS, datedConsumed) as { lines: string[] }).lines.join("\n");
+    expect(datedPromoted).not.toContain("1785204000123");
   });
 
   it("a refused error carrying the class the admitted terminal closed with does not keep it", async () => {

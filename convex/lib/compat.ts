@@ -88,7 +88,52 @@ export type ProviderSupport = {
    *  named list above is the published releases; this is what makes the verdict agree
    *  with the bridge for the pre-releases and the versions between them (codex). */
   brokenVersionWindow?: { from: string; fixedIn: string; why: string };
+  /** Intervals UNDER the ceiling that no bench run covers, `(after, before)` with both
+   *  ends exclusive (bridge/src/compat.ts `unvalidatedWindows`). A version inside one is
+   *  judged as it was while beyond the ceiling: frozen at `after`, flagged not validated.
+   *  Absent on a manifest from a bridge that predates the field. */
+  unvalidatedWindows?: UnvalidatedWindow[];
 };
+
+export type UnvalidatedWindow = { after: string; before: string; why: string };
+
+/** How many windows this boundary will read off a manifest. The shipped manifest has
+ *  one; the bound is for a body that came over the network. */
+const UNVALIDATED_WINDOWS_MAX = 16;
+
+/** Read `unvalidatedWindows` defensively: an entry is kept only when both bounds PARSE
+ *  and are ordered, so a malformed one can neither widen nor fake an interval. */
+function readUnvalidatedWindows(raw: unknown): UnvalidatedWindow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: UnvalidatedWindow[] = [];
+  for (const entry of raw.slice(0, UNVALIDATED_WINDOWS_MAX)) {
+    const o = entry as { after?: unknown; before?: unknown; why?: unknown } | null;
+    if (typeof o?.after !== "string" || typeof o.before !== "string") continue;
+    const order = compareVersions(o.after, o.before);
+    if (order === null || order >= 0) continue;
+    out.push({
+      after: o.after,
+      before: o.before,
+      why: typeof o.why === "string" ? o.why.slice(0, 300) : "",
+    });
+  }
+  return out;
+}
+
+/** The never-benched interval this version falls in, or null (both bounds exclusive).
+ *  The bridge's `unvalidatedWindowFor`, over a manifest read off the network. */
+export function unvalidatedWindowFor(
+  support: Pick<ProviderSupport, "unvalidatedWindows">,
+  version: string | null,
+): UnvalidatedWindow | null {
+  if (version === null || parseVersion(version) === null) return null;
+  for (const w of support.unvalidatedWindows ?? []) {
+    const low = compareVersions(version, w.after);
+    const high = compareVersions(version, w.before);
+    if (low !== null && high !== null && low > 0 && high < 0) return w;
+  }
+  return null;
+}
 
 /** The /api/v1/compat response payload (minus the `ok` envelope). */
 export type CompatSummary = {
@@ -393,8 +438,19 @@ export function mergeDefectAwareness(base: unknown, next: unknown): unknown {
     // with it win together: keeping the old `validatedVersions` and `capabilities`
     // beside a raised ceiling announced support the old reading never earned.
     const takeNext = higherCeiling(baseRange, nextRange);
+    // The never-benched intervals describe ONE ceiling and travel with it: a raised
+    // ceiling kept without its intervals would call validated the very versions its
+    // bridge excludes, and intervals kept under another bridge's ceiling would describe
+    // a range nobody published. So they come from whichever side's range is kept.
+    const { unvalidatedWindows: baseWindows, ...existingRest } = existing as {
+      unvalidatedWindows?: unknown;
+    } & Record<string, unknown>;
+    const keptWindows = takeNext
+      ? (entry as { unvalidatedWindows?: unknown }).unvalidatedWindows
+      : baseWindows;
     providers[name] = {
-      ...existing,
+      ...existingRest,
+      ...(Array.isArray(keptWindows) ? { unvalidatedWindows: keptWindows } : {}),
       ...(takeNext
         ? {
             supportedRange: nextRange,
@@ -994,7 +1050,14 @@ export function providerSupport(
     typeof w?.from === "string" && typeof w.fixedIn === "string" && typeof w.why === "string"
       ? { from: w.from, fixedIn: w.fixedIn, why: w.why }
       : undefined;
-  return { range, validatedVersions, knownBrokenVersions, brokenVersionWindow };
+  const unvalidatedWindows = readUnvalidatedWindows(e.unvalidatedWindows);
+  return {
+    range,
+    validatedVersions,
+    knownBrokenVersions,
+    brokenVersionWindow,
+    ...(unvalidatedWindows.length > 0 ? { unvalidatedWindows } : {}),
+  };
 }
 
 /** Read a provider's capability->minVersion table out of a stored CompatManifest.
@@ -1029,7 +1092,9 @@ export function providerCapabilityTable(
  *   - version within range: true iff version >= its minVersion;
  *   - version beyond `maxValidated`: FROZEN at the maxValidated profile (the
  *     capabilities actually exercised, and no more) + `versionBeyondValidated`, which
- *     drives a user-visible banner.
+ *     drives a user-visible banner;
+ *   - version under the ceiling but inside an `unvalidatedWindows` interval: the same
+ *     verdict, frozen at the validated version just below the interval.
  *  Both sides fail CLOSED on the same inputs (the `parseVersion` mirror guarantees it),
  *  and the agreement is now PINNED: bridge/test/fixtures/capability-policy.json is a
  *  single expectation table read by this suite and by the bridge's — the "EXACT MIRROR"
@@ -1040,7 +1105,8 @@ export function resolveCapabilitiesFromManifest(
   provider: string,
   gatewayVersion: string | null,
 ): { capabilities: Record<string, boolean>; versionBeyondValidated: boolean } {
-  const range = providerSupport(compat, provider).range;
+  const support = providerSupport(compat, provider);
+  const range = support.range;
   if (range === null) return { capabilities: {}, versionBeyondValidated: false };
   const table = providerCapabilityTable(compat, provider);
   const capabilities: Record<string, boolean> = {};
@@ -1062,13 +1128,20 @@ export function resolveCapabilitiesFromManifest(
   }
   const beyondCmp = compareVersions(gatewayVersion as string, range.maxValidated);
   const beyond = beyondCmp !== null && beyondCmp > 0;
+  // Under the ceiling but in an interval no run covers: the same verdict as beyond it,
+  // frozen at the last validated version BELOW the interval.
+  const window = beyond ? null : unvalidatedWindowFor(support, gatewayVersion);
   // FROZEN: judged as the last version we exercised, never as itself.
-  const effective = beyond ? range.maxValidated : (gatewayVersion as string);
+  const effective = beyond
+    ? range.maxValidated
+    : window !== null
+      ? window.after
+      : (gatewayVersion as string);
   for (const [cap, minVersion] of Object.entries(table)) {
     const cmp = compareVersions(effective, minVersion);
     capabilities[cap] = cmp !== null && cmp >= 0;
   }
-  return { capabilities, versionBeyondValidated: beyond };
+  return { capabilities, versionBeyondValidated: beyond || window !== null };
 }
 
 /** Build the /api/v1/compat summary from the stored snapshot (or null when no

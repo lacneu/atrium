@@ -20,15 +20,15 @@ import { describe, expect, it } from "vitest";
 
 import { GATEWAY_DETAIL_KEYS, GATEWAY_ERROR_CODES } from "../src/core/dispatch-errors.js";
 import { DRIFT_VENDORED_VERSION } from "../src/providers/openclaw/protocol-drift.js";
-import * as admission from "../protocol/openclaw/2026.9.36/agent-database-admission.js";
-import * as worker from "../protocol/openclaw/2026.9.36/worker-protocol-primitives.js";
+import * as admission from "../protocol/openclaw/2026.10.33/agent-database-admission.js";
+import * as worker from "../protocol/openclaw/2026.10.33/worker-protocol-primitives.js";
 
 type Schema = { anyOf?: Schema[]; properties?: Record<string, Schema>; const?: unknown };
 const objects = (s: Schema): Schema[] => (s.anyOf ? s.anyOf.flatMap(objects) : [s]);
 
 describe("the answered-refusal vocabularies are upstream's", () => {
   it("the vendored modules read here are the drift detector's version", () => {
-    expect(DRIFT_VENDORED_VERSION).toBe("2026.9.36");
+    expect(DRIFT_VENDORED_VERSION).toBe("2026.10.33");
   });
 
   it("vendored: every documented details key and worker error code is in the lists", () => {
@@ -84,17 +84,23 @@ describe("the answered-refusal vocabularies are upstream's", () => {
     const upstreamOnly = [
       "cause",
       "currentCount",
+      // `SkillProposalRevisionChangedErrorDetails`, declared through v2026.9.36 and gone
+      // at v2026.10.33: kept, the 2026.9 line is supported and still sends them.
       "currentRevisionHash",
       "cwd",
       "expectedRevisionHash",
       "idempotencyKey",
       "jobId",
+      // `ClawReviewRequiredErrorDetails.kind`, new at v2026.10.33.
+      "kind",
       "limit",
       "missingScope",
       "recoveryAction",
       "requiredScopes",
       "sessionId",
       "source",
+      // `ClawHubRiskAcknowledgementRequiredErrorDetails.warning`, new at v2026.10.33.
+      "warning",
     ];
     const vendored = new Set<string>();
     for (const o of objects(admission.AgentDatabaseAdmissionRefusalSchema as unknown as Schema)) {

@@ -113,6 +113,11 @@ const IDENTIFIER_KEYS = new Set([
   // `end` on it. Masked as text, two spawns of one code-mode exec (`…:sessions_spawn:1`,
   // `…:sessions_spawn:2`) collapsed onto one item and replayed as one card (2026.9.36).
   "itemId",
+  // 2026.10.33: the revision of the session lifecycle a run was started under, stamped on
+  // the `lifecycle`/`model` agent event beside `sessionId` (protocol-drift.ts
+  // AGENT_ROUTING_ENVELOPE_FIELDS). An opaque identifier: masked as an unknown KEY it made
+  // every promoted frame report `agent.field_…` drift.
+  "sessionLifecycleRevision",
   "messageId",
   "chatId",
   "callId",
@@ -969,8 +974,9 @@ export function readingsLedger({
   cronReads = [],
   taskReads = [],
   errorReads = [],
+  seqReportReads = [],
 } = {}) {
-  return { sessionKey, provenanceReads, cronReads, taskReads, errorReads };
+  return { sessionKey, provenanceReads, cronReads, taskReads, errorReads, seqReportReads };
 }
 
 /** The five CronScheduleSchema kinds of 2026.9.4 (protocol/openclaw/2026.9.4/cron.ts).
@@ -1142,6 +1148,40 @@ export function captureReaderRules(entries, readers, consumed) {
       continue;
     }
     rules.set(data.error, { keep: new Map([["errorKind", () => read.errorKind]]) });
+  }
+
+  // THE GATEWAY'S `seq gap` REPORT. An `agent` event on the `error` stream whose
+  // `data.reason` is the literal "seq gap" is the gateway's account of its own per-run
+  // numbering, and the normalizer reads it by that literal and by its two counters
+  // (normalizer.ts, `data.reason === "seq gap"` -> `expected`, `received`). `reason` holds
+  // free text everywhere else and is masked, so the promoted frame stopped being a report:
+  // the first capture to carry one (2026.10.33, a send queued behind an announce) read as
+  // `noteGatewaySeqReport` raw 1, promoted 0. Each reading is the ENTRY whose feed wrote the
+  // report, kept only on that frame and only if it still reads as the report written: the
+  // literal, and two run counters (never a date, never a string).
+  const seqCounter = (v) =>
+    typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && v < EPOCH_MS_MIN ? v : undefined;
+  for (const read of consumed.seqReportReads ?? []) {
+    const frame = entries[read.entry]?.frame;
+    const data = frame?.payload?.data;
+    if (
+      frame?.type !== "event" ||
+      frame.event !== "agent" ||
+      frame.payload?.stream !== "error" ||
+      !isPlainRecord(data) ||
+      data.reason !== "seq gap" ||
+      (seqCounter(data.expected) ?? null) !== read.expected ||
+      (seqCounter(data.received) ?? null) !== read.received
+    ) {
+      continue;
+    }
+    rules.set(data, {
+      keep: new Map([
+        ["reason", (v) => (v === "seq gap" ? v : undefined)],
+        ["expected", seqCounter],
+        ["received", seqCounter],
+      ]),
+    });
   }
 
   for (const read of consumed.cronReads ?? []) {

@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.105.0] — OpenClaw 2026.10.33 is supported
+
+Gateway support release. Atrium now supports OpenClaw 2026.10.33, the next extended-stable
+release (published upstream on 2026-11-18), beside the 2026.9 line, which stays supported as
+it was: both are validated ceilings of their own line, and nothing changes for an instance
+that stays on 2026.9.36. **Deploy the Convex functions before the bridge**: the bridge sends
+new ingest fields (the reason and time of a provider wait, the run a child agent timed out
+on) that only the new functions accept. No data migration on the Atrium side.
+
+- **OpenClaw 2026.10.33 is validated.** Full live suite GO, 31 of 31 scenarios, on the
+  published distribution image `openclaw-2026.10.33-r9`. The gateway's reply to a send, its
+  failure wording, the status of a child agent and the shape of a question changed with this
+  release; the bridge reads both generations.
+- **The versions between the two validated releases are not claimed.** OpenClaw 2026.10.1 to
+  2026.10.10 and 2026.9.37 were never run on the bench. An instance on one of them keeps the
+  "not validated" banner and the capabilities of 2026.9.36, exactly as before this release;
+  the compatibility view shows them as beyond validation.
+- **A YouTube video an agent embeds is shown as a video card.** From 2026.10.33 an agent may
+  write `[embed url="…" /]` for a video. Atrium shows a thumbnail, a Play button, the title
+  and an "Open on YouTube" link; the player loads only after a click, from
+  `youtube-nocookie.com`, in a sandboxed frame. Any other `https` address becomes a plain
+  link. This works on every gateway version and whether widgets are on or off.
+- **A provider wait says why, and until when.** While the gateway waits before retrying a
+  model call, the status line names the reason — rate limit reached, provider overloaded,
+  provider error, provider temporarily unavailable — and, on 2026.10.33, the time of the next
+  attempt.
+- **A question may offer more than four options.** A 2026.10.33 agent can ask a question with
+  up to 64 options; Atrium shows them all and answers with the option's own value. A longer
+  list is refused rather than cut.
+- **A child agent that ran out of time is shown as timed out on 2026.10.33.** That gateway
+  records such a child as "interrupted", the word it also uses after a restart; Atrium reads
+  the run's own end and shows the timeout, as on 2026.9.36.
+- **A message sent during a turn no longer gets its reply twice.** On 2026.10.33 a queued
+  message is streamed under one run id and written to the transcript under another, which
+  produced two bubbles; the gateway states the link between the two and Atrium now treats
+  them as one run.
+- **Failures are named again on 2026.10.33.** That release rewrote most of its failure
+  messages (storage unavailable, session busy, model not found, provider needs a break,
+  interrupted request…); Atrium recognises the new wording beside the 2026.9 one, so a
+  failed turn keeps its specific explanation instead of a generic one.
+- **No "Sources" card for a search that found nothing.** A knowledge search that returned no
+  result was shown as one context source; such a reply is no longer counted as a source, on
+  stored messages too.
+
+**Moving a gateway to 2026.10.33.** Use the image `openclaw-2026.10.33-r9`. The gateway
+migrates its state at first start, and the migration is one-way: a state opened by
+2026.10.33 cannot be opened by 2026.9.36 again, so take a snapshot of the state volume
+first. Before the upgrade, check two things on the gateway host: every file of the state
+directory is readable by the gateway's user (one unreadable file, a root-owned backup for
+instance, stops the start), and the volume has free space for the migration, which copies
+the databases. Upgrade Atrium (Convex, then the bridge) before the gateway.
+
+**Known limits.** The upstream defect where an exec approval is granted and the command is
+then refused when a session is created during the wait (openclaw/openclaw#170994) is still
+present on 2026.10.33. A question the agent presents as an advanced form is shown as a plain
+list of options, not as a form. Some 2026.10.33 failure messages are not classified yet and
+fall back to the generic explanation. The thumbnail of a video card is fetched from YouTube
+as soon as the message is displayed, before any click. Not exercised on the bench, so read
+in the gateway's sources only: a provider retry, a question with more than four options, a
+restart in the middle of a turn, and a video embedded by an agent.
+
 ## [0.104.4] — A child agent's status updates no longer refuse one another
 
 Reliability release for delegated work. No schema change, nothing to migrate. **Deploy the

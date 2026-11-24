@@ -12,7 +12,7 @@ import { createHmac } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { promisedVersion, vendoredVersions } from "./helpers/vendored.js";
-import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.36/logs-chat.js";
+import * as vendoredChatSchemas from "../protocol/openclaw/2026.10.33/logs-chat.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
@@ -88,7 +88,7 @@ describe("protocol drift detector", () => {
   });
 
   it("the fields a 2026.10.33 gateway adds to an agent frame are silent; one nobody vendored still reports", () => {
-    // Vendored ahead of the promise: seven fields of the session snapshot
+    // New at 2026.10.33: seven fields of the session snapshot
     // (src/gateway/session-event-payload.ts) and `preamble`, a field of the agent event
     // itself (schema/agent.ts). Badged "unknown field", they would bury the one that is.
     const frame = (extra: Record<string, unknown>): unknown => ({
@@ -292,7 +292,7 @@ describe("protocol drift detector", () => {
       { properties?: Record<string, unknown> }
     >;
     expect(DRIFT_VENDORED_VERSION, "the static import must track the vendored version").toBe(
-      "2026.9.36",
+      "2026.10.33",
     );
     const bySchema: Record<string, string> = {
       delta: "ChatDeltaEventSchema",
