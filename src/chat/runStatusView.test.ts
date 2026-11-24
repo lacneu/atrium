@@ -382,12 +382,24 @@ describe("errorDetailView (actionable error classification)", () => {
     const cooled =
       'All models failed (2): openai/a: Auth profile "openai:p" is temporarily unavailable for openai/a. (rate_limit) | openai/b: Pending input is no longer active in its admitted transcript (unknown)';
     expect(errorDetailView(cooled, undefined).code).not.toBe("pending_input_dropped");
-    // Truthful: nothing ran, the reader resends — and no automatic attempt is claimed,
-    // because none is scheduled (convex/turnRetry.ts).
+    // Truthful, and no more than what is established (prod 2026-11, three cases on
+    // OpenClaw 2026.9.36): the gateway had ACCEPTED the send, the failure came minutes
+    // later, and in two of the three no reply was being written on the conversation when
+    // the message was sent — so the card names neither a simultaneous reply nor "nothing was processed"
+    // (upstream's orphan repair can hand the text to another run as context,
+    // attempt-prompt-helpers.ts:173-175). It says the message got no answer, that the
+    // gateway will not come back to it, and claims no automatic attempt: none is
+    // scheduled (convex/turnRetry.ts).
     for (const locale of ["en", "fr"] as const) {
       const sentence = m.runstatus_error_pending_input_dropped({}, { locale });
       expect(sentence).toMatch(locale === "en" ? /send your message again/i : /renvoyez votre message/i);
-      expect(sentence).toMatch(locale === "en" ? /nothing was processed/i : /rien n’a été traité/i);
+      expect(sentence).toMatch(locale === "en" ? /accepted your message/i : /a accepté votre message/i);
+      expect(sentence).toMatch(locale === "en" ? /was not answered/i : /n’a pas reçu de réponse/i);
+      expect(sentence).toMatch(
+        locale === "en" ? /will not come back to it/i : /n’y reviendra pas/i,
+      );
+      expect(sentence).not.toMatch(/nothing was processed|rien n’a été traité/i);
+      expect(sentence).not.toMatch(/another reply|same moment|autre réponse|même moment/i);
       expect(sentence).not.toMatch(/automatic|retry(ing)? (in|now)|nouvel essai|automatiquement/i);
     }
   });
