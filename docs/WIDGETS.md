@@ -27,8 +27,9 @@ on a Hermes instance.
    shortcode included: the browser hides a shortcode only when the message carries
    the widget part it names, and only outside Markdown code (a half-typed `[embed`
    at the end of a reply still being written is held back until it is complete).
-   A shortcode that names no stored widget (another conversation's view, a URL, a
-   reply sent with widgets off) stays visible text. Copy, quote and bookmarks
+   A shortcode that names no stored widget (another conversation's view, a
+   gateway path, a reply sent with widgets off) stays visible text; one whose
+   `url` is an `https` address is a [video card or a link](#youtube-videos). Copy, quote and bookmarks
    take what is on screen (the rendered blocks); export and search read the stored
    text, so they keep the shortcode. The
    document itself never travels on the chat stream and is never stored in Convex.
@@ -126,9 +127,11 @@ load only from inline data (`data:`, `blob:`). Images load from inline data
 (`data:`) and the allow-listed public CDNs; scripts, styles and fonts load only
 from those CDNs. Atrium's policy comes before anything the widget declares, and a
 browser enforces every policy present, so a widget cannot loosen it with its own
-`<meta>`. The Atrium page itself allows its frames to navigate nowhere
-(`frame-src 'none'`, or only the sandbox origin in dedicated mode), so a widget
-cannot send itself to another address either. Messages from the frame are
+`<meta>`. The Atrium page itself allows its frames to navigate to one address only
+(`frame-src https://www.youtube-nocookie.com`, plus the sandbox origin in
+dedicated mode), so a widget cannot send itself to a server of its author's
+choosing either. That one origin is YouTube's player, which Atrium frames for a
+[video card](#youtube-videos). Messages from the frame are
 accepted only when they come from that frame's window with the opaque origin
 (`"null"`).
 
@@ -211,6 +214,38 @@ What breaks when it is misconfigured:
 | Widgets render in simple mode although an origin is set | The value is not a bare `https://host[:port]` origin, or it equals Atrium's or the Convex HTTP origin. |
 | Skeleton, then "could not be loaded" | The sandbox host is unreachable, answers something other than the proxy at `/`, or a proxy in front removed the `Referer` or added a framing policy. |
 | Widget visible but unstyled or offline | Expected: a widget has no network access; only the listed CDNs serve scripts, styles, fonts and images. |
+
+## YouTube videos
+
+From OpenClaw 2026.10.33 an agent may embed a video with
+`[embed url="https://www.youtube.com/watch?v=VIDEO_ID" title="…" /]`. The gateway
+transforms nothing: the shortcode reaches Atrium as text, and the browser decides
+what it shows, on any gateway version and whether widgets are on or off.
+
+- **A video card** when the `url` is a YouTube video link: `youtube.com`,
+  `www.youtube.com` or `m.youtube.com` with `/watch?v=`, `/shorts/`, `/live/` or
+  `/embed/`; `youtu.be/ID`; `youtube-nocookie.com/embed/ID`. `https` only, no port,
+  no credentials, an 11-character id, an optional start time (`start`, `t`, `#t`).
+  The agent's URL is never loaded: Atrium reads the id and the start time from it
+  and builds the addresses itself.
+- **A plain link** when the `url` is any other absolute `https` address (a
+  look-alike host, a playlist, another site): it opens in a new tab like any link
+  of a reply, and nothing is framed.
+- **The text as written** otherwise (another scheme, a relative path, credentials
+  in the address, a gateway path, an example inside Markdown code).
+
+The card shows the video's thumbnail, a Play button, the title and an "Open on
+YouTube" link. What reaches Google, and when:
+
+| When | Request | Carries |
+| --- | --- | --- |
+| The message is displayed | The thumbnail, from `i.ytimg.com` | The video id. No referrer. |
+| Play is clicked | The player, from `www.youtube-nocookie.com`, in a sandboxed frame | The video id and start time; Atrium's origin as referrer (YouTube's player requires it). |
+
+No player is loaded before a click, one video plays at a time, and closing the
+player removes its frame. Copying the reply takes the video's title and its
+`youtube.com/watch` address; export and search read the stored text, shortcode
+included.
 
 ## Operating notes
 

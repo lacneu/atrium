@@ -12,6 +12,8 @@ import {
   useThread,
 } from "@assistant-ui/react";
 import { WidgetPart } from "./widgets/WidgetPart";
+import { YouTubeVideoPart } from "./widgets/YouTubeVideoPart";
+import { copyTextOfContent, type CopyablePart } from "./widgets/youtubeVideo";
 import {
   createContext,
   type CSSProperties,
@@ -2795,12 +2797,7 @@ function BookmarkMenuItem() {
 
 function CopyAssistantButton() {
   const [copied, setCopied] = useState(false);
-  const ownText = useMessage((msg) =>
-    (msg.content as ReadonlyArray<{ type?: string; text?: string }>)
-      .filter((p) => p.type === "text" && typeof p.text === "string")
-      .map((p) => p.text as string)
-      .join("\n"),
-  );
+  const ownText = useMessage((msg) => copyTextOfContent(msg.content as ReadonlyArray<CopyablePart>));
   // Phase 5: the last bubble of a delegation chain's display group copies the whole
   // answer the reader sees as one.
   const groupText = useMessage(
@@ -3135,6 +3132,9 @@ const assistantComponents = {
   data: {
     by_name: {
       widget: WidgetPart as never,
+      // A video the agent embedded by its YouTube address (`[embed url=…]`, OpenClaw
+      // 2026.10.33): part of the reply too, at the place the shortcode held.
+      youtube: YouTubeVideoPart as never,
       // 0.103.0 — prose that is not the answer, in the BODY and never behind the Tools
       // toggle (that toggle gates the analysis view and is off by default): the model's
       // reasoning, and the agent's work notes (ReasoningBlocks.tsx). ASSISTANT ONLY:

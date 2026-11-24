@@ -37,6 +37,7 @@ import {
   widgetPromptSendArgs,
   type ParsedDocumentLike,
 } from "./widgetSandbox";
+import { YOUTUBE_PLAYER_ORIGIN, youTubePlayerUrl, youTubeVideoAddresses } from "./youtubeVideo";
 
 const ROOT = resolve(__dirname, "../../..");
 const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");
@@ -411,15 +412,44 @@ describe("a widget's message is its own send, never the composer's", () => {
 });
 
 describe("the page's frame-src: a widget cannot navigate itself to a server", () => {
-  it("simple mode: no frame may navigate anywhere (srcdoc widgets are not fetched, so they still render)", () => {
-    expect(pageFramePolicy({ mode: "simple", reason: "unset" })).toBe("frame-src 'none'");
-    expect(pageFramePolicy({ mode: "simple", reason: "same-origin" })).toBe("frame-src 'none'");
+  const PLAYER = "https://www.youtube-nocookie.com";
+  /** The sources of a policy's only directive. */
+  const sources = (policy: string) => policy.trim().split(/\s+/).slice(1);
+
+  it("simple mode: the YouTube player's origin and nothing else (srcdoc widgets are not fetched, so they still render)", () => {
+    expect(pageFramePolicy({ mode: "simple", reason: "unset" })).toBe(`frame-src ${PLAYER}`);
+    expect(pageFramePolicy({ mode: "simple", reason: "same-origin" })).toBe(`frame-src ${PLAYER}`);
+    expect(pageFramePolicy({ mode: "simple", reason: "insecure" })).toBe(`frame-src ${PLAYER}`);
   });
 
-  it("dedicated mode: the sandbox origin, and nothing else", () => {
+  it("dedicated mode: the sandbox origin and the player's, and nothing else", () => {
     expect(pageFramePolicy({ mode: "dedicated", origin: "https://widgets.example.com" })).toBe(
-      "frame-src https://widgets.example.com",
+      `frame-src https://widgets.example.com ${PLAYER}`,
     );
+  });
+
+  it("the opening is ONE exact https origin: no wildcard, no scheme source, no other YouTube host", () => {
+    for (const policy of [
+      pageFramePolicy({ mode: "simple", reason: "unset" }),
+      pageFramePolicy({ mode: "dedicated", origin: "https://w.example.com" }),
+    ]) {
+      const opened = sources(policy).filter((source) => source !== "https://w.example.com");
+      expect(opened).toEqual([PLAYER]);
+      for (const source of sources(policy)) {
+        expect(source).toMatch(/^https:\/\/[a-z0-9.-]+$/);
+        expect(source).not.toContain("*");
+      }
+      expect(policy).not.toMatch(/'self'|'unsafe|data:|blob:|\shttps?:(\s|$)|youtube\.com|youtu\.be|ytimg/);
+    }
+  });
+
+  it("the origin opened is the one the card's player address is built on", () => {
+    expect(YOUTUBE_PLAYER_ORIGIN).toBe(PLAYER);
+    const video = youTubeVideoAddresses({ videoId: "AbC123_-xyz", startSeconds: 0 })!;
+    expect(new URL(youTubePlayerUrl(video)).origin).toBe(PLAYER);
+    // The thumbnail and the watch link are no frames: their hosts are not opened.
+    expect(new URL(video.thumbnailUrl).origin).not.toBe(PLAYER);
+    expect(new URL(video.watchUrl).origin).not.toBe(PLAYER);
   });
 
   it("only frame-src is set — the policy must not restrict anything else the app loads", () => {
