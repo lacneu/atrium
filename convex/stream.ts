@@ -2324,6 +2324,13 @@ const TURN_PHASES = new Set([
   "retrying",
 ]);
 
+/** Why a provider is being waited on during `retrying` — the gateway's vocabulary as the
+ *  bridge forwards it (bridge/src/core/events.ts `TURN_RETRY_REASONS`: OpenClaw
+ *  `ChatStatusEvent.retry.reason` minus `output_limit`). Re-checked here: this boundary
+ *  stores only the words the label has a sentence for. */
+const PHASE_RETRY_REASONS = ["rate_limit", "overloaded", "server_error", "timeout"] as const;
+type PhaseRetryReason = (typeof PHASE_RETRY_REASONS)[number];
+
 export const setPhase = internalMutation({
   args: {
     messageId: v.id("messages"),
@@ -2331,6 +2338,12 @@ export const setPhase = internalMutation({
     // Only meaningful with `retrying`; ignored for every other phase so a
     // stale counter can never outlive the back-off that produced it.
     retry: v.optional(v.object({ attempt: v.number(), maxAttempts: v.number() })),
+    // Why the provider is waited on and until when (epoch ms, the GATEWAY's clock), beside
+    // the counter rather than inside it: a bridge that knows them must still be able to
+    // write to a backend whose `retry` validator predates them. Kept only with a sane
+    // counter, and only when well formed.
+    retryReason: v.optional(v.string()),
+    retryAt: v.optional(v.number()),
     // A clear that may ONLY remove a back-off. `generating` is shared with Hermes'
     // resume signal and wipes whatever phase is stored, so a retry clear arriving
     // after some other producer published `awaiting_approval` erased THAT instead
@@ -2344,7 +2357,7 @@ export const setPhase = internalMutation({
   },
   handler: async (
     ctx,
-    { messageId, phase, retry, onlyIfRetrying, expectedRunId, boundInstanceName },
+    { messageId, phase, retry, retryReason, retryAt, onlyIfRetrying, expectedRunId, boundInstanceName },
   ) => {
     // "generating" is Hermes' RESUME signal (sub-agents settled, the model is
     // producing again) — it is not a phase but the END of one: CLEAR the stored
@@ -2384,7 +2397,16 @@ export const setPhase = internalMutation({
       retry.attempt >= 1 &&
       retry.maxAttempts <= 10 &&
       retry.attempt <= retry.maxAttempts;
-    const phaseRetry = phase === "retrying" && sane ? retry : undefined;
+    const reason: PhaseRetryReason | undefined = PHASE_RETRY_REASONS.find((r) => r === retryReason);
+    const phaseRetry =
+      phase === "retrying" && sane
+        ? {
+            attempt: retry.attempt,
+            maxAttempts: retry.maxAttempts,
+            ...(reason !== undefined ? { reason } : {}),
+            ...(retryAt !== undefined && Number.isFinite(retryAt) && retryAt >= 0 ? { retryAt } : {}),
+          }
+        : undefined;
     if (clearing && onlyIfRetrying === true && row.phase !== "retrying") {
       // A scoped clear whose target is gone: some other producer owns the phase now,
       // and this must not speak for them. Not an error — the back-off is over either

@@ -83,6 +83,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The same wrapper as 2026.10.33 words it (src/auto-reply/reply/agent-runner-failure-reply.ts:
+ *  170-174): the headline no longer names a compaction. */
+const GONE_1033 =
+  "⚠️ This conversation is too long, and OpenClaw couldn't shorten it. " +
+  "Reason: no conversation found for session. " +
+  "Try again, use /compact, or use /new to start a fresh session.";
+
 /** The production path: the registry builds the Session from the routing Convex sent. */
 async function sessionFor(openclawChatId: string | null) {
   vi.spyOn(OpenClawConnection, "connect").mockImplementation(
@@ -100,13 +107,16 @@ async function sessionFor(openclawChatId: string | null) {
 }
 
 /** The terminal error frame, driven through the session's own run manager. */
-async function driveGone(session: {
-  sessionKey: string;
-  runManager: {
-    beginTurn: (now: number, runId: string) => Promise<void>;
-    feed: (frame: unknown, now: number) => Promise<unknown>;
-  };
-}): Promise<void> {
+async function driveGone(
+  session: {
+    sessionKey: string;
+    runManager: {
+      beginTurn: (now: number, runId: string) => Promise<void>;
+      feed: (frame: unknown, now: number) => Promise<unknown>;
+    };
+  },
+  errorMessage: string = GONE,
+): Promise<void> {
   let now = 1_000_000; // RunManager drives on milliseconds
   await session.runManager.beginTurn(now, OWN_RUN);
   await session.runManager.feed(
@@ -117,7 +127,7 @@ async function driveGone(session: {
         runId: OWN_RUN,
         sessionKey: session.sessionKey,
         state: "error",
-        errorMessage: GONE,
+        errorMessage,
       },
     },
     (now += 10),
@@ -136,6 +146,16 @@ describe("session_gone: the stored session travels Session -> RunManager -> Norm
     const { session, finalized, reg } = await sessionFor(STORED);
     await driveGone(session);
     expect(finalized.length).toBe(1);
+    expect(clearedSession(finalized)).toBe(STORED);
+    reg.closeAll();
+  });
+
+  it("2026.10.33's wording of the wrapper drops the stored session too, under the retryable class", async () => {
+    const { session, finalized, reg } = await sessionFor(STORED);
+    await driveGone(session, GONE_1033);
+    expect(finalized.length).toBe(1);
+    // finalize(messageId, status, text, error, errorKind, opts)
+    expect(finalized[0]?.[4]).toBe("session_gone");
     expect(clearedSession(finalized)).toBe(STORED);
     reg.closeAll();
   });

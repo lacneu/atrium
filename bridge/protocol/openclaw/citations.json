@@ -1172,6 +1172,27 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "failover/assistant-request-failure-copy.ts:57-58,108",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/failover/assistant-request-failure-copy.ts",
+      "lines": [
+        [
+          57,
+          58
+        ],
+        [
+          108,
+          108
+        ]
+      ],
+      "literals": [
+        "This conversation changed while OpenClaw was working",
+        "${STORAGE_FAILURE_COPY[facts.storageFailure]} ${ERROR_DETAILS_HINT}"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "gateway/worker-environments/worker-turn-run-owner.ts:72",
       "repo": "upstream",
       "tag": "2026.9.36",
@@ -1862,14 +1883,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:2023",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:2015",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          2023,
-          2023
+          2015,
+          2015
         ]
       ],
       "literals": [
@@ -3503,6 +3524,22 @@
       ],
       "literals": [
         "evt.data.reason === \"rate_limit\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:1288-1305",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          1288,
+          1305
+        ]
+      ],
+      "literals": [
+        "[\"rate_limit\", \"overloaded\", \"server_error\", \"timeout\", \"output_limit\"].includes("
       ]
     },
     {

@@ -3975,7 +3975,23 @@ export default defineSchema({
     // (OpenClaw 2026.9.4 `ChatStatusEvent.retry`). Carried rather than
     // re-derived: the label must say 2/10, and recomposing it downstream from a
     // second source is how a fact goes stale. Cleared whenever the phase is.
-    phaseRetry: v.optional(v.object({ attempt: v.number(), maxAttempts: v.number() })),
+    // `reason` and `retryAt` (OpenClaw 2026.10.33): why the provider is waited on, and the
+    // gateway's own time for the next attempt — absent when the gateway gave neither.
+    phaseRetry: v.optional(
+      v.object({
+        attempt: v.number(),
+        maxAttempts: v.number(),
+        reason: v.optional(
+          v.union(
+            v.literal("rate_limit"),
+            v.literal("overloaded"),
+            v.literal("server_error"),
+            v.literal("timeout"),
+          ),
+        ),
+        retryAt: v.optional(v.number()),
+      }),
+    ),
     // Delivery-latency recorder (OFF by default): when a recording session is
     // active, appendDelta/setSnapshot stamp the deliveryTimings row id (the unique
     // correlator) + server commit time of the last write here, so getStreamingText

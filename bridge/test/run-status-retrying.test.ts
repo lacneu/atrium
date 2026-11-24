@@ -63,6 +63,26 @@ describe("run_status `retrying` publishes the existing back-off phase", () => {
     expect(got[0]).toMatchObject({ phase: "retrying", retry: { attempt: 2, maxAttempts: 4 } });
   });
 
+  it("…and the SAME facts as the chat projection of that retry: its reason, and `retryAt` when given", () => {
+    // Both carriers describe one back-off; a label read two ways would alternate between
+    // them. `reason` is on this stream at v2026.9.36; `retryAt` from v2026.10.33
+    // (attempt-recovery.ts:463-480).
+    const at936 = phases(open().feed(runStatus(EMBEDDED), 1_002));
+    expect(at936[0]?.retry).toEqual({ attempt: 2, maxAttempts: 4, reason: "overloaded" });
+    const at1033 = phases(open().feed(runStatus({ ...EMBEDDED, retryAt: 1_800_000_005_000 }), 1_002));
+    expect(at1033[0]?.retry).toEqual({
+      attempt: 2,
+      maxAttempts: 4,
+      reason: "overloaded",
+      retryAt: 1_800_000_005_000,
+    });
+  });
+
+  it("a reason outside the vocabulary keeps the counter and names nothing", () => {
+    const got = phases(open().feed(runStatus({ ...EMBEDDED, reason: "quota" }), 1_002));
+    expect(got[0]?.retry).toEqual({ attempt: 2, maxAttempts: 4 });
+  });
+
   it("the Codex-harness shape, which counts nothing, says retrying without a counter", () => {
     const got = phases(open().feed(runStatus(CODEX), 1_002));
     expect(got).toHaveLength(1);

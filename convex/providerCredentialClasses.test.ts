@@ -170,6 +170,22 @@ describe("a delegated child's failure category (R12)", () => {
     expect(classifySubAgentError("error", "HTTP 401: session expired")).toBe("api_error");
     expect(classifySubAgentError("error", "session expired")).toBe("unknown");
     expect(classifySubAgentError("error", PERMISSION_TEXT)).toBe("provider_permission_denied");
+    // The two gateway-side categories, read from the text of a row that carries no class —
+    // in OpenClaw 2026.10.33's wording too (assistant-request-failure-copy.ts:51-56,
+    // src/state/agent-database-admission.ts:111-113), as the bridge's rules read it.
+    for (const text of [
+      "⚠️ OpenClaw couldn't save your conversation because the disk is full. Free up space on the computer running OpenClaw before continuing.",
+      "⚠️ OpenClaw doesn't have permission to save your conversation. Check folder permissions on the computer running OpenClaw.",
+      "⚠️ OpenClaw couldn't save your conversation. Check the storage on the computer running OpenClaw before continuing.",
+    ]) {
+      expect(classifySubAgentError("error", text), text).toBe("gateway_storage_unavailable");
+    }
+    expect(
+      classifySubAgentError(
+        "error",
+        "Agent alice (/data/agent.sqlite): database locked by another process\nClose other processes accessing this database, then restart the Gateway to retry admission. Lock contention does not require database repair.",
+      ),
+    ).toBe("gateway_agent_db_closed");
     expect(classifySubAgentError("error", "boom", "provider_auth_failed")).toBe(
       "provider_auth_failed",
     );

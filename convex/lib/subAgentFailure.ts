@@ -106,9 +106,9 @@ const TOOL_FAILED_RE =
 // patterns: the staging sentence says "free disk space/quota", and `quota` alone would call a
 // full gateway disk an API error.
 const GATEWAY_STORAGE_UNAVAILABLE_TEXT_RE =
-  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error|\benospc\b|\bedquot\b|no space left on device|disk quota exceeded|could not write local session data because the disk is full|free disk space\/quota or set xdg_cache_home to a writable filesystem/i;
+  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error|couldn't save your conversation because the disk is full|doesn't have permission to save your conversation|couldn't save your conversation\. check the storage|\benospc\b|\bedquot\b|no space left on device|disk quota exceeded|could not write local session data because the disk is full|free disk space\/quota or set xdg_cache_home to a writable filesystem/i;
 const GATEWAY_AGENT_DB_CLOSED_TEXT_RE =
-  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent/i;
+  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent|restart the gateway to retry admission/i;
 
 /** The row's stable class -> its category, where the class names a gateway-side cause
  *  the text patterns would misread. */

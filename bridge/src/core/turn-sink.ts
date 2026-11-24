@@ -25,6 +25,7 @@ import {
   EVENT_GATEWAY_SEQ_REPORT,
   EVENT_REASONING,
   EVENT_WIDGET,
+  readTurnRetry,
   type NormalizedEvent,
 } from "./events.js";
 import { ConvexIngestError, type ConvexWriter, type FinalizeStatus, type ToolPart } from "../convex-writer.js";
@@ -2050,21 +2051,9 @@ export class TurnSink {
               // The back-off counter rides ALONG the phase rather than being
               // re-derived downstream: a label recomposed from a second source
               // is how a fact goes stale in the next normalizer.
-              const r = event.retry;
-              const retry =
-                r !== null &&
-                typeof r === "object" &&
-                Number.isInteger((r as { attempt?: unknown }).attempt) &&
-                Number.isInteger((r as { maxAttempts?: unknown }).maxAttempts) &&
-                (r as { attempt: number }).attempt >= 1 &&
-                (r as { maxAttempts: number }).maxAttempts >=
-                  (r as { attempt: number }).attempt &&
-                (r as { maxAttempts: number }).maxAttempts <= 10
-                  ? {
-                      attempt: (r as { attempt: number }).attempt,
-                      maxAttempts: (r as { maxAttempts: number }).maxAttempts,
-                    }
-                  : undefined;
+              // Re-read here, not trusted from the normalizer: every provider's events
+              // pass through this sink, and the counter's contract is the label's.
+              const retry = readTurnRetry(event.retry);
               // A retry clear may only remove the retry: see the normalizer's
               // `clearRetryingPhase`. Carried as a flag rather than a second phase
               // name so Convex's allowlist stays the single vocabulary.

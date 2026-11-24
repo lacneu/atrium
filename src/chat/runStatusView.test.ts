@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { m } from "@/paraglide/messages.js";
+import { getLocale } from "@/paraglide/runtime.js";
 import {
   runStatusView,
   runStatusOutageLabel,
@@ -742,6 +743,47 @@ describe("live working label (phase/tool — always on, ChatGPT-style)", () => {
     expect(withCount?.label).not.toBe(
       runStatusView("streaming", false, "post_processing")?.label,
     );
+  });
+
+  it("a back-off names WHY the provider is waited on, one sentence per reason (2026.10.33)", () => {
+    const generic = runStatusView("streaming", false, "retrying", null, false, {
+      attempt: 2,
+      maxAttempts: 10,
+    })?.label;
+    const labels = (["rate_limit", "overloaded", "server_error", "timeout"] as const).map(
+      (reason) =>
+        runStatusView("streaming", false, "retrying", null, false, {
+          attempt: 2,
+          maxAttempts: 10,
+          reason,
+        })?.label,
+    );
+    // Four distinct sentences, none of them the reason-less one, each with its counter.
+    expect(new Set([...labels, generic]).size).toBe(5);
+    for (const label of labels) expect(label).toContain("2/10");
+  });
+
+  it("…and WHEN the next attempt is, only while that time is still ahead of the reader", () => {
+    const NOW = 1_800_000_000_000;
+    const retry = { attempt: 2, maxAttempts: 10, reason: "overloaded" as const };
+    const plain = runStatusView("streaming", false, "retrying", null, false, retry, null, NOW)?.label;
+    const view = (retryAt: number, now: number | null = NOW) =>
+      runStatusView("streaming", false, "retrying", null, false, { ...retry, retryAt }, null, now)?.label;
+    const ahead = view(NOW + 30_000);
+    expect(ahead).not.toBe(plain);
+    expect(ahead?.startsWith(plain!)).toBe(true);
+    // The time shown is the gateway's instant, in the reader's locale and zone.
+    expect(ahead).toContain(
+      new Intl.DateTimeFormat(getLocale(), { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(
+        new Date(NOW + 30_000),
+      ),
+    );
+    // Already due, due now, absurdly far (a clock that disagrees), or no clock given: the
+    // label states no time rather than a wrong one.
+    expect(view(NOW - 1)).toBe(plain);
+    expect(view(NOW)).toBe(plain);
+    expect(view(NOW + 2 * 60 * 60 * 1000)).toBe(plain);
+    expect(view(NOW + 30_000, null)).toBe(plain);
   });
 
   it("a back-off WITHOUT a counter still says what is happening", () => {

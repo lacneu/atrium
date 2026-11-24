@@ -1944,7 +1944,7 @@
           "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
-            "token": "(maxAttempts as number) >= (attempt as number) &&"
+            "token": "const backoff = readTurnRetry(data);"
           },
           "proof": {
             "kind": "deterministic-test",
@@ -1961,7 +1961,7 @@
           "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
-            "token": "(maxAttempts as number) >= (attempt as number) &&"
+            "token": "const backoff = readTurnRetry(data);"
           },
           "proof": {
             "kind": "deterministic-test",
@@ -1992,7 +1992,7 @@
         },
         "reason": {
           "status": "handled",
-          "by": "`output_limit` is the run continuing a cut reply, not a provider being waited on: no back-off phase for it",
+          "by": "`output_limit` is the run continuing a cut reply, not a provider being waited on: no back-off phase for it; `rate_limit`, `overloaded`, `server_error` and `timeout` ride the back-off phase so the label can name the wait",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "if (data.reason === \"output_limit\") return;"

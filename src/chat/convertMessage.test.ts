@@ -311,6 +311,17 @@ describe("convertConvexMessage carries the live phase AND its counter", () => {
     expect(meta.phaseRetry).toEqual({ attempt: 2, maxAttempts: 10 });
   });
 
+  it("…with the reason and the next-attempt time the gateway gave (2026.10.33)", () => {
+    const phaseRetry = {
+      attempt: 2,
+      maxAttempts: 10,
+      reason: "overloaded" as const,
+      retryAt: 1_800_000_060_000,
+    };
+    const meta = customMeta(makeMessage({ status: "streaming", phase: "retrying", phaseRetry }));
+    expect(meta.phaseRetry).toEqual(phaseRetry);
+  });
+
   it("a turn with no back-off carries an explicit null, never a stale counter", () => {
     const meta = customMeta(makeMessage({ status: "streaming", phase: "compacting" }));
     expect(meta.phase).toBe("compacting");

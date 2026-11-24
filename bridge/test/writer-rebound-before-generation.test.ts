@@ -144,6 +144,70 @@ describe("a writer-claim rebound is retried only when the stream proves nothing 
     expect(viaChat?.errorKind).toBe("session_write_conflict");
   });
 
+  it("2026.10.33 rewrote that copy: the same class, the same proof, the same upgrade", () => {
+    // `STORAGE_FAILURE_COPY.transcript_writer_fenced` at v2026.10.33
+    // (src/agents/failover/assistant-request-failure-copy.ts:57-58,107-109) no longer
+    // names a writer. Unrecognized, the turn died without a class — and without the
+    // bounded retry of a rebound the stream proves pre-generation.
+    const COPY_1033 =
+      "⚠️ This conversation changed while OpenClaw was working. Check its latest messages before continuing. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
+    const chatErr = (seq: number) => ({
+      type: "event",
+      event: "chat",
+      payload: { runId: RUN, sessionKey: SESSION_KEY, seq, state: "error", errorMessage: COPY_1033 },
+    });
+    // Before generation: the retryable init conflict, the true class on the trace channel.
+    const before = once([...PRELUDE, chatErr(5)]);
+    expect(before?.errorKind).toBe("session_init_conflict");
+    expect(before?.diagnosticErrorKind).toBe("session_write_conflict");
+    // Once the run started: non-retryable, on both carriers.
+    const started = [...PRELUDE, agentFrame(5, "lifecycle", { phase: "start", startedAt: 2_000 })];
+    expect(once([...started, chatErr(6)])?.errorKind).toBe("session_write_conflict");
+    expect(
+      once([
+        ...started,
+        agentFrame(6, "lifecycle", { phase: "error", error: COPY_1033, livenessState: "blocked" }),
+      ])?.errorKind,
+    ).toBe("session_write_conflict");
+  });
+
+  it("2026.10.33: the Control UI copy carries no cause — the lifecycle error that precedes it does", () => {
+    // `renderControlUiAgentFailureCopy()` takes no argument at v2026.10.33
+    // (src/agents/failover/user-copy.ts:669-670); the cause of a run that throws rides the
+    // lifecycle error, raw (src/auto-reply/reply/agent-lifecycle-terminal.ts:126-132), and
+    // the chat error projected from it. The first terminal decides: a later chat error
+    // with the cause-less copy must not replace the class nor the text.
+    const CONTROL_UI_COPY =
+      "⚠️ OpenClaw couldn't finish this reply. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
+    const copyError = (seq: number) => ({
+      type: "event",
+      event: "chat",
+      payload: { runId: RUN, sessionKey: SESSION_KEY, seq, state: "error", errorMessage: CONTROL_UI_COPY },
+    });
+    const n = new Normalizer(SESSION_KEY);
+    let now = 1_000;
+    n.beginTurn(now);
+    n.noteRunStarted(RUN, now);
+    const events: BridgeEvent[] = [];
+    for (const f of [
+      ...PRELUDE,
+      agentFrame(5, "lifecycle", { phase: "start", startedAt: 2_000 }),
+      agentFrame(6, "lifecycle", { phase: "error", error: "database or disk is full", executionSettled: true }),
+      copyError(7),
+    ]) {
+      events.push(...n.feed(f, (now += 0.01)));
+    }
+    events.push(...n.tick(now + 120));
+    const finals = events.filter((e) => e.type === "message.final") as Array<Final & { error?: string }>;
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.errorKind).toBe("gateway_storage_unavailable");
+    expect(finals[0]?.error).toBe("database or disk is full");
+    // Alone — no lifecycle terminal was observed — the copy is all there is: the class says
+    // the gateway passed on no cause, and none is invented.
+    const alone = once([...PRELUDE, agentFrame(5, "lifecycle", { phase: "start", startedAt: 2_000 }), copyError(6)]);
+    expect(alone?.errorKind).toBe("run_failed_no_cause");
+  });
+
   it("evidence and gaps belong to ONE turn", () => {
     const n = new Normalizer(SESSION_KEY);
     const first = turn(n, [...PRELUDE, agentFrame(5, "lifecycle", { phase: "start", startedAt: 2_000 }), chatError(6)], (x) =>

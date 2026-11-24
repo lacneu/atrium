@@ -528,6 +528,8 @@ type IngestOp =
       messageId: string;
       phase: string;
       retry?: { attempt: number; maxAttempts: number };
+      retryReason?: string;
+      retryAt?: number;
       onlyIfRetrying?: boolean;
       runId?: string | null;
     }
@@ -1834,6 +1836,8 @@ export const ingest = httpAction(async (ctx, request) => {
         phase: body.phase,
         boundInstanceName,
         ...(body.retry !== undefined ? { retry: body.retry } : {}),
+        ...(typeof body.retryReason === "string" ? { retryReason: body.retryReason } : {}),
+        ...(typeof body.retryAt === "number" ? { retryAt: body.retryAt } : {}),
         ...(body.onlyIfRetrying === true ? { onlyIfRetrying: true } : {}),
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });

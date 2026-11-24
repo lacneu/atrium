@@ -218,6 +218,16 @@ export function classifyErrorDetail(detail: unknown): string | null {
   }
   if (status === 429) return "rate_limit";
   if (status !== null && status >= 500 && status <= 599) return "provider_internal";
+  // LAST structured resort, after the reason and the status: `upstream_html` is an HTML page
+  // where an API answer was expected, behind a status that is not a credential's 401/403 —
+  // or a CDN challenge (src/agents/embedded-agent-helpers/provider-runtime-failure.ts:131-140
+  // at v2026.10.33, same rule at v2026.9.36 :206-215). It rides `errorObservation` and
+  // `errorDetail` like the kinds above (embedded-agent-error-observation.ts:153,192 →
+  // embedded-agent-subscribe.handlers.lifecycle.ts:203-209 → logs-chat.ts:506). Its copy was
+  // classed by TEXT up to 9.36 ("…returned an HTML error page…", `provider_internal`); 10.33
+  // rewrote the copy (error-text.ts:76-77), the kind did not move. Placed last so a frame
+  // whose reason or status already named a class keeps it on every version.
+  if (kind === "upstream_html") return "provider_internal";
   return null;
 }
 
@@ -312,8 +322,19 @@ const WRITER_CLAIM_REBOUND_RE =
 // preview) and the chat error's `errorMessage` (server-chat.ts:783,1239, ≤240 chars).
 // None of the patterns here matched it, so the turn died unclassified (v2026.9.4).
 // The prose's own "Retry" does not make it retryable: see classifyFailureText.
+//
+// v2026.10.33 rewrote that copy; the trigger is unchanged (sqlite-error-diagnostics.ts:11).
+// `STORAGE_FAILURE_COPY.transcript_writer_fenced`, src/agents/failover/
+// assistant-request-failure-copy.ts:57-58: "This conversation changed while OpenClaw was
+// working. Check its latest messages before continuing." — behind "⚠️ " and the logs hint on
+// a lifecycle error, a chat error and the `run-failed-before-reply` row (:107-109,
+// src/sessions/session-run-error.ts:49), bare on a session row (:97-101). The words "while
+// OpenClaw was working" are what tell it from the two other "conversation changed" copies,
+// which are NOT this failure: "…changed before your message could start"
+// (src/auto-reply/reply/agent-runner-core.ts:401) and "Your message didn't run because the
+// conversation changed" (src/gateway/server-methods/chat-send-dispatch-errors.ts:57).
 const WRITER_FENCED_COPY_RE =
-  /the transcript writer no longer owned this session/i;
+  /the transcript writer no longer owned this session|this conversation changed while openclaw was working/i;
 // 2026.9.1: `ActiveTurnClaimError` — "Session <id> already has an active turn
 // claim" (upstream src/gateway/worker-environments/placement-turn-claims.ts:57)
 // joins RUNTIME_COORDINATION_ERROR_NAMES (failover-error.ts:46-52): the session
@@ -345,6 +366,21 @@ const SESSION_CHANGED_STARTING_RE =
 //    initialization completes.` (src/config/sessions/lifecycle.ts:123), unclassified.
 const TRANSCRIPT_REBUILDING_RE = /session transcript is rebuilding;?\s*retry shortly/i;
 const SESSION_INITIALIZING_RE = /is still initializing\.?\s*retry after initialization completes/i;
+// v2026.10.33: three more refusals of the same family, each thrown while `chat.send` is still
+// being ADMITTED and each ending in the gateway's own "retry":
+//  - "Session preparation changed; retry." — src/gateway/server-methods/chat-send-session.ts:276
+//    (and :503): the runtime config moved while the session was being loaded, before
+//    pre-admission;
+//  - "Worker placement owner changed during chat admission; retry." —
+//    chat-send-admission.ts:205,331 (`commitChatWorkAdmission`);
+//  - "Restart-safe chat freshness was not prepared; retry." — chat-restart-recovery.ts:364,
+//    reached from that same commit (chat-send-admission.ts:345-362).
+// The last two are caught by chat-send-admission.ts:461-466, which clears the pending
+// reservation and releases the work admission before answering (`INVALID_REQUEST`, the bare
+// message, no `details`, no `retryable`: chat-send-pre-admission.ts:115-119) — nothing is
+// reserved and nothing ran, which is what the bounded retry of this class relies on.
+const CHAT_ADMISSION_CHANGED_RE =
+  /session preparation changed; retry|worker placement owner changed during chat admission; retry|restart-safe chat freshness was not prepared; retry/i;
 // 2026.9.3+ (read at v2026.9.4): the gateway's own SQLite STORAGE failures, rendered for the
 // reader by the same upstream file as the writer-fenced copy above
 // (src/agents/failover/assistant-request-failure-copy.ts:13-26,52), from the classification in
@@ -363,10 +399,25 @@ const SESSION_INITIALIZING_RE = /is still initializing\.?\s*retry after initiali
 // (src/sessions/session-run-error-presentation.ts:3-7,14) and on chat.abort
 // (src/gateway/server-methods/chat-abort-handler.ts:691-692); both name the admission
 // that stayed busy, which is the one storage fact left in the text.
+//
+// v2026.10.33 rewrote the five reader-facing copies, and none names SQLite any more
+// (`STORAGE_FAILURE_COPY`, src/agents/failover/assistant-request-failure-copy.ts:46-56):
+//   SQLITE_BUSY / SQLITE_LOCKED (:47-50) "OpenClaw is busy saving your conversation. Wait a
+//     moment, then check the conversation before trying again."
+//   SQLITE_FULL (:51-52) "OpenClaw couldn't save your conversation because the disk is full.
+//     Free up space on the computer running OpenClaw before continuing."
+//   SQLITE_READONLY (:53-54) "OpenClaw doesn't have permission to save your conversation.
+//     Check folder permissions on the computer running OpenClaw."
+//   SQLITE_IOERR (:55-56) "OpenClaw couldn't save your conversation. Check the storage on the
+//     computer running OpenClaw before continuing."
+// The split is still only in the TEXT: the one structured fact beside them,
+// `providerRuntimeFailureKind: "gateway_storage"` (embedded-agent-helpers/
+// provider-runtime-failure.ts:102-104), is the same word for all five and for the writer
+// rebound, so it cannot choose between "resend" and "repair the host" and is not read.
 const GATEWAY_STORAGE_BUSY_RE =
-  /database is locked|database table is locked|state database was (?:busy|locked)\b|sqlite transaction admission remained busy/i;
+  /database is locked|database table is locked|state database was (?:busy|locked)\b|sqlite transaction admission remained busy|openclaw is busy saving your conversation/i;
 const GATEWAY_STORAGE_UNAVAILABLE_RE =
-  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error/i;
+  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error|couldn't save your conversation because the disk is full|doesn't have permission to save your conversation|couldn't save your conversation\. check the storage/i;
 // The SAME host fact when the full filesystem is not the SQLite file itself but the scratch
 // space the gateway reads it through (v2026.9.6). Every read-only inspection of an agent
 // database first copies it into a private snapshot directory under `$XDG_CACHE_HOME/openclaw`,
@@ -423,8 +474,15 @@ export function isGatewayStorageUnavailableText(text: string | null | undefined)
 // The same refusal on a `chat.send` / session RPC arrives with its structured code in
 // `error.details` (session-request-agent.ts:29-38) — read there, by code, in dispatch-errors.ts.
 // Not retryable: a hint that says to stop the gateway and run doctor is not a transient.
+//
+// v2026.10.33 adds a fourth hint, for an inspection that failed on a database LOCKED by
+// another process (src/state/agent-database-admission.ts:106-113): reason "database locked
+// by another process", hint "Close other processes accessing this database, then restart the
+// Gateway to retry admission. Lock contention does not require database repair." Same code
+// (`agent-database-inspection-failed`, :110) and the same fact for the reader — the agent
+// stays refused until the gateway is restarted — so the same class, not the contention one.
 const AGENT_DATABASE_CLOSED_RE =
-  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent/i;
+  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent|restart the gateway to retry admission/i;
 
 // The gateway DROPPED THE USER'S ADMITTED INPUT because another writer replaced the
 // conversation's active branch under it (v2026.9.6). One producer:
@@ -525,11 +583,16 @@ export function parseFallbackSummary(
  *  `buildPreflightCompactionFailureText`): a fixed headline, ` Reason: <reason>.` only when
  *  verbose failure details are on (:213), then a fixed tail. The headline is upstream's copy
  *  for ANY compaction failure — a 401, a 429, a busy writer — whatever the context size. */
+//
+// v2026.10.33 rewrote both headlines and kept the ` Reason: <reason>.` suffix and the tail
+// (src/auto-reply/reply/agent-runner-failure-reply.ts:170-174): "⚠️ This conversation is too
+// long, and OpenClaw couldn't shorten it." / "⚠️ This conversation is too long, and
+// shortening it took too long."
 const PREFLIGHT_WRAPPER_HEAD_RE =
-  /^[\s⚠️]*context is too large and auto-compaction could not recover this turn\.\s*/i;
+  /^[\s⚠️]*(?:context is too large and auto-compaction could not recover this turn|this conversation is too long, and openclaw couldn't shorten it)\.\s*/i;
 /** Its timed-out variant (:212-216) never carries a reason: the timeout IS the cause. */
 const PREFLIGHT_TIMEOUT_HEAD_RE =
-  /^[\s⚠️]*context is too large and auto-compaction timed out before it could finish\.\s*/i;
+  /^[\s⚠️]*(?:context is too large and auto-compaction timed out before it could finish|this conversation is too long, and shortening it took too long)\.\s*/i;
 const WRAPPER_REASON_HEAD_RE = /^reason:\s*/i;
 const PREFLIGHT_WRAPPER_TAIL_RE =
   /\.?\s*try again, use \/compact, or use \/new to start a fresh session\.?\s*$/i;
@@ -546,8 +609,24 @@ const POST_COMPACTION_HEAD_RE =
   /^[\s⚠️]*context compaction succeeded, but the later model request still failed\.\s*/i;
 const AGENT_FAILED_HEAD_RE = /^[\s⚠️]*agent failed before reply:\s*/i;
 const AGENT_FAILED_TAIL_RE = /\.?\s*please try again, or use \/new to start a fresh session\.?\s*$/i;
-const TURN_ENDED_HEAD_RE = /^\s*this turn ended before a reply:\s*/i;
-const SOMETHING_WENT_WRONG_RE = /^[\s⚠️]*something went wrong while processing your request\./i;
+// v2026.10.33, the same three roles under new words:
+//   - src/sessions/session-run-error.ts:51, the `run-failed-before-reply` row when no storage
+//     or Codex copy applies: "Your request couldn't be completed: <error>";
+//   - src/agents/failover/user-copy.ts:309-310 `GENERIC_EXTERNAL_RUN_FAILURE_TEXT`: "⚠️
+//     OpenClaw couldn't finish this request. Check the conversation before trying again. …";
+//   - user-copy.ts:669-670 `renderControlUiAgentFailureCopy()` and src/agents/failover/
+//     assistant-request-failure-copy.ts:132: "⚠️ OpenClaw couldn't finish this reply. …". Up
+//     to 9.36 the Control UI copy was "Agent failed before reply: <cause>."; at 10.33 it takes
+//     NO argument, so this text carries no cause on any version of it. The cause rides the
+//     lifecycle error instead (src/auto-reply/reply/agent-lifecycle-terminal.ts:126-132, the
+//     raw `formatErrorMessage`) and the chat error projected from it (src/gateway/
+//     server-chat.ts:899-912), both read before this copy can be: the copy only becomes a
+//     chat error's text when no lifecycle terminal was observed (src/gateway/server-methods/
+//     chat-send-dispatch-errors.ts:222-225, chat-send-agent-dispatch.ts:577-584).
+const TURN_ENDED_HEAD_RE =
+  /^\s*(?:this turn ended before a reply|your request couldn't be completed):\s*/i;
+const SOMETHING_WENT_WRONG_RE =
+  /^[\s⚠️]*(?:something went wrong while processing your request|openclaw couldn't finish this (?:request|reply))\./i;
 /** `formatForLog` caps a chat error at 240 characters and appends "..."
  *  (src/gateway/ws-log.ts:18, :115-152). */
 const LOG_TRUNCATION_MARK_RE = /\.\.\.\s*$/;
@@ -695,8 +774,23 @@ export function gatewayOwnRefusal(err: unknown): GatewayOwnRefusal | null {
 // Greedy between the quotes: upstream only requires a non-empty string for a profile
 // id, so one may CONTAIN a quote, and `"[^"]*"` then failed to recognize the sentence
 // at all — no class, the exact failure this rule exists to end (codex).
+// v2026.10.33 copies of the SAME three facts, added beside the 9.36 ones they replace:
+//   - reason `overloaded` — was "… request failed (provider overloaded, HTTP 529) …", read by
+//     its `http 5xx`; now "The AI service is busy. Please try again in a moment, or choose
+//     another model." (src/agents/failover/assistant-request-failure-copy.ts:78);
+//   - reason `server_error`, or `timeout` with a 5xx (:116-119) — was "… (provider internal
+//     error, HTTP 500) …"; now "The AI service is having trouble. Please try again in a
+//     moment." (:81);
+//   - an HTML page or a CDN error where an API answer was expected — was "The provider
+//     returned an HTML error page …" / "The AI service is temporarily unavailable (HTTP 502)";
+//     now "Couldn't reach the AI service. Try again in a moment. …" (src/agents/
+//     embedded-agent-helpers/error-text.ts:76-77, src/shared/assistant-error-format.ts:235-236).
+// NOT added, on purpose: "Couldn't connect to the AI service. Check your connection …"
+// (assistant-error-format.ts:256-257) is one sentence for a provider-reported network error
+// (this class on 9.36) AND for a refused connection or a failed DNS lookup (no class on
+// 9.36), and this class is auto-retried.
 const PROVIDER_INTERNAL_TEXT_RE =
-  /the ai service returned an (?:internal )?error|the ai service is temporarily (?:overloaded|unavailable)|returned an html error page|malformed_streaming_fragment|malformed fragment|an error occurred while processing your request|http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|\bupstream (?:error|connect)|server_error|overloaded_error|fetch failed|socket hang ?up|network error|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|und_err|terminated unexpectedly/i;
+  /the ai service returned an (?:internal )?error|the ai service is temporarily (?:overloaded|unavailable)|the ai service is busy\. please try again in a moment|the ai service is having trouble\. please try again in a moment|couldn't reach the ai service\. try again in a moment|returned an html error page|malformed_streaming_fragment|malformed fragment|an error occurred while processing your request|http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|\bupstream (?:error|connect)|server_error|overloaded_error|fetch failed|socket hang ?up|network error|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|und_err|terminated unexpectedly/i;
 const PROVIDER_INTERNAL_EXCLUDE_RE =
   /rate[- ]?limit|too many requests|http\s*4\d\d\b|unauthorized|forbidden|invalid[_ ](?:api[_ ]?key|request|model)|api[_ ]?key|authentication|billing|quota|insufficient|not[_ ]found|unsupported|refus|content[_ ]policy|context overflow|prompt too large/i;
 
@@ -722,6 +816,7 @@ export function isSessionInitConflictText(text: string): boolean {
     SESSION_CHANGED_STARTING_RE.test(text) ||
     ACTIVE_TURN_CLAIM_RE.test(text) ||
     TRANSCRIPT_REBUILDING_RE.test(text) ||
+    CHAT_ADMISSION_CHANGED_RE.test(text) ||
     SESSION_INITIALIZING_RE.test(withoutOperatorData(text))
   );
 }
@@ -923,17 +1018,28 @@ export function isProviderAuthRevokedText(text: string | null | undefined): bool
 
 /** Upstream's fixed copy for a billing refusal (src/agents/failover/user-copy.ts:66-84
  *  `formatBillingErrorMessage`): "… returned a billing error — …". */
-const BILLING_COPY_RE = /\breturned a billing error\b/i;
+//  v2026.10.33 keeps that form when a provider label or a subscription is known
+//  (user-copy.ts:71,74) and words the label-less one anew (:75, and
+//  assistant-request-failure-copy.ts:79-80): "The AI service reported a billing problem. …".
+const BILLING_COPY_RE = /\breturned a billing error\b|\bthe ai service reported a billing problem\b/i;
 /** Upstream's fixed copy for an unknown model (src/agents/failover/user-copy.ts:135-136 and
  *  :590): "The selected model was not found by the provider." / "<provider> can't find the
  *  model you're using right now." */
+//  v2026.10.33 rewords the first: "This model was not found. Choose another model in the
+//  Control UI[ or run `openclaw configure`]." (src/agents/embedded-agent-helpers/
+//  error-text.ts:57-58, assistant-request-failure-copy.ts:86-87, user-copy.ts:332-333).
 const MODEL_NOT_FOUND_COPY_RE =
-  /\bthe selected model was not found by the provider\b|\bcan'?t find the model you'?re using right now\b/i;
+  /\bthe selected model was not found by the provider\b|\bthis model was not found\. choose another model in the control ui\b|\bcan'?t find the model you'?re using right now\b/i;
 /** Upstream's two fixed rate-limit copies (src/agents/failover/user-copy.ts:39 "⚠️ API rate
  *  limit reached. Please try again later." and :55-56 "⚠️ The model request was rate-limited.
  *  Please try again in a few minutes."). Fixed gateway words only: a provider's own wording
  *  ("HTTP 429: Too Many Requests") stays for the structured fields to decide. */
-const RATE_LIMIT_COPY_RE = /\bapi rate limit reached\b|\bthe model request was rate-limited\b/i;
+//  v2026.10.33 has ONE copy in place of both: "⚠️ The AI service needs a short break. Please
+//  try again in a few minutes." (user-copy.ts:32-33 `RATE_LIMIT_ERROR_USER_MESSAGE`,
+//  assistant-request-failure-copy.ts:77), or "… in ~<n>s." / "… in ~<n> min." (user-copy.ts:
+//  489-490).
+const RATE_LIMIT_COPY_RE =
+  /\bapi rate limit reached\b|\bthe model request was rate-limited\b|\bthe ai service needs a short break\b/i;
 
 /** The text with every operator-chosen segment removed, leaving only what the GATEWAY
  *  itself wrote — which is the only thing any rule below may read.
@@ -1101,10 +1207,17 @@ function blankQuotedValues(raw: string): string {
  *  ("...failed: invalid session settings. Diagnostic: no conversation found..."). This
  *  class drops the session and re-runs the turn, so it fails closed on both (codex).
  *
- *  Mirrored by `SESSION_GONE_TEXT_RE` in src/chat/runStatusView.ts, which recognizes the
- *  same sentence on rows stored before this class existed. The two must stay in step. */
+ *  v2026.10.33 rewrote the wrapper's headline, which no longer names a compaction: "⚠️ This
+ *  conversation is too long, and OpenClaw couldn't shorten it. Reason: <reason>. Try again,
+ *  …" (src/auto-reply/reply/agent-runner-failure-reply.ts:170-174). The third opener is that
+ *  headline's fixed end bound to its `Reason:` with nothing between them, so it cannot reach
+ *  a later clause either. The raw form is unchanged (`Preflight compaction required but
+ *  failed:`, :132).
+ *
+ *  Mirrored in convex/lib/failureText.ts (lockstep-tested), which the front reads for rows
+ *  stored before this class existed. */
 const SESSION_GONE_REASON_RE =
-  /(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)/;
+  /(?:(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)|openclaw couldn't shorten it\.\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)/;
 
 export function isSessionGoneText(text: string | null | undefined): boolean {
   if (!text) return false;
@@ -1118,7 +1231,11 @@ export function isSessionGoneText(text: string | null | undefined): boolean {
   // turn with a detached media task reset a session that task still needs, and re-run
   // work already billed (codex, P1). The wrapper is the one shape that proves nothing
   // was generated: it is raised BEFORE the run, when compaction could not even start.
-  if (!t.includes("auto-compaction") && !t.includes("preflight compaction")) {
+  if (
+    !t.includes("auto-compaction") &&
+    !t.includes("preflight compaction") &&
+    !t.includes("openclaw couldn't shorten it")
+  ) {
     return false;
   }
   return SESSION_GONE_REASON_RE.test(t);
