@@ -1,5 +1,5 @@
 {
-  "$comment": "Failure texts composed EXACTLY as OpenClaw v2026.9.6 composes them (each `source` cites the template), with the class Atrium must give them. Read by bridge/test/failure-classifier.test.ts (the bridge verdict) AND convex/lib/failureText.test.ts (the front mirror's verdict): the two readers of one stored sentence must agree. `expected: null` = no class.",
+  "$comment": "Failure texts composed EXACTLY as OpenClaw composes them (each `source` cites the template: at v2026.9.6 unless it names another tag; the `-1033` cases are the v2026.10.33 wording of the same facts, kept BESIDE the older cases because both generations are supported), with the class Atrium must give them. Read by bridge/test/failure-classifier.test.ts (the bridge verdict) AND convex/lib/failureText.test.ts (the front mirror's verdict): the two readers of one stored sentence must agree. `expected: null` = no class.",
   "cases": [
     {
       "id": "preflight-verbose-off",
@@ -246,6 +246,240 @@
       "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:213 (Reason: session family)",
       "text": "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: no conversation found. Try again, use /compact, or use /new to start a fresh session.",
       "expected": "session_gone"
+    },
+    {
+      "id": "writer-fenced-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:57-58,107-109",
+      "text": "⚠️ This conversation changed while OpenClaw was working. Check its latest messages before continuing. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+      "expected": "session_write_conflict"
+    },
+    {
+      "id": "writer-fenced-session-row-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:57-58,97-101 (bare, src/sessions/session-run-error.ts:93)",
+      "text": "This conversation changed while OpenClaw was working. Check its latest messages before continuing.",
+      "expected": "session_write_conflict"
+    },
+    {
+      "id": "storage-busy-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:47-50,107-109",
+      "text": "⚠️ OpenClaw is busy saving your conversation. Wait a moment, then check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+      "expected": "gateway_storage_busy"
+    },
+    {
+      "id": "storage-full-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:51-52,107-109",
+      "text": "⚠️ OpenClaw couldn't save your conversation because the disk is full. Free up space on the computer running OpenClaw before continuing. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+      "expected": "gateway_storage_unavailable"
+    },
+    {
+      "id": "storage-readonly-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:53-54,107-109",
+      "text": "⚠️ OpenClaw doesn't have permission to save your conversation. Check folder permissions on the computer running OpenClaw. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+      "expected": "gateway_storage_unavailable"
+    },
+    {
+      "id": "storage-ioerr-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:55-56,107-109",
+      "text": "⚠️ OpenClaw couldn't save your conversation. Check the storage on the computer running OpenClaw before continuing. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+      "expected": "gateway_storage_unavailable"
+    },
+    {
+      "id": "state-contention-1033",
+      "source": "v2026.10.33 src/sessions/session-run-error-presentation.ts:3-7,14",
+      "text": "Your request was interrupted while the server was busy. Check its status before trying again.\n\nSQLite transaction admission remained busy. Execution may have occurred; check the recorded outcome before resending.",
+      "expected": "gateway_storage_busy"
+    },
+    {
+      "id": "preflight-verbose-off-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:170-174 (no Reason: verbose off)",
+      "text": "⚠️ This conversation is too long, and OpenClaw couldn't shorten it. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "compaction_failed_no_cause"
+    },
+    {
+      "id": "preflight-timed-out-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:169-174",
+      "text": "⚠️ This conversation is too long, and shortening it took too long. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "compaction_timeout"
+    },
+    {
+      "id": "preflight-reason-unrecognized-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:170-174",
+      "text": "⚠️ This conversation is too long, and OpenClaw couldn't shorten it. Reason: compaction summarizer returned no summary. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "compaction_failed_no_cause"
+    },
+    {
+      "id": "preflight-revoked-verbose-on-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:170-174 + src/agents/model-fallback-runner.ts:731 + src/agents/model-fallback-attempt.ts:624",
+      "text": "⚠️ This conversation is too long, and OpenClaw couldn't shorten it. Reason: All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | openai/gpt-5.6-terra: 401: Encountered invalidated oauth token for user (auth). Re-authenticate with: openclaw models auth login --provider 'openai' --force. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "session-gone-wrapped-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:170-174 (Reason: session family, raw reason src/auto-reply/reply/agent-runner-memory.ts:553)",
+      "text": "⚠️ This conversation is too long, and OpenClaw couldn't shorten it. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "session_gone"
+    },
+    {
+      "id": "something-went-wrong-1033",
+      "source": "v2026.10.33 src/agents/failover/user-copy.ts:309-310 GENERIC_EXTERNAL_RUN_FAILURE_TEXT",
+      "text": "⚠️ OpenClaw couldn't finish this request. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "control-ui-agent-failure-1033",
+      "source": "v2026.10.33 src/agents/failover/user-copy.ts:669-670 renderControlUiAgentFailureCopy (no cause argument)",
+      "text": "⚠️ OpenClaw couldn't finish this reply. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "assistant-failure-no-reason-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:132",
+      "text": "⚠️ OpenClaw couldn't finish this reply. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "agent-failed-before-reply-verbose-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:199-203 (verbose only, unchanged form)",
+      "text": "⚠️ Agent failed before reply: database or disk is full. Please try again, or use /new to start a fresh session.",
+      "expected": "gateway_storage_unavailable"
+    },
+    {
+      "id": "turn-ended-before-reply-1033",
+      "source": "v2026.10.33 src/sessions/session-run-error.ts:51",
+      "text": "Your request couldn't be completed: LLM request failed.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "turn-ended-before-reply-cause-1033",
+      "source": "v2026.10.33 src/sessions/session-run-error.ts:51 around a raw SQLite error",
+      "text": "Your request couldn't be completed: database is locked",
+      "expected": "gateway_storage_busy"
+    },
+    {
+      "id": "post-compaction-rate-limit-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:414-422 around user-copy.ts:32-33",
+      "text": "⚠️ Context compaction succeeded, but the later model request still failed. The AI service needs a short break. Please try again in a few minutes.",
+      "expected": "rate_limit"
+    },
+    {
+      "id": "post-compaction-billing-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-failure-reply.ts:414-422 around user-copy.ts:75",
+      "text": "⚠️ Context compaction succeeded, but the later model request still failed. The AI service reported a billing problem. Check your account's credit balance and usage limits before trying again.",
+      "expected": "provider_billing"
+    },
+    {
+      "id": "rate-limit-copy-1033",
+      "source": "v2026.10.33 src/agents/failover/user-copy.ts:32-33; assistant-request-failure-copy.ts:77",
+      "text": "⚠️ The AI service needs a short break. Please try again in a few minutes.",
+      "expected": "rate_limit"
+    },
+    {
+      "id": "rate-limit-cooldown-copy-1033",
+      "source": "v2026.10.33 src/agents/failover/user-copy.ts:489",
+      "text": "⚠️ The AI service needs a short break. Please try again in ~42s.",
+      "expected": "rate_limit"
+    },
+    {
+      "id": "model-not-found-copy-1033",
+      "source": "v2026.10.33 src/agents/embedded-agent-helpers/error-text.ts:57-58",
+      "text": "This model was not found. Choose another model in the Control UI.",
+      "expected": "model_not_found"
+    },
+    {
+      "id": "model-not-found-request-copy-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:86-87,122; user-copy.ts:332-333",
+      "text": "⚠️ This model was not found. Choose another model in the Control UI or run `openclaw configure`.",
+      "expected": "model_not_found"
+    },
+    {
+      "id": "billing-copy-no-label-1033",
+      "source": "v2026.10.33 src/agents/failover/user-copy.ts:75; assistant-request-failure-copy.ts:79-80",
+      "text": "⚠️ The AI service reported a billing problem. Check your account's credit balance and usage limits before trying again.",
+      "expected": "provider_billing"
+    },
+    {
+      "id": "billing-copy-label-1033",
+      "source": "v2026.10.33 src/agents/failover/user-copy.ts:74",
+      "text": "⚠️ anthropic (claude-opus-4-7) returned a billing error — check your account's balance and usage limits before trying again.",
+      "expected": "provider_billing"
+    },
+    {
+      "id": "provider-overloaded-copy-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:78,122",
+      "text": "⚠️ The AI service is busy. Please try again in a moment, or choose another model.",
+      "expected": "provider_internal"
+    },
+    {
+      "id": "provider-server-error-copy-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:81,116-122",
+      "text": "⚠️ The AI service is having trouble. Please try again in a moment.",
+      "expected": "provider_internal"
+    },
+    {
+      "id": "upstream-html-copy-1033",
+      "source": "v2026.10.33 src/agents/embedded-agent-helpers/error-text.ts:76-77; src/shared/assistant-error-format.ts:235-236",
+      "text": "Couldn't reach the AI service. Try again in a moment. If it continues, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
+      "expected": "provider_internal"
+    },
+    {
+      "id": "connection-failed-copy-1033",
+      "source": "v2026.10.33 src/shared/assistant-error-format.ts:256-257 (one sentence for a network error, a refused connection and a DNS failure: no class)",
+      "text": "Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
+      "expected": null
+    },
+    {
+      "id": "request-timeout-copy-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:82-83 (no class by text, as its 9.36 form; the structured reason decides)",
+      "text": "⚠️ The request took too long. Check the conversation for any completed work before trying again.",
+      "expected": null
+    },
+    {
+      "id": "auth-copy-1033",
+      "source": "v2026.10.33 src/agents/failover/assistant-request-failure-copy.ts:73; user-copy.ts:34-35 (no class by text, as the hedged 9.36 form; the structured reason decides)",
+      "text": "⚠️ Couldn't sign in to the AI service. Sign in again under Models in the Control UI or run `openclaw configure`.",
+      "expected": null
+    },
+    {
+      "id": "conversation-changed-before-start-1033",
+      "source": "v2026.10.33 src/auto-reply/reply/agent-runner-core.ts:401 (restart-recovery claim, NOT the writer rebound)",
+      "text": "⚠️ This conversation changed before your message could start. Check the latest messages, then try again if needed.",
+      "expected": null
+    },
+    {
+      "id": "queued-input-dropped-1033",
+      "source": "v2026.10.33 src/gateway/server-methods/chat-send-turn-adoption.ts:305 (queue cap; not the displaced-input class)",
+      "text": "Queued input was dropped (queue-cap).",
+      "expected": null
+    },
+    {
+      "id": "chat-admission-session-preparation-1033",
+      "source": "v2026.10.33 src/gateway/server-methods/chat-send-session.ts:276",
+      "text": "Session preparation changed; retry.",
+      "expected": "session_init_conflict"
+    },
+    {
+      "id": "chat-admission-placement-owner-1033",
+      "source": "v2026.10.33 src/gateway/server-methods/chat-send-admission.ts:205",
+      "text": "Worker placement owner changed during chat admission; retry.",
+      "expected": "session_init_conflict"
+    },
+    {
+      "id": "chat-admission-freshness-1033",
+      "source": "v2026.10.33 src/gateway/server-methods/chat-restart-recovery.ts:364",
+      "text": "Restart-safe chat freshness was not prepared; retry.",
+      "expected": "session_init_conflict"
+    },
+    {
+      "id": "transcript-rebuilding-1033",
+      "source": "v2026.10.33 src/gateway/server-methods/chat-send-pre-admission.ts:107",
+      "text": "session transcript is rebuilding; retry shortly",
+      "expected": "session_init_conflict"
+    },
+    {
+      "id": "agent-database-locked-1033",
+      "source": "v2026.10.33 src/state/agent-database-admission.ts:111-113,367",
+      "text": "Agent alice (/data/agents/alice/agent.sqlite): database locked by another process\nClose other processes accessing this database, then restart the Gateway to retry admission. Lock contention does not require database repair.",
+      "expected": "gateway_agent_db_closed"
     }
   ]
 }

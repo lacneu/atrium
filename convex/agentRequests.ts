@@ -792,6 +792,65 @@ export const settleFromBridge = internalMutation({
 });
 
 /**
+ * The gateway said an exec approval's request FAILED (bridge core/agent-requests.ts
+ * `readOpenClawApprovalRequestFailed`): its command did not run, whatever was decided. The
+ * card of THAT request — same instance, same id, same generation, an OpenClaw exec approval
+ * — is marked, in any status: the mark and the verdict reach Convex in either order, and
+ * what is shown is derived from both (src/chat/agentRequestsView.ts `outcomeOf`). Nothing
+ * else changes: not the status, not who answered. Idempotent — a card already marked is
+ * left as it is and traced once. No card: nothing is kept, the card stays what it is.
+ *
+ * The trace is how an operator counts the upstream defect (openclaw/openclaw#170994) in
+ * production: `agent.request`, phase `gateway_failed`, with the card's status when the word
+ * came (`allowed` = an authorisation that was not honoured). Metadata only.
+ */
+export const markGatewayFailedFromBridge = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    boundInstanceName: v.string(),
+    providerRequestId: v.string(),
+    /** The generation concerned; absent = the newest exec approval of this id. */
+    providerCreatedAt: v.optional(v.number()),
+  },
+  handler: async (ctx, args): Promise<{ outcome: "marked" | "none" }> => {
+    if (!(await chatAllowsInstance(ctx, args.chatId, args.boundInstanceName))) {
+      throw new Error("forbidden: cross-instance agent request target");
+    }
+    const generations = await ctx.db
+      .query("agentRequests")
+      .withIndex("by_chat_instance_provider_request", (q) =>
+        q
+          .eq("chatId", args.chatId)
+          .eq("instanceName", args.boundInstanceName)
+          .eq("providerRequestId", args.providerRequestId),
+      )
+      .order("desc")
+      .take(MAX_GENERATIONS_READ);
+    const execs = generations.filter((g) => g.source === "openclaw.exec");
+    const row =
+      (args.providerCreatedAt === undefined
+        ? execs[0]
+        : execs.find(
+            (g) => g.providerCreatedAt === undefined || g.providerCreatedAt === args.providerCreatedAt,
+          )) ?? null;
+    if (row === null) return { outcome: "none" };
+    if (row.gatewayFailed === true) return { outcome: "marked" };
+    const now = Date.now();
+    await ctx.db.patch(row._id, { gatewayFailed: true, updatedAt: now });
+    await trace(ctx, args.chatId, {
+      phase: "gateway_failed",
+      source: row.source,
+      cardStatus: row.status,
+      ...(row.decision !== undefined ? { decision: row.decision } : {}),
+      elsewhere: row.resolvedElsewhere === true,
+      sinceAskedMs: now - row.createdAt,
+      ...(row.resolvedAt !== undefined ? { sinceResolvedMs: now - row.resolvedAt } : {}),
+    });
+    return { outcome: "marked" };
+  },
+});
+
+/**
  * Was this card closed `expired` by ATRIUM — its own clock or its own answer path — rather
  * than by the gateway's verdict? Since 0.103.5 such closures are marked (`expiredLocally`).
  * Before (0.103.4, c49dac12 convex/agentRequests.ts), the row tells them apart by who it
@@ -1498,6 +1557,8 @@ export const listForChat = query({
       answers: r.answers ?? null,
       decision: r.decision ?? null,
       failureCode: r.failureCode ?? null,
+      /** The gateway said this approval's request failed: its command did not run. */
+      gatewayFailed: r.gatewayFailed === true,
       /** Whether THIS reader may answer (a participant answers questions only). */
       canAnswer:
         canPost(access) &&

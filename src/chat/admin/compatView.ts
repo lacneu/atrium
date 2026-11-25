@@ -3,6 +3,7 @@ import {
   compareVersions,
   brokenVersionReason,
   providerSupport,
+  unvalidatedWindowFor,
   withinSupport,
   type ProviderSupport,
 } from "../../../convex/lib/compat";
@@ -74,8 +75,8 @@ function belowFloor(range: ProviderSupport["range"], version: string): boolean {
  * target). Lets the per-instance compatibility list be driven by the PER-INSTANCE
  * health targets — which carry every instance's version — instead of the singleton
  * compat poller (which only knows the env-BRIDGE_URL instance). `beyond` (newer than
- * the validated ceiling) is computed here from the range, since there is no
- * precomputed flag on a health target.
+ * the validated ceiling, or inside a never-benched interval under it) is computed here
+ * from the manifest, since there is no precomputed flag on a health target.
  */
 export function badgeStateFromVersion(
   version: string | null,
@@ -93,7 +94,9 @@ export function badgeStateFromVersion(
   if (!withinSupport(range, version)) return belowFloor(range, version) ? "unsupported" : "unknown";
   const beyond =
     range !== null && (compareVersions(version, range.maxValidated) ?? 0) > 0;
-  return beyond ? "beyond" : "supported";
+  // Under the ceiling but never benched (the manifest's `unvalidatedWindows`): the same
+  // badge as beyond it, which is what the bridge's own flag says for such a target.
+  return beyond || unvalidatedWindowFor(support, version) !== null ? "beyond" : "supported";
 }
 
 /** The provider card's HEADER verdict, from its instance rows.

@@ -65,10 +65,12 @@ import {
   dockFolded,
   dockOrder,
   emptyDraft,
+  explainsOutcome,
   failureKind,
   isOpen,
   isWaiting,
   oneLiner,
+  optionsOverflow,
   outcomeOf,
   panelSections,
   remaining,
@@ -307,6 +309,7 @@ const OUTCOME_LABEL: Record<OutcomeKey, () => string> = {
   allowed_session: () => m.areq_outcome_allowed_session(),
   allowed_always: () => m.areq_outcome_allowed_always(),
   allowed_elsewhere: () => m.areq_outcome_allowed_elsewhere(),
+  not_run: () => m.areq_outcome_not_run(),
   denied: () => m.areq_outcome_denied(),
   denied_elsewhere: () => m.areq_outcome_denied_elsewhere(),
   expired: () => m.areq_outcome_expired(),
@@ -396,11 +399,11 @@ export function AgentRequestCard({
   const tone = requestTone(request);
   const Icon = TONE_ICON[tone];
   const waiting = isWaiting(request, now);
-  const [selfExpanded, setSelfExpanded] = useFold(request._id, waiting);
+  const outcome = outcomeOf(request, now);
+  const [selfExpanded, setSelfExpanded] = useFold(request._id, waiting || explainsOutcome(outcome));
   const expanded = open ?? selfExpanded;
   const setExpanded = onToggle ?? setSelfExpanded;
   const bodyId = useId();
-  const outcome = outcomeOf(request, now);
   const countdown = waiting && deadlineShown(request) ? remainingLabel(request.expiresAt, now) : null;
   const blocker = ctx && waiting ? blockedBy(request, ctx.rows) : null;
   const summary = oneLiner(request);
@@ -483,7 +486,7 @@ export function AgentRequestCard({
       </header>
       {expanded ? (
         <div className="oc-areq__body" id={bodyId}>
-          <RequestBody request={request} waiting={waiting} blocker={blocker} />
+          <RequestBody request={request} waiting={waiting} blocker={blocker} outcome={outcome} />
         </div>
       ) : null}
     </section>
@@ -494,10 +497,12 @@ function RequestBody({
   request,
   waiting,
   blocker,
+  outcome,
 }: {
   request: AgentRequestView;
   waiting: boolean;
   blocker: AgentRequestView | null;
+  outcome: OutcomeKey | null;
 }) {
   const ctx = useAgentRequests();
   const several = ctx !== null && severalHermesApprovals(request, ctx.rows);
@@ -522,6 +527,11 @@ function RequestBody({
         <CredentialBody request={request} answerable={answerable} />
       )}
       {note !== null ? <p className="oc-areq__note">{note}</p> : null}
+      {outcome === "not_run" ? (
+        <p className="oc-areq__note oc-areq__note--not-run" role="note">
+          {m.areq_not_run_note()}
+        </p>
+      ) : null}
     </>
   );
 }
@@ -688,7 +698,7 @@ function QuestionBlock({
       ) : null}
       {question.options.length > 0 ? (
         <div
-          className="oc-areq__options"
+          className={`oc-areq__options${optionsOverflow(question.options.length) ? " oc-areq__options--many" : ""}`}
           role={question.multiSelect ? "group" : "radiogroup"}
           aria-labelledby={labelId}
         >

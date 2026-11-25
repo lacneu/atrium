@@ -1,0 +1,2563 @@
+{
+  "$comment": "Classification of every emission of protocol/openclaw/2026.10.33/agent-emissions.json — meta-schema: protocol/emissions.schema.json; ratchet: test/emissions-coverage.test.ts. Each (stream, phase) pair, each data key an emitter writes, and each key a gateway rewrite adds is handled (anchor + verified proof), ignored (a deliberate exclusion, said why) or a gap (its écart identifier and impact). A new version starts from the previous registry; the ratchet lists what its inventory added or dropped. 2026.10.33: carried forward from 2026.9.36. A golden-corpus proof names the 2026.10.33 capture that shows the pair or key (the corpus promoted from the bench run that validated this tag). One stream, five (stream, phase) pairs and forty data keys are new; two pairs and two keys left.",
+  "version": "2026.10.33",
+  "streams": {
+    "<opaque>": {
+      "phases": {
+        "-": {
+          "status": "ignored",
+          "why": "the stream is chosen by a caller the derivation cannot resolve (a harness forwarding its own events, the plugin SDK's emitAgentEvent): there is no stream to classify at this row. A frame from it is judged by the stream it actually names — a known stream takes that stream's path and entry, a dotted plugin stream is the plugin's own, any other is counted by the drift detector"
+        },
+        "<opaque>": {
+          "status": "ignored",
+          "why": "the stream is chosen by a caller the derivation cannot resolve (a harness forwarding its own events, the plugin SDK's emitAgentEvent): there is no stream to classify at this row. A frame from it is judged by the stream it actually names — a known stream takes that stream's path and entry, a dotted plugin stream is the plugin's own, any other is counted by the drift detector"
+        }
+      },
+      "keys": {
+        "args": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "commandBearing": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "cwd": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "durationMs": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "exitCode": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "isError": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "name": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "output": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "pluginId": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "pluginName": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "status": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "summary": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "title": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "toolCallId": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        },
+        "value": {
+          "status": "ignored",
+          "why": "declared by an emitter whose stream is unresolved: a frame carrying it is read, or not, under the stream it actually names, where that stream's entry classifies the key"
+        }
+      }
+    },
+    "acp": {
+      "phases": {
+        "prompt_submitted": {
+          "status": "ignored",
+          "why": "ACP harness runtime events (extensions/acpx): the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "runtime_event": {
+          "status": "ignored",
+          "why": "ACP harness runtime events (extensions/acpx): the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      },
+      "keys": {
+        "at": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "code": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "eventType": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "message": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "proxyEnvKeys": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "retryable": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "status": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "stopReason": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "stream": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "tag": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "text": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "title": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "toolCallId": {
+          "status": "ignored",
+          "why": "a key of the `acp` stream, which Atrium does not read: the Control UI renders no `acp` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      }
+    },
+    "approval": {
+      "phases": {
+        "requested": {
+          "status": "handled",
+          "by": "the exec RETURNED instead of waiting: status pending holds the turn for a human decision (holdForApproval), keyed by toolCallId then approvalId; status unavailable asks nobody and holds nothing",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const aliases = [data.toolCallId, data.approvalId].filter(isString);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "`requested` was never captured in either status (the bench's execs wait in place); frames built from handleToolExecutionEnd"
+          }
+        },
+        "resolved": {
+          "status": "handled",
+          "by": "the exec's result was an approval refusal: releases THIS request's hold when it is still held (releaseApproval) — after an in-place wait it follows the run's approval-resolved and finds nothing left; with status `failed` it is also the gateway's word that the approval REQUEST failed and the command did not run, whatever was decided: joined by toolCallId to the exec request announced for that call and written on its card (agent-request-observer onApprovalRequestFailed)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (phase === \"resolved\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "captured on the bench (run 2026-11-08T00-15-04-531Z, phase resolved, status failed, after the run's approval-resolved) but in no scenario of the promoted corpus; the test replays that sequence"
+          }
+        }
+      },
+      "keys": {
+        "approvalId": {
+          "status": "handled",
+          "by": "the hold's second alias",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "[data.toolCallId, data.approvalId].filter(isString)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "`requested` was never captured in either status (the bench's execs wait in place); frames built from handleToolExecutionEnd"
+          }
+        },
+        "approvalSlug": {
+          "status": "ignored",
+          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+        },
+        "command": {
+          "status": "ignored",
+          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+        },
+        "host": {
+          "status": "ignored",
+          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+        },
+        "kind": {
+          "status": "handled",
+          "by": "read by value on a `resolved` / `failed`: only an `exec` one is joined to a card (the Codex harness writes the stream for its own plugin approvals, with another meaning for `failed`)",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "data.kind !== \"exec\" || data.status !== \"failed\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-invalidated-by-gateway.test.ts",
+            "note": "the captured frames are all `exec` (the bench runs the API runtime, never the Codex harness); the test builds the other kinds from AgentApprovalEventData"
+          }
+        },
+        "message": {
+          "status": "ignored",
+          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+        },
+        "phase": {
+          "status": "handled",
+          "by": "the approval branch reads it by value (requested / resolved)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (phase === \"resolved\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "captured on the bench (run 2026-11-08T00-15-04-531Z, phase resolved, status failed, after the run's approval-resolved) but in no scenario of the promoted corpus; the test replays that sequence"
+          }
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+        },
+        "status": {
+          "status": "handled",
+          "by": "on a `requested`: `unavailable` means nobody can be asked, so the turn is not held (normalizer). On a `resolved`: `failed` — the exec refused because waiting for the decision failed (approval-request-failed), so the command did not run — marks the card of that request; `denied` (every other refusal) is not read, and the card stays what the request's own resolution made it",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "data.kind !== \"exec\" || data.status !== \"failed\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-invalidated-by-gateway.test.ts",
+            "note": "captured on the bench where the upstream defect occurred (runs 2026-11-24T21-28-40-832Z and 2026-11-25T00-13-54-548Z, scenario approval-wait-vs-existing-session-claim: allow-once, then resolved / failed) — both runs are NO-GO, which the promoter refuses, so the capture cannot enter the golden corpus; the test replays an extract of the second, free text masked"
+          }
+        },
+        "title": {
+          "status": "ignored",
+          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+        },
+        "toolCallId": {
+          "status": "handled",
+          "by": "the hold's first alias: the one id the resolution is guaranteed to carry",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "[data.toolCallId, data.approvalId].filter(isString)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-stream-after-wait.test.ts",
+            "note": "captured on the bench (run 2026-11-08T00-15-04-531Z, phase resolved, status failed, after the run's approval-resolved) but in no scenario of the promoted corpus; the test replays that sequence"
+          }
+        }
+      }
+    },
+    "assistant": {
+      "phases": {
+        "-": {
+          "status": "handled",
+          "by": "normalizer assistant branch: a sign of activity (it ends a provider back-off label); the answer's text is NOT read from this stream but from the `chat` deltas",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (stream === \"assistant\") {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "2026.7.1/async-task"
+          }
+        },
+        "<opaque>": {
+          "status": "handled",
+          "by": "normalizer assistant branch reads the phase BY VALUE: commentary is counted and kept out; any other value is a sign of activity, never the bubble's text",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const phase = isString(data.phase) ? data.phase : null;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/normalizer.test.ts",
+            "note": "an unresolved phase is a runtime value: a capture can only show the literal ones, and the by-value reading is pinned in the normalizer suite"
+          }
+        },
+        "commentary": {
+          "status": "handled",
+          "by": "normalizer assistant branch: a preamble is progress, never the answer — counted, and written nowhere",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (phase === \"commentary\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/reasoning-display.test.ts",
+            "note": "no commentary frame in the 2026.9.36 corpus (the agents captured wrote none)"
+          }
+        },
+        "final_answer": {
+          "status": "handled",
+          "by": "normalizer assistant branch: a sign of activity (it ends a provider back-off label); the answer's text is NOT read from this stream but from the `chat` deltas",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (stream === \"assistant\") {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        }
+      },
+      "keys": {
+        "assistantMessageIndex": {
+          "status": "ignored",
+          "why": "the live answer is read from `text` / `delta` and the settled one from the transcript row; not read; no reader of it under ui/src either at this tag"
+        },
+        "completedText": {
+          "status": "ignored",
+          "why": "the settled answer is the transcript row, read by the transcript projection; not read; no reader of it under ui/src either at this tag"
+        },
+        "delta": {
+          "status": "ignored",
+          "why": "delta: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "itemId: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
+        },
+        "managedMediaUrls": {
+          "status": "ignored",
+          "why": "files reach a bubble only through the transcript rows that carry them (normalizer header: media from the transcript only), never from the live stream that announces them"
+        },
+        "mediaUrls": {
+          "status": "ignored",
+          "why": "files reach a bubble only through the transcript rows that carry them (normalizer header: media from the transcript only), never from the live stream that announces them"
+        },
+        "phase": {
+          "status": "handled",
+          "by": "commentary is kept out of the reply",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const phase = isString(data.phase) ? data.phase : null;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "agent-request-question"
+          }
+        },
+        "replace": {
+          "status": "ignored",
+          "why": "replace: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
+        },
+        "replaceable": {
+          "status": "ignored",
+          "why": "replaceable: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
+        },
+        "text": {
+          "status": "ignored",
+          "why": "text: the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
+        },
+        "occurrenceId": {
+          "status": "ignored",
+          "why": "the occurrence a streamed segment belongs to (Codex harness steering segments, extensions/codex/src/app-server/event-projector-assistant.ts): the live answer is read from the `chat` stream and the settled one from the transcript row; not read; no reader of it under ui/src either at this tag"
+        }
+      }
+    },
+    "codex_app_server.diagnostic": {
+      "phases": {
+        "native_item": {
+          "status": "ignored",
+          "why": "Codex harness live diagnostics (extensions/codex/src/app-server/event-projector-diagnostics.ts): the method, sequence, counts and lengths of the native notifications, no content. The Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag); the run's own `lifecycle`, `item` and `tool` streams carry its life"
+        },
+        "no_answer": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "notification": {
+          "status": "ignored",
+          "why": "Codex harness live diagnostics (extensions/codex/src/app-server/event-projector-diagnostics.ts): the method, sequence, counts and lengths of the native notifications, no content. The Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag); the run's own `lifecycle`, `item` and `tool` streams carry its life"
+        }
+      },
+      "keys": {
+        "activeCount": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "classification": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "completedCount": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "delivery": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "deltaLength": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "droppedNativeItems": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "executionStarted": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "finalSourceReplyDelivered": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "itemPhase": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "itemType": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "lastToolErrorCode": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "lastToolName": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "method": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "middlewareError": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "mutatingAction": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "nativeItemCount": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "nativeStatus": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "runId": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "sequence": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "startedCount": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "status": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "terminalKind": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "terminalSource": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "textLength": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "threadId": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        },
+        "timedOut": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "toolCount": {
+          "status": "gap",
+          "gap": "T4",
+          "note": "a field of the no-answer diagnostic: the Codex harness's own account of a turn that ended with no answer (event-projector-diagnostics.ts: classification, terminal kind and source, tool counts, last tool and its error code, timedOut): Atrium does not read it, so such a turn shows the generic empty-reply card with none of these facts"
+        },
+        "turnId": {
+          "status": "ignored",
+          "why": "a key of the Codex harness live diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.diagnostic` frame either (no reader of it under ui/src at this tag)"
+        }
+      }
+    },
+    "codex_app_server.guardian": {
+      "phases": {
+        "completed": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "Codex harness review notice (strict review required, warning, targetless review outcome): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "started": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "Codex harness review notice (strict review required, warning, targetless review outcome): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "strict_review_required": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "Codex harness review notice (strict review required, warning, targetless review outcome): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "warning": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "Codex harness review notice (strict review required, warning, targetless review outcome): the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        }
+      },
+      "keys": {
+        "actionType": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "command": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "decisionSource": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "message": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "method": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "phase": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "rationale": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "reviewId": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "riskLevel": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "startedAtMs": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "status": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "targetItemId": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "threadId": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "turnId": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "userAuthorization": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of the Codex harness review notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        }
+      }
+    },
+    "codex_app_server.hook": {
+      "phases": {
+        "completed": {
+          "status": "ignored",
+          "why": "Codex harness hook runs: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it (its only codex reader is the guardian notice)"
+        },
+        "started": {
+          "status": "ignored",
+          "why": "Codex harness hook runs: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it (its only codex reader is the guardian notice)"
+        }
+      },
+      "keys": {
+        "durationMs": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "entries": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "eventName": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "executionMode": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "handlerType": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "hookRunId": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "scope": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "sourcePath": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "status": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "statusMessage": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "threadId": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "turnId": {
+          "status": "ignored",
+          "why": "a key of the Codex hook stream, which Atrium does not read: the Control UI renders no `codex_app_server.hook` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      }
+    },
+    "codex_app_server.item": {
+      "phases": {
+        "completed": {
+          "status": "handled",
+          "by": "a completed NATIVE media item (type imageGeneration) flags generated-but-undelivered media for finalize",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.type === \"imageGeneration\" && data.phase === \"completed\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/normalizer.test.ts",
+            "note": "the bench runs the API runtime, never the Codex harness, so no codex_app_server frame is ever captured"
+          }
+        },
+        "started": {
+          "status": "ignored",
+          "why": "an item STARTING carries no handle and no outcome; only the completed native media item is read"
+        },
+        "-": {
+          "status": "ignored",
+          "why": "a raw response item reported with no phase (extensions/codex/src/app-server/event-projector.ts handleRawResponseItemCompleted: itemId, and its type and phase when it has them): it names no outcome; only the completed native media item is read"
+        }
+      },
+      "keys": {
+        "itemId": {
+          "status": "ignored",
+          "why": "the media marker is a per-turn flag keyed on the item type, not on the item"
+        },
+        "phase": {
+          "status": "handled",
+          "by": "only the completed item is read",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.type === \"imageGeneration\" && data.phase === \"completed\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/normalizer.test.ts",
+            "note": "never captured (API runtime on the bench)"
+          }
+        },
+        "type": {
+          "status": "handled",
+          "by": "the native media marker is keyed on the item type",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.type === \"imageGeneration\" && data.phase === \"completed\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/normalizer.test.ts",
+            "note": "never captured (API runtime on the bench)"
+          }
+        }
+      }
+    },
+    "codex_app_server.lifecycle": {
+      "phases": {
+        "background_cleanup_failed": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        },
+        "startup": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        },
+        "thread_ready": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        },
+        "thread_ready_retry": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        },
+        "turn_start_failed": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        },
+        "turn_start_retry_after_compact": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        },
+        "turn_start_waiting_for_native_turn": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        },
+        "turn_starting": {
+          "status": "ignored",
+          "why": "Codex harness thread and turn diagnostics: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it; the run's own `lifecycle` stream carries its life"
+        }
+      },
+      "keys": {
+        "action": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "clientId": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "collaborationEffort": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "effort": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "error": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "model": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "serviceTier": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "threadId": {
+          "status": "ignored",
+          "why": "a key of the Codex harness diagnostics stream, which Atrium does not read: the Control UI renders no `codex_app_server.lifecycle` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      }
+    },
+    "codex_app_server.tool": {
+      "phases": {
+        "-": {
+          "status": "ignored",
+          "why": "Codex harness yield notice: extensions/codex/src/app-server/dynamic-tool-build.ts:325-330 (`onYield`) sends `{ stream: \"codex_app_server.tool\", data: { name: \"sessions_yield\", message } }` through `onCodexAppServerEvent` (run-attempt-tool-setup.ts:240, emitCodexAppServerEvent); the Control UI renders no `codex_app_server.tool` frame either (its only codex reader is `codex_app_server.guardian`, ui/src/pages/chat/tool-stream.ts:299), and the bench never runs the Codex harness; Atrium follows it"
+        }
+      },
+      "keys": {
+        "message": {
+          "status": "ignored",
+          "why": "the yield message of the Codex harness notice (extensions/codex/src/app-server/dynamic-tool-build.ts:329), which Atrium does not read: the Control UI renders no `codex_app_server.tool` frame either (ui/src/pages/chat/tool-stream.ts:299 reads only the guardian stream); Atrium follows it"
+        },
+        "name": {
+          "status": "ignored",
+          "why": "always `sessions_yield` (extensions/codex/src/app-server/dynamic-tool-build.ts:329), a key of the Codex yield notice, which Atrium does not read: the Control UI renders no `codex_app_server.tool` frame either (ui/src/pages/chat/tool-stream.ts:299 reads only the guardian stream); Atrium follows it"
+        }
+      }
+    },
+    "command_output": {
+      "phases": {
+        "-": {
+          "status": "ignored",
+          "why": "the shell output of an exec tool: the card is built from the `tool` stream's start and result (the `item` stream on delivery runs), and the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "delta": {
+          "status": "ignored",
+          "why": "the shell output of an exec tool: the card is built from the `tool` stream's start and result (the `item` stream on delivery runs), and the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "end": {
+          "status": "ignored",
+          "why": "the shell output of an exec tool: the card is built from the `tool` stream's start and result (the `item` stream on delivery runs), and the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      },
+      "keys": {
+        "cwd": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "durationMs": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "exitCode": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "name": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "output": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "replace": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "replaceable": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "status": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "title": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "toolCallId": {
+          "status": "ignored",
+          "why": "a key of the `command_output` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `command_output` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      }
+    },
+    "compaction": {
+      "phases": {
+        "end": {
+          "status": "handled",
+          "by": "the compaction's verdict (completed / failed for good) and the replay it announces",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.explicitCompaction = \"ended\";"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-detection.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus"
+          }
+        },
+        "start": {
+          "status": "handled",
+          "by": "an explicit compaction starts: the widened silence budget, the finishing grace suspended, the run marked compacting",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.explicitCompaction = \"active\";"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-detection.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus (no promoted run filled a context window)"
+          }
+        }
+      },
+      "keys": {
+        "backend": {
+          "status": "ignored",
+          "why": "which engine compacted: not part of the verdict the next turn inherits"
+        },
+        "completed": {
+          "status": "handled",
+          "by": "the gateway's own verdict on whether the compaction produced a result",
+          "anchor": {
+            "file": "src/core/compaction-verdict.ts",
+            "token": "d.phase === \"end\" && d.completed === false && d.willRetry !== true"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-verdict-hook-relay.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus"
+          }
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "the verdict is per session, not per compaction item"
+        },
+        "outcome": {
+          "status": "handled",
+          "by": "how the compaction ended, read as upstream classifies it: `failed` is a failure for good, `aborted` and an end without `outcome` (the Codex harness) give no verdict, `skipped` depends on its reason",
+          "anchor": {
+            "file": "src/core/compaction-verdict.ts",
+            "token": "if (d.outcome === \"skipped\") return !isBenignSkipReason(d.reason);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-outcome.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus (no promoted run filled a context window); frames built from handleCompactionEnd and the Codex emitCompactionEnd"
+          }
+        },
+        "phase": {
+          "status": "handled",
+          "by": "start / end drive the compaction state machine",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.explicitCompaction = \"ended\";"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-detection.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus"
+          }
+        },
+        "reason": {
+          "status": "handled",
+          "by": "the skip reason, compared against the three families upstream calls benign (nothing to compact, below threshold, already compacted); never stored or shown",
+          "anchor": {
+            "file": "src/core/compaction-verdict.ts",
+            "token": "function isBenignSkipReason(reason: unknown): boolean {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-outcome.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus; reason strings taken from agent-session-compaction.ts and classifyCompactionReason"
+          }
+        },
+        "threadId": {
+          "status": "ignored",
+          "why": "Codex harness thread identifier: the verdict is per session"
+        },
+        "turnId": {
+          "status": "ignored",
+          "why": "Codex harness turn identifier: the verdict is per session"
+        },
+        "willRetry": {
+          "status": "handled",
+          "by": "an overflow replay in flight on the same run keeps the widened budget",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.willRetry === true) {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-detection.test.ts",
+            "note": "no compaction in the 2026.9.36 corpus"
+          }
+        },
+        "qualityDegraded": {
+          "status": "gap",
+          "gap": "T2",
+          "note": "a completed compaction whose result the gateway marks as degraded in quality (src/agents/embedded-agent-subscribe.handlers.compaction.ts, on the end phase): Atrium records the compaction as completed and says nothing of the degradation; no reader of it under ui/src at this tag"
+        }
+      }
+    },
+    "error": {
+      "phases": {
+        "-": {
+          "status": "handled",
+          "by": "the gateway's report about its own per-run numbering: observed under its own name (a trace, a per-turn count), never as a frame lost on the way to the bridge",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "type: EVENT_GATEWAY_SEQ_REPORT,"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
+        }
+      },
+      "keys": {
+        "expected": {
+          "status": "handled",
+          "by": "the seq the gateway's handler expected next, carried on the report's trace",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "expected: typeof data.expected === \"number\" ? data.expected : null,"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
+        },
+        "reason": {
+          "status": "handled",
+          "by": "`seq gap` selects the report; any other reason on this stream is ignored and fails nothing",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.reason === \"seq gap\") {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
+        },
+        "received": {
+          "status": "handled",
+          "by": "the seq it received instead, carried on the report's trace (below expected: one it had passed; above: emissions it did not handle)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "received: typeof data.received === \"number\" ? data.received : null,"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/gateway-seq-report.test.ts",
+            "note": "no scenario of the promoted corpus carries one; the test's frame is verbatim from a bench capture outside it (805 such frames in 35 runs, every one with received = expected - 1)"
+          }
+        }
+      }
+    },
+    "execution": {
+      "phases": {
+        "-": {
+          "status": "ignored",
+          "why": "execution state for the Control UI's run inspector (ui/src/pages/activity/run-inspector-*.ts), a surface Atrium does not have; a turn's approval wait reaches Atrium on the run's lifecycle"
+        }
+      },
+      "keys": {
+        "approval": {
+          "status": "ignored",
+          "why": "a key of the `execution` stream, which feeds the Control UI's run inspector only, a surface Atrium does not have"
+        },
+        "executionId": {
+          "status": "ignored",
+          "why": "a key of the `execution` stream, which feeds the Control UI's run inspector only, a surface Atrium does not have"
+        },
+        "invalidate": {
+          "status": "ignored",
+          "why": "a key of the `execution` stream, which feeds the Control UI's run inspector only, a surface Atrium does not have"
+        },
+        "sourceId": {
+          "status": "ignored",
+          "why": "a key of the `execution` stream, which feeds the Control UI's run inspector only, a surface Atrium does not have"
+        },
+        "state": {
+          "status": "ignored",
+          "why": "a key of the `execution` stream, which feeds the Control UI's run inspector only, a surface Atrium does not have"
+        },
+        "wait": {
+          "status": "ignored",
+          "why": "a key of the `execution` stream, which feeds the Control UI's run inspector only, a surface Atrium does not have"
+        }
+      }
+    },
+    "fallback": {
+      "phases": {
+        "-": {
+          "status": "handled",
+          "by": "the provider rerouted the request to another model (Codex harness): the same marker as a lifecycle fallback",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "if (p.stream === \"fallback\") cleared = false;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "never captured (the Codex harness's provider reroute; the bench runs the API runtime); frame built from handleModelRerouted"
+          }
+        }
+      },
+      "keys": {
+        "fromModel": {
+          "status": "handled",
+          "by": "the model that was asked for",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.fromProvider, data.fromModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "never captured (the Codex harness's provider reroute; the bench runs the API runtime); frame built from handleModelRerouted"
+          }
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "the provider's reason for rerouting, free text; deliberately never read: only the two model names are shown"
+        },
+        "toModel": {
+          "status": "handled",
+          "by": "the model the provider routed to",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.toProvider, data.toModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "never captured (the Codex harness's provider reroute; the bench runs the API runtime); frame built from handleModelRerouted"
+          }
+        }
+      }
+    },
+    "item": {
+      "phases": {
+        "-": {
+          "status": "handled",
+          "by": "a phase-less item writes no card; a phase-less preamble is shown as a completed note",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (raw.trim() !== \"\" && (data.phase === \"start\" || data.phase === \"update\")) return null;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/reasoning-display.test.ts",
+            "note": "no phase-less item in the corpus"
+          }
+        },
+        "end": {
+          "status": "handled",
+          "by": "on a DELIVERY run the item end is the tool card (name, outcome, error, call id), claimed once",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.claimDeliveryItemEnd(data)"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "start": {
+          "status": "handled",
+          "by": "tool/command items START new work (cancels a finishing grace); a preamble clears the back-off label",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.noteGatewayResumedWork(events, now);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "update": {
+          "status": "handled",
+          "by": "the progress of a running item: writes no card and closes nothing; a preamble's progress text waits for its completion",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (raw.trim() !== \"\" && (data.phase === \"start\" || data.phase === \"update\")) return null;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "media-outbound"
+          }
+        }
+      },
+      "keys": {
+        "approvalId": {
+          "status": "ignored",
+          "why": "an item waiting for approval: the approval card comes from the request broadcast and approval.get (agent-request-observer), not from the item"
+        },
+        "approvalSlug": {
+          "status": "ignored",
+          "why": "an item waiting for approval: the approval card comes from the request broadcast and approval.get; not read; no reader of it under ui/src either at this tag"
+        },
+        "commandBearing": {
+          "status": "ignored",
+          "why": "upstream's own hint that the item carries a command; Atrium renders no item args; not read; no reader of it under ui/src either at this tag"
+        },
+        "endedAt": {
+          "status": "ignored",
+          "why": "item timing: Atrium shows no per-item timing"
+        },
+        "error": {
+          "status": "handled",
+          "by": "the reason a delivery tool failed, carried on its card",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const itemError = isString(data.error)"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "async-task"
+          }
+        },
+        "hideFromChannelProgress": {
+          "status": "ignored",
+          "why": "a hint for channel progress messages (upstream's messaging channels); Atrium posts no channel progress"
+        },
+        "itemId": {
+          "status": "handled",
+          "by": "claims a delivery item's end once; names a preamble's note",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const id = isString(data.itemId) && data.itemId !== \"\" ? data.itemId : isString(data.toolCallId) ? data.toolCallId : \"\";"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "kind": {
+          "status": "handled",
+          "by": "preamble / tool / command decide the item's reading",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.kind === \"preamble\") {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "meta": {
+          "status": "handled",
+          "by": "a child harness item's description, the closest args-equivalent the harness exposes (sub-agent observer)",
+          "anchor": {
+            "file": "src/providers/openclaw/sub-agent-observer.ts",
+            "token": "...(typeof data.meta === \"string\" && data.meta !== \"\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/sub-agent-observer.test.ts",
+            "note": "the child harness lane is not captured in the 2026.9.36 corpus"
+          }
+        },
+        "name": {
+          "status": "handled",
+          "by": "the tool name of a delivery card; the message tool's item",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.kind === \"tool\" && data.name === \"message\") {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "phase": {
+          "status": "handled",
+          "by": "start / update / end",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.claimDeliveryItemEnd(data)"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "progressText": {
+          "status": "handled",
+          "by": "a preamble's text, shown as a work note once complete",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const raw = typeof data.progressText === \"string\" ? data.progressText : \"\";"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "yield-settle-media"
+          }
+        },
+        "replace": {
+          "status": "ignored",
+          "why": "a replacement hint for the Control UI's live item text; Atrium reads an item's text once complete (completedPreamble)"
+        },
+        "replaceable": {
+          "status": "ignored",
+          "why": "a replacement hint for the live item text; Atrium reads an item's text once complete; not read; no reader of it under ui/src either at this tag"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "which producer emitted the item; a card is named after its tool"
+        },
+        "startedAt": {
+          "status": "ignored",
+          "why": "item timing: Atrium shows no per-item timing"
+        },
+        "status": {
+          "status": "handled",
+          "by": "a delivery card's outcome (completed or error)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const itemStatus = isString(data.status) ? data.status : null;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "summary": {
+          "status": "ignored",
+          "why": "an item's summary line: a delivery card carries the outcome and the error, the transcript row the full call"
+        },
+        "suppressChannelProgress": {
+          "status": "ignored",
+          "why": "a hint for channel progress messages (upstream's messaging channels); Atrium posts no channel progress"
+        },
+        "title": {
+          "status": "ignored",
+          "why": "a display label: Atrium names a card after the tool (`name`), as the transcript row names it"
+        },
+        "toolCallId": {
+          "status": "handled",
+          "by": "the call's identity on a delivery card, so the transcript's call folds into it",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const itemToolCallId ="
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "phases": {
+        "<opaque>": {
+          "status": "handled",
+          "by": "terminal backstops whose phase is computed (end / error): read by value, like the literal phases",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.handleLifecycle(payload, data, now, events);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-error-retry.test.ts",
+            "note": "an unresolved phase is a runtime value: a capture can only show the literal ones"
+          }
+        },
+        "approval-resolved": {
+          "status": "handled",
+          "by": "releases the hold of an approval this turn holds",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.releaseApproval(aliases, now, events);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "agent-request-exec-approval"
+          }
+        },
+        "end": {
+          "status": "handled",
+          "by": "not necessarily turn-final: marks the run working (or, abandoned, the compaction fallback); the turn ends on the chat terminal or the transcript",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.lifecycleEnded = true;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        },
+        "error": {
+          "status": "handled",
+          "by": "ends the turn only when DEFINITIVE by upstream's rule (isDefinitiveRunLifecycle); any other is left to the gateway's own terminal",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (!isDefinitiveLifecycleError(data)) {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-terminal.test.ts",
+            "note": "no lifecycle error in the 2026.9.36 corpus; the upstream table is transcribed in the test"
+          }
+        },
+        "fallback": {
+          "status": "handled",
+          "by": "the run was answered by another model than the one selected: a marker on that run's bubble, also when the frame follows the run's terminal",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "p.stream === \"lifecycle\" && data.phase === \"fallback\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
+        },
+        "fallback_cleared": {
+          "status": "handled",
+          "by": "the session is back on its selected model: a marker on the bubble of the run that carries it",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "p.stream === \"lifecycle\" && data.phase === \"fallback_cleared\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
+        },
+        "fallback_step": {
+          "status": "ignored",
+          "why": "one step of the gateway's failover chain; the Control UI does not read it either (handleLifecycleFallbackEvent returns on any lifecycle phase but fallback and fallback_cleared), and the fallback frame that follows names the outcome; Atrium follows it"
+        },
+        "finishing": {
+          "status": "handled",
+          "by": "pre-terminal: the post-processing label and the 60 s finishing grace (suspended under a compaction or a human wait)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "events.push({ type: EVENT_TURN_PHASE, phase: \"post_processing\" });"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        },
+        "model": {
+          "status": "handled",
+          "by": "read as a later phase of the run: after a retryable lifecycle error it says the gateway went on with the run (upstream cancels its pending error terminal on any phase but error); its model and provider are not shown — Atrium's model display comes from sessions.describe",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.retryableLifecycleErrorRun = null;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        },
+        "start": {
+          "status": "handled",
+          "by": "a new run: clears a finishing label, ends a compaction wait, marks the run running",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "events.push({ type: EVENT_RUN_STATUS, status: \"running\", runId: this.currentRunId });"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        },
+        "waiting-approval": {
+          "status": "handled",
+          "by": "the run waits on a human: holds the turn under the approval's own deadline",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (phase === \"waiting-approval\") {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "agent-request-exec-approval"
+          }
+        }
+      },
+      "keys": {
+        "aborted": {
+          "status": "handled",
+          "by": "an aborted terminal, for the trace and definitiveness",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.aborted === true) this.diagAborted = true;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-error-retry.test.ts",
+            "note": "no aborted terminal in the 2026.9.36 corpus"
+          }
+        },
+        "activeModel": {
+          "status": "handled",
+          "by": "the model that answered, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.activeProvider, data.activeModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
+        },
+        "activeProvider": {
+          "status": "handled",
+          "by": "the model that answered, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.activeProvider, data.activeModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
+        },
+        "approvalId": {
+          "status": "handled",
+          "by": "the approval a waiting-approval holds and an approval-resolved releases",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "isString(data.approvalId) && data.approvalId.trim() !== \"\" ? data.approvalId : null;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "agent-request-exec-approval"
+          }
+        },
+        "assistantTranscriptIdempotencyKey": {
+          "status": "ignored",
+          "why": "the gateway's own bookkeeping for the transcript reply; Atrium places the reply by the transcript row itself (transcript projection); not read; no reader of it under ui/src either at this tag"
+        },
+        "attemptSummaries": {
+          "status": "ignored",
+          "why": "why the selected model did not answer, in the provider's own words; deliberately never read: provider prose is neither stored nor shown, and the gateway's own notice text, delivered with the reply, already carries its summary"
+        },
+        "attempts": {
+          "status": "ignored",
+          "why": "why the selected model did not answer, in the provider's own words; deliberately never read: provider prose is neither stored nor shown, and the gateway's own notice text, delivered with the reply, already carries its summary"
+        },
+        "completionSource": {
+          "status": "ignored",
+          "why": "which completion path settled the run (bus enrichment), not part of a turn's outcome in Atrium; not read; no reader of it under ui/src either at this tag"
+        },
+        "endedAt": {
+          "status": "ignored",
+          "why": "run timing: Atrium times a turn on its own clock"
+        },
+        "error": {
+          "status": "handled",
+          "by": "a definitive error's message",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const message = extractLifecycleError(data.error);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-error-retry.test.ts",
+            "note": "no lifecycle error in the 2026.9.36 corpus"
+          }
+        },
+        "errorObservation": {
+          "status": "handled",
+          "by": "the structured provider observation, read before the text",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "errorDetail: data.errorObservation,"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/structured-failure-frames.test.ts",
+            "note": "no lifecycle error in the 2026.9.36 corpus"
+          }
+        },
+        "executionSettled": {
+          "status": "handled",
+          "by": "a settled run's error is definitive",
+          "anchor": {
+            "file": "src/providers/openclaw/lifecycle-terminal.ts",
+            "token": "if (d.executionSettled === true) return true;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-terminal.test.ts",
+            "note": "no lifecycle error in the 2026.9.36 corpus"
+          }
+        },
+        "executionStarted": {
+          "status": "ignored",
+          "why": "whether execution began: Atrium's generation evidence is any frame past the preparation ones (provesGeneration); not read; no reader of it under ui/src either at this tag"
+        },
+        "fallbackStepChainPosition": {
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
+        },
+        "fallbackStepFinalOutcome": {
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
+        },
+        "fallbackStepFromFailureDetail": {
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
+        },
+        "fallbackStepFromFailureReason": {
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
+        },
+        "fallbackStepFromModel": {
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
+        },
+        "fallbackStepToModel": {
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
+        },
+        "fallbackStepType": {
+          "status": "ignored",
+          "why": "a key of the fallback_step phase, one step of the failover chain, which neither the Control UI nor Atrium reads"
+        },
+        "livenessState": {
+          "status": "handled",
+          "by": "abandoned = the compaction fallback; read for definitiveness",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "data.livenessState === \"abandoned\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/compaction-detection.test.ts",
+            "note": "masked by the corpus anonymiser"
+          }
+        },
+        "model": {
+          "status": "ignored",
+          "why": "the run's model (lifecycle model): Atrium's model display comes from sessions.describe"
+        },
+        "phase": {
+          "status": "handled",
+          "by": "drives the lifecycle state machine",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "private handleLifecycle(_payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        },
+        "previousActiveModel": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "the model the session leaves when a fallback is cleared, which the Control UI prints in the indicator's tooltip (Previous fallback: {model}); Atrium's cleared marker names the selected model only"
+        },
+        "provider": {
+          "status": "ignored",
+          "why": "the run's provider (lifecycle model): Atrium's model display comes from sessions.describe"
+        },
+        "providerStarted": {
+          "status": "handled",
+          "by": "whether the provider started, for the trace and definitiveness",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.diagProviderStarted = data.providerStarted;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-terminal.test.ts",
+            "note": "masked by the corpus anonymiser"
+          }
+        },
+        "reasonSummary": {
+          "status": "ignored",
+          "why": "why the selected model did not answer, in the provider's own words; deliberately never read: provider prose is neither stored nor shown, and the gateway's own notice text, delivered with the reply, already carries its summary"
+        },
+        "replayInvalid": {
+          "status": "ignored",
+          "why": "a replay-invalidation flag: Atrium's compaction fallback keys on livenessState; not read; no reader of it under ui/src either at this tag"
+        },
+        "selectedModel": {
+          "status": "handled",
+          "by": "the model that was asked for, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.selectedProvider, data.selectedModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
+        },
+        "selectedProvider": {
+          "status": "handled",
+          "by": "the model that was asked for, composed as provider/model like the Control UI's label",
+          "anchor": {
+            "file": "src/providers/openclaw/model-fallback.ts",
+            "token": "modelLabel(data.selectedProvider, data.selectedModel)"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/model-fallback.test.ts",
+            "note": "captured on the bench (scenario lifecycle-error-fallback-probe, run 2026-11-07T18-04-14-703Z) but in no scenario of the promoted corpus; the test's frames are those captures, free text masked"
+          }
+        },
+        "startedAt": {
+          "status": "ignored",
+          "why": "run timing: Atrium times a turn on its own clock"
+        },
+        "status": {
+          "status": "handled",
+          "by": "the terminal status, read for definitiveness (timeout, cancelled, aborted)",
+          "anchor": {
+            "file": "src/providers/openclaw/lifecycle-terminal.ts",
+            "token": "const status = nonBlank(d.status)?.toLowerCase();"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-terminal.test.ts",
+            "note": "no lifecycle error in the 2026.9.36 corpus"
+          }
+        },
+        "stopReason": {
+          "status": "handled",
+          "by": "the terminal's stop reason, bucketed into the pressure trace; read for definitiveness",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.diagStopReason = bucketStopReason(data.stopReason);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        },
+        "terminalDelivery": {
+          "status": "ignored",
+          "why": "the gateway's own delivery bookkeeping; files reach a bubble through transcript rows; not read; no reader of it under ui/src either at this tag"
+        },
+        "terminalReceipt": {
+          "status": "ignored",
+          "why": "the gateway's own settlement bookkeeping; the turn ends on the chat terminal or the transcript's own fact; not read; no reader of it under ui/src either at this tag"
+        },
+        "terminalReply": {
+          "status": "ignored",
+          "why": "the gateway's own settlement bookkeeping; the turn ends on the chat terminal or the transcript's own fact"
+        },
+        "timeoutPhase": {
+          "status": "handled",
+          "by": "where a timeout struck, bucketed; read for definitiveness",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.diagTimeoutPhase = bucketTimeoutPhase(data.timeoutPhase);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/lifecycle-terminal.test.ts",
+            "note": "masked by the corpus anonymiser"
+          }
+        },
+        "toolCallId": {
+          "status": "handled",
+          "by": "an alias of the held approval",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "...(isString(data.toolCallId) && data.toolCallId.trim() !== \"\" ? [data.toolCallId] : []),"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "agent-request-exec-approval"
+          }
+        },
+        "toolErrorSummary": {
+          "status": "ignored",
+          "why": "a summary of the run's tool errors: each tool card carries its own; not read; no reader of it under ui/src either at this tag"
+        },
+        "yielded": {
+          "status": "handled",
+          "by": "the gateway's own hand-off signal",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.yielded === true) this.sawYielded = true;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "settle-chain-no-synthesis"
+          }
+        }
+      }
+    },
+    "notice": {
+      "phases": {
+        "provider_policy": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "provider policy and warning notices: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "warning": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "provider policy and warning notices: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        }
+      },
+      "keys": {
+        "category": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of a system notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "fallbackModel": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of a system notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "message": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of a system notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "model": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of a system notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "phase": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of a system notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "provider": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of a system notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "state": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a field of a system notice: the Control UI shows it (ui/src/pages/chat/tool-stream-status.ts, tool-stream.ts handleNoticeEvent); Atrium reads none of it, so the user sees no retry, fallback model or system notice"
+        },
+        "kind": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a node permission the run needed is missing (src/gateway/server-methods/nodes.permission-missing.ts: phase warning, kind permission_missing, permissionMissing the request): the Control UI shows it as a notice with the request (ui/src/pages/chat/tool-stream.ts); Atrium reads none of it, so the user is not told which permission to grant"
+        },
+        "permissionMissing": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a node permission the run needed is missing (src/gateway/server-methods/nodes.permission-missing.ts: phase warning, kind permission_missing, permissionMissing the request): the Control UI shows it as a notice with the request (ui/src/pages/chat/tool-stream.ts); Atrium reads none of it, so the user is not told which permission to grant"
+        }
+      }
+    },
+    "patch": {
+      "phases": {
+        "end": {
+          "status": "ignored",
+          "why": "the apply_patch tool's edit summary: the tool card carries the call, and the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      },
+      "keys": {
+        "added": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "deleted": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "modified": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "name": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "summary": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "title": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        },
+        "toolCallId": {
+          "status": "ignored",
+          "why": "a key of the `patch` stream, which Atrium does not read: the tool card carries the call; the Control UI renders no `patch` frame either (no reader of it under ui/src at this tag); Atrium follows it"
+        }
+      }
+    },
+    "plan": {
+      "phases": {
+        "update": {
+          "status": "handled",
+          "by": "the native work plan: a frame with steps is a plan snapshot (PlanPart), never a tool call",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const planPart = planPartFromPlanStream(data);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "update-plan"
+          }
+        }
+      },
+      "keys": {
+        "actions": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "approved": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "autoApproveEdits": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "explanation": {
+          "status": "handled",
+          "by": "the plan's explanation, capped",
+          "anchor": {
+            "file": "src/core/plan-part.ts",
+            "token": "const explanationRaw = data.explanation;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "update-plan"
+          }
+        },
+        "explanationFormat": {
+          "status": "ignored",
+          "why": "whether the explanation is markdown: Atrium renders it as text"
+        },
+        "feedback": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "operation": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "phase": {
+          "status": "ignored",
+          "why": "the plan stream has one phase (update): a frame is read as a plan snapshot by its steps"
+        },
+        "recommendedAction": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "requestId": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "selectedAction": {
+          "status": "ignored",
+          "why": "a field of the Copilot harness's plan-mode events (extensions/copilot event-bridge: actions, approval, feedback): Atrium reads a plan by its steps and explanation, whichever runtime emits it"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "which runtime emitted the plan: the card is the same whichever runtime emits it"
+        },
+        "steps": {
+          "status": "handled",
+          "by": "the plan's checklist (zero steps clears it)",
+          "anchor": {
+            "file": "src/core/plan-part.ts",
+            "token": "const raw = data.steps;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "update-plan"
+          }
+        },
+        "title": {
+          "status": "ignored",
+          "why": "the producer's heading for the plan: the card's heading is Atrium's own"
+        }
+      }
+    },
+    "run_status": {
+      "phases": {
+        "-": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run_status frame without a phase: no writer produces one in the vendored inventory's resolved rows; read like the startup phases, as not-yet-generation only"
+        },
+        "creating_worktree": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
+        },
+        "memory_flushing": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
+        },
+        "preparing_context": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
+        },
+        "preparing_workspace": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
+        },
+        "provisioning_environment": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
+        },
+        "retrying": {
+          "status": "handled",
+          "by": "a provider retry, whatever its reason: the back-off phase, with its counter when the frame carries a valid one",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (this.finalized || data.phase !== \"retrying\") return;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
+        },
+        "running_setup": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
+        },
+        "starting_model": {
+          "status": "gap",
+          "gap": "F7",
+          "note": "a run startup phase (preparing the workspace, the context, waiting for the model…): the Control UI prints a label for it while the run has shown nothing; Atrium reads it only as not-yet-generation (provesGeneration) and shows its own generic waiting state"
+        }
+      },
+      "keys": {
+        "attempt": {
+          "status": "handled",
+          "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const backoff = readTurnRetry(data);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
+        },
+        "delayMs": {
+          "status": "ignored",
+          "why": "how long the runner waits before the next attempt; the label says which attempt, not for how long"
+        },
+        "maxAttempts": {
+          "status": "handled",
+          "by": "the retry counter on the label, when both are integers within the label's contract (1..10, attempt <= maxAttempts)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const backoff = readTurnRetry(data);"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
+        },
+        "maxRetries": {
+          "status": "ignored",
+          "why": "the same retry counted from zero; the label uses attempt / maxAttempts, the pair the chat projection carries for a rate limit"
+        },
+        "message": {
+          "status": "ignored",
+          "why": "the gateway's own sentence for the retry (the Control UI prints it as is); Atrium says the wait in its own localized wording and never carries gateway prose"
+        },
+        "phase": {
+          "status": "handled",
+          "by": "`retrying` selects the back-off; the startup phases are not read (see the phases)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (this.finalized || data.phase !== \"retrying\") return;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
+        },
+        "reason": {
+          "status": "handled",
+          "by": "`output_limit` is the run continuing a cut reply, not a provider being waited on: no back-off phase for it; `rate_limit`, `overloaded`, `server_error` and `timeout` ride the back-off phase so the label can name the wait",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (data.reason === \"output_limit\") return;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); frames built from the embedded runner's onRetry and the Codex harness's handleRetry"
+          }
+        },
+        "retryAttempt": {
+          "status": "ignored",
+          "why": "the same retry counted from zero; the label uses attempt / maxAttempts, the pair the chat projection carries for a rate limit"
+        },
+        "retryAt": {
+          "status": "handled",
+          "by": "when the next attempt is due: kept on the back-off phase beside the counter and the reason (readTurnRetry), so the label can say until when the provider is waited on; a non-finite or negative instant is dropped and costs the label only that detail",
+          "anchor": {
+            "file": "src/core/events.ts",
+            "token": "retryAt >= 0 ? { retryAt }"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/run-status-retrying.test.ts",
+            "note": "never captured (the bench provokes no provider retry); the frame is the one upstream's own test pins (src/gateway/server-chat.agent-events.test.ts at v2026.10.33, replayed as the fixture scenario run-status-retrying-reason-retry-at)"
+          }
+        }
+      }
+    },
+    "thinking": {
+      "phases": {
+        "-": {
+          "status": "ignored",
+          "why": "live reasoning text: Atrium shows reasoning from the transcript rows (reasoning display), and the Control UI renders no `thinking` stream frame either (no stream reader under ui/src)"
+        },
+        "persisted": {
+          "status": "gap",
+          "gap": "T1",
+          "note": "the gateway's receipt that a reasoning item reached the transcript (src/gateway/server-chat-transcript-publication.ts publishThinkingReceipt: phase persisted, itemId, messageId, messageRunId): Atrium reads reasoning from the transcript rows on its own reads and does not use the receipt to time one, so reasoning shows at the next read rather than at the receipt; no reader of it under ui/src at this tag"
+        }
+      },
+      "keys": {
+        "delta": {
+          "status": "ignored",
+          "why": "a key of the live reasoning stream, which Atrium does not read: reasoning comes from the transcript rows"
+        },
+        "isReasoningSnapshot": {
+          "status": "ignored",
+          "why": "a key of the live reasoning stream, which Atrium does not read: reasoning comes from the transcript rows"
+        },
+        "progressTokens": {
+          "status": "ignored",
+          "why": "a key of the live reasoning stream, which Atrium does not read: reasoning comes from the transcript rows"
+        },
+        "text": {
+          "status": "ignored",
+          "why": "a key of the live reasoning stream, which Atrium does not read: reasoning comes from the transcript rows"
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "a key of the live reasoning stream, which Atrium does not read: reasoning comes from the transcript rows (from 2026.10.33 the live delta names its item, and the `persisted` receipt repeats it)"
+        },
+        "messageId": {
+          "status": "gap",
+          "gap": "T1",
+          "note": "a field of the reasoning receipt: the gateway's receipt that a reasoning item reached the transcript (src/gateway/server-chat-transcript-publication.ts publishThinkingReceipt: phase persisted, itemId, messageId, messageRunId): Atrium reads reasoning from the transcript rows on its own reads and does not use the receipt to time one, so reasoning shows at the next read rather than at the receipt; no reader of it under ui/src at this tag"
+        },
+        "messageRunId": {
+          "status": "gap",
+          "gap": "T1",
+          "note": "a field of the reasoning receipt: the gateway's receipt that a reasoning item reached the transcript (src/gateway/server-chat-transcript-publication.ts publishThinkingReceipt: phase persisted, itemId, messageId, messageRunId): Atrium reads reasoning from the transcript rows on its own reads and does not use the receipt to time one, so reasoning shows at the next read rather than at the receipt; no reader of it under ui/src at this tag"
+        },
+        "phase": {
+          "status": "gap",
+          "gap": "T1",
+          "note": "a field of the reasoning receipt: the gateway's receipt that a reasoning item reached the transcript (src/gateway/server-chat-transcript-publication.ts publishThinkingReceipt: phase persisted, itemId, messageId, messageRunId): Atrium reads reasoning from the transcript rows on its own reads and does not use the receipt to time one, so reasoning shows at the next read rather than at the receipt; no reader of it under ui/src at this tag"
+        }
+      }
+    },
+    "tool": {
+      "phases": {
+        "input_delta": {
+          "status": "handled",
+          "by": "a report on a call whose arguments are still being written: nothing is closed, counted or opened, and the buffered args stay for the result",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (isToolObservationPhase(phase)) {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/tool-observation-phases.test.ts",
+            "note": "never captured: 0 occurrence in the bench corpus (no scenario streams a file-mutation call's arguments or runs an auto-reviewed exec); frames built from the upstream writers"
+          }
+        },
+        "result": {
+          "status": "handled",
+          "by": "the only completion on this stream: the card closes completed or error, with its result",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "data.isError === true && !spawnResultAccepted(name, data.result);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "review": {
+          "status": "handled",
+          "by": "a report on a call a reviewer holds: the card stays running with its args, no tool is counted",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (isToolObservationPhase(phase)) {"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/tool-observation-phases.test.ts",
+            "note": "never captured: 0 occurrence in the bench corpus (no scenario streams a file-mutation call's arguments or runs an auto-reviewed exec); frames built from the upstream writers"
+          }
+        },
+        "start": {
+          "status": "handled",
+          "by": "a live running card (args buffered by call id); new work after a finishing",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.toolArgs.set(toolCallId, data.args);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "update": {
+          "status": "handled",
+          "by": "progress: the card stays running with its buffered args",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (isToolProgressPhase(phase)) {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "media-outbound"
+          }
+        }
+      },
+      "keys": {
+        "approvalReviewOutcome": {
+          "status": "gap",
+          "gap": "F3",
+          "note": "the reviewer's outcome (reviewing / approved / denied), which the Control UI prints on the card: Atrium keeps the card running through a review but shows nothing of it, so an exec held by a reviewer looks like one that is simply slow"
+        },
+        "args": {
+          "status": "handled",
+          "by": "the card's input (buffered from the start)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.toolArgs.set(toolCallId, data.args);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "commandBearing": {
+          "status": "ignored",
+          "why": "upstream's own hint that the call carries a command; not read; no reader of it under ui/src either at this tag"
+        },
+        "cwd": {
+          "status": "ignored",
+          "why": "an execution detail of a command result: the card shows the tool's result, the transcript row the full call"
+        },
+        "diff": {
+          "status": "gap",
+          "gap": "F3",
+          "note": "the live +added / -removed counter of a file-mutation call whose arguments are being written, which the Control UI prints on the running card: Atrium shows no card before the call starts and no counter"
+        },
+        "durationMs": {
+          "status": "ignored",
+          "why": "an execution detail of a command result: the card shows the tool's result, the transcript row the full call"
+        },
+        "exitCode": {
+          "status": "ignored",
+          "why": "an execution detail of a command result: the card shows the tool's result, the transcript row the full call"
+        },
+        "hideFromChannelProgress": {
+          "status": "ignored",
+          "why": "a hint for channel progress messages (upstream's messaging channels); Atrium posts no channel progress"
+        },
+        "isError": {
+          "status": "handled",
+          "by": "the card's outcome",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "data.isError === true && !spawnResultAccepted(name, data.result);"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "itemId": {
+          "status": "ignored",
+          "why": "a harness item id: the card is keyed by toolCallId"
+        },
+        "meta": {
+          "status": "ignored",
+          "why": "a harness description of the call: the card carries the args"
+        },
+        "name": {
+          "status": "handled",
+          "by": "the tool name on the card; the message tool's visible reply",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "if (name === \"message\") {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "output": {
+          "status": "ignored",
+          "why": "an execution detail of a command result: the card shows the tool's `result`, the transcript row the full call"
+        },
+        "parentToolCallId": {
+          "status": "handled",
+          "by": "nests a call under the call that ran it (code mode)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const raw = data.parentToolCallId;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/tool-anchor.test.ts",
+            "note": "no nested call in the 2026.9.36 corpus"
+          }
+        },
+        "partialResult": {
+          "status": "ignored",
+          "why": "a running tool's partial output: Atrium shows a tool's output once, at its result"
+        },
+        "phase": {
+          "status": "handled",
+          "by": "start / progress / result",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "} else if (isToolProgressPhase(phase)) {"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "replace": {
+          "status": "ignored",
+          "why": "a replacement hint for the live tool output; Atrium shows a tool's output once, at its result"
+        },
+        "replaceable": {
+          "status": "ignored",
+          "why": "a replacement hint for the live tool output; not read; no reader of it under ui/src either at this tag"
+        },
+        "result": {
+          "status": "handled",
+          "by": "the card's output",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "output: data.result ?? undefined,"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "resultContentSource": {
+          "status": "ignored",
+          "why": "where the result content came from; not read; no reader of it under ui/src either at this tag"
+        },
+        "review": {
+          "status": "handled",
+          "by": "a review frame counts as progress only when it names its review (data.review.id), as upstream counts it",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const review = isObject(data.review) ? data.review : null;"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/normalizer.test.ts",
+            "note": "no review frame in the corpus"
+          }
+        },
+        "status": {
+          "status": "ignored",
+          "why": "a harness item's status: the card's outcome is isError and the result"
+        },
+        "title": {
+          "status": "ignored",
+          "why": "a display label: the card is named after the tool"
+        },
+        "toolCallId": {
+          "status": "handled",
+          "by": "the card's upsert key",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "const toolCallId = isString(data.toolCallId) ? data.toolCallId : undefined;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "tool-exec"
+          }
+        },
+        "toolErrorSummary": {
+          "status": "ignored",
+          "why": "a summary line of a failed call: the card carries the result itself; not read; no reader of it under ui/src either at this tag"
+        }
+      }
+    },
+    "usage": {
+      "phases": {
+        "-": {
+          "status": "handled",
+          "by": "the run's output tokens, kept for the trace (latest wins)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "payload.stream === \"usage\" &&"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        }
+      },
+      "keys": {
+        "activeContextTokens": {
+          "status": "ignored",
+          "why": "the trace keeps the run's output tokens only; context usage and cost come from sessions.describe"
+        },
+        "cacheWriteInputTokens": {
+          "status": "ignored",
+          "why": "the trace keeps the run's output tokens only; context usage and cost come from sessions.describe"
+        },
+        "cachedInputTokens": {
+          "status": "ignored",
+          "why": "the trace keeps the run's output tokens only; context usage and cost come from sessions.describe"
+        },
+        "inputTokens": {
+          "status": "ignored",
+          "why": "the trace keeps the run's output tokens only; context usage and cost come from sessions.describe"
+        },
+        "modelContextWindow": {
+          "status": "ignored",
+          "why": "the trace keeps the run's output tokens only; context usage and cost come from sessions.describe"
+        },
+        "outputTokens": {
+          "status": "handled",
+          "by": "the run's output tokens (trace only)",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "this.diagOutputTokens = data.outputTokens as number;"
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "basic-turn"
+          }
+        },
+        "promptTokens": {
+          "status": "ignored",
+          "why": "the trace keeps the run's output tokens only; context usage and cost come from sessions.describe"
+        },
+        "reasoningOutputTokens": {
+          "status": "ignored",
+          "why": "the trace keeps the run's output tokens only; context usage and cost come from sessions.describe"
+        },
+        "usageReport": {
+          "status": "gap",
+          "gap": "T3",
+          "note": "`{state: \"unavailable\"}` when the run's token usage is not known (src/infra/agent-run-usage.ts: the frame's outputTokens then adds nothing): Atrium keeps the frame's outputTokens for the trace as a count, without telling an unknown usage from a zero one"
+        }
+      }
+    }
+  },
+  "rewrites": {
+    "gateway:prepareAgentWirePayload:text": {
+      "status": "ignored",
+      "why": "the gateway rebuilds `text` per item when the emitter sent only a delta; the bubble's live text is read from the `chat` stream alone, as the gateway's own UI reads it (it declares `chat-only-assistant-text` and is not sent this stream's text): the chat text is the run's text joined and projected for display by the gateway, this one is raw and per item. An assistant frame is only a sign of activity here"
+    },
+    "gateway:mergeAgentTextPayload:delta": {
+      "status": "handled",
+      "by": "a coalesced delta is one longer delta: the live-text baseline accumulates it per item like any other (its result is no longer written to a bubble)",
+      "anchor": {
+        "file": "src/providers/openclaw/live-text-baseline.ts",
+        "token": "text = previous.text + delta;"
+      },
+      "proof": {
+        "kind": "deterministic-test",
+        "ref": "bridge/test/live-text-baseline.test.ts",
+        "note": "coalescing depends on delivery timing; the merged shape is pinned in the baseline suite"
+      }
+    },
+    "bus:enrichAgentEvent:completionSource": {
+      "status": "ignored",
+      "why": "which completion path settled the run, not part of a turn's outcome in Atrium; not read; no reader of it under ui/src either at this tag"
+    },
+    "bus:enrichAgentEvent:startedAt": {
+      "status": "ignored",
+      "why": "run timing: Atrium times a turn on its own clock"
+    }
+  }
+}

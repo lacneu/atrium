@@ -23,6 +23,11 @@ import { pathToFileURL } from "node:url";
 
 import { maskText, readingsLedger } from "./anonymize-capture.mjs";
 
+/** The normalizer's event for the gateway's `seq gap` report — `EVENT_GATEWAY_SEQ_REPORT`,
+ *  src/core/events.ts. A mirror, because this script loads the bridge at run time;
+ *  replay-fidelity.test.ts holds it to the constant. */
+export const GATEWAY_SEQ_REPORT_EVENT = "gateway.seq_report";
+
 /** The newest mtime under a directory tree, or 0 when it does not exist. */
 function newestMtime(dir) {
   let newest = 0;
@@ -325,6 +330,11 @@ async function replay(RunManager, rawEntries) {
   // straight into the normalizer as the turn opens (run-manager.ts beginTurn). `normalizer.feed`
   // is synchronous and returns the events, so the wrapper stays synchronous.
   const partEntry = new WeakMap();
+  // …and the frame each `seq gap` report was read from. The sink copies the report's fields
+  // out of the event and records it when the turn can take it — possibly during a LATER feed —
+  // so neither a reference nor the frame being fed names its source; the normalizer's own
+  // event, at the frame that produced it, does.
+  const seqReportEvents = [];
   if (typeof manager.normalizer?.feed === "function") {
     const normalizerFeed = manager.normalizer.feed.bind(manager.normalizer);
     manager.normalizer.feed = (frame, at) => {
@@ -334,6 +344,14 @@ async function replay(RunManager, rawEntries) {
         for (const event of events) {
           if (event?.type === "provenance" && event.part !== null && typeof event.part === "object") {
             partEntry.set(event.part, index);
+          }
+          if (event?.type === GATEWAY_SEQ_REPORT_EVENT) {
+            seqReportEvents.push({
+              entry: index,
+              expected: typeof event.expected === "number" ? event.expected : null,
+              received: typeof event.received === "number" ? event.received : null,
+              runId: typeof event.runId === "string" ? event.runId : null,
+            });
           }
         }
       }
@@ -388,7 +406,7 @@ async function replay(RunManager, rawEntries) {
   if (manager.turnActive && manager.takeRecvSilence()) {
     await manager.endTurn(now, "final", null, "recv_timeout");
   }
-  return { calls, writes, sessionKey, partEntry };
+  return { calls, writes, sessionKey, partEntry, seqReportEvents };
 }
 
 /** Compare the readings of a raw slice and its promoted form. Returns a list of
@@ -445,12 +463,14 @@ function pathIndex(entries) {
  *  (turn-sink.ts), so those references attribute each reading to the frames the normalizer really
  *  admitted and coalesced. Without `readers`, only provenance parts are collected. */
 export async function consumedReadings(RunManager, rawEntries, readers) {
-  const { writes, sessionKey, partEntry } = await replay(RunManager, rawEntries);
+  const { writes, sessionKey, partEntry, seqReportEvents } = await replay(RunManager, rawEntries);
+  const unclaimedSeqReports = [...seqReportEvents];
   const paths = pathIndex(rawEntries);
   const provenanceReads = [];
   const cronReads = [];
   const taskReads = [];
   const errorReads = [];
+  const seqReportReads = [];
   let completed = null;
   // The run of the bubble parts are currently written into.
   let bubbleRun = null;
@@ -485,6 +505,24 @@ export async function consumedReadings(RunManager, rawEntries, readers) {
       }
       continue;
     }
+    if (name === "noteGatewaySeqReport") {
+      // The gateway's report about its own numbering. A recorded report claims, first come
+      // first served, the frame the normalizer read the same report from: a report the turn
+      // never recorded keeps nothing, and neither does a frame nobody read as one.
+      const report = args[1];
+      if (report === null || typeof report !== "object") continue;
+      const same = (a, b) => (typeof a === "number" ? a : null) === b;
+      const at = unclaimedSeqReports.findIndex(
+        (seen) =>
+          same(report.expected, seen.expected) &&
+          same(report.received, seen.received) &&
+          (typeof report.runId === "string" ? report.runId : null) === seen.runId,
+      );
+      if (at < 0) continue;
+      const [seen] = unclaimedSeqReports.splice(at, 1);
+      seqReportReads.push({ entry: seen.entry, expected: seen.expected, received: seen.received });
+      continue;
+    }
     if (readers == null || completed === null) continue;
     if (name === "addCronPart") {
       cronReads.push({
@@ -502,5 +540,12 @@ export async function consumedReadings(RunManager, rawEntries, readers) {
       });
     }
   }
-  return readingsLedger({ sessionKey, provenanceReads, cronReads, taskReads, errorReads });
+  return readingsLedger({
+    sessionKey,
+    provenanceReads,
+    cronReads,
+    taskReads,
+    errorReads,
+    seqReportReads,
+  });
 }

@@ -45,6 +45,56 @@ export const EVENT_WIDGET = "widget";
 // `post_processing`). The sink forwards it to setPhase; unknown values are
 // dropped server-side, so a newer bridge never breaks an older backend.
 export const EVENT_TURN_PHASE = "turn.phase";
+
+/** Why the provider is being waited on during a `retrying` phase — the gateway's own
+ *  vocabulary (`ChatStatusEventSchema.retry.reason`, packages/gateway-protocol/src/schema/
+ *  logs-chat.ts:432-438 at v2026.10.33; the agent `run_status` event carries the same word,
+ *  src/agents/embedded-agent-runner/run/attempt-recovery.ts:463-480) minus `output_limit`,
+ *  which is a reply being continued and not a wait. */
+export const TURN_RETRY_REASONS = ["rate_limit", "overloaded", "server_error", "timeout"] as const;
+export type TurnRetryReason = (typeof TURN_RETRY_REASONS)[number];
+
+/** The back-off facts that ride a `retrying` phase: the bounded counter, and — when the
+ *  gateway gave them — why it waits and until when (`retryAt`, epoch ms on the GATEWAY's
+ *  clock: attempt-recovery.ts:475 `Date.now() + delayMs`; absent before v2026.10.33). */
+export interface TurnRetry {
+  attempt: number;
+  maxAttempts: number;
+  reason?: TurnRetryReason;
+  retryAt?: number;
+}
+
+/** The contract's own ceiling for a back-off counter (logs-chat.ts `ChatStatusEventSchema`:
+ *  integers 1..10 on BOTH fields). */
+const TURN_RETRY_MAX_ATTEMPTS = 10;
+
+/** `value` read as a `TurnRetry`, or undefined when its COUNTER breaks the contract — a
+ *  counter the gateway cannot legally emit means the object is not what it claims to be.
+ *  The two optional facts are kept only when well-formed and dropped otherwise: a reason
+ *  outside the vocabulary or a non-finite time must cost the label its detail, never the
+ *  counter. One reader for the normalizer (both wire carriers) and the sink. */
+export function readTurnRetry(value: unknown): TurnRetry | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const { attempt, maxAttempts, reason, retryAt } = value as Record<string, unknown>;
+  if (
+    typeof attempt !== "number" ||
+    typeof maxAttempts !== "number" ||
+    !Number.isInteger(attempt) ||
+    !Number.isInteger(maxAttempts) ||
+    attempt < 1 ||
+    maxAttempts < attempt ||
+    maxAttempts > TURN_RETRY_MAX_ATTEMPTS
+  ) {
+    return undefined;
+  }
+  const known = TURN_RETRY_REASONS.find((r) => r === reason);
+  return {
+    attempt,
+    maxAttempts,
+    ...(known !== undefined ? { reason: known } : {}),
+    ...(typeof retryAt === "number" && Number.isFinite(retryAt) && retryAt >= 0 ? { retryAt } : {}),
+  };
+}
 // {overfull} — the COMPACTION VERDICT (G-08). Separate from the compaction PART
 // on purpose: the part describes what happened during this turn, this verdict
 // describes the state the NEXT turn inherits, and a successful compaction must

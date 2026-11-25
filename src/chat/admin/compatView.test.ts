@@ -168,6 +168,36 @@ describe("badgeStateFromVersion (per-instance verdict from a RAW version)", () =
   test("below the support window -> unsupported", () => {
     expect(badgeStateFromVersion("2026.4.1", "openclaw", MANIFEST)).toBe("unsupported");
   });
+  test("under the ceiling but inside a never-benched interval -> beyond, like the bridge's own flag", () => {
+    // The ceiling moved from one extended-stable release to the next; the mainline
+    // releases between them were never benched and the manifest says so. The card reads
+    // a RAW version, so it must apply the interval itself.
+    const gapped = {
+      providers: {
+        openclaw: {
+          supportedRange: { min: "2026.8.2", maxValidated: "2026.10.33" },
+          unvalidatedWindows: [
+            { after: "2026.9.36", before: "2026.10.33", why: "never benched" },
+          ],
+          validatedVersions: ["2026.9.36", "2026.10.33"],
+          capabilities: {},
+        },
+      },
+    };
+    for (const v of ["2026.9.37", "2026.10.1", "2026.10.10", "2026.10.33-beta.1"]) {
+      expect(badgeStateFromVersion(v, "openclaw", gapped), v).toBe("beyond");
+    }
+    // Both ends are validated, and the line below the interval is untouched.
+    for (const v of ["2026.9.36", "2026.10.33", "2026.9.9", "2026.9.35"]) {
+      expect(badgeStateFromVersion(v, "openclaw", gapped), v).toBe("supported");
+    }
+    expect(badgeStateFromVersion("2026.11.1", "openclaw", gapped)).toBe("beyond");
+    // A bridge that predates the field publishes none: nothing is invented for it.
+    const legacy = {
+      providers: { openclaw: { ...gapped.providers.openclaw, unvalidatedWindows: undefined } },
+    };
+    expect(badgeStateFromVersion("2026.10.1", "openclaw", legacy)).toBe("supported");
+  });
   test("an UNREADABLE version is never called unsupported (no evidence of an old gateway)", () => {
     expect(badgeStateFromVersion("garbage", "openclaw", MANIFEST)).toBe("unknown");
     expect(targetBadgeState(target("garbage"), MANIFEST)).toBe("unknown");

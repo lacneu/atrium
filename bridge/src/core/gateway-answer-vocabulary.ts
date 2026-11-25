@@ -24,7 +24,11 @@ export const GATEWAY_ERROR_CODES: readonly string[] = [
  *  trace administrators read, so only a name upstream wrote may be. Sources at v2026.9.9:
  *  `AgentDatabaseAdmissionRefusal` (vendored schema/agent-database-admission.ts), the
  *  worker error details (vendored worker-protocol-primitives.ts), and every
- *  `*ErrorDetails` shape of gateway-error-details.ts. Same confrontation test. */
+ *  `*ErrorDetails` shape of gateway-error-details.ts. Same confrontation test.
+ *
+ *  The list is the UNION over the supported lines: v2026.10.33 adds `kind` and `warning`
+ *  (the two ClawHub review refusals) and no longer declares the two revision hashes of the
+ *  skill-proposal refusal, which a 2026.9 gateway still sends. */
 export const GATEWAY_DETAIL_KEYS: readonly string[] = [
   "agentId",
   "cause",
@@ -36,6 +40,7 @@ export const GATEWAY_DETAIL_KEYS: readonly string[] = [
   "expectedRevisionHash",
   "idempotencyKey",
   "jobId",
+  "kind",
   "limit",
   "missingScope",
   "paths",
@@ -45,6 +50,7 @@ export const GATEWAY_DETAIL_KEYS: readonly string[] = [
   "requiredScopes",
   "sessionId",
   "source",
+  "warning",
 ];
 
 /** The fixed value a code outside `GATEWAY_ERROR_CODES` becomes: never the string received. */

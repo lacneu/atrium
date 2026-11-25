@@ -152,7 +152,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.compat.protocolVersion).toBe(2);
     expect(body.compat.providers.openclaw!.supportedRange).toEqual({
       min: "2026.8.2",
-      maxValidated: "2026.9.36",
+      maxValidated: "2026.10.33",
     });
     expect(body.compat.providers.openclaw!.validatedVersions).toEqual([
       "2026.9.1",
@@ -165,6 +165,19 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.9.9",
       "2026.9.33",
       "2026.9.36",
+      "2026.10.33",
+    ]);
+    // The never-benched interval under the ceiling travels WITH the manifest: Convex and
+    // the admin view resolve a version from this body, and without it they would read
+    // 2026.10.5 as validated while the bridge's own target says it is not.
+    expect(
+      (body.compat.providers.openclaw as { unvalidatedWindows?: unknown }).unvalidatedWindows,
+    ).toEqual([
+      {
+        after: "2026.9.36",
+        before: "2026.10.33",
+        why: expect.stringMatching(/never benched/),
+      },
     ]);
     expect(body.compat.providers.hermes).toEqual({
       supportedRange: { min: "0.18.0", maxValidated: "0.21.7" },

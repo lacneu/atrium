@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   hermesChoice,
   openClawDecision,
+  OPENCLAW_MAX_OPTIONS,
+  openClawAnswerLabels,
   openClawQuestionAnswers,
   readHermesApproval,
   readHermesClarify,
@@ -157,6 +159,96 @@ describe("OpenClaw questions", () => {
     expect(openClawQuestionAnswers([{ id: "format", values: ["PDF"] }, { id: "BAD-ID", values: ["x"] }])).toEqual({
       answers: { format: ["PDF"] },
     });
+  });
+
+  // OpenClaw 2026.10.33 (schema/questions.ts): `Question.options` goes up to 64 — more
+  // than four only on a `presentation: "form"` question — and an option may carry a
+  // `value`, the canonical answer (`value ?? label`, question-manager.ts
+  // `canonicalizeQuestionAnswer`).
+  const formRecord = (options: unknown[]) => ({
+    ...QUESTION_RECORD,
+    questions: [{ questionId: "region", header: "Région", question: "Où ?", presentation: "form", options }],
+  });
+  const forty = Array.from({ length: 40 }, (_, i) => ({ label: `Région ${i + 1}`, value: `r-${i + 1}` }));
+
+  it("every option the gateway sent is kept — a form question is not cut to four", () => {
+    const q = readOpenClawQuestionRequested(formRecord(forty))!;
+    expect(q.questions[0]!.options.map((o) => o.label)).toEqual(forty.map((o) => o.label));
+    // The bound is the contract's own (64), reached whole…
+    const sixtyFour = Array.from({ length: 64 }, (_, i) => ({ label: `o${i}` }));
+    expect(readOpenClawQuestionRequested(formRecord(sixtyFour))!.questions[0]!.options).toHaveLength(64);
+    // …and past it the request is not one this can state: refused, never shown short.
+    expect(OPENCLAW_MAX_OPTIONS).toBe(64);
+    expect(readOpenClawQuestionRequested(formRecord([...sixtyFour, { label: "o64" }]))).toBeNull();
+  });
+
+  it("an option's `value` is carried apart from what the card shows and Convex stores", () => {
+    const q = readOpenClawQuestionRequested(
+      formRecord([{ label: "Europe", value: "eu-west-1", description: "Paris" }, { label: "Autre" }, { label: "Vide", value: "" }]),
+    )!;
+    // The stored question is what it was before the field existed: no `value` key (the
+    // Convex validator admits label + description only).
+    expect(q.questions[0]!.options).toEqual([
+      { label: "Europe", description: "Paris" },
+      { label: "Autre" },
+      { label: "Vide" },
+    ]);
+    // Only an option that declares a usable value is listed (1..4096 chars, verbatim).
+    expect([...q.optionValues.get("region")!]).toEqual([["Europe", "eu-west-1"]]);
+    expect(readOpenClawQuestionRequested(formRecord([{ label: "L", value: "x".repeat(4097) }]))!.optionValues.size).toBe(0);
+    expect(readOpenClawQuestionRequested(formRecord([{ label: "L", value: " padded " }]))!.optionValues.get("region")!.get("L")).toBe(" padded ");
+    // A 2026.9.36 record (no value anywhere) lists none.
+    expect(readOpenClawQuestionRequested(QUESTION_RECORD)!.optionValues.size).toBe(0);
+  });
+
+  it("a picked option is answered with its value; the rest goes as typed", () => {
+    const q = readOpenClawQuestionRequested({
+      ...QUESTION_RECORD,
+      questions: [
+        {
+          questionId: "region",
+          header: "Région",
+          question: "Où ?",
+          multiSelect: true,
+          isOther: true,
+          // The trap: a label that IS another option's value. The gateway reads an answer
+          // as a value first, so the label "eu" would select the option labelled "Europe".
+          options: [{ label: "Europe", value: "eu" }, { label: "eu", value: "legacy" }, { label: "Asie" }],
+        },
+        { questionId: "note", header: "Note", question: "?", options: [] },
+      ],
+    })!;
+    expect(
+      openClawQuestionAnswers(
+        [
+          { id: "region", values: ["eu", "Asie", "ailleurs"] },
+          { id: "note", values: ["Europe"] },
+        ],
+        q.optionValues,
+      ),
+    ).toEqual({
+      // "eu" (the label) → its own value; "Asie" has none; free text is untouched; and
+      // another question's answer is never read against this one's options.
+      answers: { region: ["legacy", "Asie", "ailleurs"], note: ["Europe"] },
+    });
+    // Without the options (an unreadable record): sent as given, the gateway canonicalizes.
+    expect(openClawQuestionAnswers([{ id: "region", values: ["Europe"] }])).toEqual({ answers: { region: ["Europe"] } });
+  });
+
+  it("what the gateway recorded is read back into labels", () => {
+    const q = readOpenClawQuestionRequested(
+      formRecord([{ label: "Europe", value: "eu" }, { label: "eu", value: "legacy" }, { label: "Asie" }]),
+    )!;
+    expect(
+      openClawAnswerLabels([{ id: "region", values: ["eu", "legacy", "Asie", "ailleurs"] }], q.optionValues),
+    ).toEqual([{ id: "region", values: ["Europe", "eu", "Asie", "ailleurs"] }]);
+    // Round trip: what Atrium sends for a label comes back as that label.
+    for (const label of ["Europe", "eu", "Asie"]) {
+      const sent = openClawQuestionAnswers([{ id: "region", values: [label] }], q.optionValues).answers.region!;
+      expect(openClawAnswerLabels([{ id: "region", values: sent }], q.optionValues)).toEqual([{ id: "region", values: [label] }]);
+    }
+    // No options known: left as recorded.
+    expect(openClawAnswerLabels([{ id: "region", values: ["eu"] }], undefined)).toEqual([{ id: "region", values: ["eu"] }]);
   });
 });
 

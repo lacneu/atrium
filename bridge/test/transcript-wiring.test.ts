@@ -304,6 +304,81 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
     expect(h.applies.some((a) => a.kind === "live" && a.rows.some((r) => r.entryId === "u9"))).toBe(true);
   });
 
+  // 2026.10.33 withdraws from the live stream the text it has just recorded: the run
+  // manager is told of the recording (retired-live-text.test.ts reads what it does with it).
+  it("a visible assistant row on the events socket is handed to the run manager as recorded", async () => {
+    const h = await harness("2026.10.33");
+    await performSend(h.session, body(), h.writer, null, null);
+    await settle(h.session);
+    const noted = vi.spyOn(h.session.runManager, "onAssistantRow");
+    const ev = h.eventSockets()[0]!.gw;
+    ev.emit(
+      sessionMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "t1", name: "exec", arguments: {} }],
+        __openclaw: { id: "a6", seq: 6, runId: "webchat-x" },
+      }),
+    );
+    ev.emit(
+      sessionMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "salut" }],
+        __openclaw: { id: "a7", seq: 7, runId: "webchat-x" },
+      }),
+    );
+    await sleep(20);
+    await settle(h.session);
+    expect(noted.mock.calls.map(([row]) => [row.runId, row.seq])).toEqual([["webchat-x", 7]]);
+  });
+
+  // One run, two names, the link stated after the bubble opened (run-manager `linkLate`):
+  // Convex must hold the link before it is given the rows of the execution run, and is
+  // asked about the foreground turn under the name its rows carry.
+  it("a run link stated late is recorded BEFORE each transcript post, and the foreground run is named as the transcript names it", async () => {
+    const h = await harness("2026.10.33");
+    await performSend(h.session, body(), h.writer, null, null);
+    await settle(h.session);
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    vi.spyOn(h.session.runManager, "recordRunLinks").mockImplementation(async () => {
+      order.push("links:asked");
+      await held;
+      order.push("links:recorded");
+    });
+    (h.writer as unknown as { applyTranscript: (r: TranscriptApplyReport) => Promise<unknown> }).applyTranscript =
+      async (r) => {
+        order.push(`apply:${r.kind}`);
+        h.applies.push(r);
+      };
+    // A turn in the foreground whose link was stated late: its own name here, the
+    // execution run's in the transcript.
+    vi.spyOn(h.session.runManager, "turnActive", "get").mockReturnValue(true);
+    vi.spyOn(h.session.runManager, "activeRunIds", "get").mockReturnValue(["client-run"]);
+    vi.spyOn(h.session.runManager, "activeTranscriptRunIds", "get").mockReturnValue(["execution-run"]);
+    const before = h.applies.length;
+    h.eventSockets()[0]!.gw.emit(
+      sessionMessage({ role: "user", content: "encore", __openclaw: { id: "u9", seq: 9, idempotencyKey: "s9:user" } }),
+    );
+    await sleep(20);
+    // Asked, not answered: nothing was posted meanwhile.
+    expect(order).toEqual(["links:asked"]);
+    release();
+    await sleep(20);
+    await settle(h.session);
+    expect(order.slice(0, 3)).toEqual(["links:asked", "links:recorded", expect.stringMatching(/^apply:/)]);
+    // Every post is preceded by its own ask.
+    order.forEach((step, i) => {
+      if (step.startsWith("apply:")) expect(order.slice(0, i)).toContain("links:recorded");
+    });
+    const posted = h.applies.slice(before);
+    expect(posted.length).toBeGreaterThan(0);
+    // (A texts-only post carries rows' texts and asks nothing about the turn.)
+    const asking = posted.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+    expect(asking.length).toBeGreaterThan(0);
+    for (const a of asking) expect(a.foregroundRunIds).toEqual(["execution-run"]);
+  });
+
   it("NO duplicate delivery: a turn frame arriving on the events socket reaches no RunManager and writes nothing", async () => {
     const h = await harness("2026.9.6");
     await performSend(h.session, body(), h.writer, null, null);
@@ -448,5 +523,107 @@ describe("the send identity", () => {
     expect(await resolveSendIdentity(SESSION_KEY, "cm-1", undefined, "c1")).toBe(
       derived(SESSION_KEY, "cm-1"),
     );
+  });
+});
+
+// ONE RUN, TWO NAMES (2026.10.33): a queued input's execution is broadcast under the
+// input's client run once the gateway linked the two (chat-send-turn-adoption.ts:289-302
+// there). Every reader of the conversation's frames takes the frame under the execution
+// run — here the reconciler's terminal observation, which Convex files under the run the
+// transcript rows name (run-manager.ts `canonicalFrame`, session.ts consume loop).
+describe("a linked run is one run for every reader of the socket", () => {
+  const X = "11111111-2222-4333-8444-555555555555";
+  const C = `webchat-${"c".repeat(64)}`;
+  const agentFrame = (runId: string, stream: string, data: Record<string, unknown>) => ({
+    type: "event",
+    event: "agent",
+    payload: { sessionKey: SESSION_KEY, runId, stream, data },
+  });
+  const chatFrame = (runId: string, payload: Record<string, unknown>) => ({
+    type: "event",
+    event: "chat",
+    payload: { sessionKey: SESSION_KEY, runId, ...payload },
+  });
+  const said = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+
+  it("the terminal the reconciler posts names the EXECUTION run, and one bubble opens under it", async () => {
+    const h = await harness("2026.9.36");
+    const opened: Array<string | null> = [];
+    const open = h.writer.startAssistant.bind(h.writer);
+    (h.writer as unknown as { startAssistant: ConvexWriter["startAssistant"] }).startAssistant = async (
+      ...args: Parameters<ConvexWriter["startAssistant"]>
+    ) => {
+      opened.push(args[1]);
+      return open(...args);
+    };
+    // The first turn, answered; then an input the gateway holds (server.ts sendHeldInput).
+    await performSend(h.session, body(), h.writer, null, null);
+    h.gw.emit(chatFrame("webchat-x", { state: "final", message: said("salut") }));
+    await settle(h.session);
+    h.session.runManager.noteHeldInput(C, C, "um-2", ["webchat-x"]);
+    h.applies.length = 0;
+    // Its execution: the first frames under the execution run, the rest under the client's.
+    h.gw.emit(agentFrame(X, "run_status", { phase: "preparing_workspace" }));
+    h.gw.emit(chatFrame(C, { seq: 4, state: "delta", deltaText: "ok", message: said("ok") }));
+    h.gw.emit(agentFrame(C, "lifecycle", { phase: "end", endedAt: 1 }));
+    h.gw.emit(chatFrame(C, { seq: 1, state: "final", message: said("ok") }));
+    await settle(h.session);
+    expect(opened.filter((r) => r !== "webchat-x")).toEqual([X]);
+    const terminals = h.applies.flatMap((a) => a.terminals.map((t) => t.runId));
+    expect(terminals).toContain(X);
+    expect(terminals).not.toContain(C);
+  });
+
+  /** The client run speaks FIRST (its bubble opens under it); the link is stated after. */
+  async function linkedLate(linkRunBubble: (...args: unknown[]) => Promise<boolean>) {
+    const h = await harness("2026.10.33");
+    (h.writer as unknown as { linkRunBubble: unknown }).linkRunBubble = linkRunBubble;
+    await performSend(h.session, body(), h.writer, null, null);
+    h.gw.emit(chatFrame("webchat-x", { state: "final", message: said("salut") }));
+    await settle(h.session);
+    h.session.runManager.noteHeldInput(C, C, "um-2", ["webchat-x"]);
+    h.gw.emit(chatFrame(C, { seq: 4, state: "delta", deltaText: "ok", message: said("ok") }));
+    await sleep(10);
+    await settle(h.session);
+    expect(h.session.runManager.activeRunIds).toEqual([C]);
+    return h;
+  }
+
+  it("linked LATE: the terminal broadcast under the client run is posted under the EXECUTION run", async () => {
+    const h = await linkedLate(async () => true);
+    expect(h.session.runManager.noteRunLink(X, C, 1001)).toBe(true);
+    h.applies.length = 0;
+    h.gw.emit(chatFrame(C, { seq: 1, state: "final", message: said("ok") }));
+    await sleep(20);
+    await settle(h.session);
+    const terminals = h.applies.flatMap((a) => a.terminals.map((t) => t.runId));
+    expect(terminals).toContain(X);
+    expect(terminals).not.toContain(C);
+  });
+
+  it("linked LATE, the link's write FAILING: no row is posted until Convex holds the link", async () => {
+    let fail = true;
+    const asked: unknown[][] = [];
+    const h = await linkedLate(async (...args) => {
+      asked.push(args);
+      if (fail) throw new Error("fetch failed");
+      return true;
+    });
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(h.session.runManager.noteRunLink(X, C, 1001)).toBe(true);
+    await sleep(5);
+    h.applies.length = 0;
+    // A read is asked for (the session moved): its rows may be the execution run's.
+    h.session.transcriptShadow!.requestRead("test");
+    await settle(h.session);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(h.applies).toEqual([]);
+    // Convex takes the link: the next read is posted.
+    fail = false;
+    h.session.transcriptShadow!.requestRead("test");
+    await settle(h.session);
+    expect(h.applies.length).toBeGreaterThan(0);
+    expect(asked.at(-1)).toEqual(["msg-1", C, X]);
+    quiet.mockRestore();
   });
 });

@@ -6,8 +6,9 @@
 // becomes the label, and a credential refusal is split three ways (revoked / permission /
 // unnamed) because only one of them is "your access expired".
 //
-// The corpus (fixtures/failure-text-corpus.json) is composed exactly as OpenClaw v2026.9.6
-// composes each text, with its template cited; the front's mirror reads the same file.
+// The corpus (fixtures/failure-text-corpus.json) is composed exactly as OpenClaw composes each
+// text, with its template cited — at v2026.9.6, and at v2026.10.33 for the `-1033` cases that
+// word the same facts anew; the front's mirror reads the same file.
 
 import { describe, expect, it } from "vitest";
 import corpus from "./fixtures/failure-text-corpus.json" with { type: "json" };
@@ -25,7 +26,7 @@ import {
 type Case = { id: string; source: string; text: string; expected: string | null };
 const CASES = (corpus as { cases: Case[] }).cases;
 
-describe("the v2026.9.6 corpus — every template gets the class its cause names", () => {
+describe("the upstream corpus — every template gets the class its cause names", () => {
   for (const c of CASES) {
     it(`${c.id} (${c.source})`, () => {
       expect(classifyFailureText(c.text)).toBe(c.expected);
@@ -322,5 +323,164 @@ describe("the new rules stay linear on hostile input (the bridge has frozen on a
       withoutOperatorData(t);
       expect(performance.now() - started, t.slice(0, 30)).toBeLessThan(1000);
     }
+  });
+});
+
+describe("OpenClaw 2026.10.33 — the same facts under the rewritten copies", () => {
+  const HINT =
+    "For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
+  const TAIL = " Try again, use /compact, or use /new to start a fresh session.";
+
+  it("every 9.36 family has its 10.33 wording in the corpus, with the SAME class", () => {
+    // 9.36 case -> its 10.33 counterpart: one fact, two generations, one verdict.
+    const pairs: Array<[string, string]> = [
+      ["preflight-verbose-off", "preflight-verbose-off-1033"],
+      ["preflight-timed-out", "preflight-timed-out-1033"],
+      ["preflight-reason-unrecognized", "preflight-reason-unrecognized-1033"],
+      ["prod-revoked-verbose-on", "preflight-revoked-verbose-on-1033"],
+      ["session-gone-wrapped", "session-gone-wrapped-1033"],
+      ["something-went-wrong", "something-went-wrong-1033"],
+      ["agent-failed-before-reply-unknown", "control-ui-agent-failure-1033"],
+      ["turn-ended-before-reply", "turn-ended-before-reply-1033"],
+      ["post-compaction-rate-limit", "post-compaction-rate-limit-1033"],
+      ["post-compaction-billing", "post-compaction-billing-1033"],
+      ["billing-copy", "billing-copy-no-label-1033"],
+      ["model-not-found-copy", "model-not-found-copy-1033"],
+      ["rate-limit-copy", "rate-limit-copy-1033"],
+      ["hedged-401", "auth-copy-1033"],
+    ];
+    const byId = new Map(CASES.map((c) => [c.id, c]));
+    for (const [old, now] of pairs) {
+      expect(byId.get(old), old).toBeDefined();
+      expect(byId.get(now), now).toBeDefined();
+      expect(byId.get(now)!.expected, `${old} -> ${now}`).toBe(byId.get(old)!.expected);
+      expect(byId.get(now)!.source, now).toContain("v2026.10.33");
+    }
+  });
+
+  it("the rewritten preflight headline is peeled like the old one, and is not a context fact", () => {
+    const head = "⚠️ This conversation is too long, and OpenClaw couldn't shorten it.";
+    expect(unwrapGatewayFailure(`${head}${TAIL}`)).toEqual({ wrapper: "preflight_compaction", inner: null });
+    expect(unwrapGatewayFailure(`${head} Reason: 401: Encountered invalidated oauth token for user (auth).${TAIL}`)).toEqual({
+      wrapper: "preflight_compaction",
+      inner: "401: Encountered invalidated oauth token for user (auth)",
+    });
+    expect(
+      unwrapGatewayFailure(`⚠️ This conversation is too long, and shortening it took too long.${TAIL}`),
+    ).toEqual({ wrapper: "compaction_timeout", inner: null });
+    expect(classifyFailureText(`${head}${TAIL}`)).not.toBe("context_length");
+  });
+
+  it("the three cause-less copies are wrappers that carry nothing — never a guessed cause", () => {
+    for (const text of [
+      "⚠️ OpenClaw couldn't finish this request. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
+      `⚠️ OpenClaw couldn't finish this reply. Check the conversation before trying again. ${HINT}`,
+      `⚠️ OpenClaw couldn't finish this reply. ${HINT}`,
+    ]) {
+      expect(unwrapGatewayFailure(text), text).toEqual({ wrapper: "run_failure", inner: null });
+      expect(classifyFailureText(text), text).toBe("run_failed_no_cause");
+    }
+    // The transcript row's headline keeps what follows it as the cause.
+    expect(unwrapGatewayFailure("Your request couldn't be completed: database or disk is full")).toEqual({
+      wrapper: "run_failure",
+      inner: "database or disk is full",
+    });
+    expect(classifyFailureText("Your request couldn't be completed: database or disk is full")).toBe(
+      "gateway_storage_unavailable",
+    );
+  });
+
+  it("the storage copies keep the SPLIT: busy is a resend, the three others are the host", () => {
+    const copy = (id: string) => CASES.find((c) => c.id === id)!.text;
+    expect(classifyFailureText(copy("storage-busy-1033"))).toBe("gateway_storage_busy");
+    for (const id of ["storage-full-1033", "storage-readonly-1033", "storage-ioerr-1033"]) {
+      expect(classifyFailureText(copy(id)), id).toBe("gateway_storage_unavailable");
+    }
+    // The host wins when one text carries both, as on 9.36 (precedence).
+    expect(classifyFailureText(`${copy("storage-busy-1033")} | ${copy("storage-full-1033")}`)).toBe(
+      "gateway_storage_unavailable",
+    );
+  });
+
+  it("the writer-rebound copy is NOT the two other `conversation changed` sentences", () => {
+    expect(
+      classifyFailureText(
+        `⚠️ This conversation changed while OpenClaw was working. Check its latest messages before continuing. ${HINT}`,
+      ),
+    ).toBe("session_write_conflict");
+    // src/auto-reply/reply/agent-runner-core.ts:401 — a restart-recovery claim.
+    expect(
+      classifyFailureText(
+        "⚠️ This conversation changed before your message could start. Check the latest messages, then try again if needed.",
+      ),
+    ).toBeNull();
+    // src/gateway/server-methods/chat-send-dispatch-errors.ts:55-60 — a refresh-required send.
+    expect(
+      classifyFailureText(
+        "Your message didn't run because the conversation changed. Refresh the conversation, then send it again.",
+      ),
+    ).toBeNull();
+  });
+
+  it("what one sentence cannot tell apart stays without a class", () => {
+    // One copy for a provider network error (auto-retried class on 9.36), a refused
+    // connection and a DNS failure (no class on 9.36): src/shared/assistant-error-format.ts:256-276.
+    expect(
+      classifyFailureText(
+        "Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
+      ),
+    ).toBeNull();
+    // A queue cap dropping a queued input is not the displaced-input class, whose card and
+    // diagnosis describe a rewritten transcript branch.
+    for (const reason of ["queue-cap", "queue-cap-old", "queue-cap-new"]) {
+      expect(classifyFailureText(`Queued input was dropped (${reason}).`), reason).toBeNull();
+    }
+  });
+});
+
+describe("OpenClaw 2026.10.33 — the structured observation still decides first", () => {
+  it("`upstream_html` names the transient class when neither the reason nor the status did", () => {
+    // provider-runtime-failure.ts:131-140; carried by errorObservation / errorDetail.
+    expect(classifyErrorDetail({ providerRuntimeFailureKind: "upstream_html" })).toBe("provider_internal");
+    expect(classifyErrorDetail({ providerRuntimeFailureKind: "upstream_html", httpStatus: 404 })).toBe(
+      "provider_internal",
+    );
+    expect(
+      classifyStructuredFailure({ errorDetail: { providerRuntimeFailureKind: "upstream_html", failoverReason: "unknown" } }),
+    ).toBe("provider_internal");
+  });
+
+  it("…and never outranks a reason or a status that already named one", () => {
+    expect(
+      classifyErrorDetail({ providerRuntimeFailureKind: "upstream_html", failoverReason: "auth", httpStatus: 403 }),
+    ).toBe("provider_permission_denied");
+    expect(
+      classifyErrorDetail({ providerRuntimeFailureKind: "upstream_html", failoverReason: "model_not_found" }),
+    ).toBe("model_not_found");
+    expect(classifyErrorDetail({ providerRuntimeFailureKind: "upstream_html", httpStatus: 429 })).toBe("rate_limit");
+  });
+
+  it("the kinds that cannot choose a class are not read", () => {
+    // `gateway_storage` is one word for busy, full, read-only, I/O and the writer rebound
+    // (provider-runtime-failure.ts:102-104): it cannot choose between "resend" and "repair
+    // the host". `proxy`, `dns` and `timeout` had no class by their 9.36 copy either.
+    for (const kind of ["gateway_storage", "proxy", "dns", "timeout", "tls_certificate", "schema"]) {
+      expect(classifyErrorDetail({ providerRuntimeFailureKind: kind }), kind).toBeNull();
+    }
+  });
+
+  it("the rewritten copies no longer carry what the structured fields do: both are needed", () => {
+    // The 10.33 rate-limit copy, alone and beside its observation — same class either way.
+    const copy = "⚠️ The AI service needs a short break. Please try again in a few minutes.";
+    expect(classifyFailureText(copy)).toBe("rate_limit");
+    expect(classifyStructuredFailure({ errorKind: "rate_limit", errorDetail: { failoverReason: "rate_limit", httpStatus: 429 } })).toBe(
+      "rate_limit",
+    );
+    // The auth copy names nothing by itself; the observation does.
+    const auth = "⚠️ Couldn't sign in to the AI service. Sign in again under Models in the Control UI or run `openclaw configure`.";
+    expect(classifyFailureText(auth)).toBeNull();
+    expect(classifyStructuredFailure({ errorDetail: { failoverReason: "auth", httpStatus: 401 } })).toBe(
+      "provider_auth_revoked",
+    );
   });
 });

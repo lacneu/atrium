@@ -104,6 +104,34 @@ export function sessionRowKind(row: SessionRunState): SessionRowKind {
         : "danger";
 }
 
+/**
+ * `interrupted` is one word for two ends on OpenClaw 2026.10.33: a gateway restart, and
+ * a run that reached its time limit while a tool was executing
+ * (src/gateway/session-lifecycle-state.ts:196-212 — `interruptedForRestart` /
+ * `interruptedForToolTimeout`, both `status:"interrupted"`, `abortedLastRun:true`). The
+ * row carries no field that tells them apart: only its `lastRunError` sentence differs,
+ * and a sentence decides nothing here. The run's own terminal does say it: the child's
+ * `chat` error frame carries the protocol enum `errorKind:"timeout"`, minted from the
+ * run's terminal classification (src/gateway/server-chat.ts:509-514), under the run id
+ * the row then holds as `lastRunId` (session-lifecycle-state.ts:260-264).
+ *
+ * So a row that reads `interrupted` FOR THE RUN whose terminal the gateway classed as a
+ * timeout is a child that ran out of time — what 2026.9.36 stated on the row itself
+ * (`timeout`). Any other `interrupted` row keeps the row's word, as the Control UI shows
+ * it: a run id that differs, or a terminal Atrium did not see, proves nothing.
+ */
+export function rowRunTimedOut(
+  row: { status?: string; runId?: string } | undefined,
+  timedOutRunId: string | undefined,
+): boolean {
+  return (
+    row?.status === "interrupted" &&
+    row.runId !== undefined &&
+    timedOutRunId !== undefined &&
+    row.runId === timedOutRunId
+  );
+}
+
 /** Atrium's four lifecycle states, from what the badge says. `null` = the row says
  *  nothing Atrium's enum can hold (`idle`, `unknown`): the stored state is left as it is.
  *  `failed` and `timeout` are `error` (the word stays beside it); `killed` and

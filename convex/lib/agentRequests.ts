@@ -207,7 +207,15 @@ export type AgentRequestAnswer = Infer<typeof agentRequestAnswerValidator>;
 /** Hermes batches up to five clarify questions (tools/clarify_tool.py MAX_QUESTIONS);
  *  OpenClaw asks fewer. */
 export const MAX_QUESTIONS = 5;
-export const MAX_OPTIONS = 4;
+/** OpenClaw's own bound from 2026.10.33 on (schema/questions.ts `options` maxItems: 64 —
+ *  more than four only on a `presentation: "form"` question; four before that tag, and
+ *  Hermes keeps at most four in the bridge). A longer list is REFUSED, never cut: a
+ *  closed question shown with fewer choices than the agent offered is another question. */
+export const MAX_OPTIONS = 64;
+/** All the option text one request may carry (labels and descriptions, every question
+ *  together). Sixty-four options of eight thousand characters would not fit a document;
+ *  a request past this is not recorded rather than recorded in part. */
+export const MAX_OPTIONS_TEXT = 120_000;
 const MAX_HEADER = 40;
 const MAX_QUESTION_TEXT = 4000;
 /** An option label is sent back verbatim as the answer, so it is bounded by what an
@@ -224,8 +232,17 @@ const MAX_DETAIL = 16_384;
 const MAX_COMMAND = 16_384 + 64;
 const MAX_SHORT = 200;
 export const MAX_ANSWER_CHARS = 8000;
-/** The most values one answer may carry (the bridge refuses more, never cuts). */
-export const MAX_ANSWER_VALUES = 8;
+/** The most values one answer may carry on the wire (the bridge refuses more, never
+ *  cuts): every option of a multi-select question may be picked, plus the ONE free
+ *  answer of a question that also takes one. OpenClaw bounds the options, never the
+ *  answer (schema/questions.ts `QuestionAnswersSchema`; question-manager.ts
+ *  `validateAnswers` accepts any value of an `isOther` question beside its options). */
+export const MAX_ANSWER_VALUES = MAX_OPTIONS + 1;
+/** The same bound for ONE question: the free answer counts only where the question
+ *  offers options AND takes another answer. */
+function maxAnswerValues(q: Pick<AgentRequestQuestion, "options" | "allowOther">): number {
+  return q.allowOther && q.options.length > 0 ? MAX_ANSWER_VALUES : MAX_OPTIONS;
+}
 const QUESTION_ID_RE = /^[a-z][a-z0-9_]*$/;
 
 function clip(value: unknown, max: number): string | undefined {
@@ -253,6 +270,7 @@ export function boundQuestions(raw: unknown): AgentRequestQuestion[] | null {
   if (raw.length > MAX_QUESTIONS) return null;
   const out: AgentRequestQuestion[] = [];
   const seen = new Set<string>();
+  let optionsText = 0;
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
     const q = item as Record<string, unknown>;
@@ -262,8 +280,10 @@ export function boundQuestions(raw: unknown): AgentRequestQuestion[] | null {
     seen.add(id);
     const options: AgentRequestQuestion["options"] = [];
     const rawOptionCount = Array.isArray(q.options) ? q.options.length : 0;
+    // REFUSED past the bound, never cut — the same rule as the questions above.
+    if (rawOptionCount > MAX_OPTIONS) return null;
     if (Array.isArray(q.options)) {
-      for (const o of q.options.slice(0, MAX_OPTIONS)) {
+      for (const o of q.options) {
         if (typeof o !== "object" || o === null) continue;
         // A label is also the ANSWER VALUE: the gateway compares it byte for byte
         // (question-manager.ts). Never shortened — an option too long to send is
@@ -277,6 +297,8 @@ export function boundQuestions(raw: unknown): AgentRequestQuestion[] | null {
           MAX_OPTION_DESCRIPTION,
         );
         options.push(description === undefined ? { label } : { label, description });
+        optionsText += label.length + (description?.length ?? 0);
+        if (optionsText > MAX_OPTIONS_TEXT) return null;
       }
     }
     // A CLOSED question left with no option it can show cannot be answered from here: shown
@@ -505,7 +527,7 @@ export function validateAnswers(
     }
     // Bounded, never cut: the bridge relays at most this many, and a stored answer the agent
     // did not receive in full would claim an answer nobody gave (codex P3).
-    if (given.values.length > MAX_ANSWER_VALUES) {
+    if (given.values.length > maxAnswerValues(q)) {
       return { ok: false, refusal: { code: "too_many", questionId: q.id } };
     }
     if (!q.multiSelect && given.values.length > 1) {

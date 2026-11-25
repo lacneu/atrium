@@ -83,6 +83,10 @@ export interface AgentRequestView {
   answers: Array<{ id: string; values: string[] }> | null;
   decision: ApprovalDecision | null;
   failureCode: string | null;
+  /** The gateway said this approval's request FAILED: its command did not run, whatever
+   *  was decided (convex/schema.ts `agentRequests.gatewayFailed`). Absent from a row an
+   *  older deployment serves: read as false. */
+  gatewayFailed?: boolean;
   canAnswer: boolean;
 }
 
@@ -174,6 +178,14 @@ export function toggleOption(
     return { ...draft, selected: has ? draft.selected.filter((l) => l !== label) : [...draft.selected, label] };
   }
   return { selected: has ? [] : [label], other: has ? draft.other : "" };
+}
+
+/** More options than a row of choices reads well with: the card lays them out as one
+ *  scrolling column instead (an OpenClaw `presentation: "form"` question carries up to
+ *  64; an ordinary one, at most four). */
+export const OPTIONS_INLINE_MAX = 4;
+export function optionsOverflow(count: number): boolean {
+  return count > OPTIONS_INLINE_MAX;
 }
 
 /** Typing an "other" answer on a single-choice question deselects the options. */
@@ -292,6 +304,7 @@ export type OutcomeKey =
   | "allowed_session"
   | "allowed_always"
   | "allowed_elsewhere"
+  | "not_run"
   | "denied"
   | "denied_elsewhere"
   | "expired"
@@ -299,7 +312,10 @@ export type OutcomeKey =
   | "failed";
 
 export function outcomeOf(
-  r: Pick<AgentRequestView, "status" | "decision" | "resolvedElsewhere" | "answeredByMe" | "expiresAt">,
+  r: Pick<
+    AgentRequestView,
+    "status" | "decision" | "resolvedElsewhere" | "answeredByMe" | "expiresAt" | "gatewayFailed"
+  >,
   now: number,
 ): OutcomeKey | null {
   // Past its deadline, an open request is expired whatever the row still says: the
@@ -309,6 +325,10 @@ export function outcomeOf(
     case "answered":
       return r.resolvedElsewhere ? "answered_elsewhere" : "answered";
     case "allowed":
+      // Allowed, and the gateway then said the request failed: the command did not run.
+      // Never shown as an authorisation that took effect, whoever gave it. Only beside
+      // `allowed`: with any other status the card already says the command did not run.
+      if (r.gatewayFailed === true) return "not_run";
       if (r.resolvedElsewhere) return "allowed_elsewhere";
       return r.decision === "allow-always"
         ? "allowed_always"
@@ -327,6 +347,12 @@ export function outcomeOf(
     default:
       return null;
   }
+}
+
+/** Whether a settled card says more than its outcome word, and so opens by itself: an
+ *  authorisation the gateway did not honour is explained in the card's body. */
+export function explainsOutcome(outcome: OutcomeKey | null): boolean {
+  return outcome === "not_run";
 }
 
 /** A failure code worth telling the person, and whether retrying can help. */

@@ -273,6 +273,10 @@
     {
       "path": "TickEvent.ts",
       "scan": false
+    },
+    {
+      "path": "QuestionOption.value",
+      "scan": false
     }
   ]
 }

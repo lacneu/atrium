@@ -117,6 +117,9 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   // The run-segment index of a bubble cut at a steered input (phase 3): live placement
   // state tied to the source's `runId`, which stays behind for the same reason.
   "runSegment",
+  // The same run under the name its transcript rows carry (a queued input's execution,
+  // OpenClaw 2026.10.33): the source gateway's run identity, like `runId`.
+  "transcriptRunId",
   // Correlation with the SOURCE deployment's live run. The fork path excludes
   // the same fields for the same reason: they belong to sessions that are not
   // ours.

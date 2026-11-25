@@ -71,6 +71,7 @@ import {
   EVENT_TURN_PHASE,
   EVENT_SESSION_OVERFULL,
   EVENT_COMPACTION_CAUSE,
+  readTurnRetry,
   stampReceived,
   type BridgeEvent,
 } from "../../core/events.js";
@@ -136,12 +137,7 @@ export const COMPACTION_RECV_TIMEOUT = 900.0; // widened gap budget while compac
 export const COMPACTION_TIMEOUT_CODE = "compaction_timeout";
 const COMPACTION_TIMEOUT_TEXT =
   "The gateway did not finish optimizing (compacting) the session in time.";
-export /** The contract's own ceiling for a back-off counter (logs-chat.ts
- *  `ChatStatusEventSchema`: integers 1..10 on BOTH fields). Checking only the lower
- *  bound let `{attempt: 11, maxAttempts: 11}` through to the label — a counter the
- *  gateway cannot legally emit, which means the frame is not what it claims to be
- *  (raised in review). */
-/** Upstream's OWN test for "this tool frame is visible progress"
+export /** Upstream's OWN test for "this tool frame is visible progress"
  *  (`server-chat-progress-snapshot.ts` `isTool`), transcribed rather than approximated.
  *
  *  Two earlier versions were wrong. The first accepted a raw non-empty `toolCallId`,
@@ -176,8 +172,6 @@ const UPSTREAM_RESUME_TOOL_PHASES: ReadonlySet<string> = new Set([
   "review",
   "result",
 ]);
-
-const RETRY_MAX_ATTEMPTS = 10;
 
 // A tool asked for HUMAN approval — on 2026.9.36 the run that waits says so on its own
 // lifecycle (`waiting-approval` / `approval-resolved`, src/agents/bash-tools.exec-host-
@@ -313,6 +307,10 @@ const EMBEDDED_LOCK_CONFLICT_RE =
 // SessionLifecycleParams.action, sessions-lifecycle-drain.ts, broadcast by
 // chat-abort.ts on the killed run). Bucketed to "other", a trace could not tell
 // a gateway restart from a revoked login or a deleted session.
+// 2026.10.33 adds "aborted-partial-persistence-failed": the `chat` error that follows a
+// Stop whose partial reply could not be saved (a literal in
+// src/gateway/server-methods/chat-aborted-partial.ts:239-248; the Control UI keys on it,
+// ui/src/pages/chat/chat-gateway.ts:81-88).
 const KNOWN_STOP_REASONS = new Set([
   "stop",
   "rpc",
@@ -330,6 +328,7 @@ const KNOWN_STOP_REASONS = new Set([
   "auth-revoked",
   "archive",
   "delete",
+  "aborted-partial-persistence-failed",
 ]);
 const bucketStopReason = (v: string): string =>
   KNOWN_STOP_REASONS.has(v) ? v : "other";
@@ -709,6 +708,43 @@ export class Normalizer {
    *  oldest first. */
   private readonly settledWindows = new Map<string, SettledWindow>();
   private static readonly MAX_SETTLED_WINDOWS = 16;
+  // --- THE LIVE STREAM EMPTIED (gateway 2026.10.33) ------------------------------------
+  //
+  // From 2026.10.33 the gateway withdraws from a run's chat buffer the text it has just
+  // recorded in the transcript (src/gateway/server-chat-transcript-publication.ts
+  // `retireTranscript`; src/gateway/server-chat-buffer.ts `retireBuffer`,
+  // `bufferVisibleText`): the delta that follows is `replace: true` and carries only the
+  // tail not recorded yet, usually nothing. The Control UI shows the recorded text from
+  // its durable row and the tail from the stream (ui/src/pages/chat/chat-gateway.ts,
+  // "ignoring it would keep already-saved text visible beside its durable row"). A live
+  // bubble here has ONE carrier, its live text — its rows make it only once its runs are
+  // over (convex/lib/bubbleProjection.ts) — so a withdrawal written as it arrives blanks
+  // an answer the reader is looking at until the terminal brings it back.
+  //
+  // On the wire that delta is the one a real retraction sends (a silent reply recognised
+  // late, src/gateway/server-chat.agent-events.test.ts "retracts a visible item replaced
+  // by NO_REPLY"). What tells them apart is the transcript, never the frame nor the
+  // gateway's version:
+  //  - a visible assistant row of the SAME run was recorded (`noteAssistantRowRecorded`):
+  //    the text changed carrier. The bubble keeps it (`recordedText`) and the stream's
+  //    later text is shown after it, as the gateway joins two items itself;
+  //  - nothing says so: the emptying stays the gateway's statement about the stream, held
+  //    here exactly as before — and it is WRITTEN with what replaces the text shown, the
+  //    run's next text or the turn's terminal, never on its own (`unshownEmptying`).
+  /** The text of the bubble its run's stream no longer carries because the transcript
+   *  holds it. A later text of that stream is shown after it (`withRecordedText`). */
+  private recordedText: { runId: string; text: string } | null = null;
+  /** A stream emptied with no row seen for it: `text` is what the bubble still shows,
+   *  while the text held here is already what the emptying leaves. Written by the next
+   *  write of the bubble (`applyVisible`) or by the terminal (`finalize`). */
+  private unshownEmptying: { runId: string; text: string } | null = null;
+  /** Runs with a visible assistant row recorded and no `chat` text read since: the
+   *  emptying that comes next for one of them is that row's (the gateway forces the flush
+   *  right after the recording). Any other text of the run ends it. */
+  private readonly recordedAhead = new Set<string>();
+  /** Per run, the highest transcript `seq` of a row already noted: the same row read
+   *  twice says nothing new. */
+  private readonly recordedRowSeq = new Map<string, number>();
   /** The frame being read is a `chat` terminal (`final`, `error`, `aborted`). */
   private frameChatTerminal = false;
   hasSnapshot: boolean;
@@ -1056,6 +1092,7 @@ export class Normalizer {
     this.segmentPrefix = null;
     this.chatSeqHigh.clear();
     this.textOrigin = null;
+    this.forgetEmptiedStream();
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.messageToolSends.clear();
@@ -1142,7 +1179,62 @@ export class Normalizer {
     this.segmentPrefix = (this.segmentPrefix ?? "") + lead + this.text;
     this.segmentLead = "";
     this.text = "";
+    // The cut settled the bubble with the text held here: nothing is left to write for
+    // it, and what it kept of a recorded text is the settled segment's.
+    this.forgetEmptiedStream();
     this.hasSnapshot = false;
+  }
+
+  /** Nothing of an emptied stream is left to decide (see `recordedText`). */
+  private forgetEmptiedStream(): void {
+    this.recordedText = null;
+    this.unshownEmptying = null;
+    this.recordedAhead.clear();
+    this.recordedRowSeq.clear();
+  }
+
+  /**
+   * The transcript recorded a VISIBLE assistant row of a run (`session.message`): under
+   * every name the run is known by (`runIds`), at transcript position `seq`.
+   *
+   * It is the fact that makes an emptying of that run's stream a change of carrier (see
+   * `recordedText`). The two arrive on two sockets, in either order (bench 2026-11-24 on
+   * 2026.10.33: the row first in 168 of 190 emptyings, up to 2 ms after the delta in the
+   * others), so the row either settles the emptying already read or waits for the next
+   * one. Only for a run of the open turn that writes its own bubble.
+   */
+  noteAssistantRowRecorded(runIds: readonly string[], seq: number): void {
+    const own = runIds.filter((id) => this.ownRunIds.has(id) && !this.adoptedRunIds.has(id));
+    if (own.length === 0) return;
+    if (own.every((id) => (this.recordedRowSeq.get(id) ?? -1) >= seq)) return;
+    for (const id of own) this.recordedRowSeq.set(id, seq);
+    const unshown = this.unshownEmptying;
+    if (unshown !== null && own.includes(unshown.runId)) {
+      // The text was never taken off the screen: it is the bubble's again, under the
+      // transcript's authority.
+      this.text = unshown.text;
+      this.recordedText = { runId: unshown.runId, text: unshown.text };
+      this.unshownEmptying = null;
+      return;
+    }
+    for (const id of own) this.recordedAhead.add(id);
+  }
+
+  /**
+   * A run's live stream text, after what the bubble keeps of that run's recorded text.
+   *
+   * The boundary is the gateway's own between two items (src/gateway/
+   * agent-event-assistant-text.ts `mergeAssistantText`, `boundaryNewlines`: padded to a
+   * blank line), which is what its terminal carries for the same texts
+   * (src/gateway/server-chat.wire.test.ts, "replaces committed live text and preserves an
+   * indented tail": `Saved.\n\n${tail} More.`).
+   */
+  private withRecordedText(streamText: string): string {
+    const recorded = this.recordedText;
+    if (recorded === null || recorded.runId !== this.frameRunId) return streamText;
+    if (recorded.text === "" || streamText === "") return streamText;
+    const pad = recorded.text.endsWith("\n\n") ? "" : recorded.text.endsWith("\n") ? "\n" : "\n\n";
+    return recorded.text + pad + streamText;
   }
 
   /** The CURRENT segment's whole visible text (what a cut settles it with). */
@@ -1759,10 +1851,13 @@ export class Normalizer {
     // "post-processing" while the gateway's own UI showed "Retrying... 2/10":
     // a terminal-ish label for a turn that has not even reached the model.
     //
-    // `retry` is present ONLY for `reason === "rate_limit"` (server-chat.ts
-    // gates on it); any other back-off arrives as a bare `starting_model` and
-    // stays invisible here. The richer `stream:"run_status"` agent event is the
-    // fix for that case and is its own lot — this reads the field it is given.
+    // WHICH back-offs carry `retry` depends on the gateway. Up to 2026.9.36 the schema
+    // declares `reason: "rate_limit"` alone and server-chat.ts gates on it, so any other
+    // back-off arrives as a bare `starting_model`. From 2026.10.33 it is a union of five
+    // (packages/gateway-protocol/src/schema/logs-chat.ts:432-438; projection
+    // src/gateway/server-chat.ts:1288-1305), with an optional `retryAt`. Four of them are
+    // a provider being waited on; `output_limit` is the run continuing a reply cut at its
+    // output limit, and says nothing here — as on the `run_status` stream (handleRunStatus).
     //
     // Best-effort by construction: the frame is sent with `dropIfSlow`, so an
     // attempt CAN be missed under backpressure. The label must therefore never
@@ -1770,24 +1865,17 @@ export class Normalizer {
     if (state === "status") {
       const retry = payload.retry;
       if (isObject(retry)) {
-        const attempt = retry.attempt;
-        const maxAttempts = retry.maxAttempts;
         // The contract is INTEGERS in 1..10 (logs-chat.ts ChatStatusEventSchema), and
         // `typeof === "number"` admitted -1, 0 and 2.5 straight to the label (raised in
         // review). A counter that reads "2.5/1" is worse than no counter: it makes the
         // reader doubt the turn rather than the frame.
-        if (
-          Number.isInteger(attempt) &&
-          Number.isInteger(maxAttempts) &&
-          (attempt as number) >= 1 &&
-          (maxAttempts as number) >= (attempt as number) &&
-          (maxAttempts as number) <= RETRY_MAX_ATTEMPTS &&
-          // The DISCRIMINANT is part of the contract: the schema declares
-          // `reason: "rate_limit"` and nothing else. Accepting any object with two
-          // plausible counters let a divergent frame say "provider is rate-limiting"
-          // when it never claimed that (raised in review).
-          retry.reason === "rate_limit"
-        ) {
+        const backoff = readTurnRetry(retry);
+        // The DISCRIMINANT is part of the contract: on this carrier the reason is
+        // required and closed. Accepting any object with two plausible counters let a
+        // divergent frame say "the provider is being waited on" when it never claimed
+        // that (raised in review). `output_limit` is refused by the same test: it is not
+        // one of the reasons `readTurnRetry` keeps.
+        if (backoff !== undefined && backoff.reason !== undefined) {
           // A BACK-OFF IS NOT SILENCE. The gateway may emit `finishing` before the
           // retry status, and this branch published the label and returned without
           // touching the 60 s promise — so a back-off longer than a minute closed the
@@ -1795,11 +1883,7 @@ export class Normalizer {
           // WITHOUT the helper: the label belongs to the back-off, and a bare
           // `generating` would wipe the very counter this branch just published.
           this.cancelFinishingGrace();
-          events.push({
-            type: EVENT_TURN_PHASE,
-            phase: "retrying",
-            retry: { attempt, maxAttempts },
-          });
+          events.push({ type: EVENT_TURN_PHASE, phase: "retrying", retry: backoff });
           this.inRetryingPhase = true;
           return;
         }
@@ -1810,9 +1894,10 @@ export class Normalizer {
         return;
       }
       // A BARE status is NOT proof of resume, and treating it as one was wrong.
-      // Upstream projects the retries whose reason is `overloaded`, `server_error` or
-      // `timeout` as `starting_model` with NO `retry` field (server-chat.ts) — so a
-      // bare status can equally mean "still backing off, for another cause". Clearing
+      // Up to 2026.9.36 upstream projects the retries whose reason is `overloaded`,
+      // `server_error` or `timeout` as `starting_model` with NO `retry` field
+      // (server-chat.ts), and a retry of the Codex harness carries none on any version — so
+      // a bare status can equally mean "still backing off, for another cause". Clearing
       // on it told the reader the wait was over while the provider was still refusing
       // (raised in review). The back-off ends on a real resume signal instead.
       // Every other status frame stays deliberately eventless: the startup
@@ -1955,8 +2040,12 @@ export class Normalizer {
     if (isFinal && isString(payload.stopReason)) {
       this.diagStopReason = bucketStopReason(payload.stopReason);
     }
-    const snapshotText = textFromMessage(message);
-    this.collectShortcodeWidgets(snapshotText, events);
+    const streamText = textFromMessage(message);
+    this.collectShortcodeWidgets(streamText, events);
+    // A terminal carries the run's COMPLETE text whatever the stream withdrew
+    // (src/gateway/server-chat.ts `emitChatTerminal`: `content` is the whole buffer, the
+    // tail goes in `openclawDisplayContent`); a delta carries the stream's.
+    const snapshotText = isFinal ? streamText : this.withRecordedText(streamText);
     // `replace` on a delta: the gateway REWROTE the live text instead of extending it
     // (src/gateway/server-chat-state.ts `takeBufferDelta`; every command snapshot,
     // src/gateway/server-methods/chat-broadcast.ts `broadcastChatFrame`), and such a
@@ -1974,6 +2063,9 @@ export class Normalizer {
       this.chatFrameIsFresh() &&
       (rewrite || (snapshotText.length < this.text.length && this.chatRewriteInOrder()));
     if (snapshotText) {
+      // The run's stream moved on: a row recorded before this text is not what an
+      // emptying read later would be about.
+      this.recordedAhead.delete(this.frameRunId);
       // BEHIND, not different: an unmarked text the bubble already starts with is an
       // older view of it (a late copy, a re-read that lost the race). Nothing to write —
       // sent, it would be a shrink Convex refuses. (The gateway marks a real cut back to
@@ -1995,12 +2087,17 @@ export class Normalizer {
         events,
         isFinal ? "chat_final" : rewrite ? "chat_delta_replace" : "chat_delta",
         mayShrink,
+        // Built from the text held here: not the gateway's cumulative one.
+        snapshotText !== streamText,
       );
       return;
     }
-    // A RETRACTION: a rewrite to the empty text (a silent reply recognised late, an
-    // errored message withdrawn — `flushBufferedChatDeltaIfNeeded`, `emitChatDelta` with
-    // an emptied buffer). The Control UI clears its stream; so does the bubble.
+    // THE STREAM EMPTIED: a rewrite to the empty text. Either the gateway recorded the
+    // text and withdrew it from the stream (2026.10.33, `retireTranscript`), or it took
+    // it back (a silent reply recognised late, an errored message withdrawn —
+    // `flushBufferedChatDeltaIfNeeded`, `emitChatDelta` with an emptied buffer). The
+    // Control UI clears its stream in both cases and shows what the transcript holds;
+    // see `recordedText` for what the bubble does.
     if (
       rewrite &&
       mayShrink &&
@@ -2009,15 +2106,23 @@ export class Normalizer {
       !this.finalized &&
       this.text !== ""
     ) {
-      this.text = "";
+      const run = this.frameRunId;
+      const shown = this.text;
+      // What the bubble keeps of this run whatever this emptying is.
+      const kept = this.recordedText?.runId === run ? this.recordedText.text : "";
+      if (kept === shown) return;
       this.hasSnapshot = false;
       this.noteTextOrigin(true);
-      events.push({
-        type: EVENT_MESSAGE_SNAPSHOT,
-        text: "",
-        replace: true,
-        snapshotSource: "chat_delta_replace" satisfies SnapshotSource,
-      });
+      if (this.recordedAhead.delete(run)) {
+        // RECORDED: the transcript holds a visible row of this run. Nothing is written —
+        // the text is where it was, under another authority.
+        this.recordedText = { runId: run, text: shown };
+        return;
+      }
+      // NOT KNOWN TO BE RECORDED: the stream is empty, and so is the text held here, as
+      // it always was. The bubble is told by what replaces its text, not before.
+      this.text = kept;
+      this.unshownEmptying = { runId: run, text: shown };
       return;
     }
     if (isString(deltaText) && deltaText) {
@@ -2337,16 +2442,20 @@ export class Normalizer {
   /**
    * `stream:"run_status"` — only its `retrying` phase is read.
    *
-   * The gateway projects a provider retry onto `chat` as a status frame and names it a
-   * retry there ONLY when its reason is `rate_limit` (server-chat.ts); an overloaded
-   * provider, a server error, a timeout, and every retry of the Codex harness arrive on
-   * `chat` as a bare `starting_model`. The agent stream says all of them:
+   * The gateway projects a provider retry onto `chat` as a status frame and, up to
+   * 2026.9.36, names it a retry there ONLY when its reason is `rate_limit` (server-chat.ts);
+   * an overloaded provider, a server error, a timeout arrive there as a bare
+   * `starting_model` — as does every retry of the Codex harness, on any version. The agent
+   * stream says all of them:
    * `{phase:"retrying", attempt?, maxAttempts?, reason?, message}` (the embedded
    * runner's `onRetry`, attempt-recovery.ts; the Codex harness's `handleRetry`, which
    * carries `message` alone). It is not droppable, unlike the `chat` projection.
    *
    * Published as the same back-off phase the `chat` path publishes, closed by the same
-   * resume signals. The counter rides only when it satisfies the label's contract;
+   * resume signals — and with the SAME facts (`readTurnRetry`): both carriers describe one
+   * back-off, and two readings of it would make the label alternate between them. `reason`
+   * is on this stream at 2026.9.36 already; `retryAt` from 2026.10.33
+   * (attempt-recovery.ts:463-480). The counter rides only when it satisfies the label's contract;
    * `message` is the gateway's sentence and never leaves this method. `output_limit` is
    * the run continuing a reply cut at its output limit — not a provider being waited on
    * — and says nothing here. The startup phases of this stream are not read.
@@ -2354,18 +2463,11 @@ export class Normalizer {
   private handleRunStatus(data: JsonObject, events: BridgeEvent[]): void {
     if (this.finalized || data.phase !== "retrying") return;
     if (data.reason === "output_limit") return;
-    const attempt = data.attempt;
-    const maxAttempts = data.maxAttempts;
-    const counted =
-      Number.isInteger(attempt) &&
-      Number.isInteger(maxAttempts) &&
-      (attempt as number) >= 1 &&
-      (maxAttempts as number) >= (attempt as number) &&
-      (maxAttempts as number) <= RETRY_MAX_ATTEMPTS;
+    const backoff = readTurnRetry(data);
     events.push({
       type: EVENT_TURN_PHASE,
       phase: "retrying",
-      ...(counted ? { retry: { attempt, maxAttempts } } : {}),
+      ...(backoff !== undefined ? { retry: backoff } : {}),
     });
     this.inRetryingPhase = true;
   }
@@ -3879,6 +3981,11 @@ export class Normalizer {
     if (isSnapshot && !segmentLocal && this.segmentPrefix !== null) {
       candidate = this.stripSegmentPrefix(candidate);
     }
+    // The stream was emptied and the bubble not told (`unshownEmptying`): this write is
+    // what replaces the text it still shows, so it carries the emptying's own declaration
+    // — whatever its length, and whole (an append would land on the text still shown).
+    const replacesShown = this.unshownEmptying !== null;
+    if (replacesShown) authorizedShrink = true;
     let emitted: string;
     let eventType: string;
     // An ADOPTED run's snapshot REPLACES the text like any other: every run has its
@@ -3923,9 +4030,11 @@ export class Normalizer {
         return; // an authoritative snapshot already won; ignore deltas
       }
       this.text += candidate;
-      emitted = candidate;
-      eventType = EVENT_MESSAGE_DELTA;
+      emitted = replacesShown ? this.text : candidate;
+      eventType = replacesShown ? EVENT_MESSAGE_SNAPSHOT : EVENT_MESSAGE_DELTA;
     }
+    this.unshownEmptying = null;
+    const asSnapshot = eventType === EVENT_MESSAGE_SNAPSHOT;
     if (this.pendingApprovalCount() === 1 && this.approvalsRequested === 1) {
       // Real content resumed: the approval was answered somewhere (the gateway's
       // own `resolved` may not reach us on every version). Release the wait the
@@ -3983,10 +4092,12 @@ export class Normalizer {
       type: eventType,
       // A live snapshot stops before a tail the sanitiser may still rewrite.
       text: this.safeSanitizeText(
-        isSnapshot && !isFinal ? emitted.slice(0, liveStableLength(emitted)) : emitted,
+        asSnapshot && !isFinal ? emitted.slice(0, liveStableLength(emitted)) : emitted,
       ),
-      ...(isSnapshot && authorizedShrink ? { replace: true } : {}),
-      ...(isSnapshot && source !== null ? { snapshotSource: source } : {}),
+      ...(asSnapshot && authorizedShrink ? { replace: true } : {}),
+      ...(asSnapshot && (source !== null || !isSnapshot)
+        ? { snapshotSource: source ?? ("chat_delta_replace" satisfies SnapshotSource) }
+        : {}),
     });
     if (isFinal) {
       this.finalizeSuccess(now, "gateway_final", events);
@@ -4245,6 +4356,18 @@ export class Normalizer {
     }
     // Open tool cards close FIRST (see the flush above), then the terminal.
     const result: BridgeEvent[] = [finalEvent, statusEvent];
+    // The turn ends on an emptied stream nothing replaced (`unshownEmptying`): the
+    // emptying is written now, ahead of the terminal — Convex settles an empty final on
+    // the live text it still holds.
+    if (this.unshownEmptying !== null) {
+      result.unshift({
+        type: EVENT_MESSAGE_SNAPSHOT,
+        text: finalEvent.text,
+        replace: true,
+        snapshotSource: "chat_delta_replace" satisfies SnapshotSource,
+      });
+    }
+    this.forgetEmptiedStream();
     // The agent ran native media generation this turn but delivered NO media
     // (no MEDIA:/mediaUrls/outbound path) -> emit a content-free diagnostic so the
     // gap (agent omitted the delivery directive) is visible to the #7 loop.
@@ -4269,6 +4392,8 @@ export class Normalizer {
     this.text = "";
     this.chatSeqHigh.clear();
     this.textOrigin = null;
+    // The caller clears the bubble itself, and the replay is another attempt's stream.
+    this.forgetEmptiedStream();
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.messageToolSends.clear();

@@ -22,6 +22,7 @@
 
 import {
   hermesChoice,
+  OPENCLAW_MAX_OPTIONS,
   openClawDecision,
   openClawQuestionAnswers,
   questionShape,
@@ -106,10 +107,14 @@ const SOURCES = new Set<AgentRequestSource>([
 ]);
 const DECISIONS = new Set<ApprovalDecision>(["allow-once", "allow-session", "allow-always", "deny"]);
 const MAX_VALUE = 8000;
-/** A question shape is ids, flags and at most 5 × 4 labels of <= 8000 chars. */
+/** A question shape is ids, flags, labels and shown texts. Convex bounds the options'
+ *  text of one request (convex/lib/agentRequests.ts MAX_OPTIONS_TEXT, 120 000), plus at
+ *  most 5 question texts of 4000: the shape of anything it recorded fits. */
 const MAX_SHAPE = 200_000;
-/** Mirrors convex/lib/agentRequests.ts MAX_ANSWER_VALUES. */
-const MAX_ANSWER_VALUES = 8;
+/** Mirrors convex/lib/agentRequests.ts MAX_ANSWER_VALUES: every option of a question
+ *  (OPENCLAW_MAX_OPTIONS) plus the one free answer of an `isOther` question. Upstream
+ *  bounds the options, not the answer (schema/questions.ts QuestionAnswersSchema). */
+const MAX_ANSWER_VALUES = OPENCLAW_MAX_OPTIONS + 1;
 
 /** Parse and bound the POST body. Null for anything malformed. */
 export function parseRespondBody(raw: string): RespondBody | null {
@@ -308,8 +313,10 @@ export async function respondOpenClaw(
     }
     // …and the same QUESTION: a reused id under a clock that stood still carries the same
     // creation time and another question — the card must not answer it (codex P1).
+    // Read once: the shape check below, and the options' own answer values (the record
+    // the gateway holds NOW is the one the answer is canonicalized against).
+    const question = readOpenClawQuestionRequested(asked.record);
     if (body.questionShape !== undefined) {
-      const question = readOpenClawQuestionRequested(asked.record);
       if (question === null || questionShape(question.questions) !== body.questionShape) {
         return goneByGateway("expired");
       }
@@ -327,7 +334,7 @@ export async function respondOpenClaw(
               })
             : await gateway.request("question.resolve", {
                 id: body.providerRequestId,
-                answers: openClawQuestionAnswers(body.answers ?? []),
+                answers: openClawQuestionAnswers(body.answers ?? [], question?.optionValues),
                 resolvedBy: "atrium",
               }),
         ),

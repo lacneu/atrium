@@ -42,6 +42,16 @@ export interface VersionRange {
   maxValidated: string;
 }
 
+/** One interval of gateway versions under the ceiling that was never benched. */
+export interface UnvalidatedWindow {
+  /** The last validated version BELOW the interval (exclusive bound, and the profile a
+   *  version inside it is frozen at). */
+  after: string;
+  /** The first validated version ABOVE the interval (exclusive bound). */
+  before: string;
+  why: string;
+}
+
 export interface ProviderCompat {
   /** null = structural placeholder, no adapter validated yet. */
   supportedRange: VersionRange | null;
@@ -56,6 +66,14 @@ export interface ProviderCompat {
    *  admin badge; this is the predicate every surface must agree on, because an exact
    *  list called `2026.9.1-beta.1` supported while the bridge quarantined it (codex). */
   brokenVersionWindow?: { from: string; fixedIn: string; why: string };
+  /** Intervals UNDER `maxValidated` that no bench run covers, each `(after, before)`
+   *  with BOTH ends exclusive. The range is an interval, and raising its ceiling across
+   *  a release line nobody exercised would otherwise declare that whole line validated
+   *  by arithmetic. A version inside one resolves exactly as it did while it was beyond
+   *  the ceiling: FROZEN at the profile of `after` (the last validated version below
+   *  it) and flagged `versionBeyondValidated`, so the operator keeps the "not validated"
+   *  banner. A pre-release of `before` sorts below it and is inside the window. */
+  unvalidatedWindows?: UnvalidatedWindow[];
   /** Every gateway version exercised on the validation bench. */
   validatedVersions: string[];
   /** capability key -> the FIRST validated gateway version that supports it. */
@@ -471,7 +489,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // FLOOR 2026.8.2 (OPENCLAW_MIN_SUPPORTED, release 0.92.0): the versions below it
       // were retired from support — their validation runs stay in the release notes, but
       // the redesigned turn model cannot run on them, and a claim nobody keeps is not one.
-      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.36" },
+      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.10.33" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -501,6 +519,29 @@ export const COMPAT_MANIFEST: CompatManifest = {
         "2026.8.2":
           "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
       },
+      // NOT VALIDATED, although under the ceiling: everything strictly between the two
+      // extended-stable releases. Upstream publishes two lines — the mainline (v2026.10.1
+      // … v2026.10.10 and their betas, then 2026.11.x) and the extended-stable releases
+      // cut from it (v2026.9.33–v2026.9.37, v2026.10.33). The ceiling moved from one
+      // extended-stable release to the next, and the versions in between were never run:
+      //   * v2026.10.1 … v2026.10.10 are ten mainline releases, each a state of the
+      //     chat-admission, queued-send and failure-copy rework that 2026.10.33 ships
+      //     finished. Only the two ends were diffed and benched; a shape one of them
+      //     emitted and a later one withdrew is in neither.
+      //   * v2026.9.37 is a later maintenance release of the 2026.9 line, published after
+      //     2026.9.36 was validated and never examined.
+      //   * 2026.10.11–2026.10.32 hold no upstream release.
+      // This is NOT the 2026.9.34/2026.9.35 case (left inside the range, no banner): those
+      // two are backport-only steps on ONE line, wholly contained in the 2026.9.33 →
+      // 2026.9.36 diff that was read file by file, and that diff was additive. Here the
+      // diff spans a line change and five reworked interpretation zones.
+      unvalidatedWindows: [
+        {
+          after: "2026.9.36",
+          before: "2026.10.33",
+          why: "never benched: the 2026.10 mainline releases and 2026.9.37 sit between two validated extended-stable releases",
+        },
+      ],
       validatedVersions: [
         // 2026.5.19 → 2026.7.1 (incl. 2026.7.1-beta.2/-beta.5) were validated on the
         // standing bench and are RETIRED with the 2026.8.2 floor (0.92.0): below it a
@@ -698,6 +739,32 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // 24.18.0, below the >=24.22.1 floor 2026.9.34+ enforces at startup, so it cannot
         // boot; its upstream base's Node 24.22.1 was put back for the run.
         "2026.9.36",
+        // 2026.10.33: the NEXT extended-stable release (upstream v2026.10.33 = 5196fbb,
+        // published 2026-11-18, cut from the 2026.10 mainline). Full live suite GO 31/31
+        // (proof run 2026-11-24T22-39-08-086Z, then the attestation run on the final tree)
+        // on the PUBLISHED distribution image `openclaw-2026.10.33-r9`. Unlike every step
+        // since 2026.9.7 this one is a line change, and the bridge was adapted before the
+        // run:
+        //   * `chat.send` may answer `accepted` (a repeated key whose turn waits in the
+        //     queue): custody, read like `started`/`in_flight`, never a refusal;
+        //   * a queued send keeps its client run id while its execution runs under
+        //     another — the gateway states the link, and both names are ONE run (no
+        //     second reply for a message sent during a turn);
+        //   * a child run cut off by its timeout leaves a row that says `interrupted`,
+        //     read from the lifecycle's own terminal classification;
+        //   * the failure copies were rewritten upstream and are recognised beside the
+        //     2026.9.36 ones; a provider wait carries one of five reasons and `retryAt`;
+        //   * a question may carry up to 64 options (4 through 2026.9.36);
+        //   * `aborted-partial-persistence-failed` follows a stop whose partial could not
+        //     be saved; live text may be retracted by `replace: true`.
+        // The 2026.9 line stays supported as it was: every reading above is taken from
+        // the wire shape, not from the version number, and no capability floor moves (the
+        // run proved no surface that an older floor did not already cover).
+        //
+        // UPGRADE NOTE, one-way: the state migrates at first boot and cannot be opened by
+        // 2026.9.36 afterwards; the migration needs free disk space and state files
+        // readable by the gateway's user.
+        "2026.10.33",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },
@@ -816,7 +883,9 @@ export interface ResolvedCapabilities {
  *  - version within range: capability true iff version >= its minVersion;
  *  - version beyond `maxValidated`: FROZEN at the maxValidated profile — the
  *    capabilities we have actually exercised, and no more — plus the
- *    `versionBeyondValidated` flag (which drives a user-visible banner).
+ *    `versionBeyondValidated` flag (which drives a user-visible banner);
+ *  - version under the ceiling but inside an `unvalidatedWindows` interval: the same
+ *    verdict, frozen at the validated version just below the interval.
  *
  * WHY frozen rather than fail-open (Olivier's decision, 2026-07-26). The old rule
  * granted every capability unconditionally beyond `maxValidated`. On today's table
@@ -922,10 +991,16 @@ export function openClawInlineWidgetsEnabled(gatewayVersion: string | null): boo
 }
 
 export function openClawAgentRequestsEnabled(gatewayVersion: string | null): boolean {
-  const range = COMPAT_MANIFEST.providers.openclaw?.supportedRange ?? null;
+  const openclaw = COMPAT_MANIFEST.providers.openclaw;
   return (
-    resolveCapabilitiesFor(range, { agentRequests: AGENT_REQUESTS_MIN_VERSION }, gatewayVersion)
-      .capabilities.agentRequests === true
+    resolveCapabilitiesFor(
+      openclaw?.supportedRange ?? null,
+      { agentRequests: AGENT_REQUESTS_MIN_VERSION },
+      gatewayVersion,
+      "token",
+      CAPABILITIES_REQUIRING_AUTH_MODE,
+      openclaw?.unvalidatedWindows,
+    ).capabilities.agentRequests === true
   );
 }
 
@@ -954,7 +1029,26 @@ export function resolveCapabilities(
     compat.capabilities,
     gatewayVersion,
     authMode,
+    CAPABILITIES_REQUIRING_AUTH_MODE,
+    compat.unvalidatedWindows,
   );
+}
+
+/** The never-benched interval this version falls in, or null. Both bounds exclusive: the
+ *  two ends are validated versions. A window whose bounds do not parse matches nothing —
+ *  it is this module's own data, and `compat.test.ts` holds every shipped window to
+ *  parseable, validated, ordered bounds. */
+export function unvalidatedWindowFor(
+  windows: readonly UnvalidatedWindow[] | undefined,
+  version: ParsedVersion,
+): UnvalidatedWindow | null {
+  for (const w of windows ?? []) {
+    const after = parseVersion(w.after);
+    const before = parseVersion(w.before);
+    if (after === null || before === null) continue;
+    if (compareVersions(version, after) > 0 && compareVersions(version, before) < 0) return w;
+  }
+  return null;
 }
 
 /**
@@ -991,6 +1085,8 @@ export function resolveCapabilitiesFor(
    *  shipped one is EMPTY since `gatewayMentions` was withdrawn, and a mechanism
    *  proven only through an empty table is a mechanism proven by nothing. */
   gate: Record<string, GatewayAuthMode> = CAPABILITIES_REQUIRING_AUTH_MODE,
+  /** Never-benched intervals under the ceiling (`ProviderCompat.unvalidatedWindows`). */
+  unvalidatedWindows: readonly UnvalidatedWindow[] = [],
 ): ResolvedCapabilities {
   if (range === null) return { capabilities: {}, versionBeyondValidated: false };
   const capabilities: Record<string, boolean> = {};
@@ -1021,14 +1117,19 @@ export function resolveCapabilitiesFor(
   }
   const maxValidated = parseVersion(range.maxValidated);
   const beyond = maxValidated !== null && compareVersions(parsed, maxValidated) > 0;
+  // Under the ceiling but in an interval no run covers: the same verdict as beyond it,
+  // frozen at the last validated version BELOW the interval.
+  const window = beyond ? null : unvalidatedWindowFor(unvalidatedWindows, parsed);
+  const windowFloor = window === null ? null : parseVersion(window.after);
   // FROZEN: judged as the last version we exercised, never as itself.
-  const effective = beyond && maxValidated !== null ? maxValidated : parsed;
+  const effective =
+    beyond && maxValidated !== null ? maxValidated : windowFloor !== null ? windowFloor : parsed;
   for (const [cap, minVersion] of Object.entries(table)) {
     const min = parseVersion(minVersion);
     capabilities[cap] = min !== null && compareVersions(effective, min) >= 0;
   }
   return {
     capabilities: applyAuthModeGate(capabilities, authMode, gate),
-    versionBeyondValidated: beyond,
+    versionBeyondValidated: beyond || window !== null,
   };
 }

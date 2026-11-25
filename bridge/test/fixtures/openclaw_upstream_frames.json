@@ -1,11 +1,11 @@
 {
-  "_about": "Wire frames of the upstream OpenClaw gateway at tag v2026.9.4 (github.com/openclaw/openclaw), taken from its unit tests and adapted for sessionKey/runId namespacing. Each scenario pins one interpretation contract documented in docs/UPSTREAM_INTERPRETATION.md. Source file:line is cited per scenario; those citations are recorded in bridge/protocol/openclaw/citations.json and checked by test/upstream-citations.test.ts, and the frames are replayed by test/upstream-frames.test.ts — do not edit shapes without re-checking the upstream tag. NOT EVERY FRAME IS COPIED. Three scenarios say COMPOSED in their own description: writer-claim-rebound-after-content, writer-claim-rebound-before-generation and writer-claim-rebound-after-start-zero-content. The 2026-09-12 adversarial review found composed parts in three more whose descriptions do not say so: aborted-user-stop-partial-text (the terminal frame is upstream's, the preceding delta is not), init-conflict-zero-content (the message is verbatim, the wire frame around it is ours) and compaction-explicit-stream-signals (both signals are anchored, the deltas between them are synthetic). On 2026-09-15 the citation check found that the errorMessage text of error-errorkind-rate-limit is ours as well (the upstream test pins only that it contains `Too many requests`). Three more are composed throughout and say so in their description: error-state-contention-dispatch, status-waiting-for-state-then-resume and aborted-then-save-warning-error (2026-10-03); agent-assistant-append-only composes its lifecycle end and final envelope around the two pinned frames. This list used to name four of seven while the fixture held nine scenarios: nothing read it.",
-  "upstream_tag": "v2026.9.36",
+  "_about": "Wire frames of the upstream OpenClaw gateway at tag v2026.10.33 (github.com/openclaw/openclaw), rebuilt from that tag's own unit tests and adapted for sessionKey/runId namespacing. Each scenario pins one interpretation contract documented in docs/UPSTREAM_INTERPRETATION.md. Source file:line is cited per scenario; those citations are recorded in bridge/protocol/openclaw/citations.json and checked by test/upstream-citations.test.ts, and the frames are replayed by test/upstream-frames.test.ts — do not edit shapes without re-checking the upstream tag. ONLY_AT. A scenario carrying `only_at` holds a shape that the tag it names pins and v2026.10.33 does not (the upstream test was removed, or the gateway's copy changed), kept because that version is still supported: its citations are read at THAT tag, `only_at_why` says what replaced it, and the replay test refuses an `only_at` that is the reference tag or has no reason. NOT EVERY FRAME IS COPIED. A `seq` is ours wherever the cited test does not show one, and a content block's `type`/`role` is added where an upstream matcher pins only the text. Composed throughout, and saying so in their description: writer-claim-rebound-after-content, writer-claim-rebound-before-generation, writer-claim-rebound-after-start-zero-content. Composed in part: aborted-user-stop-partial-text (the terminal frame is upstream's, the preceding delta is not), init-conflict-zero-content and init-conflict-zero-content-9.36 (the message is verbatim, the wire frame around it is ours), compaction-explicit-stream-signals (both signals are anchored, the deltas between them are synthetic), error-timeout-stopreason-precedence and aborted-tool-validation-errormessage (the terminal is the test's expected projection, a matcher), error-timeout-with-message-9.36 (same), error-rate-limit-kind-with-overloaded-detail (the three pinned fields and the errorDetail are the test's, a matcher), error-errorkind-rate-limit (the errorMessage text is ours: the upstream test pins only that it contains `Too many requests`), agent-assistant-append-only (lifecycle end and final envelope are ours around the two pinned frames), error-state-contention-dispatch and error-state-contention-dispatch-9.36 (the message is the production literal, the frame is broadcastChatError's), status-waiting-for-state-then-resume (the status and the delta are the Control UI test's, the final is ours), aborted-then-save-warning-error and aborted-then-save-warning-error-9.36 (two cited frames put on one run), chat-delta-replace-retracts-text (the three payloads are the test's matcher), run-status-retrying-reason-retry-at (one attempt of the test's loop, then a delta and a final of ours). chat-send-ack-accepted-queued holds an RPC answer (`ack`), not event frames.",
+  "upstream_tag": "v2026.10.33",
   "session_key": "agent:main:atrium:chat:u-testuser01:own-chat",
   "run_id": "run-own",
   "scenarios": {
     "aborted-user-stop-partial-text": {
-      "description": "src/gateway/chat-abort.test.ts:450-464 (v2026.9.5) — a killed run broadcasts state:aborted with a free-form stopReason ('user' is a caller value, NOT in any enum) and the partial text snapshot. The turn must finalize aborted on state alone; stopReason must never reclassify it.",
+      "description": "src/gateway/chat-abort.test.ts:406-442 — a killed run broadcasts state:aborted with a free-form stopReason ('user' is a caller value, NOT in any enum) and the partial text snapshot (shape unchanged since v2026.9.5). The turn must finalize aborted on state alone; stopReason must never reclassify it.",
       "frames": [
         {
           "event": "chat",
@@ -40,7 +40,7 @@
       ]
     },
     "aborted-tool-validation-errormessage": {
-      "description": "src/gateway/server-chat.agent-events.test.ts:3707-3716 (v2026.9.5) — self-abort on tool-validation failure: state:aborted carries stopReason:'aborted' plus errorMessage. An aborted turn keeps its abort status; the errorMessage is diagnostic, never a persisted error.",
+      "description": "src/gateway/server-chat.agent-events.test.ts:1830-1842 (case `safe validation diagnostic`, projected on lifecycle end by src/gateway/server-chat.agent-events.test.ts:1875-1894) — self-abort on tool-validation failure: state:aborted carries stopReason:'aborted' plus errorMessage. An aborted turn keeps its abort status; the errorMessage is diagnostic, never a persisted error.",
       "frames": [
         {
           "event": "chat",
@@ -56,7 +56,25 @@
       ]
     },
     "error-timeout-stopreason-precedence": {
-      "description": "src/gateway/server-chat.agent-events.test.ts:3776-3803 (v2026.9.5) — a timed-out abort (lifecycle end aborted:true stopReason:'timeout') is emitted as state:ERROR, not aborted: the gateway consumes stopReason BEFORE emitting. NEW at 2026.8.x: the payload also carries errorKind:'timeout' (the recorded classification must reach the browser) and NO `message` — the test asserts its absence.",
+      "description": "src/gateway/server-chat.agent-events.test.ts:1854-1859 (case `timeout without error text`) — a timed-out abort (lifecycle end aborted:true stopReason:'timeout' timeoutPhase:'idle') is emitted as state:ERROR, not aborted: the gateway consumes stopReason BEFORE emitting, and badges the class it recorded as errorKind:'timeout'. At v2026.10.33 the pinned terminal carries NO errorMessage (the case has no error text); the form with a message is error-timeout-with-message-9.36.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 2,
+            "state": "error",
+            "stopReason": "timeout",
+            "errorKind": "timeout"
+          }
+        }
+      ]
+    },
+    "error-timeout-with-message-9.36": {
+      "description": "src/gateway/server-chat.agent-events.test.ts:3776-3803 — the same timed-out abort WITH its error text: lifecycle end aborted:true stopReason:'timeout' timeoutPhase:'provider' error:'agent provider timeout' reaches the wire as state:error, errorKind:'timeout', errorMessage 'agent provider timeout' and NO `message` (the test asserts its absence).",
+      "only_at": "v2026.9.36",
+      "only_at_why": "v2026.10.33 folded this test into a table whose timeout case has no error text (error-timeout-stopreason-precedence); the projection of an error text beside errorKind is no longer pinned by an upstream test there.",
       "frames": [
         {
           "event": "chat",
@@ -72,8 +90,31 @@
         }
       ]
     },
+    "error-rate-limit-kind-with-overloaded-detail": {
+      "description": "src/gateway/server-chat.native-provider-error.test.ts:55-103 — the only chat error carrying errorKind:'rate_limit' that a v2026.10.33 gateway test pins: a native provider failure ('Selected model is at capacity…', not aborted) reaches the wire as state:error with errorKind:'rate_limit', the gateway's reader-facing errorMessage and errorDetail {provider, model, failoverReason:'overloaded'} (the gateway folds `overloaded` into the `rate_limit` kind; the classifier is pinned by src/gateway/server-chat.error-kind.test.ts:14). The three fields and the errorDetail are the test's matcher; the seq is ours. CONTRACT: the provider observation outranks the kind — the bridge reads the more precise `overloaded` and classes the turn provider_internal, not rate_limit.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 2,
+            "state": "error",
+            "errorMessage": "⚠️ Selected model is at capacity. Try a different model, or wait and retry.",
+            "errorKind": "rate_limit",
+            "errorDetail": {
+              "provider": "openai",
+              "model": "gpt-5.6-luna",
+              "failoverReason": "overloaded"
+            }
+          }
+        }
+      ]
+    },
     "error-errorkind-rate-limit": {
-      "description": "src/gateway/server-chat.agent-events.test.ts:4505-4532 (v2026.9.5) — a 429 lifecycle error reaches the wire as state:error with errorKind:'rate_limit'. The upstream test asserts the payload has NO `message` and NO `errorDetail` (that field only appears when the runtime recorded a provider observation). The allowlisted wire errorKind survives as the message errorKind. The errorMessage TEXT of the frame is ours, not upstream's: the upstream test pins only that errorMessage contains `Too many requests` (the gateway renders the error with formatForLog), so only the errorKind and the absent message/errorDetail are upstream facts here.",
+      "description": "src/gateway/server-chat.agent-events.test.ts:4505-4532 — a 429 lifecycle error reaches the wire as state:error with errorKind:'rate_limit'. The upstream test asserts the payload has NO `message` and NO `errorDetail` (that field only appears when the runtime recorded a provider observation). The allowlisted wire errorKind survives as the message errorKind. The errorMessage TEXT of the frame is ours, not upstream's: the upstream test pins only that errorMessage contains `Too many requests` (the gateway renders the error with formatForLog), so only the errorKind and the absent message/errorDetail are upstream facts here.",
+      "only_at": "v2026.9.36",
+      "only_at_why": "that test is gone at v2026.10.33, where the only pinned rate_limit chat error also carries an errorDetail (error-rate-limit-kind-with-overloaded-detail).",
       "frames": [
         {
           "event": "chat",
@@ -89,7 +130,7 @@
       ]
     },
     "writer-claim-rebound-after-content": {
-      "description": "COMPOSED (not copied from one upstream test) — the 2026.8.1+ successor of the 7.1 embedded prompt-lock takeover, which no longer exists (attempt.session-lock.ts is gone since 2026.8.1; transcripts moved to SQLite). Parts, each cited: the message is thrown verbatim by src/config/sessions/transcript-write-context.ts:411 (SessionTranscriptWriterClaimReboundError, identical 8.1->9.4); the error NAME is pinned by src/agents/model-fallback.test.ts:667; the wire rendering '<Name>: <message>' is pinned by src/gateway/ws-log.test.ts:130-132,139-140 (formatForLog), and server-chat.ts:1125 emits it as errorMessage on state:error. CONTRACT: unlike the 7.1 lock flavour, this one is NOT downgraded to complete — upstream's announce delivery retry loop may retry it (subagent-announce-delivery-retry.ts:136-171 isTransientAnnounceDeliveryError, used at subagent-announce-delivery-retry.ts:248: no retry on send evidence, then a typed retryability decides when present, then a permanent non-writer error refuses, and only then a writer rebound retries); a failed direct delivery is `ambiguous` on send evidence, otherwise `permanent_failure` for this rebound unless a typed retryability decides otherwise (subagent-announce-direct-delivery.ts:612-623 via isPermanentAnnounceDeliveryError, defined at subagent-announce-delivery-retry.ts:173-179; the regex at subagent-announce-delivery-retry.ts:58-59 is only the shared definition; retry file byte-identical 9.2->9.4, direct-delivery classification unchanged in meaning). Atrium keeps the honest error card and classifies the turn session_write_conflict — its OWN class, NOT the retryable session_init_conflict: upstream throws the same text at commits after the model ran (tools may have had external effects) as well as before generation; here content has streamed, which proves the run generated, so Atrium's bounded auto-retry must not re-dispatch it (the pre-generation case is writer-claim-rebound-before-generation).",
+      "description": "COMPOSED (not copied from one upstream test) — the 2026.8.1+ successor of the 7.1 embedded prompt-lock takeover, which no longer exists (transcripts moved to SQLite). Parts, each cited: the message is thrown verbatim by src/config/sessions/session-transcript-writer-claim-error.ts:46-51 (SessionTranscriptWriterClaimReboundError; the class moved out of transcript-write-context.ts, text identical 8.1->10.33); the error NAME is pinned by src/agents/model-fallback.test.ts:519; the wire rendering '<Name>: <message>' is formatForLog's (src/gateway/ws-log.ts:126-137, pinned for message-like objects by src/gateway/ws-log.test.ts:246-253), and server-chat.ts:899 emits it as errorMessage on state:error. CONTRACT: unlike the 7.1 lock flavour, this one is NOT downgraded to complete — upstream's announce delivery retry loop may retry it (subagent-announce-delivery-retry.ts:97-133 isTransientAnnounceDeliveryError, used at subagent-announce-delivery-retry.ts:189: no retry on send evidence, then a typed retryability decides when present, then a permanent error refuses, and only then a writer rebound retries); a failed direct delivery is `ambiguous` on send evidence and otherwise, for this rebound, `retryable` unless a typed retryability decides otherwise (subagent-announce-direct-delivery.ts:686-690 via isPermanentAnnounceDeliveryError, defined at subagent-announce-delivery-retry.ts:135-141 — CHANGED at v2026.10.33: through v2026.9.36 that function also returned true for a writer rebound, which made the failed direct delivery `permanent_failure`; the regex at subagent-announce-delivery-retry.ts:55-56 is only the shared definition). Atrium keeps the honest error card and classifies the turn session_write_conflict — its OWN class, NOT the retryable session_init_conflict: upstream throws the same text at commits after the model ran (tools may have had external effects) as well as before generation; here content has streamed, which proves the run generated, so Atrium's bounded auto-retry must not re-dispatch it (the pre-generation case is writer-claim-rebound-before-generation).",
       "frames": [
         {
           "event": "chat",
@@ -114,7 +155,7 @@
       ]
     },
     "writer-claim-rebound-before-generation": {
-      "description": "COMPOSED — the same rebound thrown while the attempt is still PREPARED: src/agents/embedded-agent-runner/run/session-bootstrap.ts:286 (prepareInitialSessionWriter, reached from run/session-prompt-state.ts:54) and run/pre-persisted-user-turn.ts:101 (preparePersistedCurrentUserTurn, from run/attempt-session-prepare.ts:596), both before the agent loop emits agent_start (packages/agent-core/src/agent-loop.ts:114) — which embedded-agent-subscribe.handlers.lifecycle.ts:51-62 turns into {stream:'lifecycle', data:{phase:'start'}}. The prelude frames (chat state:'status', agent stream:'run_status') are the shapes captured on every run of a full 2026.9.4 bench run, which showed nothing else before lifecycle start; the terminal frame is as in writer-claim-rebound-after-content. CONTRACT: no generation frame on an unbroken stream proves the rebound pre-generation, so the bridge upgrades it to the retryable session_init_conflict and keeps session_write_conflict on the trace channel.",
+      "description": "COMPOSED — the same rebound thrown while the attempt is still PREPARED: src/agents/embedded-agent-runner/run/session-bootstrap.ts:377-383 (inside prepareInitialSessionWriter, reached from run/session-prompt-state.ts:60) and run/pre-persisted-user-turn.ts:280 (preparePersistedCurrentUserTurn, from run/attempt-session-prepare.ts:597), both before the agent loop emits agent_start (packages/agent-core/src/agent-loop.ts:100) — which embedded-agent-subscribe.handlers.lifecycle.ts:87-94 turns into {stream:'lifecycle', data:{phase:'start'}}. The prelude frames (chat state:'status', agent stream:'run_status') are the shapes captured on every run of a full 2026.9.4 bench run, which showed nothing else before lifecycle start; the terminal frame is as in writer-claim-rebound-after-content. CONTRACT: no generation frame on an unbroken stream proves the rebound pre-generation, so the bridge upgrades it to the retryable session_init_conflict and keeps session_write_conflict on the trace channel.",
       "frames": [
         {
           "event": "chat",
@@ -155,7 +196,7 @@
       ]
     },
     "writer-claim-rebound-after-start-zero-content": {
-      "description": "COMPOSED — the dangerous twin of writer-claim-rebound-before-generation: the run STARTED (lifecycle start, shape as captured on 2026.9.4 and emitted by embedded-agent-subscribe.handlers.lifecycle.ts:51-62) and then rebounded at a commit with NOTHING visible — the post-generation throws of run/settled-turn-finalization.ts:635,682 come after the attempt. Zero content does not mean no work: tools may have had external effects. CONTRACT: stays session_write_conflict, never auto-retried.",
+      "description": "COMPOSED — the dangerous twin of writer-claim-rebound-before-generation: the run STARTED (lifecycle start, shape as captured on 2026.9.4 and emitted by embedded-agent-subscribe.handlers.lifecycle.ts:93) and then rebounded at a commit with NOTHING visible — the post-generation throws of run/settled-turn-finalization.ts:614,661 come after the attempt. Zero content does not mean no work: tools may have had external effects. CONTRACT: stays session_write_conflict, never auto-retried.",
       "frames": [
         {
           "event": "chat",
@@ -197,7 +238,24 @@
       ]
     },
     "init-conflict-zero-content": {
-      "description": "src/auto-reply/reply/session-init-conflict-retry.ts:12 (message verbatim; upstream test src/auto-reply/reply/session.init-conflict-retry.test.ts:110,122) — the pre-generation OCC init conflict, unchanged 7.1->9.1. Upstream retries it (up to 5 attempts with backoff); with zero content the bridge classifies it session_init_conflict so its own bounded auto-retry can key on it.",
+      "description": "src/auto-reply/reply/session-init-conflict-retry.ts:11-14,18-19 — the pre-generation OCC init conflict. CHANGED at v2026.10.33: the message ends with `; please retry your message.` (the retry classifier accepts both endings; the string form without it is still retried, src/auto-reply/reply/session.init-conflict-retry.test.ts:94-98). Upstream retries it (up to 5 attempts with backoff); with zero content the bridge classifies it session_init_conflict so its own bounded auto-retry can key on it.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 1,
+            "state": "error",
+            "errorMessage": "reply session initialization conflicted for agent:main:atrium:chat:u-testuser01:own-chat; please retry your message."
+          }
+        }
+      ]
+    },
+    "init-conflict-zero-content-9.36": {
+      "description": "src/auto-reply/reply/session-init-conflict-retry.ts:12 (message verbatim; upstream test src/auto-reply/reply/session.init-conflict-retry.test.ts:110,122) — the pre-generation OCC init conflict as worded 7.1->9.36, with no trailing sentence. Same contract: session_init_conflict.",
+      "only_at": "v2026.9.36",
+      "only_at_why": "v2026.10.33 appends `; please retry your message.` to the message (init-conflict-zero-content).",
       "frames": [
         {
           "event": "chat",
@@ -212,7 +270,7 @@
       ]
     },
     "compaction-explicit-stream-signals": {
-      "description": "src/infra/agent-events.test.ts:782-787 + src/plugins/wired-hooks-compaction.test.ts:195-204 (v2026.9.5) — the EXPLICIT mid-turn compaction signal: {stream:'compaction', phase:'start'} then {phase:'end', outcome:'completed', willRetry:true, completed:true}. The overflow retry replays inside the SAME runId with no lifecycle end; accumulated text must survive. NOTE 2026.9.1: start/end also carry an optional itemId correlating one compaction operation (src/agents/sessions/agent-session-compaction.ts:122-123,129-130,143-146) — not read by the bridge.",
+      "description": "src/auto-reply/reply/agent-runner-execution-compaction.test.ts:42 + src/plugins/wired-hooks-compaction.test.ts:126-134,208-217 — the EXPLICIT mid-turn compaction signal: {stream:'compaction', phase:'start'} then {phase:'end', outcome:'completed', willRetry:true, completed:true}. The overflow retry replays inside the SAME runId with no lifecycle end; accumulated text must survive. NOTE 2026.9.1: start/end also carry an optional itemId correlating one compaction operation (src/agents/sessions/agent-session-compaction.ts:182-183,214) — not read by the bridge.",
       "frames": [
         {
           "event": "chat",
@@ -271,7 +329,7 @@
       ]
     },
     "chat-append-only-deltas": {
-      "description": "ui/src/api/gateway-chat-events.node.test.ts:29-87 (v2026.9.7) — the WIRE of 2026.9.7's append-only live text, verbatim from the Control UI's own test: one delta carrying the cumulative `message`, then deltas carrying `deltaText` only (`projectChatWireDelta`, src/gateway/server-chat-live-text.ts:17-21), a `replace` and a fresh append. The bridge restores `message` at the connection (live-text-baseline.ts, mirroring `mergeChatStreamMessage`, packages/gateway-client/src/chat-stream-message.ts:4-46). CONTRACT: projected, the live text grows to \"Hello world\" and ends on \"New answer\"; raw, it would freeze on \"Hello\".",
+      "description": "ui/src/api/gateway-chat-events.node.test.ts:29-87 — the WIRE of the append-only live text (2026.9.7 on, unchanged at v2026.10.33), verbatim from the Control UI's own test: one delta carrying the cumulative `message`, then deltas carrying `deltaText` only (`projectChatWireDelta`, src/gateway/server-chat-live-text.ts:17-21), a `replace` and a fresh append. The bridge restores `message` at the connection (live-text-baseline.ts, mirroring `mergeChatStreamMessage`, packages/gateway-client/src/chat-stream-message.ts:4-46). CONTRACT: projected, the live text grows to \"Hello world\" and ends on \"New answer\"; raw, it would freeze on \"Hello\".",
       "frames": [
         {
           "event": "chat",
@@ -326,7 +384,7 @@
       ]
     },
     "chat-delta-after-terminal-no-baseline": {
-      "description": "ui/src/api/gateway-chat-events.node.test.ts:195-233 (v2026.9.7) — a terminal retires the run's baseline, so a later append-only delta has nothing to append to; the Control UI closes the socket on it (\"chat stream baseline missing\"). CONTRACT: the bridge reports the gap and forwards the frame WITHOUT its fragment.",
+      "description": "ui/src/api/gateway-chat-events.node.test.ts:155-233 — a terminal retires the run's baseline, so a later append-only delta has nothing to append to; the Control UI closes the socket on it (\"chat stream baseline missing\"). At v2026.10.33 the test is a table over which boundary retires an OWNED baseline (final, aborted, error, unsubscribe); the `final` row is this scenario. CONTRACT: the bridge reports the gap and forwards the frame WITHOUT its fragment.",
       "frames": [
         {
           "event": "chat",
@@ -360,7 +418,7 @@
       ]
     },
     "agent-assistant-append-only": {
-      "description": "src/gateway/server-chat.agent-events.test.ts:4859,4893 (v2026.9.7) — the agent stream's append-only wire, as the gateway's own test pins it: `{text:\"one\",delta:\"one\"}` then `{delta:\" two\"}` (`projectAssistantWireDelta`, server-chat-live-text.ts:23-28), then the final carrying \"one two\". The lifecycle end and the final's envelope are ours. CONTRACT: the second frame reaches the reader with `data.text` \"one two\"; the turn completes with \"one two\".",
+      "description": "src/gateway/server-chat.agent-events.test.ts:2341,2378 — the agent stream's append-only wire, as the gateway's own test pins it: `{text:\"one\",delta:\"one\"}` then `{delta:\" two\"}` (`projectAssistantWireDelta`, server-chat-live-text.ts:23-28), then the final carrying \"one two\". The lifecycle end and the final's envelope are ours. CONTRACT: the second frame reaches the reader with `data.text` \"one two\"; the turn completes with \"one two\".",
       "frames": [
         {
           "event": "agent",
@@ -416,8 +474,25 @@
         }
       ]
     },
+    "error-state-contention-control-ui": {
+      "description": "ui/src/pages/chat/chat-gateway.contention.test.ts:34-46 — `errorKind:\"state_contention\"` on a chat error, verbatim from the Control UI's own test (no `seq` in it). Its text names no storage fact a classifier could rely on, so only the structured kind can classify it. CONTRACT: finalize error, errorKind gateway_state_contention (never auto-retried).",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "state": "error",
+            "errorKind": "state_contention",
+            "errorMessage": "Temporarily busy. Check status before trying again.\nState contention: session store; attempts exhausted."
+          }
+        }
+      ]
+    },
     "error-state-contention-schema": {
-      "description": "packages/gateway-protocol/src/schema/logs-chat.test.ts:256-266 (v2026.9.7) — NEW at 2026.9.7: `errorKind:\"state_contention\"`, verbatim from the schema test. Its text names no storage fact, so only the structured kind can classify it. CONTRACT: finalize error, errorKind gateway_storage_busy (never auto-retried).",
+      "description": "packages/gateway-protocol/src/schema/logs-chat.test.ts:256-266 — `errorKind:\"state_contention\"` as introduced at 2026.9.7, verbatim from the schema test. CONTRACT: finalize error, errorKind gateway_state_contention (never auto-retried).",
+      "only_at": "v2026.9.36",
+      "only_at_why": "the schema test that pinned this frame is gone at v2026.10.33 (the literal stays in the schema); the form pinned there is the Control UI's (error-state-contention-control-ui).",
       "frames": [
         {
           "event": "chat",
@@ -433,7 +508,25 @@
       ]
     },
     "error-state-contention-dispatch": {
-      "description": "COMPOSED — the production frame of a typed SQLite BUSY/LOCKED on the chat.send dispatch path: the errorMessage is the literal of src/sessions/session-run-error-presentation.ts:3-7,14 (v2026.9.7), the frame shape broadcastChatError's; the seq is ours. Upstream calls it terminal and says execution may have occurred. CONTRACT: error, errorKind gateway_storage_busy.",
+      "description": "COMPOSED — the production frame of a typed SQLite BUSY/LOCKED on the chat.send dispatch path: the errorMessage is the literal of src/sessions/session-run-error-presentation.ts:3-4,6-7,14 — REWORDED at v2026.10.33 (`Your request was interrupted…`, where 9.36 said `The turn was interrupted…`) — and src/gateway/server-methods/chat-send-dispatch-errors.test.ts:388-393 pins that the terminal carries the kind and starts with that summary; the frame shape is broadcastChatError's, the seq is ours. Upstream calls it terminal and says execution may have occurred. CONTRACT: error, errorKind gateway_state_contention.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 1,
+            "state": "error",
+            "errorMessage": "Your request was interrupted while the server was busy. Check its status before trying again.\n\nSQLite transaction admission remained busy. Execution may have occurred; check the recorded outcome before resending.",
+            "errorKind": "state_contention"
+          }
+        }
+      ]
+    },
+    "error-state-contention-dispatch-9.36": {
+      "description": "COMPOSED — the same dispatch failure as worded through v2026.9.36: the errorMessage is the literal of src/sessions/session-run-error-presentation.ts:3-7,14, the frame shape broadcastChatError's; the seq is ours. CONTRACT: error, errorKind gateway_state_contention.",
+      "only_at": "v2026.9.36",
+      "only_at_why": "v2026.10.33 rewords the summary (error-state-contention-dispatch).",
       "frames": [
         {
           "event": "chat",
@@ -449,14 +542,13 @@
       ]
     },
     "status-waiting-for-state-then-resume": {
-      "description": "COMPOSED — the status phase `waiting_for_state` is declared by packages/gateway-protocol/src/schema/logs-chat.test.ts:256-257 (v2026.9.7) and has NO producer at the tag; the delta and the final are ours. CONTRACT: the status frame emits no event and does not finalize; the turn completes with \"Resumed\".",
+      "description": "ui/src/pages/chat/chat-gateway.contention.test.ts:60-80 — the quiet wait as the Control UI's own test hands it to its chat handler (past the socket's baseline reconstruction, so the resuming delta shows `deltaText` only): a `status` frame with phase `waiting_for_state`, then that delta on the same run. The phase is declared by packages/gateway-protocol/src/schema/logs-chat.ts:412 and still has NO producer at the tag; the final is ours. CONTRACT: the status frame emits no event and does not finalize; the turn completes with \"Resumed\".",
       "frames": [
         {
           "event": "chat",
           "payload": {
-            "runId": "run-own",
             "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
-            "seq": 1,
+            "runId": "run-own",
             "state": "status",
             "phase": "waiting_for_state"
           }
@@ -464,27 +556,17 @@
         {
           "event": "chat",
           "payload": {
-            "runId": "run-own",
             "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
-            "seq": 2,
+            "runId": "run-own",
             "state": "delta",
-            "deltaText": "Resumed",
-            "message": {
-              "role": "assistant",
-              "content": [
-                {
-                  "type": "text",
-                  "text": "Resumed"
-                }
-              ]
-            }
+            "deltaText": "Resumed"
           }
         },
         {
           "event": "chat",
           "payload": {
-            "runId": "run-own",
             "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
             "seq": 3,
             "state": "final",
             "message": {
@@ -501,7 +583,44 @@
       ]
     },
     "aborted-then-save-warning-error": {
-      "description": "COMPOSED — the aborted frame is src/gateway/chat-abort.test.ts:451-463 (v2026.9.7); the trailing error on the SAME run is the deferred partial-save warning, src/gateway/server-methods/chat-aborted-partial.ts:151,173-174 (no upstream test asserts that broadcast). CONTRACT: exactly one run.status, aborted; the late error changes nothing.",
+      "description": "COMPOSED — the aborted frame is src/gateway/chat-abort.test.ts:430-441; the trailing error on the SAME run is the deferred partial-save warning. NEW at v2026.10.33: it carries stopReason `aborted-partial-persistence-failed` (src/gateway/server-methods/chat-aborted-partial.ts:240-248,264-265), the frame being verbatim from ui/src/e2e/chat-stop-response-ownership.e2e.test.ts:93-101; the Control UI keys on that stopReason (ui/src/pages/chat/chat-gateway.ts:81-88). CONTRACT: exactly one run.status, aborted; the late error changes nothing.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "runId": "run-own",
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "seq": 3,
+            "state": "aborted",
+            "stopReason": "user",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "  Partial reply  "
+                }
+              ],
+              "timestamp": 1767323045000
+            }
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "state": "error",
+            "errorMessage": "Stopped, but a reply could not be saved to history. Copy any visible text before leaving this chat.",
+            "stopReason": "aborted-partial-persistence-failed"
+          }
+        }
+      ]
+    },
+    "aborted-then-save-warning-error-9.36": {
+      "description": "COMPOSED — the aborted frame is src/gateway/chat-abort.test.ts:451-463; the trailing error on the SAME run is the deferred partial-save warning as v2026.9.36 sends it, with NO stopReason (src/gateway/server-methods/chat-aborted-partial.ts:151,173-174; no upstream test asserts that broadcast). CONTRACT: exactly one run.status, aborted; the late error changes nothing.",
+      "only_at": "v2026.9.36",
+      "only_at_why": "v2026.10.33 adds stopReason `aborted-partial-persistence-failed` to the warning (aborted-then-save-warning-error).",
       "frames": [
         {
           "event": "chat",
@@ -534,6 +653,140 @@
           }
         }
       ]
+    },
+    "chat-delta-replace-retracts-text": {
+      "description": "src/gateway/server-chat.agent-events.test.ts:1053-1085 — NEW reading at v2026.10.33: text already shown is TAKEN BACK mid-run. The gateway's own test streams \"Provisional answer\", replaces the item, and pins three chat payloads: the delta, a delta `replace:true` with an empty `deltaText` and an EMPTY message text, then a `final` with NO `message`. The same frame shape is what a transcript commit sends when it retires recorded text from the live buffer (src/gateway/server-chat-transcript-publication.ts:222-230). The payloads are the test's matcher; `role`, the block `type` and the seq are ours. CONTRACT: after the replace the live text is empty, not the retired text; the turn ends final.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 1,
+            "state": "delta",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Provisional answer"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 2,
+            "state": "delta",
+            "replace": true,
+            "deltaText": "",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 3,
+            "state": "final"
+          }
+        }
+      ]
+    },
+    "run-status-retrying-reason-retry-at": {
+      "description": "src/gateway/server-chat.agent-events.test.ts:569-614 — NEW at v2026.10.33: a provider back-off says WHY and UNTIL WHEN. The gateway's test emits `run_status` {phase:'retrying', attempt, maxAttempts:10, reason, retryAt} for the reasons `rate_limit` and `timeout`, and pins the chat status it derives: state:'status', phase:'starting_model', retry {attempt, maxAttempts, reason, retryAt}. One attempt of that loop (attempt 2, reason `timeout` — refused as a retry reason through v2026.9.36, whose schema knows `rate_limit` only); the delta and the final after it are ours. CONTRACT: the turn enters a `retrying` phase carrying the reason and the retryAt, is not finalized by it, then completes.",
+      "frames": [
+        {
+          "event": "agent",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "stream": "run_status",
+            "data": {
+              "phase": "retrying",
+              "attempt": 2,
+              "maxAttempts": 10,
+              "reason": "timeout",
+              "retryAt": 1800000060000
+            },
+            "seq": 5
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 5,
+            "state": "status",
+            "phase": "starting_model",
+            "retry": {
+              "attempt": 2,
+              "maxAttempts": 10,
+              "reason": "timeout",
+              "retryAt": 1800000060000
+            }
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 13,
+            "state": "delta",
+            "deltaText": "I agree",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "I agree"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 14,
+            "state": "final",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "I agree"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "chat-send-ack-accepted-queued": {
+      "description": "src/gateway/server-methods/chat-send-queued-identity.test.ts:115-120 — NEW at v2026.10.33: a send put in the follow-up queue stores `{runId, status:\"accepted\"}` as its key's replayable answer, so a repeated key reads `accepted` where v2026.9.36 answered `in_flight`. This is an RPC answer, not an event: it sits in `ack`, and `frames` is empty. CONTRACT: `accepted` means the gateway HOLDS the input, like `started` and `in_flight`.",
+      "ack": {
+        "runId": "run-own",
+        "status": "accepted"
+      },
+      "frames": []
     }
   }
 }

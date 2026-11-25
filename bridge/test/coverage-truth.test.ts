@@ -134,6 +134,9 @@ const FROZEN_TRUTH_FLOOR = [
   "HelloOk.policy",
   "ShutdownEvent.restartExpectedMs",
   "TickEvent.ts",
+  // The answer value an option declares (OpenClaw 2026.10.33): a picked option is
+  // answered with it, and the gateway's canonical answers are read back into labels.
+  "QuestionOption.value",
 ];
 
 const ratchet = JSON.parse(

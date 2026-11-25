@@ -1,5 +1,9 @@
 /**
- * Upstream-derived frame contracts (OpenClaw tag v2026.9.4).
+ * Upstream-derived frame contracts (OpenClaw tag v2026.10.33, the fixture's `upstream_tag`).
+ *
+ * A scenario carrying `only_at` holds a shape an OLDER supported gateway sends and the
+ * reference tag no longer pins (v2026.9.36 stays supported beside v2026.10.33): it is
+ * replayed like the others, and the marking itself is checked below.
  *
  * Each scenario in fixtures/openclaw_upstream_frames.json is built from the
  * upstream sources its description cites: copied from upstream's own unit tests,
@@ -27,6 +31,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { COMPAT_MANIFEST } from "../src/compat.js";
+import { chatSendAckHoldsInput } from "../src/providers/openclaw/chat-send-ack.js";
 import { Normalizer, type BridgeEvent } from "../src/providers/openclaw/normalizer.js";
 import {
   LiveTextBaselines,
@@ -38,9 +44,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = JSON.parse(
   readFileSync(resolve(__dirname, "./fixtures/openclaw_upstream_frames.json"), "utf-8"),
 ) as {
+  upstream_tag: string;
   session_key: string;
   run_id: string;
-  scenarios: Record<string, { description: string; frames: unknown[] }>;
+  scenarios: Record<
+    string,
+    {
+      description: string;
+      frames: unknown[];
+      /** The tag whose shape this is, when the reference tag does not pin it. */
+      only_at?: string;
+      only_at_why?: string;
+      /** A `chat.send` answer (an RPC result, not an event frame). */
+      ack?: { runId: string; status: string };
+    }
+  >;
 };
 
 const SESSION_KEY = FIXTURES.session_key;
@@ -78,7 +96,42 @@ const statusOf = (events: BridgeEvent[]) =>
 const finalOf = (events: BridgeEvent[]) =>
   events.find((e) => e.type === "message.final");
 
-describe("upstream v2026.9.4 frame contracts", () => {
+describe("shapes kept for an older supported gateway are marked, and only those", () => {
+  const entries = Object.entries(FIXTURES.scenarios);
+  const validated = COMPAT_MANIFEST.providers.openclaw!.validatedVersions;
+
+  it("an `only_at` names a validated version other than the reference tag, with its reason", () => {
+    const marked = entries.filter(([, s]) => s.only_at !== undefined);
+    // Vacuity guard: 2026.9.36 is supported and six of its shapes differ at the reference tag.
+    expect(marked.map(([name]) => name).sort()).toEqual([
+      "aborted-then-save-warning-error-9.36",
+      "error-errorkind-rate-limit",
+      "error-state-contention-dispatch-9.36",
+      "error-state-contention-schema",
+      "error-timeout-with-message-9.36",
+      "init-conflict-zero-content-9.36",
+    ]);
+    for (const [name, s] of marked) {
+      expect(s.only_at, name).toMatch(/^v\d{4}\.\d+\.\d+$/);
+      expect(s.only_at, `${name}: a shape of the reference tag carries no only_at`).not.toBe(
+        FIXTURES.upstream_tag,
+      );
+      // Kept BECAUSE the version is still supported: a shape of a retired gateway goes.
+      expect(validated, `${name}: ${s.only_at} is not a validated version`).toContain(
+        s.only_at!.slice(1),
+      );
+      expect((s.only_at_why ?? "").length, `${name}: says what replaced it`).toBeGreaterThan(20);
+    }
+  });
+
+  it("a scenario without `only_at` carries no reason for one", () => {
+    for (const [name, s] of entries) {
+      if (s.only_at === undefined) expect(s.only_at_why, name).toBeUndefined();
+    }
+  });
+});
+
+describe("upstream frame contracts: chat terminals and failure classes", () => {
   it("aborted with free-form stopReason ('user') finalizes aborted on state alone, partial text kept", () => {
     const { events, normalizer } = drive("aborted-user-stop-partial-text");
     expect(statusOf(events)?.status).toBe("aborted");
@@ -99,18 +152,35 @@ describe("upstream v2026.9.4 frame contracts", () => {
   });
 
   it("timed-out abort arrives as state:error and stays an error (no stopReason re-derivation)", () => {
+    // v2026.10.33's pinned form has no error text: the class is all the frame says.
     const { events, normalizer } = drive("error-timeout-stopreason-precedence");
     expect(statusOf(events)?.status).toBe("error");
     expect(normalizer.finalized).toBe(true);
-    expect(finalOf(events)?.error).toContain("agent provider timeout");
-    // NEW at 2026.8.x: the gateway also badges the class it recorded.
+    // The gateway badges the class it recorded (2026.8.x on).
     expect(finalOf(events)?.errorKind).toBe("timeout");
   });
 
-  it("allowlisted wire errorKind (rate_limit) survives as the message errorKind", () => {
+  it("v2026.9.36: the same timed-out abort with its error text keeps the text and the class", () => {
+    const { events, normalizer } = drive("error-timeout-with-message-9.36");
+    expect(statusOf(events)?.status).toBe("error");
+    expect(normalizer.finalized).toBe(true);
+    expect(finalOf(events)?.error).toContain("agent provider timeout");
+    expect(finalOf(events)?.errorKind).toBe("timeout");
+  });
+
+  it("v2026.9.36: allowlisted wire errorKind (rate_limit) survives as the message errorKind", () => {
     const { events } = drive("error-errorkind-rate-limit");
     expect(statusOf(events)?.status).toBe("error");
     expect(finalOf(events)?.errorKind).toBe("rate_limit");
+  });
+
+  it("a provider observation beside the kind outranks it: rate_limit + overloaded is provider_internal", () => {
+    // The gateway folds `overloaded` into the `rate_limit` kind; the observation is the more
+    // precise fact, and it is the one the reader is told (core/failure-classifier.ts).
+    const { events } = drive("error-rate-limit-kind-with-overloaded-detail");
+    expect(statusOf(events)?.status).toBe("error");
+    expect(finalOf(events)?.errorKind).toBe("provider_internal");
+    expect(finalOf(events)?.error).toContain("Selected model is at capacity");
   });
 
   it("writer-claim rebound AFTER streamed content stays an ERROR, in its own non-retryable class", () => {
@@ -147,11 +217,14 @@ describe("upstream v2026.9.4 frame contracts", () => {
     expect(finalOf(events)?.errorKind).toBe("session_write_conflict");
   });
 
-  it("pre-generation init OCC conflict classifies to session_init_conflict (auto-retry key)", () => {
-    const { events } = drive("init-conflict-zero-content");
-    expect(statusOf(events)?.status).toBe("error");
-    expect(finalOf(events)?.errorKind).toBe("session_init_conflict");
-  });
+  for (const scenario of ["init-conflict-zero-content", "init-conflict-zero-content-9.36"]) {
+    // v2026.10.33 appends "; please retry your message." — both wordings are the same fact.
+    it(`${scenario}: pre-generation init OCC conflict classifies to session_init_conflict (auto-retry key)`, () => {
+      const { events } = drive(scenario);
+      expect(statusOf(events)?.status).toBe("error");
+      expect(finalOf(events)?.errorKind).toBe("session_init_conflict");
+    });
+  }
 
   it("explicit compaction stream signals drive ONE midturn marker without resetting accumulated text", () => {
     const { events, normalizer } = drive("compaction-explicit-stream-signals");
@@ -201,7 +274,7 @@ const shownTexts = (events: BridgeEvent[]): string[] =>
     .filter((e) => e.type === "message.snapshot" || e.type === "message.delta")
     .map((e) => (e as { text?: string }).text ?? "");
 
-describe("upstream v2026.9.7 frame contracts", () => {
+describe("upstream frame contracts: live text, contention, retries (2026.9.7 on)", () => {
   it("append-only chat deltas: projected, the live text grows and follows the replace", () => {
     const { events, gaps } = driveWire("chat-append-only-deltas");
     expect(gaps).toEqual([]);
@@ -231,7 +304,12 @@ describe("upstream v2026.9.7 frame contracts", () => {
     expect(finalOf(events)?.text).toBe("one two");
   });
 
-  for (const scenario of ["error-state-contention-schema", "error-state-contention-dispatch"]) {
+  for (const scenario of [
+    "error-state-contention-control-ui",
+    "error-state-contention-schema",
+    "error-state-contention-dispatch",
+    "error-state-contention-dispatch-9.36",
+  ]) {
     // A status to check, not a failure to resend (state-contention-projected.test.ts).
     it(`${scenario}: state_contention is gateway_state_contention, a terminal error`, () => {
       const { events } = drive(scenario);
@@ -248,9 +326,57 @@ describe("upstream v2026.9.7 frame contracts", () => {
     expect(finalOf(events)?.text).toBe("Resumed");
   });
 
-  it("the partial-save warning after an abort changes nothing: one terminal, aborted", () => {
-    const { events } = drive("aborted-then-save-warning-error");
+  for (const scenario of ["aborted-then-save-warning-error", "aborted-then-save-warning-error-9.36"]) {
+    // v2026.10.33 names the warning (stopReason aborted-partial-persistence-failed); 9.36 does not.
+    it(`${scenario}: the partial-save warning after an abort changes nothing: one terminal, aborted`, () => {
+      const { events } = drive(scenario);
+      const statuses = events.filter((e) => e.type === "run.status");
+      expect(statuses.map((e) => e.status)).toEqual(["aborted"]);
+      expect(events.filter((e) => e.type === "message.final")).toHaveLength(1);
+    });
+  }
+});
+
+describe("upstream v2026.10.33 frame contracts", () => {
+  it("a replace with an empty message takes the shown text back; the turn ends final", () => {
+    const { events, normalizer, gaps } = driveWire("chat-delta-replace-retracts-text");
+    expect(gaps).toEqual([]);
+    const shown = shownTexts(events);
+    expect(shown[0]).toBe("Provisional answer");
+    // The retired text is not what the reader is left looking at.
+    expect(shown.at(-1)).toBe("");
     const statuses = events.filter((e) => e.type === "run.status");
-    expect(statuses.map((e) => e.status)).toEqual(["aborted"]);
+    expect(statuses.at(-1)?.status).toBe("final");
+    expect(normalizer.finalized).toBe(true);
+    expect(finalOf(events)?.text ?? "").toBe("");
+  });
+
+  it("a back-off says why and until when, does not end the turn, and the turn then completes", () => {
+    const { events, normalizer } = drive("run-status-retrying-reason-retry-at");
+    const retrying = events.filter(
+      (e) => e.type === "turn.phase" && (e as { phase?: string }).phase === "retrying",
+    ) as Array<{ retry?: unknown }>;
+    expect(retrying.length).toBeGreaterThan(0);
+    for (const e of retrying) {
+      expect(e.retry).toEqual({
+        attempt: 2,
+        maxAttempts: 10,
+        reason: "timeout",
+        retryAt: 1800000060000,
+      });
+    }
+    const statuses = events.filter((e) => e.type === "run.status");
+    expect(statuses.map((e) => e.status)).toEqual(["final"]);
+    expect(normalizer.finalized).toBe(true);
+    expect(finalOf(events)?.text).toBe("I agree");
+  });
+
+  it("a queued send's `accepted` answer means the gateway holds the input", () => {
+    const s = FIXTURES.scenarios["chat-send-ack-accepted-queued"]!;
+    expect(s.frames).toEqual([]);
+    expect(s.ack).toEqual({ runId: OWN_RUN, status: "accepted" });
+    expect(chatSendAckHoldsInput(s.ack!.status)).toBe(true);
+    // The line the answer sits on the right side of: a settled or failed send is not held.
+    for (const status of ["ok", "timeout", "error"]) expect(chatSendAckHoldsInput(status)).toBe(false);
   });
 });

@@ -29,7 +29,7 @@ import {
 import { TALK_CALL_HOLD_MS } from "./core/talk-relay.js";
 import { presentedIdentity } from "./providers/openclaw/gateway-identity.js";
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
-import { RunManager } from "./providers/openclaw/run-manager.js";
+import { RunManager, type OwedLateLink } from "./providers/openclaw/run-manager.js";
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import { ChildRowStatus } from "./providers/openclaw/child-row-status.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
@@ -458,6 +458,8 @@ class Session implements BridgeSession {
       gateway: connection,
       upsert: writer.upsertAgentRequest?.bind(writer),
       settle: writer.settleAgentRequest?.bind(writer),
+      gatewayFailed: writer.agentRequestGatewayFailed?.bind(writer),
+      sameRun: (a, b) => this.runManager.sameRun(a, b),
       currentMessageId: () =>
         this.runManager.turnActive ? this.runManager.currentMessageId : null,
       noteQuestion: (id, expiresInSec) =>
@@ -490,16 +492,33 @@ class Session implements BridgeSession {
       apply: async (report) => (await writer.applyTranscript?.(report)) ?? undefined,
       ...(sessionEvents === undefined ? {} : { events: sessionEvents }),
       // READ-ONLY view of the turn: the run in the foreground, for CU-16's admission.
+      // Under the names the TRANSCRIPT gives the runs (a link stated late keeps the
+      // turn under the client run: run-manager `linkLate`).
       foregroundRunId: () =>
-        this.runManager.turnActive ? (this.runManager.activeRunIds[0] ?? null) : null,
-      foregroundRunIds: () => (this.runManager.turnActive ? this.runManager.activeRunIds : []),
+        this.runManager.turnActive ? (this.runManager.activeTranscriptRunIds[0] ?? null) : null,
+      foregroundRunIds: () =>
+        this.runManager.turnActive ? this.runManager.activeTranscriptRunIds : [],
+      // A link stated late is recorded in Convex before the rows it concerns: while its
+      // write is owed, nothing is posted (the read is asked again).
+      beforeApply: () => this.runManager.runLinksRecorded(),
       // The live overlay's transcript facts (phase 3).
       onUserRow: (row) => {
         void this.runManager.onUserRow(row).catch((e) =>
           console.error("[send] steer split failed (non-fatal):", errForLog(e)),
         );
       },
+      // The transcript recorded a visible assistant row: what an emptied live stream is
+      // read against (2026.10.33 withdraws recorded text from the stream).
+      onAssistantRow: (row) => {
+        void this.runManager.onAssistantRow(row).catch((e) =>
+          console.error("[stream] recorded row not noted (non-fatal):", errForLog(e)),
+        );
+      },
       onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
+      // One run, two names (2026.10.33): the gateway's own statement of the link.
+      onRunLinked: (executionRunId, clientRunId) => {
+        this.runManager.noteRunLink(executionRunId, clientRunId, this.clock());
+      },
       // PROJECTION `on` (final design step 2): the files Convex has no copy of yet. Called
       // only in `on` (TranscriptShadow.emitFiles).
       ...(copier === null ? {} : { copyFiles: (files) => copier.enqueue(files) }),
@@ -893,6 +912,11 @@ class Session implements BridgeSession {
         }
         nextFrame = iterator.next();
         this.lastActivityAt = now; // active turn (or live child) -> not idle, don't reap
+        // ONE RUN, ONE NAME: a frame the gateway broadcast under a linked client run
+        // (2026.10.33, a queued input's execution) is read under its execution run by
+        // EVERY reader below — the turn, the transcript's terminal observation, the
+        // sub-agent anchors — or each would know the run by a different name.
+        const frame = this.runManager.canonicalFrame(winner.value);
         // Capture the live message BEFORE the feed: the frame that FINALIZES a
         // turn clears currentMessageId inside feed(), and the observer below
         // would then see null for the turn's own final — losing the anchor an
@@ -903,11 +927,11 @@ class Session implements BridgeSession {
         // deferred run would anchor its spawns to the previous bubble.
         const preFeedMessageId =
           this.runManager.turnActive &&
-          this.runManager.frameOwnedByActiveTurn(winner.value)
+          this.runManager.frameOwnedByActiveTurn(frame)
             ? this.runManager.currentMessageId
             : null;
         try {
-          await this.runManager.feed(winner.value, now);
+          await this.runManager.feed(frame, now);
         } catch (err) {
           // NO sensor call here: `runManager.feed` reports the frame itself and rethrows
           // (C4 lives on the reader, so the voice relay and the pre-ack replay are
@@ -918,7 +942,9 @@ class Session implements BridgeSession {
         // session asks for a read. Read-only — the frame went through the feed above
         // untouched, and nothing here can change what it did.
         try {
-          this.transcriptShadow.observeFrame(winner.value);
+          // Under the name the transcript gives the run (a link stated late keeps the
+          // turn under the client run: Convex files the terminal beside the run's rows).
+          this.transcriptShadow.observeFrame(this.runManager.transcriptFrame(frame));
         } catch (err) {
           // Shadow-only: a failure here loses a READ trigger, never a frame (the feed
           // above already consumed it), so it is logged rather than sensed.
@@ -928,10 +954,10 @@ class Session implements BridgeSession {
         // them. Awaited because the one local effect — a human now holds the turn —
         // decides the very next deadline; the network writes inside are detached.
         if (
-          OpenClawAgentRequestObserver.handles(winner.value) &&
+          OpenClawAgentRequestObserver.handles(frame) &&
           openClawAgentRequestsEnabled(this.connection.gatewayVersion)
         ) {
-          await this.agentRequests.observe(winner.value);
+          await this.agentRequests.observe(frame);
         }
         // POST-feed re-evaluation: a legitimately NEW runId admitted DURING
         // feed() (lifecycle_end / compaction adoption windows) was not in
@@ -942,7 +968,7 @@ class Session implements BridgeSession {
         // inside feed(), so only the pre-feed view holds its anchor.
         const postFeedMessageId =
           this.runManager.turnActive &&
-          this.runManager.frameOwnedByActiveTurn(winner.value)
+          this.runManager.frameOwnedByActiveTurn(frame)
             ? this.runManager.currentMessageId
             : null;
         const observeAnchor = preFeedMessageId ?? postFeedMessageId;
@@ -955,7 +981,7 @@ class Session implements BridgeSession {
           // status/heartbeat writes stay off the critical path. See flushSubAgentObserved.
           await this.flushSubAgentObserved(
             this.observer.observe(
-              winner.value,
+              frame,
               now,
               // NO unconditional fallback to currentMessageId here: the
               // anchor is null precisely when this frame does NOT belong to
@@ -975,7 +1001,7 @@ class Session implements BridgeSession {
           // independent path, so a throw here is a second way to lose a frame silently.
           // Instrumenting only the feed would have covered one of two identical blind
           // spots.
-          protocolDrift.observeException(winner.value, err, "subagent-observe");
+          protocolDrift.observeException(frame, err, "subagent-observe");
           console.error(
             "session subagent observe error:",
             errForLog(err),
@@ -1006,7 +1032,7 @@ class Session implements BridgeSession {
           // THIRD frame-path site. The programme named two; this one runs on the same
           // arrived frame (anchor propagation for frames the observer never re-observes),
           // so a throw here loses a frame exactly as silently as the other two.
-          protocolDrift.observeException(winner.value, err, "subagent-anchor");
+          protocolDrift.observeException(frame, err, "subagent-anchor");
           console.error(
             "session subagent anchor error:",
             errForLog(err),
@@ -1371,6 +1397,13 @@ export class SessionDisplaceRefusedError extends Error {
 
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
+  /** The late run links a chat's dropped session still owed Convex (RunManager
+   *  `owedLateLinks`), by chat, with the session key they belong to: handed to the next
+   *  session of that key, whose reconciler must hold the same rows back. In-process
+   *  only — a bridge restart loses them (no local store; the gateway does not state a
+   *  link again). Bounded, oldest first. */
+  private readonly owedLateLinks = new Map<string, { sessionKey: string; links: OwedLateLink[] }>();
+  private static readonly MAX_OWED_LINK_CHATS = 256;
   private readonly inflight = new Map<string, Promise<Session>>();
   // RECENT session keys per chat (bounded history): the sessions map keeps
   // ONE entry per chat, so an agent/instance re-key drops the previous key
@@ -1433,6 +1466,20 @@ export class SessionRegistry {
     this.served.set(instanceName, bundle);
   }
 
+  /** What a dropped session still owed Convex of its late run links, for the chat's next
+   *  session (`owedLateLinks`). */
+  private keepOwedLateLinks(chatId: string, session: Session): void {
+    const links = session.runManager.owedLateLinks();
+    if (links.length === 0) return;
+    this.owedLateLinks.delete(chatId);
+    this.owedLateLinks.set(chatId, { sessionKey: session.sessionKey, links });
+    while (this.owedLateLinks.size > SessionRegistry.MAX_OWED_LINK_CHATS) {
+      const oldest = this.owedLateLinks.keys().next().value;
+      if (oldest === undefined) break;
+      this.owedLateLinks.delete(oldest);
+    }
+  }
+
   /** Start the idle-session sweeper on first use (lazy, so pure-helper tests that
    *  never acquire don't spin a timer). The interval is unref'd — it never keeps
    *  the process alive — and is cleared by closeAll. */
@@ -1464,6 +1511,7 @@ export class SessionRegistry {
             /* already gone */
           }
         }
+        this.keepOwedLateLinks(chatId, session);
         this.sessions.delete(chatId);
         reaped++;
       }
@@ -1590,6 +1638,7 @@ export class SessionRegistry {
         }
         existing.close();
       }
+      this.keepOwedLateLinks(chatId, existing);
       this.sessions.delete(chatId);
     }
     const pending = this.inflight.get(chatId);
@@ -1767,6 +1816,9 @@ export class SessionRegistry {
     );
     session.widgetsWanted = widgetsWanted;
     session.runManager.setWidgetsEnabled(declared.includes(INLINE_WIDGETS_CAP));
+    const owed = this.owedLateLinks.get(chatId);
+    this.owedLateLinks.delete(chatId);
+    if (owed !== undefined && owed.sessionKey === session.sessionKey) session.runManager.adoptOwedLateLinks(owed.links);
     session.startConsumer();
     this.sessions.set(chatId, session);
     {

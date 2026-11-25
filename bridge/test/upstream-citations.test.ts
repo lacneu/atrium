@@ -14,7 +14,8 @@
  * embodies the claim, chosen by reading it. Everything that selects what verifies an entry is
  * taken from the TEXT or from the tag itself, never from the record alone: the ranges are the
  * ones written; the repository is this one only for a citation written from `bridge/`,
- * upstream otherwise; the tag is the fixture's `upstream_tag`, or the document's reference tag
+ * upstream otherwise; the tag is the fixture's `upstream_tag` (a scenario's own `only_at` when it
+ * holds a shape of an older supported gateway), or the document's reference tag
  * unless the citation's own line dates it; and the FILE is the only one of the tag's tree the
  * written path resolves to. A record that can choose its own verifier verifies nothing (codex,
  * three times: the tag, the repository, then a `../` path read from another checkout).
@@ -72,7 +73,7 @@ const readDoc = () => readFileSync(`${REPO}${DOC}`, "utf8");
 const readFixture = () =>
   JSON.parse(readFileSync(`${REPO}${FIXTURE}`, "utf8")) as {
     upstream_tag: string;
-    scenarios: Record<string, { description: string }>;
+    scenarios: Record<string, { description: string; only_at?: string }>;
   };
 
 /** Every citation of both texts, with the text it was read from. */
@@ -233,7 +234,10 @@ describe("upstream citations are recorded, and the record matches the texts", ()
       expectAt(DOC, line, dated ? dated[1]! : bareTag(reference![1]!));
     }
     for (const scenario of Object.values(fixture.scenarios)) {
-      expectAt(FIXTURE, scenario.description, bareTag(fixture.upstream_tag));
+      // A scenario kept for an older supported gateway says so in the FIXTURE (`only_at`):
+      // its shape is that tag's, so its citations are read there. Still the text's choice,
+      // never the record's.
+      expectAt(FIXTURE, scenario.description, bareTag(scenario.only_at ?? fixture.upstream_tag));
     }
     expect(wrong).toEqual([]);
   });

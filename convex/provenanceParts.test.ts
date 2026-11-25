@@ -163,3 +163,56 @@ describe("getProvenanceParts — bounded on-demand detail", () => {
     ).resolves.toEqual([]);
   });
 });
+
+describe("a search that found nothing shows no Sources card", () => {
+  const NO_RESULT_PART = {
+    kind: "provenance" as const,
+    v: 1,
+    pluginId: "openclaw-knowledge",
+    source: "knowledge",
+    group: "documents" as const,
+    injected: { chars: 41, position: "system_prepend" },
+    retrieval: { route: "lightrag" },
+    items: [{ id: "lightrag-context", text: "No relevant context found for the query." }],
+  };
+
+  async function seed(t: TestConvex<typeof schema>, parts: unknown[]) {
+    const owner = await seedUser(t, "alice");
+    const ids = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", { userId: owner.userId, updatedAt: Date.now() });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId: owner.userId,
+        role: "assistant",
+        status: "complete",
+        text: "the reply",
+        updatedAt: Date.now(),
+      });
+      for (const [order, part] of parts.entries()) {
+        await ctx.db.insert("messageParts", { messageId, order, part: part as typeof FULL_PART });
+      }
+      return { chatId, messageId };
+    });
+    return { owner, ...ids };
+  }
+
+  test("a stored report holding only the no-result reply reaches neither the stream nor the panel", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, chatId, messageId } = await seed(t, [NO_RESULT_PART]);
+    const rows = await owner.as.query(api.messages.listByChat, { chatId: chatId as string });
+    expect(rows[0].parts.filter((p) => p.kind === "provenance")).toEqual([]);
+    expect(await owner.as.query(api.messages.getProvenanceParts, { messageId })).toEqual([]);
+  });
+
+  test("a real report on the same message is still shown, alone", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, chatId, messageId } = await seed(t, [NO_RESULT_PART, FULL_PART]);
+    const rows = await owner.as.query(api.messages.listByChat, { chatId: chatId as string });
+    const shown = rows[0].parts.filter((p) => p.kind === "provenance");
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toMatchObject({ source: "hindsight" });
+    const detail = await owner.as.query(api.messages.getProvenanceParts, { messageId });
+    expect(detail).toHaveLength(1);
+    expect(detail[0].source).toBe("hindsight");
+  });
+});

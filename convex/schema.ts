@@ -2324,6 +2324,13 @@ export default defineSchema({
       v.literal("system"),
     ),
     runId: v.optional(v.string()),
+    // ASSISTANT rows: the run's name IN THE TRANSCRIPT when the live stream opened the
+    // bubble under another one. From OpenClaw 2026.10.33 a queued input's execution is
+    // broadcast under the input's client run while its rows keep the execution run; when
+    // the gateway's statement of that link reaches the bridge after the bubble opened,
+    // `runId` stays the name the bridge writes with (its generation) and this is the run
+    // whose rows the bubble shows (stream.ts `linkRunBubble`). Absent everywhere else.
+    transcriptRunId: v.optional(v.string()),
     // USER rows only: the send identity of the dispatch that carried this message (the
     // outbox row's `sendId`, see there) — the key the transcript's `"<sendId>:user"` row
     // is reconciled on (invariant I3). The LAST dispatch wins (a regenerate re-sends the
@@ -3379,6 +3386,10 @@ export default defineSchema({
     // PROJECTION `on`: a WIDGET part derived from the bubble's transcript rows (not posted
     // live) — it exists only while the current rows name its view (lib/rowParts.ts).
     transcriptWidget: v.optional(v.boolean()),
+    // PROJECTION `on`: a PLAN part derived from a work-plan call of the bubble's transcript
+    // rows — the id of that call (lib/rowParts.ts). The identity that derives each call's
+    // plan once, whether the call's card came from the rows or from the live stream.
+    transcriptPlanCall: v.optional(v.string()),
   })
     .index("by_message", ["messageId"])
     .index("by_storage", ["storageId"])
@@ -3442,6 +3453,14 @@ export default defineSchema({
     // limit be told as such, with its figure, instead of the gateway's generic
     // advice to raise a config value that was not the one in force. Fill-only.
     runTimeoutSeconds: v.optional(v.number()),
+    // The run whose OWN terminal the gateway classed as a timeout: the `runId` of the
+    // child's `chat` error frame carrying `errorKind:"timeout"` (a protocol enum, never
+    // the sentence). On OpenClaw 2026.10.33 a child cut off while a tool was executing
+    // leaves a session row that reads `interrupted`, the word a gateway restart also
+    // leaves; when the row speaks for THIS run (`gatewayRow.runId`), the child ran out
+    // of time (convex/lib/sessionRowStatus.ts `rowRunTimedOut`). Replaced by a later
+    // run's own timeout; never cleared, an id that matches no row is inert.
+    timedOutRunId: v.optional(v.string()),
     // The user stopped THIS child. Distinct from `status`, which legitimately
     // keeps moving afterwards: a late terminal frame turns the row `done` and
     // carries the child's `resultText`, and without a stamp that survives it the
@@ -3858,6 +3877,12 @@ export default defineSchema({
      *  or was refused by the gateway (`saidBy: "gateway"`, every OpenClaw one since 0.103.5).
      *  A verdict, never reopened as a closure of Atrium's. */
     closedByGateway: v.optional(v.boolean()),
+    /** The GATEWAY said this exec approval's request FAILED: the exec was refused and its
+     *  command did not run, whatever was decided (OpenClaw `agent` event, stream `approval`,
+     *  `resolved` / `failed` — agentRequests.markGatewayFailedFromBridge). Beside `allowed`,
+     *  the card says the authorisation was not honoured; beside any other status it changes
+     *  nothing shown. A structured fact only: no error text ever sets it. */
+    gatewayFailed: v.optional(v.boolean()),
   })
     .index("by_chat_and_created", ["chatId", "createdAt"])
     .index("by_chat_and_status", ["chatId", "status"])
@@ -3975,7 +4000,23 @@ export default defineSchema({
     // (OpenClaw 2026.9.4 `ChatStatusEvent.retry`). Carried rather than
     // re-derived: the label must say 2/10, and recomposing it downstream from a
     // second source is how a fact goes stale. Cleared whenever the phase is.
-    phaseRetry: v.optional(v.object({ attempt: v.number(), maxAttempts: v.number() })),
+    // `reason` and `retryAt` (OpenClaw 2026.10.33): why the provider is waited on, and the
+    // gateway's own time for the next attempt — absent when the gateway gave neither.
+    phaseRetry: v.optional(
+      v.object({
+        attempt: v.number(),
+        maxAttempts: v.number(),
+        reason: v.optional(
+          v.union(
+            v.literal("rate_limit"),
+            v.literal("overloaded"),
+            v.literal("server_error"),
+            v.literal("timeout"),
+          ),
+        ),
+        retryAt: v.optional(v.number()),
+      }),
+    ),
     // Delivery-latency recorder (OFF by default): when a recording session is
     // active, appendDelta/setSnapshot stamp the deliveryTimings row id (the unique
     // correlator) + server commit time of the last write here, so getStreamingText

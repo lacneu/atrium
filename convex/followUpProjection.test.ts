@@ -1178,6 +1178,20 @@ describe("codex pass 2 — a resumed later segment knows the earlier ones (P2)",
   });
 });
 
+describe("a resumed bubble linked late hands its execution run back (OpenClaw 2026.10.33)", () => {
+  test("liveBubbleForSession / resumeTarget carry `transcriptRunId`; a bubble without one carries none", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t, "on");
+    const linked = await streamingAssistant(t, chatId, userId, { transcriptRunId: "exec-run" });
+    expect((await t.query(internal.bridge.liveBubbleForSession, { chatId, sessionKey: SK }))?.transcriptRunId).toBe("exec-run");
+    expect((await t.query(internal.stuckStreams.resumeTarget, { messageId: linked }))?.transcriptRunId).toBe("exec-run");
+    await t.run((ctx) => ctx.db.patch(linked, { transcriptRunId: undefined }));
+    const plain = await t.query(internal.bridge.liveBubbleForSession, { chatId, sessionKey: SK });
+    expect(plain).not.toBeNull();
+    expect(plain).not.toHaveProperty("transcriptRunId");
+  });
+});
+
 describe("codex pass 3 — the switch never reads the agent catalogue (bounded, all modes)", () => {
   const CATALOGUE = 3_000;
   const LIMIT = { documentsRead: 2_000 };

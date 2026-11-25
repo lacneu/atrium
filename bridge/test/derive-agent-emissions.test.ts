@@ -492,6 +492,42 @@ describe("deriveAgentEmissions — the emitter family is DISCOVERED", () => {
     const second = `${BUS}\nexport function backdoor(e: AgentEventPayload) { notifyListeners(iterateAgentEventListeners(e), e); }\n`;
     expect(() => derive({ root: "/v", files: { ...UPSTREAM, "src/infra/agent-events.ts": second }, tsconfig: TSCONFIG, compilerOptions: OPTIONS })).toThrow(/must be fed by dispatchAgentEvent alone/);
   });
+
+  // v2026.10.33: the generator is gone — the dispatcher reads the registrations itself and
+  // calls each one's `listener`; the bus's types moved to a sibling module it re-exports.
+  const BUS_INLINE = BUS.replace('export type AgentEventPayload = { runId: string; seq: number; stream: string; ts: number; data: Record<string, unknown>; sessionKey?: string };', 'import type { AgentEventPayload } from "./agent-events.types.js";\nexport type { AgentEventPayload, AgentEventStream } from "./agent-events.types.js";')
+    .replace("function* iterateAgentEventListeners(evt: AgentEventPayload): Generator<Listener> {\n  yield* listeners;\n}\n", "const registrations = new Map<Listener, { listener: Listener; id: number }>();\n")
+    .replace("notifyListeners(iterateAgentEventListeners(enriched), enriched);", "notifyListeners([...registrations.values()].map((registration) => (delivered: AgentEventPayload) => { registration.listener(delivered); }), enriched);");
+  const BUS_TYPES = `export type AgentEventStream = "lifecycle" | "tool" | (string & {});\nexport type AgentEventPayload = { runId: string; seq: number; stream: AgentEventStream; ts: number; data: Record<string, unknown>; sessionKey?: string };\n`;
+  const inline = (bus: string) => derive({ root: "/virtual-upstream", files: { ...UPSTREAM, "src/infra/agent-events.ts": bus, "src/infra/agent-events.types.ts": BUS_TYPES }, tsconfig: TSCONFIG, compilerOptions: OPTIONS });
+
+  it("derives the same surface from a dispatcher that calls the registrations itself, with the bus types re-exported (v2026.10.33 layout)", () => {
+    expect(BUS_INLINE).not.toContain("iterateAgentEventListeners");
+    expect(BUS_INLINE).toContain("registration.listener(delivered)");
+    const next = inline(BUS_INLINE);
+    const rows = (i: Inventory) => i.emissions.map((e) => `${e.file}|${e.function}|${e.stream}|${String(e.phase)}|${e.keys.map((k) => k.key).join(",")}`).sort();
+    expect(rows(next)).toEqual(rows(inv));
+    const root = (next as unknown as { root: { listenerIterator: string | null; listenerMember?: string; declaredStreams: { literals: string[]; open: boolean; source?: string } | null } }).root;
+    expect(root.listenerIterator).toBeNull();
+    expect(root.listenerMember).toBe("listener");
+    // The declared stream union is read through the re-export, and says where it lives.
+    expect(root.declaredStreams).toMatchObject({ literals: ["lifecycle", "tool"], open: true, source: "src/infra/agent-events.types.ts" });
+    // …and the older layout's record is unchanged: no new key, the generator named.
+    const before = (inv as unknown as { root: Record<string, unknown> }).root;
+    expect(before.listenerIterator).toBe("iterateAgentEventListeners");
+    expect(before).not.toHaveProperty("listenerMember");
+  });
+
+  it("in that layout, a second function reading a registration's listener is a second door", () => {
+    const second = `${BUS_INLINE}\nexport function backdoor(e: AgentEventPayload) { for (const r of registrations.values()) r.listener(e); }\n`;
+    expect(() => inline(second)).toThrow(/must be read by dispatchAgentEvent alone; read by \[dispatchAgentEvent, backdoor\]/);
+    // Handed out without being called is the same door.
+    const handed = `${BUS_INLINE}\nexport function leak() { return [...registrations.values()].map((r) => r.listener); }\n`;
+    expect(() => inline(handed)).toThrow(/a second door to the public listeners/);
+    // And a dispatcher that reaches no listener at all is not a root.
+    const none = BUS_INLINE.replace("registration.listener(delivered);", "void delivered; void registration;");
+    expect(() => inline(none)).toThrow(/must be read by dispatchAgentEvent alone; read by \[\]/);
+  });
 });
 
 describe("deriveAgentEmissions — nothing is lost in silence", () => {
@@ -1881,6 +1917,24 @@ export function wire() {
     expect(() => run(other, [ENTRY])).toThrow(/RunState\.record: another object provides it \(src\/gateway\/other-state\.ts:2\)/);
   });
 
+  it("a type DERIVED from the factory declares no signature to trust: the entry is not applied and the body is read (v2026.10.33)", () => {
+    // `type ChatRunState = ReturnType<typeof createChatRunState>`: the checker reaches the
+    // member's body, so the send resolves from the body itself — with the stale entry
+    // present (not a refusal) exactly as with none.
+    const derived = runState(RECORD)
+      .replace("export type RunState = {\n  record: (runId: string, event: Ev, extra?: Ev) => void;\n};", "export type RunState = ReturnType<typeof createRunState>;")
+      .replace("export function createRunState(): RunState {", "export function createRunState() {");
+    expect(derived).toContain("ReturnType<typeof createRunState>");
+    const files = { ...FILES, "src/gateway/run-state.ts": derived };
+    const withEntry = tfOf(run(files, [ENTRY]));
+    const without = tfOf(run(files, []));
+    expect(withEntry).toEqual(without);
+    expect(withEntry.fabricated.filter((g) => g.stream === "x_recorded").map((g) => g.keys)).toEqual([["a"]]);
+    // A body that WRITES into the event is then seen, entry or not: nothing was trusted.
+    const writing = { ...files, "src/gateway/run-state.ts": derived.replace("store.set(runId, copyEvent(event));", "event.data.touched = 1;\n    store.set(runId, copyEvent(event));") };
+    expect(tfOf(run(writing, [ENTRY]))).toEqual(tfOf(run(writing, [])));
+  });
+
   it("a declared member that is gone refuses the derivation", () => {
     const gone = { ...FILES, "src/gateway/run-state.ts": runState(RECORD).replace("  record: (runId: string, event: Ev, extra?: Ev) => void;\n", "") };
     expect(() => run(gone, [ENTRY])).toThrow(/RunState\.record: the declared member is absent/);
@@ -2737,6 +2791,217 @@ export function relayForeignData(evt: AgentEventPayload, other: { stream: string
   it("4. a bus without its event type refuses the derivation: no relay could be told from a frame", () => {
     const files = { ...TRANSPORT, "src/infra/agent-events.ts": BUS.replace(/AgentEventPayload/g, "BusEvent"), "src/cases/lifecycle.ts": UPSTREAM["src/cases/lifecycle.ts"]! };
     expect(() => derive({ root: "/virtual-upstream", files, tsconfig: TSCONFIG, compilerOptions: OPTIONS })).toThrow(/no AgentEventPayload type/);
+  });
+});
+
+describe("deriveAgentEmissions — the gateway's handler chain at v2026.10.33: admission, live sender, shared reads", () => {
+  // Three shapes that tag introduces between the bus and the transports, each of which
+  // left a gateway sender unresolved. Mirrors of src/gateway/server-chat.ts
+  // (`sendLivePayload`, :734-799), src/gateway/server-chat-event-admission.ts
+  // (`createAgentEventAdmission`, :16-142) and src/gateway/shared-read-responses.ts
+  // (`owners`, :29-41 and :103-128) at v2026.10.33.
+  type Tf = { relays: { file: string; function: string; origins: { kind: string; type?: string; entries?: string[] }[] }[]; unresolved: { file: string; function: string; reason: string }[]; senderSites: Record<string, number> };
+  type Forward = { at: string; function: string; wrapper: string; followed: Record<string, unknown>[] };
+  const LIB = { lib: ["lib.es2022.d.ts"] };
+  const deriveWithFiles = (files: Record<string, string>) =>
+    derive({ root: "/virtual-upstream", files: { ...TRANSPORT, "src/infra/agent-events.ts": BUS, ...files }, tsconfig: TSCONFIG, compilerOptions: LIB });
+  const tfOf = (i: Inventory) => i.transformations as unknown as Tf;
+  const inFile = (i: Inventory, file: string) => ({
+    relays: tfOf(i).relays.filter((r) => r.file === file),
+    unresolved: tfOf(i).unresolved.filter((u) => u.file === file),
+  });
+
+  const LIVE = `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import { createGatewayNodeSessionRuntime } from "./server-node-session-runtime.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
+type ChatEvent = { runId: string; state: "delta" | "final" | "error" | "aborted" };
+type Opts = { visible?: boolean; agentId?: string };
+declare const publication: { holdTerminal(runId: string, release: () => void): boolean };
+declare function snapshot(sessionKey: string): { sessionKey: string };
+type Send = (event: string, payload: unknown) => void;
+export function wire() {
+  const { broadcast, broadcastToConnIds } = createGatewayBroadcaster();
+  const { nodeSendToSession } = createGatewayNodeSessionRuntime();
+  return createHandler({ broadcast, broadcastToConnIds, nodeSendToSession });
+}
+export function createHandler({ broadcast, broadcastToConnIds, nodeSendToSession }: { broadcast: Send; broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => void; nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void }) {
+  const sendLivePayload = (event: "agent" | "chat", sessionKey: string | undefined, payload: ChatEvent | AgentEventPayload, opts?: Opts) => {
+    if (__RECURSE__) return;
+    if (opts?.visible ?? true) {
+      broadcast(event, payload);
+      if (sessionKey) nodeSendToSession(sessionKey, event, payload);
+      return;
+    }
+    const delivered = event === "agent" && sessionKey ? { ...payload, ...snapshot(sessionKey) } : payload;
+    broadcastToConnIds(event, delivered, new Set<string>());
+  };
+  const sendAgentPayload = (sessionKey: string | undefined, payload: AgentEventPayload & { spawnedBy?: string }, opts?: Opts) => {
+    sendLivePayload("agent", sessionKey, payload, { ...opts });
+  };
+  const buffer: { bufferedEvent?: { sessionKey: string; payload: AgentEventPayload & { spawnedBy?: string } } }[] = [];
+  const flush = () => {
+    for (const state of buffer) {
+      const buffered = state.bufferedEvent;
+      if (!buffered) continue;
+      delete state.bufferedEvent;
+      sendAgentPayload(buffered.sessionKey, buffered.payload, { visible: false });
+    }
+  };
+  const chat = (p: ChatEvent) => sendLivePayload("chat", "k", p);
+  const handleEvent = (evt: AgentEventPayload) => {
+    const spawnedBy = evt.sessionKey;
+    const text = String(evt.data.text ?? "");
+    if (evt.stream === "assistant") {
+      const agentPayload = { ...evt, ...(spawnedBy ? { spawnedBy } : {}), data: { ...evt.data, text } };
+      if (text) buffer.push({ bufferedEvent: { sessionKey: "k", payload: agentPayload } });
+      else sendAgentPayload(evt.sessionKey, agentPayload, { visible: true });
+      return;
+    }
+    if (evt.stream === "tool") {
+      sendAgentPayload(evt.sessionKey, spawnedBy ? { ...evt, spawnedBy } : evt);
+      return;
+    }
+    sendAgentPayload(evt.sessionKey, evt, { agentId: "a" });
+    chat({ runId: evt.runId, state: "final" });
+  };
+  return Object.assign(handleEvent, { flush });
+}
+`;
+
+  const HELD = 'event === "chat" && "state" in payload && payload.state === "final" && publication.holdTerminal(payload.runId, () => sendLivePayload(event, sessionKey, payload, opts))';
+  const live = (recurse: string) => deriveWithFiles({ "src/gateway/live.ts": LIVE.replace("__RECURSE__", recurse) });
+
+  it("a wrapper calling itself with its own parameters adds no frame: the live sender resolves as it does without the recursion", () => {
+    const plain = inFile(live("false"), "src/gateway/live.ts");
+    const held = live(HELD);
+    expect(plain.unresolved).toEqual([]);
+    expect(plain.relays.map((r) => r.function).sort()).toEqual(["createHandler > flush", "createHandler > handleEvent"]);
+    // Followed as a forward, the self-call re-entered the wrapper's template with one more
+    // layer of the body's effects on each round and ended on the evaluator's bound
+    // ("the event is not evaluated: more than 64 alternatives").
+    expect(inFile(held, "src/gateway/live.ts")).toEqual(plain);
+    expect(tfOf(held).senderSites.undetermined).toBe(tfOf(live("false")).senderSites.undetermined);
+    const self = ((held as unknown as { forwards: Forward[] }).forwards).filter((f) => f.followed.some((x) => "self" in x));
+    expect(self.map((f) => f.wrapper)).toEqual(["createHandler > sendLivePayload"]);
+  });
+
+  it("a recursion that changes what it passes on is a forward like any other", () => {
+    for (const changed of [
+      // another payload
+      'event === "chat" && publication.holdTerminal(payload.runId, () => sendLivePayload(event, sessionKey, { ...payload, runId: "again" }, opts))',
+      // another event
+      'event === "chat" && publication.holdTerminal(payload.runId, () => sendLivePayload("agent", sessionKey, payload, opts))',
+    ]) {
+      const forwards = (live(changed) as unknown as { forwards: Forward[] }).forwards;
+      expect(forwards.filter((f) => f.followed.some((x) => "self" in x)), changed).toEqual([]);
+    }
+  });
+
+  const SHARED = (decl: string) => `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+type Send = (event: string, payload: unknown) => void;
+${decl}
+export function invalidate(owner: Send): void {
+  owners.get(owner)?.clear();
+}
+export function share(context: { broadcast: Send }) {
+  const owner = context.broadcast;
+  let entries = owners.get(owner);
+  if (!entries) {
+    entries = new Map();
+    owners.set(owner, entries);
+  }
+}
+export function wireShared() {
+  const { broadcast } = createGatewayBroadcaster();
+  share({ broadcast });
+  invalidate(broadcast);
+}
+`;
+  const ADMISSION = `
+import type { AgentEventPayload } from "../infra/agent-events.js";
+export function createAdmission({ handleEvent, resolveSession, isCurrent }: {
+  handleEvent: (e: AgentEventPayload) => void;
+  resolveSession: (e: AgentEventPayload) => { key?: string };
+  isCurrent: (e: AgentEventPayload) => boolean;
+}) {
+  const accept = (evt: AgentEventPayload) => {
+    if (!isCurrent(evt)) return;
+    const session = resolveSession(evt);
+    void session;
+    handleEvent(evt);
+  };
+  return Object.assign((event: AgentEventPayload) => accept(event), { dispose: () => {} });
+}
+`;
+  const HANDLER = (isCurrent: string, extra = "") => `
+import { createGatewayBroadcaster } from "./server-broadcast.js";
+import { createAdmission } from "./admission.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
+type Send = (event: string, payload: unknown) => void;
+export function createHandler({ broadcast }: { broadcast: Send }) {
+  const handleEvent = (evt: AgentEventPayload) => {
+    broadcast("agent", evt);
+  };
+  const resolveSession = (evt: AgentEventPayload) => ({ key: evt.sessionKey });
+  return createAdmission({ handleEvent, resolveSession, isCurrent: ${isCurrent} });
+}
+export function wire() {
+  const { broadcast } = createGatewayBroadcaster();
+  return createHandler({ broadcast });
+}
+${extra}
+`;
+
+  it("a sender used as the KEY of a standard WeakMap goes nowhere through it", () => {
+    const weak = inFile(deriveWithFiles({ "src/gateway/shared.ts": SHARED("const owners = new WeakMap<Send, Map<string, number>>();") }), "src/gateway/shared.ts");
+    expect(weak).toEqual({ relays: [], unresolved: [] });
+  });
+
+  it("the key of a Map can be read back and called: it still escapes — and so does a subclass with methods of its own", () => {
+    const map = inFile(deriveWithFiles({ "src/gateway/shared.ts": SHARED("const owners = new Map<Send, Map<string, number>>();") }), "src/gateway/shared.ts");
+    expect(map.unresolved.length).toBeGreaterThan(0);
+    expect(map.unresolved.every((u) => /closure parameter #0 of createGatewayBroadcaster > broadcast/.test(u.reason))).toBe(true);
+    const sub = inFile(
+      deriveWithFiles({
+        "src/gateway/shared.ts": SHARED("class Owners extends WeakMap<Send, Map<string, number>> {\n  get(key: Send) {\n    key(\"agent\", {});\n    return super.get(key);\n  }\n}\nconst owners = new Owners();"),
+      }),
+      "src/gateway/shared.ts",
+    );
+    // Its own `get` is read as the caller it is; its inherited `set` is not the library's.
+    expect(sub.unresolved.map((u) => u.function).sort()).toEqual(["Owners.get", "broadcast=createGatewayBroadcaster()→broadcast"]);
+  });
+
+  it("an event handed to callback parameters that only read it stays a relay of the bus's event", () => {
+    const adm = inFile(deriveWithFiles({ "src/gateway/admission.ts": ADMISSION, "src/gateway/handler.ts": HANDLER('(evt) => evt.runId !== ""') }), "src/gateway/admission.ts");
+    expect(adm.unresolved).toEqual([]);
+    expect(adm.relays.map((r) => [r.function, r.origins.map((o) => [o.kind, o.type])])).toEqual([
+      ["createAdmission > Object.assign(#0)", [["typed", "AgentEventPayload"]]],
+    ]);
+  });
+
+  it("a callback that writes into the event, or one whose value is not in the sources, leaves the send unresolved — by name", () => {
+    const writes = inFile(deriveWithFiles({ "src/gateway/admission.ts": ADMISSION, "src/gateway/handler.ts": HANDLER("(evt) => { evt.data.seen = 1; return true; }") }), "src/gateway/admission.ts");
+    expect(writes.relays).toEqual([]);
+    expect(writes.unresolved.map((u) => u.reason)).toEqual([
+      expect.stringMatching(/^passed to isCurrent\(…\) before the send, a callback that may be createHandler > isCurrent \(src\/gateway\/handler\.ts:\d+\): .*writes into it$/),
+    ]);
+    // A second caller hands in values this cannot read: nothing is assumed about them.
+    const external = inFile(
+      deriveWithFiles({
+        "src/gateway/admission.ts": ADMISSION,
+        "src/gateway/handler.ts": HANDLER(
+          '(evt) => evt.runId !== ""',
+          "declare const external: { handleEvent: (e: AgentEventPayload) => void; resolveSession: (e: AgentEventPayload) => { key?: string }; isCurrent: (e: AgentEventPayload) => boolean };\nexport const other = createAdmission(external);",
+        ),
+      }),
+      "src/gateway/admission.ts",
+    );
+    expect(external.relays).toEqual([]);
+    expect(external.unresolved.map((u) => u.reason)).toEqual([
+      "passed to resolveSession(…) before the send, code whose effects on it are not modeled; passed to isCurrent(…) before the send, code whose effects on it are not modeled",
+    ]);
   });
 });
 

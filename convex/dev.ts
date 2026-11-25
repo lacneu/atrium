@@ -2413,6 +2413,9 @@ export const peekSubAgents = query({
         providerStatus: r.providerStatus ?? null,
         gatewayRowDisplay: r.gatewayRow?.display ?? null,
         gatewayRowRunId: r.gatewayRow?.runId ?? null,
+        // The run whose own terminal the gateway classed as a timeout (2026.10.33): why a
+        // row read `interrupted` is settled `error`/`timeout` when it equals the id above.
+        timedOutRunId: r.timedOutRunId ?? null,
         runTimeoutSeconds: r.runTimeoutSeconds ?? null,
         sessionMeta: r.sessionMeta ?? null,
         createdAt: r.createdAt,

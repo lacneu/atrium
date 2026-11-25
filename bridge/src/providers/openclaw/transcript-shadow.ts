@@ -40,6 +40,7 @@
 
 import type { TranscriptApplyReport, TranscriptFileToCopy } from "../../convex-writer.js";
 import type { GatewayFrame } from "./openclaw-client.js";
+import { chatSendAckHoldsInput } from "./chat-send-ack.js";
 import { protocolDrift } from "./protocol-drift.js";
 import {
   admitLiveRow,
@@ -48,10 +49,12 @@ import {
   INPUT_RUN_ID_MAX_CHARS,
   capDisplayedRow,
   isDisplayCapped,
+  isGatewayAuthoredAssistantMessage,
   parseHistoryReply,
   rowContentBytes,
   toTranscriptRow,
   runTerminalStatus,
+  sessionsChangedRunLink,
   type CappedRef,
   type HistoryRead,
   type RowDisplay,
@@ -271,9 +274,23 @@ export interface TranscriptShadowDeps {
   /** PROJECTION `on` (phase 3): every USER row read or received — the steer fact the
    *  live overlay cuts a run's bubble on (CU-20). Never awaited by the reconciler. */
   onUserRow?: (row: TranscriptRow) => void;
+  /** Every ASSISTANT row RECEIVED live (`session.message`) that names its run and shows
+   *  something a reader sees (visible, not hidden — the rows a bubble's text is made of):
+   *  the fact the live text reads an emptied stream against (normalizer.ts
+   *  `recordedText`). Never a row a read brought back: that one was recorded long before
+   *  the frames being read. Never awaited by the reconciler. */
+  onAssistantRow?: (row: TranscriptRow) => void;
   /** PROJECTION `on`: the gateway says it will never run this input (cancelled, or
    *  asked after its ACK and holding no receipt for it). */
   onInputDropped?: (sendId: string) => void;
+  /** The gateway stated that an execution run is broadcast under a client run
+   *  (`sessionsChangedRunLink`): one run for the live overlay. Never awaited. */
+  onRunLinked?: (executionRunId: string, clientRunId: string) => void;
+  /** Awaited before rows are posted: what Convex must hold first for them to be placed
+   *  (a run link stated after its bubble opened). A REJECTION means it does not hold it
+   *  yet: nothing is posted — a read fails like any other and is asked again, its cursor
+   *  unmoved; directly applied rows are dropped, the read brings them. */
+  beforeApply?: () => Promise<void>;
   /** PROJECTION `on` (phase 4): runs the transcript proved OVER (Convex's run table — a
    *  terminal, or a fresh read that found the session idle). A foreground turn among
    *  them ends here: a fact, never a timer. Never awaited by the reconciler. */
@@ -409,14 +426,15 @@ export class TranscriptShadow {
   }
 
   /** The `chat.send` ACK. Only `ok` asks for a read (the reply is in the transcript);
-   *  `started`/`in_flight` are custody, not persistence (docs/web/webchat.md:55-56). */
+   *  `started`/`in_flight` — and `accepted`, a repeated key on a queued turn from
+   *  2026.10.33 on (chat-send-ack.ts) — are custody, not persistence
+   *  (docs/web/webchat.md:55-56). */
   noteAck(status: unknown, sendId?: string | null): void {
     if (!this.active) return;
     if (typeof sendId === "string") {
       const c = this.custody.get(sendId);
       if (c !== undefined) {
-        const accepted = status === "started" || status === "in_flight" || status === "ok";
-        c.state = accepted ? "accepted" : "failed";
+        c.state = chatSendAckHoldsInput(status) || status === "ok" ? "accepted" : "failed";
       }
     }
     if (status !== "ok") return;
@@ -488,6 +506,17 @@ export class TranscriptShadow {
     }
     const isUser = admission.role === "user";
     if (isUser && admission.row !== null) this.emitUserRow(admission.row);
+    // Whether or not CU-16 admits the row to the store now: that it was RECORDED is the
+    // event's own fact. Only the model's own message records text of the run's stream: a
+    // row the gateway wrote on the run's behalf (delivery mirror, injected row) carries a
+    // text of its own, and taken for a record it would keep a text the gateway retracts.
+    if (
+      admission.role === "assistant" &&
+      admission.row !== null &&
+      !isGatewayAuthoredAssistantMessage(payload.message)
+    ) {
+      this.emitAssistantRow(admission.row);
+    }
     if (foreground !== null && admission.hasActiveRun === true && !isUser) {
       // The turn is live: its rows reach the store by the read its terminal triggers.
       this.pump();
@@ -500,6 +529,8 @@ export class TranscriptShadow {
   onSessionsChanged(payload: Record<string, unknown>): void {
     if (!this.active) return;
     this.stats.sessionsChanged++;
+    const link = sessionsChangedRunLink(payload);
+    if (link !== null) this.deps.onRunLinked?.(link.runId, link.clientRunId);
     const action = classifySessionsChanged(payload);
     if (action.reset) {
       // `sessionReset`: the old transcript's cursor and live rows name nothing in the
@@ -559,10 +590,25 @@ export class TranscriptShadow {
     }
   }
 
+  /** Never swallowed: rows posted before what they depend on are placed wrongly, and
+   *  Convex cannot move them afterwards. */
+  private async settleBeforeApply(): Promise<void> {
+    await this.deps.beforeApply?.();
+  }
+
   private emitUserRow(row: TranscriptRow): void {
     if (row.sendId === undefined) return;
     try {
       this.deps.onUserRow?.(row);
+    } catch {
+      /* the overlay's bookkeeping never fails a read */
+    }
+  }
+
+  private emitAssistantRow(row: TranscriptRow): void {
+    if (row.runId === undefined || !row.visible || row.hidden) return;
+    try {
+      this.deps.onAssistantRow?.(row);
     } catch {
       /* the overlay's bookkeeping never fails a read */
     }
@@ -956,6 +1002,7 @@ export class TranscriptShadow {
       ...(unreadable.length > 0 ? { inputUnreadable: unreadable } : {}),
     };
     try {
+      await this.settleBeforeApply();
       // THE TEXTS FIRST, each chunk persisted before the next is sent, the read last: a
       // failure anywhere throws before the read — the cursor never moves past a row whose
       // text was not stored (codex phase 4 pass 6).
@@ -1074,6 +1121,7 @@ export class TranscriptShadow {
       ...this.foregroundOpt(),
     };
     try {
+      await this.settleBeforeApply();
       if (oversized) await this.postTexts(sessionId, all, payload.readAt);
       const answer = await this.deps.apply(payload);
       this.emitSettled(answer);

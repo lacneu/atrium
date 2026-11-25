@@ -48,7 +48,12 @@ export const SNAPSHOT_FN = "buildSessionEventSnapshot";
  * caller still refuses. Older tags keep vendoring from their own layout.
  */
 export const SNAPSHOT_SITES = [
-  { source: "src/gateway/session-event-payload.ts", fn: "buildGatewaySessionSnapshot" },
+  // `supersetLiteral` NAMES the one binding whose object-literal initialiser may be read
+  // as a superset of the shape (see collectSpread). v2026.10.33 inlined the callee into
+  // `const eventFields: Record<string, unknown> = {…}`, deleted from under `lifecycle`
+  // and projected through `Object.entries` before the spread. Declared per site and per
+  // name: everywhere else a narrowed literal still refuses.
+  { source: "src/gateway/session-event-payload.ts", fn: "buildGatewaySessionSnapshot", supersetLiteral: "eventFields" },
   { source: SNAPSHOT_SOURCE, fn: SNAPSHOT_FN },
 ];
 
@@ -138,6 +143,24 @@ function collectSpread(expression, fields, resolveIdentifier, where, ctx) {
       const init = ctx?.initialiserOf?.(expression.text);
       if (init !== undefined && ts.isCallExpression(init)) {
         collectSpread(init, fields, resolveIdentifier, `spread ...${expression.text}`, ctx);
+        return;
+      }
+      // v2026.10.33 inlined the callee: the shape is an object LITERAL bound to a const,
+      // narrowed by `delete` and projected through `Object.entries` before the spread.
+      // Reaching this point means every other mention of the name is one of those two
+      // accounted forms (anything else refused in `resolveIdentifier`): neither can add a
+      // key, so the literal's own keys are a SUPERSET of what reaches the wire. The list
+      // may then name a key a `delete` removes on some path — which is why this reading is
+      // not the rule: it is taken ONLY for the binding the snapshot site names
+      // (`supersetLiteral`), where the deleted keys are known to be emitted on the other
+      // path. Any other narrowed literal refuses, as it always did.
+      if (
+        init !== undefined &&
+        ts.isObjectLiteralExpression(init) &&
+        ctx?.supersetLiteral !== undefined &&
+        ctx.supersetLiteral === expression.text
+      ) {
+        collectObjectKeys(init, fields, resolveIdentifier, `spread ...${expression.text}`, ctx);
         return;
       }
       throw new Error(
@@ -317,6 +340,7 @@ export function deriveSnapshotFields(source, options = {}) {
     resolveLocalFunction,
     collectFunctionReturnKeys,
     initialiserOf: (name) => bindings.get(name),
+    supersetLiteral: options.supersetLiteral,
   };
 
   /** Bindings declared directly in the function's OWN body. A helper's shadowing

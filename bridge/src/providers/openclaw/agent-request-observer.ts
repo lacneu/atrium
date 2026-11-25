@@ -12,6 +12,11 @@
 //   3. the TURN's knowledge that a human holds it, so the silence clock and the
 //      finishing grace stop treating the wait as a dead run (RunManager).
 //
+// One frame of the RUN is read here too, because only this observer can join it to a
+// card: the `agent` event `approval` / `resolved` / `failed` — the gateway's word that an
+// exec approval's request failed and its command did not run, whatever was decided
+// (onApprovalRequestFailed).
+//
 // No `sessions.messages.subscribe` here, although it would deliver sanitized
 // approvals per session: a subscription on the conversation socket has already
 // cost the live bench frames the turn depends on (session.ts, "NO sessions.subscribe
@@ -38,15 +43,19 @@ import {
   OPENCLAW_QUESTION_EVENTS,
   readOpenClawApprovalPresentation,
   readOpenClawApprovalRequested,
+  readOpenClawApprovalRequestFailed,
   readOpenClawApprovalResolved,
   readOpenClawApprovalSnapshotOrigin,
   readOpenClawApprovalTerminal,
   readOpenClawApprovalTerminalStatus,
+  openClawAnswerLabels,
   readOpenClawQuestionRequested,
   readOpenClawQuestionResolved,
   questionShape,
+  type AgentRequestGatewayFailure,
   type AgentRequestRecord,
   type AgentRequestSettle,
+  type OpenClawOptionValues,
 } from "../../core/agent-requests.js";
 import { SIGHTING_EPOCH, nextSightingSeq } from "../../core/sighting-order.js";
 import {
@@ -68,6 +77,12 @@ export interface AgentRequestObserverDeps {
   upsert: ((record: AgentRequestRecord) => Promise<unknown>) | undefined;
   /** Resolves with what Convex did (`{ outcome }`, convex-writer.ts), or nothing. */
   settle: ((settle: AgentRequestSettle) => Promise<unknown>) | undefined;
+  /** The gateway said an exec approval's request FAILED (its command did not run). Resolves
+   *  with what Convex did (`{ outcome }`, convex-writer.ts), or nothing. */
+  gatewayFailed?: (failure: AgentRequestGatewayFailure) => Promise<unknown>;
+  /** Whether two run ids name ONE run (a queued input's execution has two from OpenClaw
+   *  2026.10.33 — run-manager `sameRun`). Absent: only an id is itself. */
+  sameRun?: (a: string, b: string) => boolean;
   /** The active turn's bubble, when this chat is driving one. */
   currentMessageId: () => string | null;
   noteQuestion: (id: string, expiresInSec: number | null) => Promise<boolean>;
@@ -137,6 +152,10 @@ const QUESTION_REPLAY_LATER_MS = 15_000;
  *  (the writer's own retries spent). Bounded: past the last, an open card is left to
  *  Convex's expiry sweep. */
 const SETTLE_RETRY_MS = [2_000, 10_000, 30_000, 120_000];
+/** A failure heard before its request is announced here (`earlyFailures`): how many are
+ *  kept, and for how long — the reads of one connection's pending lists, generously. */
+const MAX_EARLY_FAILURES = 32;
+const EARLY_FAILURE_TTL_MS = 120_000;
 /** What an approval's write ends in when its `approval.get` answered a TERMINAL snapshot:
  *  the request was settled from it (recordApproval), and its resolution has nothing left
  *  to settle. */
@@ -194,7 +213,8 @@ export class OpenClawAgentRequestObserver {
       event !== null &&
       (OPENCLAW_QUESTION_EVENTS.has(event) ||
         OPENCLAW_APPROVAL_REQUESTED_EVENTS.has(event) ||
-        OPENCLAW_APPROVAL_RESOLVED_EVENTS.has(event))
+        OPENCLAW_APPROVAL_RESOLVED_EVENTS.has(event) ||
+        (event === "agent" && readOpenClawApprovalRequestFailed(frame) !== null))
     );
   }
 
@@ -216,6 +236,8 @@ export class OpenClawAgentRequestObserver {
         await this.onApproval(event, payload);
       } else if (OPENCLAW_APPROVAL_RESOLVED_EVENTS.has(event)) {
         await this.onApprovalResolved(event, payload);
+      } else if (event === "agent") {
+        this.onApprovalRequestFailed(frame);
       }
     } catch (err) {
       console.error(
@@ -355,7 +377,7 @@ export class OpenClawAgentRequestObserver {
       questions: q.questions,
     };
     this.noteGeneration(qKey(q.id), q.createdAtMs);
-    this.noteContent(qKey(q.id), content, seenSeq);
+    this.noteContent(qKey(q.id), content, seenSeq, q.optionValues);
     const sighting = this.newSighting(qKey(q.id));
     const secret = new Set(q.questions.filter((x) => x.secret).map((x) => x.id));
     if (secret.size > 0) this.secretQuestionIds.set(qKey(q.id), secret);
@@ -475,10 +497,13 @@ export class OpenClawAgentRequestObserver {
   /** What each recorded question request ASKED (`questionShape`) and when this process
    *  SAW it, to tell a reused id carrying another question from a replay of the same one —
    *  and to name, at its settle, WHICH generation settled. Bounded like `known`. */
-  private readonly contents = new Map<string, { shape: string; seq: number }>();
-  private noteContent(id: string, shape: string, seq: number): void {
+  private readonly contents = new Map<
+    string,
+    { shape: string; seq: number; optionValues: OpenClawOptionValues }
+  >();
+  private noteContent(id: string, shape: string, seq: number, optionValues: OpenClawOptionValues): void {
     this.contents.delete(id);
-    this.contents.set(id, { shape, seq });
+    this.contents.set(id, { shape, seq, optionValues });
     if (this.contents.size > 512) {
       const oldest = this.contents.keys().next().value;
       if (oldest !== undefined) this.contents.delete(oldest);
@@ -541,7 +566,13 @@ export class OpenClawAgentRequestObserver {
           ...generation,
           ...(seen !== undefined ? { questionShape: seen.shape, providerSeenSeq: seen.seq } : {}),
           status: r.status,
-          ...this.withoutSecrets(secret, r.answers),
+          // The gateway records canonical answers (an option's `value` when it has
+          // one); the card, its stored answer and the "ours or theirs" comparison are in
+          // labels — translated back with the options this request was asked with.
+          ...this.withoutSecrets(
+            secret,
+            r.answers === undefined ? undefined : openClawAnswerLabels(r.answers, seen?.optionValues),
+          ),
         }),
       )
       .catch((err) =>
@@ -560,9 +591,25 @@ export class OpenClawAgentRequestObserver {
   private async onApproval(event: string, payload: unknown, listedBefore?: number): Promise<boolean> {
     const a = readOpenClawApprovalRequested(event, payload);
     if (a === null || !this.ours(a.sessionKey)) return false;
+    const recorded = await this.admitApproval(event, payload, a, listedBefore);
+    // The gateway's word that THIS request failed, heard before the request was known
+    // here: joined now that its card's write and its verdict's are in flight.
+    if (a.kind === "exec" && a.toolCallId !== null && this.takeEarlyFailure(a.toolCallId, a.runId)) {
+      this.markAfterWrites(a.id, a.createdAtMs);
+    }
+    return recorded;
+  }
+
+  private async admitApproval(
+    event: string,
+    payload: unknown,
+    a: NonNullable<ReturnType<typeof readOpenClawApprovalRequested>>,
+    listedBefore?: number,
+  ): Promise<boolean> {
     const generation = a.createdAtMs;
     this.remember(aKey(a.id), "approval");
     this.routedApprovals.add(a.id, generation);
+    if (a.kind === "exec" && a.toolCallId !== null) this.noteToolCall(a.toolCallId, a.id, generation);
     // A list asked BEFORE a resolution of this id came, and read before the decision: the
     // entry is the request that resolution decided — now with its generation — not a wait.
     const early = this.unattachedResolutions.get(a.id);
@@ -783,7 +830,8 @@ export class OpenClawAgentRequestObserver {
     this.approvalGenerations.resolve(id, generation);
     await this.deps.noteApprovalSettled(id, generation);
     this.deps.wake();
-    void this.afterWrite(aKey(approvalIdentity(id, generation)))
+    const key = aKey(approvalIdentity(id, generation));
+    const verdict = this.afterWrite(key)
       .then(async (written) => {
         // Its verdict already LANDED (the terminal snapshot's settle, or an earlier write):
         // a write saved — Convex's settle is idempotent either way.
@@ -812,6 +860,124 @@ export class OpenClawAgentRequestObserver {
           errForLog(err),
         ),
       );
+    this.noteVerdictWrite(key, verdict);
+  }
+
+  /** The exec request each tool call waits on (`request.toolCallId` of its announcement):
+   *  the run's `approval` stream names the tool call only. Bounded like `known`. */
+  private readonly approvalsByToolCall = new Map<string, { id: string; generation: ApprovalGeneration }>();
+  private noteToolCall(toolCallId: string, id: string, generation: ApprovalGeneration): void {
+    this.approvalsByToolCall.delete(toolCallId);
+    this.approvalsByToolCall.set(toolCallId, { id, generation });
+    while (this.approvalsByToolCall.size > MAX_KNOWN) {
+      const oldest = this.approvalsByToolCall.keys().next().value;
+      if (oldest === undefined) break;
+      this.approvalsByToolCall.delete(oldest);
+    }
+  }
+  /** Each identity's verdict write in flight (settleResolution), so the gateway's later
+   *  word about the same request reaches Convex after it. Bounded like `writes`. */
+  private readonly verdictWrites = new Map<string, Promise<unknown>>();
+  private noteVerdictWrite(key: string, write: Promise<unknown>): void {
+    this.verdictWrites.set(key, write);
+    if (this.verdictWrites.size > 512) {
+      const oldest = this.verdictWrites.keys().next().value;
+      if (oldest !== undefined) this.verdictWrites.delete(oldest);
+    }
+  }
+
+  /**
+   * The run's `approval` / `resolved` / `failed` (readOpenClawApprovalRequestFailed): the
+   * gateway refused the exec because the approval REQUEST failed — its command did not run,
+   * even when a person had just allowed it (upstream openclaw/openclaw#170994: the gateway
+   * accepts the decision, then revokes the requester it was waiting for). Joined to the
+   * card by the tool call its announcement named; a frame naming a tool call this socket
+   * announced no exec request for marks nothing — the card stays what it is. The frame is
+   * the only thing read: no error text decides anything here.
+   */
+  private onApprovalRequestFailed(frame: unknown): void {
+    const failed = readOpenClawApprovalRequestFailed(frame);
+    if (failed === null) return;
+    if (failed.sessionKey !== null && !this.ours(failed.sessionKey)) return;
+    const request = this.approvalsByToolCall.get(failed.toolCallId);
+    if (request === undefined) {
+      const kept = this.keepEarlyFailure(failed);
+      console.log(
+        `[agent-request] approval request failed on the gateway chat=${this.deps.chatId}: ${
+          kept ? "its request is not announced here yet (kept for it)" : "no card to mark (tool call not announced here)"
+        }`,
+      );
+      return;
+    }
+    this.markAfterWrites(request.id, request.generation);
+  }
+
+  /** After the card's own write and its verdict's: the mark is about a card Convex holds. */
+  private markAfterWrites(id: string, generation: ApprovalGeneration): void {
+    const key = aKey(approvalIdentity(id, generation));
+    void Promise.allSettled([this.writes.get(key), this.verdictWrites.get(key)]).then(() =>
+      this.markGatewayFailed({
+        chatId: this.deps.chatId,
+        providerRequestId: id,
+        ...(generation !== null ? { providerCreatedAt: generation } : {}),
+      }),
+    );
+  }
+
+  /**
+   * Failures heard BEFORE their request was announced on this socket, by tool call. A
+   * request is learnt from its broadcast or from the pending lists read at connection
+   * (`replayApprovals`, three lists awaited together): while a list is slow, a request
+   * another one already returned can be allowed and then fail, and dropping that word
+   * left the card saying "allowed". Kept only with what ties it to one request: THIS
+   * session, stated by the frame (a frame naming none could be anyone's), the tool call,
+   * and the run — a request that names another run is not the one that failed. Bounded
+   * in number and in time (the bridge's own clock at both ends).
+   */
+  private readonly earlyFailures = new Map<string, { runId: string | null; atMs: number }>();
+  private keepEarlyFailure(failed: { toolCallId: string; sessionKey: string | null; runId: string | null }): boolean {
+    if (!this.ours(failed.sessionKey)) return false;
+    this.earlyFailures.delete(failed.toolCallId);
+    this.earlyFailures.set(failed.toolCallId, { runId: failed.runId, atMs: this.deps.nowMs() });
+    while (this.earlyFailures.size > MAX_EARLY_FAILURES) {
+      const oldest = this.earlyFailures.keys().next().value;
+      if (oldest === undefined) break;
+      this.earlyFailures.delete(oldest);
+    }
+    return true;
+  }
+  /** The failure kept for the exec request just announced for `toolCallId`, consumed:
+   *  whether there is one, still fresh, of the request's own run. */
+  private takeEarlyFailure(toolCallId: string, requestRunId: string | null): boolean {
+    const kept = this.earlyFailures.get(toolCallId);
+    if (kept === undefined) return false;
+    this.earlyFailures.delete(toolCallId);
+    if (this.deps.nowMs() - kept.atMs > EARLY_FAILURE_TTL_MS) return false;
+    if (kept.runId === null || requestRunId === null || kept.runId === requestRunId) return true;
+    return this.deps.sameRun?.(kept.runId, requestRunId) === true;
+  }
+
+  /** Write the mark, again on the settle's back-off while Convex cannot take it or holds no
+   *  card yet (a card write retried later). Bounded; idempotent in Convex. */
+  private async markGatewayFailed(failure: AgentRequestGatewayFailure, attempt = 0): Promise<void> {
+    if (this.deps.gatewayFailed === undefined) return;
+    let outcome: unknown;
+    try {
+      outcome = ((await this.deps.gatewayFailed(failure)) as { outcome?: unknown } | undefined)?.outcome;
+    } catch (err) {
+      console.error(
+        `[agent-request] approval gateway-failure write failed chat=${this.deps.chatId} attempt=${attempt + 1}:`,
+        errForLog(err),
+      );
+    }
+    console.log(
+      `[agent-request] approval request failed on the gateway chat=${this.deps.chatId}: card ${outcome === "marked" ? "marked" : "not marked"} attempt=${attempt + 1}`,
+    );
+    if (outcome === "marked") return;
+    const wait = SETTLE_RETRY_MS[attempt];
+    if (wait === undefined) return;
+    const timer = setTimeout(() => void this.markGatewayFailed(failure, attempt + 1), wait);
+    (timer as { unref?: () => void }).unref?.();
   }
 
   /**

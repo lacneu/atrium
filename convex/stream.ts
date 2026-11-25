@@ -63,8 +63,8 @@ import { drainNextQueued, endProjectedActivityOfRun, MAX_QUEUED_PER_CHAT } from 
 import { MAX_ADDRESSED_AGENTS } from "./lib/agentMentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { regroupIfLaunchWaits, scheduleRegroup } from "./displayGroups";
-import { deletedRunSegment, purgeRowTextsOfMessage, transcriptStoredText } from "./lib/transcriptProjection";
-import { bubbleInScope, reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
+import { deletedRunSegment, MAX_RUN_ID_CHARS, purgeRowTextsOfMessage, transcriptStoredText } from "./lib/transcriptProjection";
+import { bubbleInScope, liveBubbleFor, reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
 import { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
 import { isExplicitTerminal, utf8Bytes } from "./lib/bubbleProjection";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
@@ -1488,6 +1488,120 @@ async function recordRotatedRunBubble(
   await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
 }
 
+/**
+ * ONE RUN, TWO NAMES, the link stated LATE (OpenClaw 2026.10.33). A queued input's
+ * execution is broadcast under the input's CLIENT run while its transcript rows keep the
+ * EXECUTION run (src/gateway/server-methods/chat-send-turn-adoption.ts:289-302,
+ * src/gateway/server-chat.ts:1158 at v2026.10.33). The bridge reads both under the
+ * execution run once it knows the link — but the live stream can speak first, and its
+ * bubble is then open under the client run when the gateway's statement arrives
+ * (`sessions.changed` with `clientRunId` ≠ `runId`, another socket, best-effort).
+ *
+ * The statement is recorded as a fact of THAT bubble: it keeps the name the bridge
+ * writes with (`runId`, its generation), gains the run its rows carry
+ * (`transcriptRunId`), and the execution run gets its run → bubble record — what both
+ * "one run, one bubble" doors read (lib/projectedRuns `liveBubbleFor`,
+ * `settledProjectedBubble`; lib/bubbleProjectionStore `liveBubbleCharged`, `loadBubble`).
+ * Durable, so a bridge that restarts between the first delta and the statement, or
+ * after it, changes nothing.
+ *
+ * Refused, with nothing written, when the bubble is not the client run's, when it
+ * already names another execution run, or when the execution run already shows in
+ * another bubble (its rows arrived first and made one): nothing here chooses between
+ * two bubbles, and no text is ever compared.
+ *
+ * EVERY bubble of the run, one bounded PAGE per call (codex pass 3: a run cut into more
+ * segments than one read takes was confirmed linked with segments left unnamed, and their
+ * rows made a second bubble). `continueCursor` in the answer: more segments remain — the
+ * link holds for none of the run until the caller has asked again with it and been
+ * answered without one (the bridge holds the run's rows back until then, convex-writer
+ * `linkRunBubble`). Each page is all or nothing; a refusal on a later page leaves the
+ * earlier ones linked — their rows land on their bubbles, and the refused segment already
+ * shows elsewhere, which a refusal of the whole run would only have repeated for each.
+ */
+export const linkRunBubble = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    clientRunId: v.string(),
+    runId: v.string(),
+    /** The page to take (an answer's `continueCursor`); absent: the first. */
+    cursor: v.optional(v.string()),
+    ...boundArg,
+  },
+  returns: v.object({ linked: v.boolean(), continueCursor: v.optional(v.string()) }),
+  handler: async (
+    ctx,
+    { messageId, clientRunId, runId, cursor, boundInstanceName },
+  ): Promise<{ linked: boolean; continueCursor?: string }> => {
+    const refused = { linked: false };
+    if (
+      runId === clientRunId ||
+      runId.length === 0 ||
+      runId.length > MAX_RUN_ID_CHARS ||
+      clientRunId.length === 0 ||
+      clientRunId.length > MAX_RUN_ID_CHARS
+    ) {
+      return refused;
+    }
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant") return refused;
+    // The bubble's durable stamp wins; an unstamped one falls back to the chat's barrier.
+    if (
+      boundInstanceName !== undefined &&
+      message.boundInstance !== undefined &&
+      message.boundInstance !== boundInstanceName
+    ) {
+      throw new Error(CROSS_INSTANCE);
+    }
+    if (message.boundInstance === undefined) await assertChatBound(ctx, message.chatId, boundInstanceName);
+    if (message.runId !== clientRunId) return refused;
+    // EVERY bubble of the run: a steered input cuts it into segments (`splitSegment`), all
+    // opened under the client run, and the statement can arrive on any of them — in
+    // segment order (the index's), one page per call.
+    const page = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_run_segment", (q) => q.eq("chatId", message.chatId).eq("runId", clientRunId))
+      .paginate({ numItems: LINK_PAGE_SEGMENTS, cursor: cursor ?? null });
+    const segments = page.page.filter(
+      (m) =>
+        m.role === "assistant" &&
+        m.boundInstance === message.boundInstance &&
+        m.turnSessionKey === message.turnSessionKey,
+    );
+    const first = cursor === undefined;
+    if (first && !segments.some((m) => m._id === messageId)) segments.push(message);
+    // All or nothing, decided before any write: a segment that names another execution
+    // run, or whose rows already made a bubble of their own, refuses the whole link.
+    for (const m of segments) {
+      if (m.transcriptRunId !== undefined) {
+        if (m.transcriptRunId !== runId) return refused;
+        continue;
+      }
+      const shown = await liveBubbleFor(ctx, m.chatId, runId, segmentOf(m));
+      if (shown !== null && shown !== m._id) return refused;
+    }
+    for (const m of segments) {
+      if (m.transcriptRunId === runId) continue;
+      await ctx.db.patch(m._id, { transcriptRunId: runId });
+    }
+    // The execution run's record names its EARLIEST bubble: the first segment's, or — a
+    // run cut before it showed anything, whose bubble was born at a later segment — that
+    // one. Every later segment is found through it (`liveBubbleFor`); a record naming a
+    // later segment never stands for the first. The first page holds it (segment order).
+    if (first) {
+      const earliest = segments.reduce((a, b) => (segmentOf(b) < segmentOf(a) ? b : a));
+      await recordRotatedRunBubble(ctx, earliest.chatId, runId, earliest._id);
+    }
+    return page.isDone ? { linked: true } : { linked: true, continueCursor: page.continueCursor };
+  },
+});
+
+/** Bubbles of one client run a late link reaches per call (its steer segments). */
+const LINK_PAGE_SEGMENTS = 32;
+
+const segmentOf = (m: { runSegment?: number }): number =>
+  m.runSegment !== undefined && m.runSegment > 0 ? m.runSegment : 0;
+
 /** The bubble run `run` wrote to in this chat, or null when that is not KNOWN.
  *
  *  The durable record first (`recordRunBubble`); then, for a bubble written before
@@ -1714,10 +1828,13 @@ function sameDeliveryGeneration(
 ): boolean {
   if (a === undefined || b === undefined) return false;
   if (a === b) return true;
-  const sa = parseRequesterSettleRun(a);
-  const sb = parseRequesterSettleRun(b);
+  // Two settle runs of one identity: the same settled batch whatever its suffixes, or
+  // the same pause notice (which names no settled child — comparing the batches alone
+  // made every pause notice of a conversation "the same delivery").
   return (
-    sa !== null && sb !== null && batchKey(sa.childRunIds) === batchKey(sb.childRunIds)
+    parseRequesterSettleRun(a) !== null &&
+    parseRequesterSettleRun(b) !== null &&
+    deliveryIdentityKey(a) === deliveryIdentityKey(b)
   );
 }
 
@@ -2324,6 +2441,13 @@ const TURN_PHASES = new Set([
   "retrying",
 ]);
 
+/** Why a provider is being waited on during `retrying` — the gateway's vocabulary as the
+ *  bridge forwards it (bridge/src/core/events.ts `TURN_RETRY_REASONS`: OpenClaw
+ *  `ChatStatusEvent.retry.reason` minus `output_limit`). Re-checked here: this boundary
+ *  stores only the words the label has a sentence for. */
+const PHASE_RETRY_REASONS = ["rate_limit", "overloaded", "server_error", "timeout"] as const;
+type PhaseRetryReason = (typeof PHASE_RETRY_REASONS)[number];
+
 export const setPhase = internalMutation({
   args: {
     messageId: v.id("messages"),
@@ -2331,6 +2455,12 @@ export const setPhase = internalMutation({
     // Only meaningful with `retrying`; ignored for every other phase so a
     // stale counter can never outlive the back-off that produced it.
     retry: v.optional(v.object({ attempt: v.number(), maxAttempts: v.number() })),
+    // Why the provider is waited on and until when (epoch ms, the GATEWAY's clock), beside
+    // the counter rather than inside it: a bridge that knows them must still be able to
+    // write to a backend whose `retry` validator predates them. Kept only with a sane
+    // counter, and only when well formed.
+    retryReason: v.optional(v.string()),
+    retryAt: v.optional(v.number()),
     // A clear that may ONLY remove a back-off. `generating` is shared with Hermes'
     // resume signal and wipes whatever phase is stored, so a retry clear arriving
     // after some other producer published `awaiting_approval` erased THAT instead
@@ -2344,7 +2474,7 @@ export const setPhase = internalMutation({
   },
   handler: async (
     ctx,
-    { messageId, phase, retry, onlyIfRetrying, expectedRunId, boundInstanceName },
+    { messageId, phase, retry, retryReason, retryAt, onlyIfRetrying, expectedRunId, boundInstanceName },
   ) => {
     // "generating" is Hermes' RESUME signal (sub-agents settled, the model is
     // producing again) — it is not a phase but the END of one: CLEAR the stored
@@ -2384,7 +2514,16 @@ export const setPhase = internalMutation({
       retry.attempt >= 1 &&
       retry.maxAttempts <= 10 &&
       retry.attempt <= retry.maxAttempts;
-    const phaseRetry = phase === "retrying" && sane ? retry : undefined;
+    const reason: PhaseRetryReason | undefined = PHASE_RETRY_REASONS.find((r) => r === retryReason);
+    const phaseRetry =
+      phase === "retrying" && sane
+        ? {
+            attempt: retry.attempt,
+            maxAttempts: retry.maxAttempts,
+            ...(reason !== undefined ? { reason } : {}),
+            ...(retryAt !== undefined && Number.isFinite(retryAt) && retryAt >= 0 ? { retryAt } : {}),
+          }
+        : undefined;
     if (clearing && onlyIfRetrying === true && row.phase !== "retrying") {
       // A scoped clear whose target is gone: some other producer owns the phase now,
       // and this must not speak for them. Not an error — the back-off is over either
@@ -6384,6 +6523,8 @@ export const splitSegment = internalMutation({
         : {}),
       role: "assistant",
       runId: message.runId,
+      // A run linked late keeps its transcript name on every segment (`linkRunBubble`).
+      ...(message.transcriptRunId !== undefined ? { transcriptRunId: message.transcriptRunId } : {}),
       status: "streaming",
       runSegment: (message.runSegment ?? 0) + 1,
       ...(message.routedInstanceName !== undefined
@@ -6413,7 +6554,8 @@ export const splitSegment = internalMutation({
     });
     // The one opening point (see startAssistant): what the run's rows of the NEW segment
     // already said (a steer and its show_widget result read before this cut) is taken up now.
-    if (message.runId !== undefined) await catchUpLiveBubbleFromRows(ctx, next, message.runId);
+    const rowsRun = message.transcriptRunId ?? message.runId;
+    if (rowsRun !== undefined) await catchUpLiveBubbleFromRows(ctx, next, rowsRun);
     return next;
   },
 });

@@ -3,62 +3,302 @@
   "citations": [
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "embedded-agent-subscribe.handlers.lifecycle.ts:51-62",
+      "cite": "src/gateway/chat-abort.test.ts:406-442",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-subscribe.handlers.lifecycle.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/chat-abort.test.ts",
       "lines": [
         [
-          51,
-          62
+          406,
+          442
         ]
       ],
       "literals": [
-        "const data = { phase: \"start\", startedAt: Date.now() };"
+        "stopReason: \"user\","
       ]
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "packages/agent-core/src/agent-loop.ts:114",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:1830-1842",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/agent-core/src/agent-loop.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          114,
-          114
+          1830,
+          1842
         ]
       ],
       "literals": [
-        "await emit({ type: \"agent_start\" });"
+        "errorMessage: \"edit tool validation failed: edits: must be an array\","
       ]
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/attempt-session-prepare.ts:596",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:1875-1894",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/attempt-session-prepare.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          596,
-          596
+          1875,
+          1894
         ]
       ],
       "literals": [
-        "preparePersistedCurrentUserTurn({"
+        "\"projects $name on lifecycle end\""
       ]
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/pre-persisted-user-turn.ts:101",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:1854-1859",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/pre-persisted-user-turn.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          101,
-          101
+          1854,
+          1859
+        ]
+      ],
+      "literals": [
+        "expected: { state: \"error\", stopReason: \"timeout\", errorKind: \"timeout\" },"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:3776-3803",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
+      "lines": [
+        [
+          3776,
+          3803
+        ]
+      ],
+      "literals": [
+        "errorKind: \"timeout\","
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-chat.native-provider-error.test.ts:55-103",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.native-provider-error.test.ts",
+      "lines": [
+        [
+          55,
+          103
+        ]
+      ],
+      "literals": [
+        "errorKind: \"rate_limit\","
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-chat.error-kind.test.ts:14",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.error-kind.test.ts",
+      "lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "literals": [
+        "\"rate_limit\"]"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:4505-4532",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
+      "lines": [
+        [
+          4505,
+          4532
+        ]
+      ],
+      "literals": [
+        "expect(payload).not.toHaveProperty(\"errorDetail\");"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/config/sessions/session-transcript-writer-claim-error.ts:46-51",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/config/sessions/session-transcript-writer-claim-error.ts",
+      "lines": [
+        [
+          46,
+          51
+        ]
+      ],
+      "literals": [
+        "session writer claim changed before transcript persistence"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/agents/model-fallback.test.ts:519",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/model-fallback.test.ts",
+      "lines": [
+        [
+          519,
+          519
+        ]
+      ],
+      "literals": [
+        "{ name: \"SessionTranscriptWriterClaimReboundError\" }"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/ws-log.ts:126-137",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/ws-log.ts",
+      "lines": [
+        [
+          126,
+          137
+        ]
+      ],
+      "literals": [
+        "const parts = [name, rec.message.trim()].filter(Boolean);"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/ws-log.test.ts:246-253",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/ws-log.test.ts",
+      "lines": [
+        [
+          246,
+          253
+        ]
+      ],
+      "literals": [
+        "expected: \"Oops: failed: code=E1\","
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "server-chat.ts:899",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          899,
+          899
+        ]
+      ],
+      "literals": [
+        "const errorMessage = error ? formatForLog(error) : undefined;"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "subagent-announce-delivery-retry.ts:97-133",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          97,
+          133
+        ]
+      ],
+      "literals": [
+        "function isTransientAnnounceDeliveryError(error: unknown): boolean {"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "subagent-announce-delivery-retry.ts:189",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          189,
+          189
+        ]
+      ],
+      "literals": [
+        "isTransientAnnounceDeliveryError(err)"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "subagent-announce-direct-delivery.ts:686-690",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
+      "lines": [
+        [
+          686,
+          690
+        ]
+      ],
+      "literals": [
+        "? \"permanent_failure\""
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "subagent-announce-delivery-retry.ts:135-141",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          135,
+          141
+        ]
+      ],
+      "literals": [
+        "return hasPermanentAnnounceError(error);"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "subagent-announce-delivery-retry.ts:55-56",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          55,
+          56
+        ]
+      ],
+      "literals": [
+        "WRITER_CLAIM_REBOUND_ANNOUNCE_RE"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/agents/embedded-agent-runner/run/session-bootstrap.ts:377-383",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/session-bootstrap.ts",
+      "lines": [
+        [
+          377,
+          383
         ]
       ],
       "literals": [
@@ -67,14 +307,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/session-prompt-state.ts:54",
+      "cite": "run/session-prompt-state.ts:60",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/embedded-agent-runner/run/session-prompt-state.ts",
       "lines": [
         [
-          54,
-          54
+          60,
+          60
         ]
       ],
       "literals": [
@@ -83,18 +323,98 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/settled-turn-finalization.ts:635,682",
+      "cite": "run/pre-persisted-user-turn.ts:280",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/pre-persisted-user-turn.ts",
+      "lines": [
+        [
+          280,
+          280
+        ]
+      ],
+      "literals": [
+        "throw new SessionTranscriptWriterClaimReboundError();"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "run/attempt-session-prepare.ts:597",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/attempt-session-prepare.ts",
+      "lines": [
+        [
+          597,
+          597
+        ]
+      ],
+      "literals": [
+        "preparePersistedCurrentUserTurn({"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "packages/agent-core/src/agent-loop.ts:100",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/agent-core/src/agent-loop.ts",
+      "lines": [
+        [
+          100,
+          100
+        ]
+      ],
+      "literals": [
+        "await emit({ type: \"agent_start\" });"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "embedded-agent-subscribe.handlers.lifecycle.ts:87-94",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-subscribe.handlers.lifecycle.ts",
+      "lines": [
+        [
+          87,
+          94
+        ]
+      ],
+      "literals": [
+        "emitLifecycleAgentEvent(ctx, { phase: \"start\", startedAt: Date.now() });"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "embedded-agent-subscribe.handlers.lifecycle.ts:93",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-subscribe.handlers.lifecycle.ts",
+      "lines": [
+        [
+          93,
+          93
+        ]
+      ],
+      "literals": [
+        "emitLifecycleAgentEvent(ctx, { phase: \"start\", startedAt: Date.now() });"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "run/settled-turn-finalization.ts:614,661",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/agents/embedded-agent-runner/run/settled-turn-finalization.ts",
       "lines": [
         [
-          635,
-          635
+          614,
+          614
         ],
         [
-          682,
-          682
+          661,
+          661
         ]
       ],
       "literals": [
@@ -104,76 +424,39 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "server-chat.ts:1125",
+      "cite": "src/auto-reply/reply/session-init-conflict-retry.ts:11-14,18-19",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/session-init-conflict-retry.ts",
       "lines": [
         [
-          1125,
-          1125
-        ]
-      ],
-      "literals": [
-        "errorMessage: error ? formatForLog(error) : undefined,"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/agents/embedded-agent-runner/run/session-bootstrap.ts:286",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/session-bootstrap.ts",
-      "lines": [
-        [
-          286,
-          286
-        ]
-      ],
-      "literals": [
-        "throw new SessionTranscriptWriterClaimReboundError();"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/agents/model-fallback.test.ts:667",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/model-fallback.test.ts",
-      "lines": [
-        [
-          667,
-          667
-        ]
-      ],
-      "literals": [
-        "{ name: \"SessionTranscriptWriterClaimReboundError\" }"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/agents/sessions/agent-session-compaction.ts:122-123,129-130,143-146",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/sessions/agent-session-compaction.ts",
-      "lines": [
-        [
-          122,
-          123
+          11,
+          14
         ],
         [
-          129,
-          130
-        ],
-        [
-          143,
-          146
+          18,
+          19
         ]
       ],
       "literals": [
-        "type: \"compaction_start\"",
-        "outcome = await this.runCompactionWork({",
-        "type: \"compaction_end\""
+        "; please retry your message.`",
+        "(?:; please retry your message\\.)?$/u"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/auto-reply/reply/session.init-conflict-retry.test.ts:94-98",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/session.init-conflict-retry.test.ts",
+      "lines": [
+        [
+          94,
+          98
+        ]
+      ],
+      "literals": [
+        "reply session initialization conflicted for"
       ]
     },
     {
@@ -215,1688 +498,67 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/config/sessions/transcript-write-context.ts:411",
+      "cite": "src/auto-reply/reply/agent-runner-execution-compaction.test.ts:42",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/config/sessions/transcript-write-context.ts",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/agent-runner-execution-compaction.test.ts",
       "lines": [
         [
-          411,
-          411
+          42,
+          42
         ]
       ],
       "literals": [
-        "session writer claim changed before transcript persistence"
+        "{ stream: \"compaction\", data: { phase: \"start\" } }"
       ]
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/chat-abort.test.ts:450-464",
+      "cite": "src/plugins/wired-hooks-compaction.test.ts:126-134,208-217",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/chat-abort.test.ts",
-      "lines": [
-        [
-          450,
-          464
-        ]
-      ],
-      "literals": [
-        "stopReason: \"user\","
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/server-chat.agent-events.test.ts:3707-3716",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.agent-events.test.ts",
-      "lines": [
-        [
-          3707,
-          3716
-        ]
-      ],
-      "literals": [
-        "errorMessage: \"edit tool validation failed: edits: must be an array\","
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/server-chat.agent-events.test.ts:3776-3803",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.agent-events.test.ts",
-      "lines": [
-        [
-          3776,
-          3803
-        ]
-      ],
-      "literals": [
-        "errorKind: \"timeout\","
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/server-chat.agent-events.test.ts:4505-4532",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.agent-events.test.ts",
-      "lines": [
-        [
-          4505,
-          4532
-        ]
-      ],
-      "literals": [
-        "expect(payload).not.toHaveProperty(\"errorDetail\");"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/ws-log.test.ts:130-132,139-140",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/ws-log.test.ts",
-      "lines": [
-        [
-          130,
-          132
-        ],
-        [
-          139,
-          140
-        ]
-      ],
-      "literals": [
-        "expected: \"TestError: boom\",",
-        "expect(formatForLog(input)).toBe(expected);"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/infra/agent-events.test.ts:782-787",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/infra/agent-events.test.ts",
-      "lines": [
-        [
-          782,
-          787
-        ]
-      ],
-      "literals": [
-        "stream: \"compaction\", data: { phase: \"start\" }"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/plugins/wired-hooks-compaction.test.ts:195-204",
-      "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/plugins/wired-hooks-compaction.test.ts",
       "lines": [
         [
-          195,
-          204
-        ]
-      ],
-      "literals": [
-        "outcome: \"completed\","
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "subagent-announce-delivery-retry.ts:136-171",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          136,
-          171
-        ]
-      ],
-      "literals": [
-        "function isTransientAnnounceDeliveryError(error: unknown): boolean {"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "subagent-announce-delivery-retry.ts:173-179",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          173,
-          179
-        ]
-      ],
-      "literals": [
-        "export function isPermanentAnnounceDeliveryError"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "subagent-announce-delivery-retry.ts:248",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          248,
-          248
-        ]
-      ],
-      "literals": [
-        "isTransientAnnounceDeliveryError(err)"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "subagent-announce-delivery-retry.ts:58-59",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          58,
-          59
-        ]
-      ],
-      "literals": [
-        "WRITER_CLAIM_REBOUND_ANNOUNCE_RE"
-      ]
-    },
-    {
-      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "subagent-announce-direct-delivery.ts:612-623",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
-      "lines": [
-        [
-          612,
-          623
-        ]
-      ],
-      "literals": [
-        "? \"permanent_failure\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:363-370",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
-      "lines": [
-        [
-          363,
-          370
-        ]
-      ],
-      "literals": [
-        "Type.Literal(\"state_contention\"),"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:487-493",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
-      "lines": [
-        [
-          487,
-          493
-        ]
-      ],
-      "literals": [
-        "export const ChatEventSchema = Type.Union("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/packages/llm-core/src/types.ts:357",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/llm-core/src/types.ts",
-      "lines": [
-        [
-          357,
-          357
-        ]
-      ],
-      "literals": [
-        "export type StopReason = \"stop\" | \"length\" | \"toolUse\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/packages/normalization-core/src/agent-run-terminal-outcome.ts:91-129",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/normalization-core/src/agent-run-terminal-outcome.ts",
-      "lines": [
-        [
-          91,
-          129
-        ]
-      ],
-      "literals": [
-        "return value === \"rpc\" || value === \"stop\";"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/announce-idempotency.ts:11-18",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/announce-idempotency.ts",
-      "lines": [
-        [
-          11,
-          18
-        ]
-      ],
-      "literals": [
-        "v1:${params.childSessionKey}:${params.childRunId}"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/command/attempt-execution.ts:530",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/command/attempt-execution.ts",
-      "lines": [
-        [
-          530,
-          530
-        ]
-      ],
-      "literals": [
-        "throw createAgentRunSupersededAbortError()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-runner/run/session-bootstrap.ts:426-482",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/session-bootstrap.ts",
-      "lines": [
-        [
-          426,
-          482
-        ]
-      ],
-      "literals": [
-        "supersedeEmbeddedAgentRunByRunId(previousWriterRunId"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/sessions/agent-session-types.ts:33,48",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/sessions/agent-session-types.ts",
-      "lines": [
-        [
-          33,
-          33
+          126,
+          134
         ],
-        [
-          48,
-          48
-        ]
-      ],
-      "literals": [
-        "reason: \"manual\" | \"threshold\" | \"overflow\"",
-        "reason: \"manual\" | \"threshold\" | \"overflow\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/get-reply-run-queue.ts:31",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/get-reply-run-queue.ts",
-      "lines": [
-        [
-          31,
-          31
-        ]
-      ],
-      "literals": [
-        "params.queueMode === \"interrupt\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/queue/settings.ts:31-36",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/queue/settings.ts",
-      "lines": [
-        [
-          31,
-          36
-        ]
-      ],
-      "literals": [
-        "normalizePersistedQueueMode(params.sessionEntry?.queueMode)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/session.ts:462",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/session.ts",
-      "lines": [
-        [
-          462,
-          462
-        ]
-      ],
-      "literals": [
-        "const drained = await interruptSessionWorkAdmissions("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/config/sessions/transcript-write-context.ts:411",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/config/sessions/transcript-write-context.ts",
-      "lines": [
-        [
-          411,
-          411
-        ]
-      ],
-      "literals": [
-        "session writer claim changed before transcript persistence"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-chat.ts:552-569",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
-      "lines": [
-        [
-          552,
-          569
-        ]
-      ],
-      "literals": [
-        "isSupersededRestartRecoveryEvent"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-methods/chat-send-admission.ts:274,553",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-admission.ts",
-      "lines": [
-        [
-          274,
-          274
-        ],
-        [
-          553,
-          553
-        ]
-      ],
-      "literals": [
-        "p.queueMode === \"interrupt\"",
-        "p.queueMode === \"interrupt\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-methods/chat-send-session.ts:103",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-session.ts",
-      "lines": [
-        [
-          103,
-          103
-        ]
-      ],
-      "literals": [
-        "clientRunId = p.idempotencyKey"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/worker-environments/placement-turn-claims.ts:53",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/worker-environments/placement-turn-claims.ts",
-      "lines": [
-        [
-          53,
-          53
-        ]
-      ],
-      "literals": [
-        "already has an active turn claim"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/infra/sqlite-error-diagnostics.ts:11",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/infra/sqlite-error-diagnostics.ts",
-      "lines": [
-        [
-          11,
-          11
-        ]
-      ],
-      "literals": [
-        "transcript_writer_fenced"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/chat-send-queue-state.ts:94",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/chat-send-queue-state.ts",
-      "lines": [
-        [
-          94,
-          94
-        ]
-      ],
-      "literals": [
-        "sendRunId: generateUUID()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/tool-stream-status.ts:208-291",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/tool-stream-status.ts",
-      "lines": [
         [
           208,
-          291
+          217
         ]
       ],
       "literals": [
-        "data.willRetry === true && completed"
+        "data: { phase: \"start\" },",
+        "willRetry: true,"
       ]
     },
     {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "assistant-error-transcript.ts:58-104,141-149",
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/agents/sessions/agent-session-compaction.ts:182-183,214",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/assistant-error-transcript.ts",
+      "tag": "2026.10.33",
+      "path": "src/agents/sessions/agent-session-compaction.ts",
       "lines": [
         [
-          58,
-          104
+          182,
+          183
         ],
         [
-          141,
-          149
+          214,
+          214
         ]
       ],
       "literals": [
-        "stopReason: \"error\"",
-        "appendExactAssistantMessageToSessionTranscript("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "auto-reply/reply/agent-runner-cli-candidate.ts:196",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/agent-runner-cli-candidate.ts",
-      "lines": [
-        [
-          196,
-          196
-        ]
-      ],
-      "literals": [
-        "throw createAgentRunSupersededAbortError()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "auto-reply/reply/reply-run-registry.operation.ts:519",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/reply-run-registry.operation.ts",
-      "lines": [
-        [
-          519,
-          519
-        ]
-      ],
-      "literals": [
-        "createSupersededError()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "auto-reply/reply/session.ts:593-605",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/session.ts",
-      "lines": [
-        [
-          593,
-          605
-        ]
-      ],
-      "literals": [
-        "relatedSessionKeys = ["
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1640-1651",
-      "repo": "atrium",
-      "tag": null,
-      "path": "bridge/src/providers/openclaw/openclaw-client.ts",
-      "lines": [
-        [
-          1640,
-          1651
-        ]
-      ],
-      "literals": [
-        "return `webchat-${digest}`"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-abort-authorization.ts:56-62",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-abort-authorization.ts",
-      "lines": [
-        [
-          56,
-          62
-        ]
-      ],
-      "literals": [
-        "summary: \"aborted\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-abort.ts:436-475",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/chat-abort.ts",
-      "lines": [
-        [
-          436,
-          475
-        ]
-      ],
-      "literals": [
-        "function broadcastChatAborted("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-agent-run-grouping.ts:58-62,106-120",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/chat-agent-run-grouping.ts",
-      "lines": [
-        [
-          58,
-          62
-        ],
-        [
-          106,
-          120
-        ]
-      ],
-      "literals": [
-        "asRecord(message)?.stopReason === \"error\"",
-        "const stopReason = record?.stopReason;"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-gateway.ts:82-97",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/chat-gateway.ts",
-      "lines": [
-        [
-          82,
-          97
-        ]
-      ],
-      "literals": [
-        "`Error: ${errorText}`"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-gateway.ts:65-77,253-259",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/chat-gateway.ts",
-      "lines": [
-        [
-          65,
-          77
-        ],
-        [
-          253,
-          259
-        ]
-      ],
-      "literals": [
-        "detail.providerRuntimeFailureKind !== \"auth_refresh\"",
-        "payload.errorDetail?.providerRuntimeFailureKind === \"auth_refresh\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-history-handler.ts:368-378",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-history-handler.ts",
-      "lines": [
-        [
-          368,
-          378
-        ]
-      ],
-      "literals": [
-        "sessionInfo.hasActiveRun = activeRunState.active"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-queued-turns.ts:65",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/chat-queued-turns.ts",
-      "lines": [
-        [
-          65,
-          65
-        ]
-      ],
-      "literals": [
-        "idempotency keys are exact protocol identities"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-delivery.ts:211,258",
-      "repo": "upstream",
-      "tag": "2026.9.2",
-      "path": "ui/src/pages/chat/chat-send-delivery.ts",
-      "lines": [
-        [
-          211,
-          211
-        ],
-        [
-          258,
-          258
-        ]
-      ],
-      "literals": [
-        "item.sendRunId ?? generateUUID()",
-        "prepared.sendRunId ?? generateUUID()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-handler.ts:562-590",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-handler.ts",
-      "lines": [
-        [
-          562,
-          590
-        ]
-      ],
-      "literals": [
-        "status: \"started\" as const"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-late-followup.ts:39-48",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-late-followup.ts",
-      "lines": [
-        [
-          39,
-          48
-        ]
-      ],
-      "literals": [
-        "late-and-dropped"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-pre-admission.ts:177-184",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
-      "lines": [
-        [
-          177,
-          184
-        ]
-      ],
-      "literals": [
-        "chat-request-conflict"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-pre-admission.ts:222-250",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
-      "lines": [
-        [
-          222,
-          250
-        ]
-      ],
-      "literals": [
-        "readSessionSubmittedInput("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-turn-adoption.ts:16-25",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
-      "lines": [
-        [
-          16,
-          25
-        ]
-      ],
-      "literals": [
-        "createChatSendLateFollowupDisposition"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "deferred-lifecycle-owner.ts:103-119",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/deferred-lifecycle-owner.ts",
-      "lines": [
-        [
-          103,
-          119
-        ]
-      ],
-      "literals": [
-        "await flushEmbeddedAttemptTrajectoryRecorder"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "embedded-agent-runner/run/attempt-stream-prepare.ts:441",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/attempt-stream-prepare.ts",
-      "lines": [
-        [
-          441,
-          441
-        ]
-      ],
-      "literals": [
-        "? createAgentRunSupersededAbortError()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "embedded-agent-runner/run/deferred-lifecycle-owner.ts:158",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/deferred-lifecycle-owner.ts",
-      "lines": [
-        [
-          158,
-          158
-        ]
-      ],
-      "literals": [
-        "? createAgentRunSupersededAbortError()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "embedded-agent-subscribe.handlers.lifecycle.ts:164-180,233",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-subscribe.handlers.lifecycle.ts",
-      "lines": [
-        [
-          164,
-          180
-        ],
-        [
-          233,
-          233
-        ]
-      ],
-      "literals": [
-        "formatUserFacingAssistantErrorText(lastAssistant",
-        "error: lifecycleErrorText ?? GENERIC_ASSISTANT_ERROR_TEXT"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "failover-error.ts:52-58",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/failover-error.ts",
-      "lines": [
-        [
-          52,
-          58
-        ]
-      ],
-      "literals": [
-        "\"ActiveTurnClaimError\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "failover-error.ts:702-705",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/failover-error.ts",
-      "lines": [
-        [
-          702,
-          705
-        ]
-      ],
-      "literals": [
-        "hasSessionTranscriptWriterClaimRebound(err)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "failover/assistant-request-failure-copy.ts:48-49,76",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/failover/assistant-request-failure-copy.ts",
-      "lines": [
-        [
-          48,
-          49
-        ],
-        [
-          76,
-          76
-        ]
-      ],
-      "literals": [
-        "the transcript writer no longer owned this session",
-        "Agent run failed: ${STORAGE_FAILURE_COPY"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "gateway/worker-environments/worker-turn-run-owner.ts:72",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/worker-environments/worker-turn-run-owner.ts",
-      "lines": [
-        [
-          72,
-          72
-        ]
-      ],
-      "literals": [
-        "? createAgentRunSupersededAbortError()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "get-reply-directives-apply.ts:561",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/get-reply-directives-apply.ts",
-      "lines": [
-        [
-          561,
-          561
-        ]
-      ],
-      "literals": [
-        "perMessageQueueMode"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "get-reply-run-admission.ts:511-512",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/get-reply-run-admission.ts",
-      "lines": [
-        [
-          511,
-          512
-        ]
-      ],
-      "literals": [
-        "isEmbeddedAgentRunActive(embeddedActiveSessionId)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "logs-chat.ts:394-448",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
-      "lines": [
-        [
-          394,
-          448
-        ]
-      ],
-      "literals": [
-        "providerRuntimeFailureKind: ChatErrorDetailTextSchema"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "model-fallback-runner.ts:605-606",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/model-fallback-runner.ts",
-      "lines": [
-        [
-          605,
-          606
-        ]
-      ],
-      "literals": [
-        "isNonProviderRuntimeCoordinationError(err)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "plugin-sdk/infra-runtime.ts:133-176",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/plugin-sdk/infra-runtime.ts",
-      "lines": [
-        [
-          133,
-          176
-        ]
-      ],
-      "literals": [
-        "export function detectErrorKind("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "post-run.ts:673-679",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/command/post-run.ts",
-      "lines": [
-        [
-          673,
-          679
-        ]
-      ],
-      "literals": [
-        "lifecycle.emitEnd(terminal)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "queue/settings.ts:36",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/queue/settings.ts",
-      "lines": [
-        [
-          36,
-          36
-        ]
-      ],
-      "literals": [
-        "\"steer\";"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "reply-turn-admission.ts:305-307",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/reply-turn-admission.ts",
-      "lines": [
-        [
-          305,
-          307
-        ]
-      ],
-      "literals": [
-        "operation?.abortForRestart()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "run-termination.ts:131-141,156-182",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/run-termination.ts",
-      "lines": [
-        [
-          131,
-          141
-        ],
-        [
-          156,
-          182
-        ]
-      ],
-      "literals": [
-        "function resolveRunErrorTimeout(error: unknown)",
-        "return timeout ? { stopReason: \"timeout\", ...timeout } : {};"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "embedded-agent-runner/runs.ts:917",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/runs.ts",
-      "lines": [
-        [
-          917,
-          917
-        ]
-      ],
-      "literals": [
-        "ACTIVE_EMBEDDED_RUNS.has(sessionId)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "embedded-agent-runner/runs.ts:1059-1086",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/runs.ts",
-      "lines": [
-        [
-          1059,
-          1086
-        ]
-      ],
-      "literals": [
-        "isEmbeddedRunHandleInProgress(handle)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-broadcast.ts:469-503",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-broadcast.ts",
-      "lines": [
-        [
-          469,
-          503
-        ]
-      ],
-      "literals": [
-        "live.coalesce.merge(previous.payload, payload)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.agent-events.test.ts:3105-3167,3721-3740",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.agent-events.test.ts",
-      "lines": [
-        [
-          3105,
-          3167
-        ],
-        [
-          3721,
-          3740
-        ]
-      ],
-      "literals": [
-        "suppresses late interrupted pre-restart lifecycle events",
-        "preserves RPC lifecycle abort classification"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.agent-events.test.ts:3803,4531,4806",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.agent-events.test.ts",
-      "lines": [
-        [
-          3803,
-          3803
-        ],
-        [
-          4531,
-          4531
-        ],
-        [
-          4806,
-          4806
-        ]
-      ],
-      "literals": [
-        "not.toHaveProperty(\"message\")",
-        "not.toHaveProperty(\"message\")",
-        "not.toHaveProperty(\"message\")"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:106-111,309,1720-1739",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
-      "lines": [
-        [
-          106,
-          111
-        ],
-        [
-          309,
-          309
-        ],
-        [
-          1720,
-          1739
-        ]
-      ],
-      "literals": [
-        "const CHAT_STATE_BY_TERMINAL_CLASSIFICATION = {",
-        "lifecycleErrorRetryGraceMs = AGENT_RUN_TERMINAL_RETRY_GRACE_MS",
-        "if (lifecyclePhase === \"error\") {"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:889-900,1054-1060",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
-      "lines": [
-        [
-          889,
-          900
-        ],
-        [
-          1054,
-          1060
-        ]
-      ],
-      "literals": [
-        "scheduleChatDeltaFlush(",
-        "flushBufferedChatDeltaIfNeeded(sessionKey, opts?.agentId"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:1112-1124",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
-      "lines": [
-        [
-          1112,
-          1124
-        ]
-      ],
-      "literals": [
-        "state: \"error\" as const,"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:158-206",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
-      "lines": [
-        [
-          158,
-          206
-        ]
-      ],
-      "literals": [
-        "CHAT_ERROR_KIND_BY_FAILOVER_REASON"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:598-608,1091-1118",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
-      "lines": [
-        [
-          598,
-          608
-        ],
-        [
-          1091,
-          1118
-        ]
-      ],
-      "literals": [
-        "CHAT_STATE_BY_TERMINAL_CLASSIFICATION[terminalClassification]",
-        "state: jobState === \"done\" ? (\"final\" as const)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:607,1125",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-chat.ts",
-      "lines": [
-        [
-          607,
-          607
-        ],
-        [
-          1125,
-          1125
-        ]
-      ],
-      "literals": [
-        "terminalOutcome.error ?? evt.data?.error,",
-        "errorMessage: error ? formatForLog(error)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-methods/chat-send-request.ts:308-316",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-send-request.ts",
-      "lines": [
-        [
-          308,
-          316
-        ]
-      ],
-      "literals": [
-        "createHash(\"sha256\")"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-worker-placement-move-barrier.ts:79",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-worker-placement-move-barrier.ts",
-      "lines": [
-        [
-          79,
-          79
-        ]
-      ],
-      "literals": [
-        "const released = await interruptSessionWorkAdmissions("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-worker-placement-startup.ts:322",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-worker-placement-startup.ts",
-      "lines": [
-        [
-          322,
-          322
-        ]
-      ],
-      "literals": [
-        "const released = await interruptSessionWorkAdmissions("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "session-active-runs.ts:256-273",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/session-active-runs.ts",
-      "lines": [
-        [
-          256,
-          273
-        ]
-      ],
-      "literals": [
-        "hasTerminalPersistence ||"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "session-reset-service.ts:903",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/session-reset-service.ts",
-      "lines": [
-        [
-          903,
-          903
-        ]
-      ],
-      "literals": [
-        "admittedWorkReleased = await interruptSessionWorkAdmissions("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "sessions-messaging.ts:109",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/sessions-messaging.ts",
-      "lines": [
-        [
-          109,
-          109
-        ]
-      ],
-      "literals": [
-        "const queueMode = method === \"sessions.steer\" ? \"interrupt\" : undefined;"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/agent-run-terminal-outcome.ts:526-533",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/agent-run-terminal-outcome.ts",
-      "lines": [
-        [
-          526,
-          533
-        ]
-      ],
-      "literals": [
-        "isAgentRunSupersededAbortReason"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-delivery-retry.ts:136-171",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          136,
-          171
-        ]
-      ],
-      "literals": [
-        "hasWriterClaimReboundAnnounceError(error)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-delivery-retry.ts:173-179",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          173,
-          179
-        ]
-      ],
-      "literals": [
-        "export function isPermanentAnnounceDeliveryError"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-delivery-retry.ts:248",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          248,
-          248
-        ]
-      ],
-      "literals": [
-        "isTransientAnnounceDeliveryError(err)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-delivery-retry.ts:58-59",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
-      "lines": [
-        [
-          58,
-          59
-        ]
-      ],
-      "literals": [
-        "WRITER_CLAIM_REBOUND_ANNOUNCE_RE"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-direct-delivery.ts:324-366",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
-      "lines": [
-        [
-          324,
-          366
-        ]
-      ],
-      "literals": [
-        "resolveActiveWakeWithRetries("
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-direct-delivery.ts:308,342",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
-      "lines": [
-        [
-          308,
-          308
-        ],
-        [
-          342,
-          342
-        ]
-      ],
-      "literals": [
-        "steeringMode: \"all\"",
-        "path: \"steered\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-direct-delivery.ts:689-700",
-      "repo": "upstream",
-      "tag": "2026.9.2",
-      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
-      "lines": [
-        [
-          689,
-          700
-        ]
-      ],
-      "literals": [
-        "isPermanentAnnounceDeliveryError(err)"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-direct-delivery.ts:612-623",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
-      "lines": [
-        [
-          612,
-          623
-        ]
-      ],
-      "literals": [
-        "\"permanent_failure\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-control-kill-runtime.ts:357-362",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/subagents/registry/subagent-control-kill-runtime.ts",
-      "lines": [
-        [
-          357,
-          362
-        ]
-      ],
-      "literals": [
-        "startSessionWorkAdmissionInterruption({"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "terminal-reply-recovery.ts:24-28",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/terminal-reply-recovery.ts",
-      "lines": [
-        [
-          24,
-          28
-        ]
-      ],
-      "literals": [
-        "record.stopReason.trim().toLowerCase()"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-send-request.ts:53",
-      "repo": "upstream",
-      "tag": "2026.9.2",
-      "path": "ui/src/pages/chat/chat-send-request.ts",
-      "lines": [
-        [
-          53,
-          53
-        ]
-      ],
-      "literals": [
-        "idempotencyKey: params.runId"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:122-125",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/chat-gateway.ts",
-      "lines": [
-        [
-          122,
-          125
-        ]
-      ],
-      "literals": [
-        "incoming.stopReason === \"auth-revoked\""
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:2023",
-      "repo": "atrium",
-      "tag": null,
-      "path": "bridge/src/providers/openclaw/normalizer.ts",
-      "lines": [
-        [
-          2023,
-          2023
-        ]
-      ],
-      "literals": [
-        "isString(deltaText) && deltaText"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "operator-run-cancellation.ts:134-138",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/operator-run-cancellation.ts",
-      "lines": [
-        [
-          134,
-          138
-        ]
-      ],
-      "literals": [
-        "stopReason: \"rpc\","
+        "type: \"compaction_start\", reason: \"manual\", itemId",
+        "type: \"compaction_end\", reason: \"manual\", itemId, outcome"
       ]
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "ui/src/api/gateway-chat-events.node.test.ts:29-87",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/api/gateway-chat-events.node.test.ts",
       "lines": [
         [
@@ -1912,7 +574,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "src/gateway/server-chat-live-text.ts:17-21",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-chat-live-text.ts",
       "lines": [
         [
@@ -1928,7 +590,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "packages/gateway-client/src/chat-stream-message.ts:4-46",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "packages/gateway-client/src/chat-stream-message.ts",
       "lines": [
         [
@@ -1942,13 +604,13 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "ui/src/api/gateway-chat-events.node.test.ts:195-233",
+      "cite": "ui/src/api/gateway-chat-events.node.test.ts:155-233",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/api/gateway-chat-events.node.test.ts",
       "lines": [
         [
-          195,
+          155,
           233
         ]
       ],
@@ -1958,18 +620,18 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/server-chat.agent-events.test.ts:4859,4893",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:2341,2378",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          4859,
-          4859
+          2341,
+          2341
         ],
         [
-          4893,
-          4893
+          2378,
+          2378
         ]
       ],
       "literals": [
@@ -1981,7 +643,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "server-chat-live-text.ts:23-28",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-chat-live-text.ts",
       "lines": [
         [
@@ -1991,6 +653,22 @@
       ],
       "literals": [
         "const { text: _text, ...data } = payload.data;"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "ui/src/pages/chat/chat-gateway.contention.test.ts:34-46",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.contention.test.ts",
+      "lines": [
+        [
+          34,
+          46
+        ]
+      ],
+      "literals": [
+        "State contention: session store; attempts exhausted."
       ]
     },
     {
@@ -2007,6 +685,48 @@
       ],
       "literals": [
         "errorKind: \"state_contention\","
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/sessions/session-run-error-presentation.ts:3-4,6-7,14",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/sessions/session-run-error-presentation.ts",
+      "lines": [
+        [
+          3,
+          4
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          14,
+          14
+        ]
+      ],
+      "literals": [
+        "\"Your request was interrupted while the server was busy. Check its status before trying again.\";",
+        "SQLite transaction admission remained busy.",
+        "${STATE_CONTENTION_SUMMARY}"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-methods/chat-send-dispatch-errors.test.ts:388-393",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-dispatch-errors.test.ts",
+      "lines": [
+        [
+          388,
+          393
+        ]
+      ],
+      "literals": [
+        "expect(terminal).toMatchObject({ errorKind: \"state_contention\" });"
       ]
     },
     {
@@ -2032,18 +752,103 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "packages/gateway-protocol/src/schema/logs-chat.test.ts:256-257",
+      "cite": "ui/src/pages/chat/chat-gateway.contention.test.ts:60-80",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/gateway-protocol/src/schema/logs-chat.test.ts",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.contention.test.ts",
       "lines": [
         [
-          256,
-          257
+          60,
+          80
         ]
       ],
       "literals": [
-        "phase: \"waiting_for_state\""
+        "phase: \"waiting_for_state\","
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "packages/gateway-protocol/src/schema/logs-chat.ts:412",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
+      "lines": [
+        [
+          412,
+          412
+        ]
+      ],
+      "literals": [
+        "Type.Literal(\"waiting_for_state\"),"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/chat-abort.test.ts:430-441",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/chat-abort.test.ts",
+      "lines": [
+        [
+          430,
+          441
+        ]
+      ],
+      "literals": [
+        "stopReason: \"user\","
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-methods/chat-aborted-partial.ts:240-248,264-265",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-aborted-partial.ts",
+      "lines": [
+        [
+          240,
+          248
+        ],
+        [
+          264,
+          265
+        ]
+      ],
+      "literals": [
+        "stopReason: \"aborted-partial-persistence-failed\",",
+        "\"Stopped, but a reply could not be saved to history."
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "ui/src/e2e/chat-stop-response-ownership.e2e.test.ts:93-101",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/e2e/chat-stop-response-ownership.e2e.test.ts",
+      "lines": [
+        [
+          93,
+          101
+        ]
+      ],
+      "literals": [
+        "stopReason: \"aborted-partial-persistence-failed\","
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "ui/src/pages/chat/chat-gateway.ts:81-88",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          81,
+          88
+        ]
+      ],
+      "literals": [
+        "payload.stopReason === \"aborted-partial-persistence-failed\")"
       ]
     },
     {
@@ -2084,10 +889,180 @@
       ]
     },
     {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:1053-1085",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
+      "lines": [
+        [
+          1053,
+          1085
+        ]
+      ],
+      "literals": [
+        "{ state: \"delta\", replace: true, deltaText: \"\", message: { content: [{ text: \"\" }] } },"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-chat-transcript-publication.ts:222-230",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-transcript-publication.ts",
+      "lines": [
+        [
+          222,
+          230
+        ]
+      ],
+      "literals": [
+        "agentRunSeq.get(sourceRunId) ?? 0,"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:569-614",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
+      "lines": [
+        [
+          569,
+          614
+        ]
+      ],
+      "literals": [
+        "retryAt: 1_800_000_000_000 + attempt * 30_000,"
+      ]
+    },
+    {
+      "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
+      "cite": "src/gateway/server-methods/chat-send-queued-identity.test.ts:115-120",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-queued-identity.test.ts",
+      "lines": [
+        [
+          115,
+          120
+        ]
+      ],
+      "literals": [
+        "status: \"accepted\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/methods/core-descriptors.ts:110,230,322",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/methods/core-descriptors.ts",
+      "lines": [
+        [
+          110,
+          110
+        ],
+        [
+          230,
+          230
+        ],
+        [
+          322,
+          322
+        ]
+      ],
+      "literals": [
+        "shareMaxAgeMs: 1_000,",
+        "shareMaxAgeMs: 1_000,",
+        "shareMaxAgeMs: 1_000,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/state/openclaw-agent-db-contract.ts:9",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/state/openclaw-agent-db-contract.ts",
+      "lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "literals": [
+        "export const OPENCLAW_AGENT_SCHEMA_VERSION = 27;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/auth-policy.ts:98-130",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/auth-policy.ts",
+      "lines": [
+        [
+          98,
+          130
+        ]
+      ],
+      "literals": [
+        "grantGeneration: stableStringify({"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/shared/silent-reply-policy.ts:32-41",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/shared/silent-reply-policy.ts",
+      "lines": [
+        [
+          32,
+          41
+        ]
+      ],
+      "literals": [
+        "if (params.conversationType !== \"group\") {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/command/attempt-execution.helpers.ts:48-75",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/command/attempt-execution.helpers.ts",
+      "lines": [
+        [
+          48,
+          75
+        ]
+      ],
+      "literals": [
+        "export function resolveCommandReplyExpectation(params: {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/infra/gateway-owner-lease.ts:284",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/infra/gateway-owner-lease.ts",
+      "lines": [
+        [
+          284,
+          284
+        ]
+      ],
+      "literals": [
+        "Another Gateway owner lease is still active for this state directory"
+      ]
+    },
+    {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/gateway/server-chat-live-text.ts:17-28",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-chat-live-text.ts",
       "lines": [
         [
@@ -2103,7 +1078,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/gateway/server-broadcast-live-text.ts:214-224",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-broadcast-live-text.ts",
       "lines": [
         [
@@ -2119,7 +1094,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/packages/gateway-client/src/chat-stream-projection.ts:7-56",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "packages/gateway-client/src/chat-stream-projection.ts",
       "lines": [
         [
@@ -2133,14 +1108,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/api/gateway-chat-events.ts:59-74",
+      "cite": "$UP/ui/src/api/gateway-chat-events.ts:57-72",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/api/gateway-chat-events.ts",
       "lines": [
         [
-          59,
-          74
+          57,
+          72
         ]
       ],
       "literals": [
@@ -2149,14 +1124,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/chat-abort.ts:335-357",
+      "cite": "$UP/src/gateway/chat-abort.ts:309-331",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/chat-abort.ts",
       "lines": [
         [
-          335,
-          357
+          309,
+          331
         ]
       ],
       "literals": [
@@ -2167,7 +1142,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "run-transcript.e2e.test.ts:130",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/cron/run-transcript.e2e.test.ts",
       "lines": [
         [
@@ -2177,6 +1152,27 @@
       ],
       "literals": [
         "for (const method of [\"tasks.list\", \"tasks.get\", \"tasks.history\"]) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/tools/media-generate-background-shared.ts:227,302",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/tools/media-generate-background-shared.ts",
+      "lines": [
+        [
+          227,
+          227
+        ],
+        [
+          302,
+          302
+        ]
+      ],
+      "literals": [
+        "const runId = `tool:${params.toolName}:${crypto.randomUUID()}`;",
+        "taskId: runId,"
       ]
     },
     {
@@ -2197,9 +1193,391 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/sessions/session-run-error-presentation.ts:10-17",
+      "cite": "operator-run-cancellation.ts:149-153",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/operator-run-cancellation.ts",
+      "lines": [
+        [
+          149,
+          153
+        ]
+      ],
+      "literals": [
+        "stopReason: \"rpc\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:111-114",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          111,
+          114
+        ]
+      ],
+      "literals": [
+        "displayEvent.stopReason === \"auth-revoked\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:2128",
+      "repo": "atrium",
+      "tag": null,
+      "path": "bridge/src/providers/openclaw/normalizer.ts",
+      "lines": [
+        [
+          2128,
+          2128
+        ]
+      ],
+      "literals": [
+        "isString(deltaText) && deltaText"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:532-538",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
+      "lines": [
+        [
+          532,
+          538
+        ]
+      ],
+      "literals": [
+        "export const ChatEventSchema = Type.Union("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.ts:715-718,833",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          715,
+          718
+        ],
+        [
+          833,
+          833
+        ]
+      ],
+      "literals": [
+        "const flushBufferedChatDeltaIfNeeded = (delivery: ChatDelivery) =>",
+        "flushBufferedChatDeltaIfNeeded(delivery);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.ts:491-501,873-900",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          491,
+          501
+        ],
+        [
+          873,
+          900
+        ]
+      ],
+      "literals": [
+        "CHAT_STATE_BY_TERMINAL_CLASSIFICATION[terminalClassification]",
+        "state: jobState === \"done\" ? (\"final\" as const)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-abort.ts:405-444",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/chat-abort.ts",
+      "lines": [
+        [
+          405,
+          444
+        ]
+      ],
+      "literals": [
+        "function broadcastChatAborted("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.ts:895-907",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          895,
+          907
+        ]
+      ],
+      "literals": [
+        "state: \"error\" as const,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.ts:91-96,254,1519-1538",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          91,
+          96
+        ],
+        [
+          254,
+          254
+        ],
+        [
+          1519,
+          1538
+        ]
+      ],
+      "literals": [
+        "const CHAT_STATE_BY_TERMINAL_CLASSIFICATION = {",
+        "lifecycleErrorRetryGraceMs = AGENT_RUN_TERMINAL_RETRY_GRACE_MS",
+        "if (lifecyclePhase === \"error\") {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/llm-core/src/types.ts:355",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/llm-core/src/types.ts",
+      "lines": [
+        [
+          355,
+          355
+        ]
+      ],
+      "literals": [
+        "export type StopReason = \"stop\" | \"length\" | \"toolUse\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/normalization-core/src/agent-run-terminal-outcome.ts:91-129",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/normalization-core/src/agent-run-terminal-outcome.ts",
+      "lines": [
+        [
+          91,
+          129
+        ]
+      ],
+      "literals": [
+        "return value === \"rpc\" || value === \"stop\";"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:435-452",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          435,
+          452
+        ]
+      ],
+      "literals": [
+        "isSupersededRestartRecoveryEvent"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.agent-events.test.ts:1537",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
+      "lines": [
+        [
+          1537,
+          1537
+        ]
+      ],
+      "literals": [
+        "suppresses late interrupted pre-restart lifecycle events"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:401-408",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
+      "lines": [
+        [
+          401,
+          408
+        ]
+      ],
+      "literals": [
+        "Type.Literal(\"state_contention\"),"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.ts:128-165",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          128,
+          165
+        ]
+      ],
+      "literals": [
+        "export function resolveChatErrorKindFromError(error: unknown)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.agent-events.test.ts:2249",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.agent-events.test.ts",
+      "lines": [
+        [
+          2249,
+          2249
+        ]
+      ],
+      "literals": [
+        "not.toHaveProperty(\"message\")"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-gateway.ts:83-98",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          83,
+          98
+        ]
+      ],
+      "literals": [
+        "`Error: ${errorText}`"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "plugin-sdk/infra-runtime.ts:133-176",
       "repo": "upstream",
       "tag": "2026.9.36",
+      "path": "src/plugin-sdk/infra-runtime.ts",
+      "lines": [
+        [
+          133,
+          176
+        ]
+      ],
+      "literals": [
+        "export function detectErrorKind("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "logs-chat.ts:439-493",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
+      "lines": [
+        [
+          439,
+          493
+        ]
+      ],
+      "literals": [
+        "providerRuntimeFailureKind: ChatErrorDetailTextSchema"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-gateway.ts:62-74,117-123",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          62,
+          74
+        ],
+        [
+          117,
+          123
+        ]
+      ],
+      "literals": [
+        "detail.providerRuntimeFailureKind !== \"auth_refresh\"",
+        "payload.errorDetail?.providerRuntimeFailureKind === \"auth_refresh\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-broadcast.ts:456-490",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-broadcast.ts",
+      "lines": [
+        [
+          456,
+          490
+        ]
+      ],
+      "literals": [
+        "live.coalesce.merge(previous.payload, payload)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "run-termination.ts:134-146,187-190",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/run-termination.ts",
+      "lines": [
+        [
+          134,
+          146
+        ],
+        [
+          187,
+          190
+        ]
+      ],
+      "literals": [
+        "function resolveRunErrorTimeout(error: unknown)",
+        "return { stopReason: \"timeout\", ...timeout };"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/sessions/session-run-error-presentation.ts:10-17",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/sessions/session-run-error-presentation.ts",
       "lines": [
         [
@@ -2213,18 +1591,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-methods/chat-aborted-partial.ts:151,173-174",
+      "cite": "$UP/src/gateway/server-methods/chat-aborted-partial.ts:240,264-265",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/chat-aborted-partial.ts",
       "lines": [
         [
-          151,
-          151
+          240,
+          240
         ],
         [
-          173,
-          174
+          264,
+          265
         ]
       ],
       "literals": [
@@ -2234,14 +1612,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/packages/gateway-protocol/src/schema/sessions-row.ts:28-36",
+      "cite": "$UP/packages/gateway-protocol/src/schema/sessions-row.ts:38-46",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "packages/gateway-protocol/src/schema/sessions-row.ts",
       "lines": [
         [
-          28,
-          36
+          38,
+          46
         ]
       ],
       "literals": [
@@ -2250,14 +1628,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "session-utils-display.ts:140",
+      "cite": "session-utils-display.ts:137",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/session-utils-display.ts",
       "lines": [
         [
-          140,
-          140
+          137,
+          137
         ]
       ],
       "literals": [
@@ -2266,9 +1644,329 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-runtime-subscriptions.ts:643-660",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-runtime-subscriptions.ts",
+      "lines": [
+        [
+          643,
+          660
+        ]
+      ],
+      "literals": [
+        "handler.retireTranscript(evt, publication.promise)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-transcript-publication.ts:228",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-transcript-publication.ts",
+      "lines": [
+        [
+          228,
+          228
+        ]
+      ],
+      "literals": [
+        "agentRunSeq.get(sourceRunId) ?? 0"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-state.ts:350-374",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-state.ts",
+      "lines": [
+        [
+          350,
+          374
+        ]
+      ],
+      "literals": [
+        "display.unsentDelta === null"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-transcript-publication.ts:51-73",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-transcript-publication.ts",
+      "lines": [
+        [
+          51,
+          73
+        ]
+      ],
+      "literals": [
+        "holdTerminal: (runId: string, publish: () => void): boolean =>"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:446-457",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          446,
+          457
+        ]
+      ],
+      "literals": [
+        "replaceChatStream(state, hidden ? \"\" : next);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:842-866",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          842,
+          866
+        ]
+      ],
+      "literals": [
+        "[ASSISTANT_DISPLAY_CONTENT_FIELD]: appendChatCanvasBlocks("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:102-110",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          102,
+          110
+        ]
+      ],
+      "literals": [
+        "projectAssistantDisplayContent(wireMessage)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:79-84",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          79,
+          84
+        ]
+      ],
+      "literals": [
+        "if (!isCurrent(evt)) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:109-116",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          109,
+          116
+        ]
+      ],
+      "literals": [
+        "current.chatLink !== source.chatLink ||"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:59-62",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          59,
+          62
+        ]
+      ],
+      "literals": [
+        "Session recovery source changed while awaiting earlier events"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:90-93",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          90,
+          93
+        ]
+      ],
+      "literals": [
+        "(terminal?.reason === \"cancelled\" && terminal.stopReason === \"restart\"));"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:97-120",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          97,
+          120
+        ]
+      ],
+      "literals": [
+        "const pending = previous ? previous.then(consume, consume) : consume();"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:104-106",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          104,
+          106
+        ]
+      ],
+      "literals": [
+        "return handleEvent(evt);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat-event-admission.ts:117-118",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-event-admission.ts",
+      "lines": [
+        [
+          117,
+          118
+        ]
+      ],
+      "literals": [
+        "handleEvent(evt, recovery);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:739-748",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          739,
+          748
+        ]
+      ],
+      "literals": [
+        "sendLivePayload(event, sessionKey, payload, opts),"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:440-455",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          440,
+          455
+        ]
+      ],
+      "literals": [
+        "const terminalPersistence ="
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:899-910",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          899,
+          910
+        ]
+      ],
+      "literals": [
+        "renderCodexAppServerFailureCopy(errorMessage) ?? errorMessage"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-dispatch-errors.ts:216-247",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-dispatch-errors.ts",
+      "lines": [
+        [
+          216,
+          247
+        ]
+      ],
+      "literals": [
+        "stopReason: \"restart\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:280-289",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          280,
+          289
+        ]
+      ],
+      "literals": [
+        "payload.stopReason === \"restart\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-aborted-partial.ts:239-248",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-aborted-partial.ts",
+      "lines": [
+        [
+          239,
+          248
+        ]
+      ],
+      "literals": [
+        "stopReason: \"aborted-partial-persistence-failed\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/packages/gateway-client/src/session-projection-run-event.ts:46-73",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "packages/gateway-client/src/session-projection-run-event.ts",
       "lines": [
         [
@@ -2282,18 +1980,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:85-87,254-258",
+      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:84-86,116-120",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-gateway.ts",
       "lines": [
         [
-          85,
-          87
+          84,
+          86
         ],
         [
-          254,
-          258
+          116,
+          120
         ]
       ],
       "literals": [
@@ -2303,14 +2001,472 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/get-reply-run-admission.ts:553-562",
+      "cite": "ui/src/pages/chat/chat-thread-grouping.ts:438",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-thread-grouping.ts",
+      "lines": [
+        [
+          438,
+          438
+        ]
+      ],
+      "literals": [
+        "asRecord(message)?.stopReason === \"error\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-assistant-reply.ts:53",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-assistant-reply.ts",
+      "lines": [
+        [
+          53,
+          53
+        ]
+      ],
+      "literals": [
+        "const stopReason = record?.stopReason;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/queue/settings.ts:18-23",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/queue/settings.ts",
+      "lines": [
+        [
+          18,
+          23
+        ]
+      ],
+      "literals": [
+        "normalizePersistedQueueMode(params.sessionEntry?.queueMode)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/get-reply-run-queue.ts:17",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/get-reply-run-queue.ts",
+      "lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "literals": [
+        "params.queueMode === \"interrupt\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "get-reply-directives-apply.ts:520",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/get-reply-directives-apply.ts",
+      "lines": [
+        [
+          520,
+          520
+        ]
+      ],
+      "literals": [
+        "perMessageQueueMode"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-direct-delivery.ts:339,381",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
+      "lines": [
+        [
+          339,
+          339
+        ],
+        [
+          381,
+          381
+        ]
+      ],
+      "literals": [
+        "steeringMode: \"all\"",
+        "path: \"steered\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/announce-idempotency.ts:6-13",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/announce-idempotency.ts",
+      "lines": [
+        [
+          6,
+          13
+        ]
+      ],
+      "literals": [
+        "v1:${params.childSessionKey}:${params.childRunId}"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-admission.ts:318,570",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-admission.ts",
+      "lines": [
+        [
+          318,
+          318
+        ],
+        [
+          570,
+          570
+        ]
+      ],
+      "literals": [
+        "p.queueMode === \"interrupt\"",
+        "p.queueMode === \"interrupt\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "sessions-messaging.ts:112",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/sessions-messaging.ts",
+      "lines": [
+        [
+          112,
+          112
+        ]
+      ],
+      "literals": [
+        "const queueMode = method === \"sessions.steer\" ? \"interrupt\" : undefined;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "session-reset-service.ts:452",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/session-reset-service.ts",
+      "lines": [
+        [
+          452,
+          452
+        ]
+      ],
+      "literals": [
+        "admittedWorkReleased = await interruptSessionWorkAdmissions("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-worker-placement-move-barrier.ts:90",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-worker-placement-move-barrier.ts",
+      "lines": [
+        [
+          90,
+          90
+        ]
+      ],
+      "literals": [
+        "const released = await interruptSessionWorkAdmissions("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-control-kill-runtime.ts:431-436",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/registry/subagent-control-kill-runtime.ts",
+      "lines": [
+        [
+          431,
+          436
+        ]
+      ],
+      "literals": [
+        "startSessionWorkAdmissionInterruption({"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/session.ts:263",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/session.ts",
+      "lines": [
+        [
+          263,
+          263
+        ]
+      ],
+      "literals": [
+        "const drained = await interruptSessionWorkAdmissions("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "reply-turn-admission.ts:272-274",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/reply-turn-admission.ts",
+      "lines": [
+        [
+          272,
+          274
+        ]
+      ],
+      "literals": [
+        "operation?.abortForRestart()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/run/session-bootstrap.ts:546-602",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/session-bootstrap.ts",
+      "lines": [
+        [
+          546,
+          602
+        ]
+      ],
+      "literals": [
+        "supersedeEmbeddedAgentRunByRunId(previousWriterRunId"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-direct-delivery.ts:363-405",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
+      "lines": [
+        [
+          363,
+          405
+        ]
+      ],
+      "literals": [
+        "resolveActiveWakeWithRetries("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/config/sessions/session-transcript-writer-claim-error.ts:46",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/config/sessions/session-transcript-writer-claim-error.ts",
+      "lines": [
+        [
+          46,
+          46
+        ]
+      ],
+      "literals": [
+        "export class SessionTranscriptWriterClaimReboundError extends Error"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/worker-environments/placement-turn-claims.ts:49",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/worker-environments/placement-turn-claims.ts",
+      "lines": [
+        [
+          49,
+          49
+        ]
+      ],
+      "literals": [
+        "already has an active turn claim"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/run-entry-cli.ts:70",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run-entry-cli.ts",
+      "lines": [
+        [
+          70,
+          70
+        ]
+      ],
+      "literals": [
+        "throw createAgentRunSupersededAbortError()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "auto-reply/reply/reply-run-registry.operation.ts:555",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/reply-run-registry.operation.ts",
+      "lines": [
+        [
+          555,
+          555
+        ]
+      ],
+      "literals": [
+        "createSupersededError()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "embedded-agent-runner/run/deferred-lifecycle-owner.ts:184",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/deferred-lifecycle-owner.ts",
+      "lines": [
+        [
+          184,
+          184
+        ]
+      ],
+      "literals": [
+        "? createAgentRunSupersededAbortError()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "embedded-agent-runner/run/attempt-stream-prepare.ts:423",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/attempt-stream-prepare.ts",
+      "lines": [
+        [
+          423,
+          423
+        ]
+      ],
+      "literals": [
+        "? createAgentRunSupersededAbortError()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "gateway/worker-environments/worker-turn-run-owner.ts:127",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/worker-environments/worker-turn-run-owner.ts",
+      "lines": [
+        [
+          127,
+          127
+        ]
+      ],
+      "literals": [
+        "? createAgentRunSupersededAbortError()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/agent-run-terminal-outcome.ts:499-506",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/agent-run-terminal-outcome.ts",
+      "lines": [
+        [
+          499,
+          506
+        ]
+      ],
+      "literals": [
+        "isAgentRunSupersededAbortReason"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "queue/settings.ts:23",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/queue/settings.ts",
+      "lines": [
+        [
+          23,
+          23
+        ]
+      ],
+      "literals": [
+        "\"steer\";"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-agent-dispatch.ts:540-542",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-agent-dispatch.ts",
+      "lines": [
+        [
+          540,
+          542
+        ]
+      ],
+      "literals": [
+        "queuedFollowup.isEnqueued() || queuedFollowup.isTerminal()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:295-301",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
+      "lines": [
+        [
+          295,
+          301
+        ]
+      ],
+      "literals": [
+        "clientRunId: params.runId,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:303-308",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
+      "lines": [
+        [
+          303,
+          308
+        ]
+      ],
+      "literals": [
+        "Queued input was dropped (${reason})."
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/get-reply-run-admission.ts:562-571",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/auto-reply/reply/get-reply-run-admission.ts",
       "lines": [
         [
-          553,
-          562
+          562,
+          571
         ]
       ],
       "literals": [
@@ -2319,14 +2475,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "agent-runner-steer-adoption.ts:104-141",
+      "cite": "agent-runner-steer-adoption.ts:125-162",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/auto-reply/reply/agent-runner-steer-adoption.ts",
       "lines": [
         [
-          104,
-          141
+          125,
+          162
         ]
       ],
       "literals": [
@@ -2335,14 +2491,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-methods/chat-history-handler.ts:231-250",
+      "cite": "$UP/src/gateway/server-methods/chat-history-handler.ts:214-233",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/chat-history-handler.ts",
       "lines": [
         [
-          231,
-          250
+          214,
+          233
         ]
       ],
       "literals": [
@@ -2353,7 +2509,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/gateway/server-methods/chat-pending-inputs.ts:72-113",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/chat-pending-inputs.ts",
       "lines": [
         [
@@ -2367,14 +2523,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-abort-handler.ts:84-91",
+      "cite": "chat-abort-handler.ts:67-74",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/chat-abort-handler.ts",
       "lines": [
         [
-          84,
-          91
+          67,
+          74
         ]
       ],
       "literals": [
@@ -2383,14 +2539,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/chat-abort.ts:621-630",
+      "cite": "$UP/src/gateway/chat-abort.ts:558-567",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/chat-abort.ts",
       "lines": [
         [
-          621,
-          630
+          558,
+          567
         ]
       ],
       "literals": [
@@ -2399,115 +2555,790 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-runner/run/attempt-stream-prepare.ts:285-300",
+      "cite": "$UP/src/gateway/server-methods/chat-send-turn-adoption.ts:234-240",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/run/attempt-stream-prepare.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
       "lines": [
         [
-          285,
-          300
+          234,
+          240
         ]
       ],
       "literals": [
-        "customType: \"openclaw.plan-completion-check\","
+        "payload: { runId: params.runId, status: \"accepted\" }"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/tools/media-generate-background-shared.ts:220,280",
+      "cite": "$UP/src/gateway/server-methods/chat-send-pre-admission.ts:279-282,306-309",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/tools/media-generate-background-shared.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
       "lines": [
         [
-          220,
-          220
+          279,
+          282
         ],
         [
-          280,
-          280
+          306,
+          309
         ]
       ],
       "literals": [
-        "const runId = `tool:${params.toolName}:${crypto.randomUUID()}`;",
-        "taskId: runId,"
+        "respond(cached.ok, cached.payload, cached.error, { cached: true });",
+        "status: \"in_flight\" as const"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/auth-policy.ts:99-131",
+      "cite": "$UP/ui/src/pages/chat/chat-send-ack.ts:42-46",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/auth-policy.ts",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-send-ack.ts",
       "lines": [
         [
-          99,
-          131
+          42,
+          46
         ]
       ],
       "literals": [
-        "grantGeneration: stableStringify({"
+        ": \"started\";"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/shared/silent-reply-policy.ts:33-42",
+      "cite": "$UP/src/agents/agent-command-recovery-owner.ts:270-279",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/shared/silent-reply-policy.ts",
+      "tag": "2026.10.33",
+      "path": "src/agents/agent-command-recovery-owner.ts",
+      "lines": [
+        [
+          270,
+          279
+        ]
+      ],
+      "literals": [
+        "serializeOwner: true,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/reply-turn-admission.ts:399-401",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/reply-turn-admission.ts",
+      "lines": [
+        [
+          399,
+          401
+        ]
+      ],
+      "literals": [
+        "Only detached followups wait here"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-admission.ts:573",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-admission.ts",
+      "lines": [
+        [
+          573,
+          573
+        ]
+      ],
+      "literals": [
+        "interruptChatSendWork({"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-work-admission.ts:233",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-work-admission.ts",
+      "lines": [
+        [
+          233,
+          233
+        ]
+      ],
+      "literals": [
+        "export function interruptChatSendWork(params: {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/get-reply-run-queue.ts:17-19",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/get-reply-run-queue.ts",
+      "lines": [
+        [
+          17,
+          19
+        ]
+      ],
+      "literals": [
+        "params.queueMode === \"interrupt\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/run-orchestrator.ts:753",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run-orchestrator.ts",
+      "lines": [
+        [
+          753,
+          753
+        ]
+      ],
+      "literals": [
+        "return enqueueSession(() =>"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/subagents/registry/subagent-requester-settle-identity.ts:25-31",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/registry/subagent-requester-settle-identity.ts",
+      "lines": [
+        [
+          25,
+          31
+        ]
+      ],
+      "literals": [
+        "params.pause ? \"pause\" : undefined,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/subagents/registry/subagent-requester-settle-identity.ts:34-39",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/registry/subagent-requester-settle-identity.ts",
+      "lines": [
+        [
+          34,
+          39
+        ]
+      ],
+      "literals": [
+        "`${batchKey}:retry-${attemptIndex}`"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/subagents/announce/subagent-announce.requester-settle-message.ts:33",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce.requester-settle-message.ts",
       "lines": [
         [
           33,
-          42
+          33
         ]
       ],
       "literals": [
-        "if (params.conversationType !== \"group\") {"
+        "A child is paused awaiting a continuation; this is not a completion."
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/command/attempt-execution.helpers.ts:44-71",
+      "cite": "$UP/src/agents/internal-runtime-context.ts:34",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/internal-runtime-context.ts",
+      "lines": [
+        [
+          34,
+          34
+        ]
+      ],
+      "literals": [
+        "RUNTIME_EVENT_USER_PROMPT = \"Continue the OpenClaw runtime event.\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/approval-request-authority.ts:197-199",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/approval-request-authority.ts",
+      "lines": [
+        [
+          197,
+          199
+        ]
+      ],
+      "literals": [
+        "throw new Error(\"Approval requester authority changed\");"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-send-input-dispatch.ts:596-610",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-input-dispatch.ts",
+      "lines": [
+        [
+          596,
+          610
+        ]
+      ],
+      "literals": [
+        "status: \"started\" as const"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-send-turn-adoption.ts:21-30",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
+      "lines": [
+        [
+          21,
+          30
+        ]
+      ],
+      "literals": [
+        "createChatSendLateFollowupDisposition"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-send-late-followup.ts:47-56",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-late-followup.ts",
+      "lines": [
+        [
+          47,
+          56
+        ]
+      ],
+      "literals": [
+        "late-and-dropped"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "post-run.ts:675-681",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/command/post-run.ts",
+      "lines": [
+        [
+          675,
+          681
+        ]
+      ],
+      "literals": [
+        "lifecycle.emitEnd(terminal)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "embedded-agent-runner/run/attempt-session-settle.ts:153",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/attempt-session-settle.ts",
+      "lines": [
+        [
+          153,
+          153
+        ]
+      ],
+      "literals": [
+        "await flushEmbeddedAttemptTrajectoryRecorder"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "embedded-agent-runner/runs.ts:1052",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/runs.ts",
+      "lines": [
+        [
+          1052,
+          1052
+        ]
+      ],
+      "literals": [
+        "ACTIVE_EMBEDDED_RUNS.has(sessionId)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "get-reply-run-admission.ts:520-521",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/get-reply-run-admission.ts",
+      "lines": [
+        [
+          520,
+          521
+        ]
+      ],
+      "literals": [
+        "isEmbeddedAgentRunActive(embeddedActiveSessionId)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-history-handler.ts:366-376",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-history-handler.ts",
+      "lines": [
+        [
+          366,
+          376
+        ]
+      ],
+      "literals": [
+        "sessionInfo.hasActiveRun = activeRunState.active"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "embedded-agent-runner/runs.ts:1080-1107",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/runs.ts",
+      "lines": [
+        [
+          1080,
+          1107
+        ]
+      ],
+      "literals": [
+        "isEmbeddedRunHandleInProgress(handle)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "session-active-runs.ts:229-246",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/session-active-runs.ts",
+      "lines": [
+        [
+          229,
+          246
+        ]
+      ],
+      "literals": [
+        "hasTerminalPersistence ||"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "failover-error.ts:751-754",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/failover-error.ts",
+      "lines": [
+        [
+          751,
+          754
+        ]
+      ],
+      "literals": [
+        "hasSessionTranscriptWriterClaimRebound(err)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "model-fallback-runner.ts:598-599",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/model-fallback-runner.ts",
+      "lines": [
+        [
+          598,
+          599
+        ]
+      ],
+      "literals": [
+        "isNonProviderRuntimeCoordinationError(err)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-delivery-retry.ts:97-132",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          97,
+          132
+        ]
+      ],
+      "literals": [
+        "hasAnnounceErrorMatch(error, isWriterClaimReboundAnnounceError)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-delivery-retry.ts:189",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          189,
+          189
+        ]
+      ],
+      "literals": [
+        "isTransientAnnounceDeliveryError(err)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-direct-delivery.ts:590-601",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
+      "lines": [
+        [
+          590,
+          601
+        ]
+      ],
+      "literals": [
+        "\"permanent_failure\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-delivery-retry.ts:135-141",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          135,
+          141
+        ]
+      ],
+      "literals": [
+        "export function isPermanentAnnounceDeliveryError"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-delivery-retry.ts:173-179",
       "repo": "upstream",
       "tag": "2026.9.36",
-      "path": "src/agents/command/attempt-execution.helpers.ts",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          173,
+          179
+        ]
+      ],
+      "literals": [
+        "isPermanentNonWriterAnnounceError(error) || hasWriterClaimReboundAnnounceError(error)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-delivery-retry.ts:55-56",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
+      "lines": [
+        [
+          55,
+          56
+        ]
+      ],
+      "literals": [
+        "WRITER_CLAIM_REBOUND_ANNOUNCE_RE"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "subagent-announce-direct-delivery.ts:689-700",
+      "repo": "upstream",
+      "tag": "2026.9.2",
+      "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
+      "lines": [
+        [
+          689,
+          700
+        ]
+      ],
+      "literals": [
+        "isPermanentAnnounceDeliveryError(err)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/infra/sqlite-error-diagnostics.ts:11",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/infra/sqlite-error-diagnostics.ts",
+      "lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "literals": [
+        "transcript_writer_fenced"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "failover/assistant-request-failure-copy.ts:57-58,108",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/failover/assistant-request-failure-copy.ts",
+      "lines": [
+        [
+          57,
+          58
+        ],
+        [
+          108,
+          108
+        ]
+      ],
+      "literals": [
+        "This conversation changed while OpenClaw was working",
+        "${STORAGE_FAILURE_COPY[facts.storageFailure]} ${ERROR_DETAILS_HINT}"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "embedded-agent-subscribe.handlers.lifecycle.ts:185-201,254",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-subscribe.handlers.lifecycle.ts",
+      "lines": [
+        [
+          185,
+          201
+        ],
+        [
+          254,
+          254
+        ]
+      ],
+      "literals": [
+        "formatUserFacingAssistantErrorText(lastAssistant",
+        "error: lifecycleErrorText ?? GENERIC_ASSISTANT_ERROR_TEXT"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "server-chat.ts:506,899",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          506,
+          506
+        ],
+        [
+          899,
+          899
+        ]
+      ],
+      "literals": [
+        "terminalOutcome.error ?? evt.data?.error,",
+        "const errorMessage = error ? formatForLog(error) : undefined;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "failover/assistant-request-failure-copy.ts:48-49,76",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/failover/assistant-request-failure-copy.ts",
+      "lines": [
+        [
+          48,
+          49
+        ],
+        [
+          76,
+          76
+        ]
+      ],
+      "literals": [
+        "the transcript writer no longer owned this session",
+        "Agent run failed: ${STORAGE_FAILURE_COPY"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "assistant-error-transcript.ts:58-104,141-149",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/agents/assistant-error-transcript.ts",
+      "lines": [
+        [
+          58,
+          104
+        ],
+        [
+          141,
+          149
+        ]
+      ],
+      "literals": [
+        "stopReason: \"error\"",
+        "appendExactAssistantMessageToSessionTranscript("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "failover-error.ts:59-65",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/failover-error.ts",
+      "lines": [
+        [
+          59,
+          65
+        ]
+      ],
+      "literals": [
+        "\"ActiveTurnClaimError\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "auto-reply/reply/session.ts:375-387",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/session.ts",
+      "lines": [
+        [
+          375,
+          387
+        ]
+      ],
+      "literals": [
+        "relatedSessionKeys = ["
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/sessions/agent-session-types.ts:44,61",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/sessions/agent-session-types.ts",
       "lines": [
         [
           44,
-          71
+          44
+        ],
+        [
+          61,
+          61
         ]
       ],
       "literals": [
-        "export function resolveCommandReplyExpectation(params: {"
+        "reason: \"manual\" | \"threshold\" | \"overflow\"",
+        "reason: \"manual\" | \"threshold\" | \"overflow\""
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/infra/gateway-owner-lease.ts:180",
+      "cite": "$UP/ui/src/pages/chat/tool-stream-status.ts:204,236-257",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/infra/gateway-owner-lease.ts",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/tool-stream-status.ts",
       "lines": [
         [
-          180,
-          180
+          204,
+          204
+        ],
+        [
+          236,
+          257
         ]
       ],
       "literals": [
-        "Another Gateway owner lease is still active for this state directory"
+        "payload.operation !== \"compact\"",
+        "data.willRetry === true ? \"retrying\" : \"complete\""
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-methods/sessions-compact.ts:138-147",
+      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.compaction.ts:197-202",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-subscribe.handlers.compaction.ts",
+      "lines": [
+        [
+          197,
+          202
+        ]
+      ],
+      "literals": [
+        "reasonClass === \"already_compacted\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/compact-reasons.ts:17-20",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/compact-reasons.ts",
+      "lines": [
+        [
+          17,
+          20
+        ]
+      ],
+      "literals": [
+        "[\"no_compactable_entries\", [\"nothing to compact\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:174-186",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "extensions/codex/src/app-server/event-projector-events.ts",
+      "lines": [
+        [
+          174,
+          186
+        ]
+      ],
+      "literals": [
+        "backend: \"codex-app-server\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/sessions-compact.ts:110-119",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/sessions-compact.ts",
       "lines": [
         [
-          138,
-          147
+          110,
+          119
         ]
       ],
       "literals": [
@@ -2516,14 +3347,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server.sessions.compaction-read-errors.test.ts:176-196",
+      "cite": "server.sessions.compaction-read-errors.test.ts:166-186",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server.sessions.compaction-read-errors.test.ts",
       "lines": [
         [
-          176,
-          196
+          166,
+          186
         ]
       ],
       "literals": [
@@ -2532,30 +3363,307 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/chat-display-projection.reconciliation.test.ts:70",
+      "cite": "$UP/src/agents/embedded-agent-runner/run/attempt-stream-prepare.ts:313-328",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/chat-display-projection.reconciliation.test.ts",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-runner/run/attempt-stream-prepare.ts",
       "lines": [
         [
-          70,
-          70
+          313,
+          328
         ]
       ],
       "literals": [
-        "preserves distinct durable answers even when one run produced identical text"
+        "customType: \"openclaw.plan-completion-check\","
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-gateway.ts:195-204",
+      "cite": "$UP/packages/gateway-protocol/src/schema/sessions-row.ts:276-278",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/sessions-row.ts",
+      "lines": [
+        [
+          276,
+          278
+        ]
+      ],
+      "literals": [
+        "usageReport: Type.Optional("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/session-utils-projection.ts:191-199",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/session-utils-projection.ts",
+      "lines": [
+        [
+          191,
+          199
+        ]
+      ],
+      "literals": [
+        "snapshot.usageReport?.state === \"available\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/session-utils-row.ts:180-188",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/session-utils-row.ts",
+      "lines": [
+        [
+          180,
+          188
+        ]
+      ],
+      "literals": [
+        "allowCacheLookup: false,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-send-queue-state.ts:101",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-send-queue-state.ts",
+      "lines": [
+        [
+          101,
+          101
+        ]
+      ],
+      "literals": [
+        "sendRunId: generateUUID()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-send-delivery.ts:211,258",
+      "repo": "upstream",
+      "tag": "2026.9.2",
+      "path": "ui/src/pages/chat/chat-send-delivery.ts",
+      "lines": [
+        [
+          211,
+          211
+        ],
+        [
+          258,
+          258
+        ]
+      ],
+      "literals": [
+        "item.sendRunId ?? generateUUID()",
+        "prepared.sendRunId ?? generateUUID()"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-send-request.ts:53",
+      "repo": "upstream",
+      "tag": "2026.9.2",
+      "path": "ui/src/pages/chat/chat-send-request.ts",
+      "lines": [
+        [
+          53,
+          53
+        ]
+      ],
+      "literals": [
+        "idempotencyKey: params.runId"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-session.ts:219",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-session.ts",
+      "lines": [
+        [
+          219,
+          219
+        ]
+      ],
+      "literals": [
+        "clientRunId = p.idempotencyKey"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-abort-authorization.ts:115-121",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-abort-authorization.ts",
+      "lines": [
+        [
+          115,
+          121
+        ]
+      ],
+      "literals": [
+        "summary: \"aborted\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-pre-admission.ts:102-112",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
+      "lines": [
+        [
+          102,
+          112
+        ]
+      ],
+      "literals": [
+        "session transcript is rebuilding; retry shortly"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-request.ts:320-322",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-request.ts",
+      "lines": [
+        [
+          320,
+          322
+        ]
+      ],
+      "literals": [
+        "createHmac(\"sha256\", key).update(requestInput).digest(\"hex\")"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "chat-send-pre-admission.ts:159-166",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
+      "lines": [
+        [
+          159,
+          166
+        ]
+      ],
+      "literals": [
+        "chat-request-conflict"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-user-turn-recorder.ts:216",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-user-turn-recorder.ts",
+      "lines": [
+        [
+          216,
+          216
+        ]
+      ],
+      "literals": [
+        "chatRequestIdentity: request.requestIdentity"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-methods/chat-send-retry-comparison.ts:64-67",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-send-retry-comparison.ts",
+      "lines": [
+        [
+          64,
+          67
+        ]
+      ],
+      "literals": [
+        "return storedIdentity !== request.requestIdentity;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-send-request.ts:95-100",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-send-request.ts",
+      "lines": [
+        [
+          95,
+          100
+        ]
+      ],
+      "literals": [
+        "timeoutMs: GATEWAY_STARTUP_ADMISSION_WAIT_MS,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-send-queue-state.ts:356-378",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-send-queue-state.ts",
+      "lines": [
+        [
+          356,
+          378
+        ]
+      ],
+      "literals": [
+        "setState(\"unconfirmed\", UNCONFIRMED_CHAT_SEND_ERROR)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1640-1651",
+      "repo": "atrium",
+      "tag": null,
+      "path": "bridge/src/providers/openclaw/openclaw-client.ts",
+      "lines": [
+        [
+          1640,
+          1651
+        ]
+      ],
+      "literals": [
+        "return `webchat-${digest}`"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "packages/gateway-client/src/session-projection.ts:235",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-client/src/session-projection.ts",
+      "lines": [
+        [
+          235,
+          235
+        ]
+      ],
+      "literals": [
+        "without joining distinct durable rows or equal prose"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-gateway.ts:270-279",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-gateway.ts",
       "lines": [
         [
-          195,
-          204
+          270,
+          279
         ]
       ],
       "literals": [
@@ -2564,14 +3672,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-outbox-drain.ts:190-198",
+      "cite": "ui/src/pages/chat/chat-outbox-drain.ts:179-187",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-outbox-drain.ts",
       "lines": [
         [
-          190,
-          198
+          179,
+          187
         ]
       ],
       "literals": [
@@ -2580,30 +3688,30 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/sessions/session-status.ts:17-37",
+      "cite": "ui/src/pages/sessions/session-status.tsx:17-39",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/sessions/session-status.ts",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/sessions/session-status.tsx",
       "lines": [
         [
           17,
-          37
+          39
         ]
       ],
       "literals": [
-        "export function renderSessionStatusBadge(row: GatewaySessionRow) {"
+        "isSessionRunActive(props.row)"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/subagents/registry/subagent-session-metrics.ts:69-102",
+      "cite": "src/agents/subagents/registry/subagent-session-metrics.ts:46-79",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/subagents/registry/subagent-session-metrics.ts",
       "lines": [
         [
-          69,
-          102
+          46,
+          79
         ]
       ],
       "literals": [
@@ -2612,14 +3720,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-gateway.ts:128-200",
+      "cite": "ui/src/pages/chat/chat-gateway.ts:161-233",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-gateway.ts",
       "lines": [
         [
-          128,
-          200
+          161,
+          233
         ]
       ],
       "literals": [
@@ -2628,14 +3736,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-methods/chat-history-handler.ts:364-381",
+      "cite": "src/gateway/server-methods/chat-history-handler.ts:362-379",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/chat-history-handler.ts",
       "lines": [
         [
-          364,
-          381
+          362,
+          379
         ]
       ],
       "literals": [
@@ -2646,7 +3754,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "src/shared/session-run-state.ts:8-16",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/shared/session-run-state.ts",
       "lines": [
         [
@@ -2660,14 +3768,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-history-hydration.ts:195-243",
+      "cite": "ui/src/pages/chat/chat-history-hydration.ts:210-258",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-history-hydration.ts",
       "lines": [
         [
-          195,
-          243
+          210,
+          258
         ]
       ],
       "literals": [
@@ -2676,14 +3784,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-history-stream.ts:187-215",
+      "cite": "ui/src/pages/chat/chat-history-stream.ts:137-165",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-history-stream.ts",
       "lines": [
         [
-          187,
-          215
+          137,
+          165
         ]
       ],
       "literals": [
@@ -2692,14 +3800,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-maintenance.ts:242-246",
+      "cite": "src/gateway/server-maintenance.ts:235-239",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-maintenance.ts",
       "lines": [
         [
-          242,
-          246
+          235,
+          239
         ]
       ],
       "literals": [
@@ -2708,30 +3816,46 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/api/gateway.ts:443-465",
+      "cite": "ui/src/api/gateway.ts:447",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/api/gateway.ts",
       "lines": [
         [
-          443,
-          465
+          447,
+          447
         ]
       ],
       "literals": [
-        "this.maxInboundSilenceMs = tickIntervalMs * 2;"
+        "this.maxInboundSilenceMs = resolveMaxInboundSilenceMs(hello.policy?.tickIntervalMs);"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/embedded-agent-runner/run/llm-idle-timeout.ts:27",
+      "cite": "ui/src/api/gateway-heartbeat-policy.ts:16",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "ui/src/api/gateway-heartbeat-policy.ts",
+      "lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "literals": [
+        "return tickIntervalMs * 2;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/embedded-agent-runner/run/llm-idle-timeout.ts:28",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/agents/embedded-agent-runner/run/llm-idle-timeout.ts",
       "lines": [
         [
-          27,
-          27
+          28,
+          28
         ]
       ],
       "literals": [
@@ -2740,14 +3864,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/code-mode-node.ts:113",
+      "cite": "src/agents/code-mode-node.ts:188",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/code-mode-node.ts",
       "lines": [
         [
-          113,
-          113
+          188,
+          188
         ]
       ],
       "literals": [
@@ -2756,14 +3880,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-methods/session-active-runs.ts:273-283",
+      "cite": "src/gateway/server-methods/session-active-runs.ts:246-256",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/session-active-runs.ts",
       "lines": [
         [
-          273,
-          283
+          246,
+          256
         ]
       ],
       "literals": [
@@ -2772,14 +3896,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-history-hydration.ts:175-200",
+      "cite": "ui/src/pages/chat/chat-history-hydration.ts:181-206",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-history-hydration.ts",
       "lines": [
         [
-          175,
-          200
+          181,
+          206
         ]
       ],
       "literals": [
@@ -2788,30 +3912,30 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/sessions-patch.ts:469-480",
+      "cite": "src/gateway/sessions-patch.ts:476-481",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/sessions-patch.ts",
       "lines": [
         [
-          469,
-          480
+          476,
+          481
         ]
       ],
       "literals": [
-        "if (\"reasoningLevel\" in patch) {"
+        "invalid reasoningLevel (use \"on\"|\"off\"|\"stream\")"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/system-prompt.ts:1178",
+      "cite": "src/agents/system-prompt.ts:947",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/system-prompt.ts",
       "lines": [
         [
-          1178,
-          1178
+          947,
+          947
         ]
       ],
       "literals": [
@@ -2820,14 +3944,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/embedded-agent-runner/run/payloads.ts:208",
+      "cite": "src/agents/embedded-agent-runner/run/payloads.ts:284",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/embedded-agent-runner/run/payloads.ts",
       "lines": [
         [
-          208,
-          208
+          284,
+          284
         ]
       ],
       "literals": [
@@ -2836,62 +3960,62 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-methods/chat-assistant-content.ts:54",
+      "cite": "src/gateway/server-methods/chat-assistant-content.ts:147-150",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/chat-assistant-content.ts",
       "lines": [
         [
-          54,
-          54
+          147,
+          150
         ]
       ],
       "literals": [
-        "if (payload.isReasoning === true) {"
+        "payloads[sourceIndex]?.isReasoning === true"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/lib/chat/message-extract.ts:81",
+      "cite": "ui/src/lib/chat/message-extract.ts:87",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/lib/chat/message-extract.ts",
       "lines": [
         [
-          81,
-          81
+          87,
+          87
         ]
       ],
       "literals": [
-        "item?.type === \"thinking\" && typeof item.thinking === \"string\""
+        "item.type === \"thinking\" && typeof item.thinking === \"string\""
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/components/chat-transcript-projection.ts:120",
+      "cite": "ui/src/pages/chat/chat-reasoning.ts:128-129",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/components/chat-transcript-projection.ts",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-reasoning.ts",
       "lines": [
         [
-          120,
-          120
+          128,
+          129
         ]
       ],
       "literals": [
-        "activeSession?.reasoningLevel === \"on\""
+        "const showReasoning = props.showThinking && level === \"on\";"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/components/chat-message-bubble.ts:317",
+      "cite": "ui/src/pages/chat/components/chat-message-bubble-presentation.ts:161",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/pages/chat/components/chat-message-bubble.ts",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/components/chat-message-bubble-presentation.ts",
       "lines": [
         [
-          317,
-          317
+          161,
+          161
         ]
       ],
       "literals": [
@@ -2900,30 +4024,30 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/embedded-agent-subscribe.stream-rendering.ts:670",
+      "cite": "src/agents/embedded-agent-subscribe.handlers.messages.update.ts:128",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-subscribe.stream-rendering.ts",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-subscribe.handlers.messages.update.ts",
       "lines": [
         [
-          670,
-          670
+          128,
+          128
         ]
       ],
       "literals": [
-        "Emit-always: the thinking stream"
+        "Emit-always: emitReasoningStream always reaches the bus/archive"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/tool-stream-preamble.ts:46",
+      "cite": "ui/src/pages/chat/tool-stream-preamble.ts:39",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/tool-stream-preamble.ts",
       "lines": [
         [
-          46,
-          46
+          39,
+          39
         ]
       ],
       "literals": [
@@ -2932,30 +4056,30 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/tool-stream.ts:516",
+      "cite": "ui/src/pages/chat/tool-stream.ts:530",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/tool-stream.ts",
       "lines": [
         [
-          516,
-          516
+          530,
+          530
         ]
       ],
       "literals": [
-        "if (handlePreambleProgress(host, payload)) {"
+        "handlePreambleProgress(host, payload, source)"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/pages/chat/chat-assistant-reply.ts:21",
+      "cite": "ui/src/pages/chat/chat-assistant-reply.ts:23",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-assistant-reply.ts",
       "lines": [
         [
-          21,
-          21
+          23,
+          23
         ]
       ],
       "literals": [
@@ -2964,18 +4088,34 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/chat-display-projection.sanitize.ts:217-231,576-586",
+      "cite": "$UP/src/gateway/server-chat-transcript-publication.ts:114-124",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat-transcript-publication.ts",
+      "lines": [
+        [
+          114,
+          124
+        ]
+      ],
+      "literals": [
+        "data: { phase: \"persisted\", itemId, messageId, messageRunId: runId },"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/chat-display-projection.sanitize.ts:228-242,591-601",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/gateway/chat-display-projection.sanitize.ts",
       "lines": [
         [
-          217,
-          231
+          228,
+          242
         ],
         [
-          576,
-          586
+          591,
+          601
         ]
       ],
       "literals": [
@@ -2985,14 +4125,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/approval-session-audience.ts:52-107",
+      "cite": "src/gateway/approval-session-audience.ts:21-76",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/approval-session-audience.ts",
       "lines": [
         [
-          52,
-          107
+          21,
+          76
         ]
       ],
       "literals": [
@@ -3003,7 +4143,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "src/gateway/exec-approval-registration.ts:107-112",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/exec-approval-registration.ts",
       "lines": [
         [
@@ -3017,30 +4157,30 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-methods/sessions-subscriptions.ts:116-122",
+      "cite": "src/gateway/server-methods/sessions-subscriptions.ts:111",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/sessions-subscriptions.ts",
       "lines": [
         [
-          116,
-          122
+          111,
+          111
         ]
       ],
       "literals": [
-        "p.includeApprovals === true"
+        "params.includeApprovals === true"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/operator-approval-session-events.ts:156",
+      "cite": "src/gateway/operator-approval-session-events.ts:149",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/operator-approval-session-events.ts",
       "lines": [
         [
-          156,
-          156
+          149,
+          149
         ]
       ],
       "literals": [
@@ -3049,14 +4189,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-methods/approval-shared.ts:132-147",
+      "cite": "src/gateway/server-methods/approval-shared.ts:126-141",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/approval-shared.ts",
       "lines": [
         [
-          132,
-          147
+          126,
+          141
         ]
       ],
       "literals": [
@@ -3067,7 +4207,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "ui/src/pages/chat/session-approval-projection.ts:31-48",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/session-approval-projection.ts",
       "lines": [
         [
@@ -3081,14 +4221,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "ui/src/components/exec-approval-card.ts:400-408",
+      "cite": "ui/src/components/exec-approval-card-solid.tsx:424",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "ui/src/components/exec-approval-card.ts",
+      "tag": "2026.10.33",
+      "path": "ui/src/components/exec-approval-card-solid.tsx",
       "lines": [
         [
-          400,
-          408
+          424,
+          424
         ]
       ],
       "literals": [
@@ -3097,14 +4237,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/bash-tools.exec-host-shared.ts:209",
+      "cite": "src/agents/bash-tools.exec-host-shared.ts:198",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/bash-tools.exec-host-shared.ts",
       "lines": [
         [
-          209,
-          209
+          198,
+          198
         ]
       ],
       "literals": [
@@ -3113,14 +4253,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/agents/bash-tools.exec-host-node.ts:329",
+      "cite": "src/agents/bash-tools.exec-host-node.ts:304",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/bash-tools.exec-host-node.ts",
       "lines": [
         [
-          329,
-          329
+          304,
+          304
         ]
       ],
       "literals": [
@@ -3129,14 +4269,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/node-invoke-plugin-approval.ts:184",
+      "cite": "src/gateway/node-invoke-plugin-approval.ts:168",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/node-invoke-plugin-approval.ts",
       "lines": [
         [
-          184,
-          184
+          168,
+          168
         ]
       ],
       "literals": [
@@ -3145,18 +4285,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-methods/exec-approval.ts:172,292-299",
+      "cite": "src/gateway/server-methods/exec-approval.ts:142,234-241",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/exec-approval.ts",
       "lines": [
         [
-          172,
-          172
+          142,
+          142
         ],
         [
-          292,
-          299
+          234,
+          241
         ]
       ],
       "literals": [
@@ -3166,30 +4306,30 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/operator-approval-store.kernel.ts:140",
+      "cite": "src/gateway/operator-approval-store.kernel.worker.ts:155",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/operator-approval-store.kernel.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/operator-approval-store.kernel.worker.ts",
       "lines": [
         [
-          140,
-          140
+          155,
+          155
         ]
       ],
       "literals": [
-        ".onConflict((conflict) => conflict.column(\"approval_id\").doNothing()),"
+        ".onConflict((conflict) => conflict.column(\"approval_id\").doNothing())"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "src/gateway/server-methods/approval-shared.ts:59-65",
+      "cite": "src/gateway/server-methods/approval-shared.ts:62-68",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-methods/approval-shared.ts",
       "lines": [
         [
-          59,
-          65
+          62,
+          68
         ]
       ],
       "literals": [
@@ -3198,62 +4338,51 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.compaction.ts:209-214",
+      "cite": "$UP/src/agents/bash-tools.exec-host-gateway.ts:1234-1245",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-subscribe.handlers.compaction.ts",
+      "tag": "2026.10.33",
+      "path": "src/agents/bash-tools.exec-host-gateway.ts",
       "lines": [
         [
-          209,
-          214
+          1234,
+          1245
         ]
       ],
       "literals": [
-        "reasonClass === \"already_compacted\""
+        "emitApprovalLifecycle(\"waiting-approval\");"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-runner/compact-reasons.ts:57-67",
+      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.tools.completion.ts:481-511,542-559",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-runner/compact-reasons.ts",
+      "tag": "2026.10.33",
+      "path": "src/agents/embedded-agent-subscribe.handlers.tools.completion.ts",
       "lines": [
         [
-          57,
-          67
+          481,
+          511
+        ],
+        [
+          542,
+          559
         ]
       ],
       "literals": [
-        "return \"no_compactable_entries\";"
+        "status: approvalStatus,",
+        "phase: \"resolved\","
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:180-192",
+      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.messages.update.ts:69-78",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "extensions/codex/src/app-server/event-projector-events.ts",
-      "lines": [
-        [
-          180,
-          192
-        ]
-      ],
-      "literals": [
-        "backend: \"codex-app-server\","
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.messages.update.ts:75-84",
-      "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/embedded-agent-subscribe.handlers.messages.update.ts",
       "lines": [
         [
-          75,
-          84
+          69,
+          78
         ]
       ],
       "literals": [
@@ -3262,14 +4391,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/bash-tools.exec-host-gateway.ts:133-171",
+      "cite": "$UP/src/agents/bash-tools.exec-host-gateway.ts:119-157",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/bash-tools.exec-host-gateway.ts",
       "lines": [
         [
-          133,
-          171
+          119,
+          157
         ]
       ],
       "literals": [
@@ -3278,14 +4407,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:259-271",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:253-265",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "extensions/codex/src/app-server/event-projector-events.ts",
       "lines": [
         [
-          259,
-          271
+          253,
+          265
         ]
       ],
       "literals": [
@@ -3294,51 +4423,46 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-chat-progress-snapshot.ts:152",
+      "cite": "$UP/src/gateway/server-chat-progress-snapshot.ts:14-20",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-chat-progress-snapshot.ts",
       "lines": [
         [
-          152,
-          152
+          14,
+          20
         ]
       ],
       "literals": [
-        "\"input_delta\", \"update\", \"review\""
+        "[\"input_delta\", [\"diff\"]],"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/tool-stream.ts:623,659",
+      "cite": "$UP/ui/src/pages/chat/tool-stream.ts:670",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/tool-stream.ts",
       "lines": [
         [
-          623,
-          623
-        ],
-        [
-          659,
-          659
+          670,
+          670
         ]
       ],
       "literals": [
-        "resultReceived: true",
         "entry.resultReceived = true;"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-chat.ts:1422-1457",
+      "cite": "$UP/src/gateway/server-chat.ts:1222-1257",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          1422,
-          1457
+          1222,
+          1257
         ]
       ],
       "literals": [
@@ -3347,30 +4471,30 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/infra/agent-events.ts:421-422",
+      "cite": "$UP/src/infra/agent-events.ts:454-455",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/infra/agent-events.ts",
       "lines": [
         [
-          421,
-          422
+          454,
+          455
         ]
       ],
       "literals": [
-        "const nextSeq = (state.seqByRun.get(event.runId) ?? 0) + 1;"
+        "const nextSeq = Math.max(runState.seq, state.runs.get(event.runId)?.seq ?? 0) + 1;"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/infra/agent-events.ts:592-603",
+      "cite": "$UP/src/infra/agent-events.ts:671-682",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/infra/agent-events.ts",
       "lines": [
         [
-          592,
-          603
+          671,
+          682
         ]
       ],
       "literals": [
@@ -3379,14 +4503,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-broadcast.ts:458-462",
+      "cite": "$UP/src/gateway/server-broadcast.ts:445-449",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-broadcast.ts",
       "lines": [
         [
-          458,
-          462
+          445,
+          449
         ]
       ],
       "literals": [
@@ -3395,14 +4519,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:372-388",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:391-407",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/auto-reply/reply/agent-runner-result-payloads.ts",
       "lines": [
         [
-          372,
-          388
+          391,
+          407
         ]
       ],
       "literals": [
@@ -3411,14 +4535,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:399-411",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:412-424",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/auto-reply/reply/agent-runner-result-payloads.ts",
       "lines": [
         [
-          399,
-          411
+          412,
+          424
         ]
       ],
       "literals": [
@@ -3427,14 +4551,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:302-321",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:292-311",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "extensions/codex/src/app-server/event-projector-events.ts",
       "lines": [
         [
-          302,
-          321
+          292,
+          311
         ]
       ],
       "literals": [
@@ -3443,14 +4567,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/tool-stream-status.ts:303-349",
+      "cite": "$UP/ui/src/pages/chat/tool-stream-status.ts:292-338",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/tool-stream-status.ts",
       "lines": [
         [
-          303,
-          349
+          292,
+          338
         ]
       ],
       "literals": [
@@ -3459,14 +4583,62 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-runner/run/attempt-recovery.ts:450-466",
+      "cite": "$UP/src/gateway/server-methods/chat-assistant-content.ts:189-197",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-methods/chat-assistant-content.ts",
+      "lines": [
+        [
+          189,
+          197
+        ]
+      ],
+      "literals": [
+        "content.push({ type: \"text\", text, openclawStatusNotice: true });"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:477-500",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/auto-reply/reply/agent-runner-result-payloads.ts",
+      "lines": [
+        [
+          477,
+          500
+        ]
+      ],
+      "literals": [
+        "[...fallbackNoticePayloads, ...payloadArray]"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-client/src/session-projection-message-content.ts:38-50",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-client/src/session-projection-message-content.ts",
+      "lines": [
+        [
+          38,
+          50
+        ]
+      ],
+      "literals": [
+        "openclawStatusNotice !== true"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/agents/embedded-agent-runner/run/attempt-recovery.ts:463-479",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/agents/embedded-agent-runner/run/attempt-recovery.ts",
       "lines": [
         [
-          450,
-          466
+          463,
+          479
         ]
       ],
       "literals": [
@@ -3475,18 +4647,50 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:388-399",
+      "cite": "$UP/extensions/codex/src/app-server/event-projector-events.ts:375-386",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "extensions/codex/src/app-server/event-projector-events.ts",
       "lines": [
         [
-          388,
-          399
+          375,
+          386
         ]
       ],
       "literals": [
         "phase: \"retrying\","
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-chat.ts:1288-1305",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "src/gateway/server-chat.ts",
+      "lines": [
+        [
+          1288,
+          1305
+        ]
+      ],
+      "literals": [
+        "[\"rate_limit\", \"overloaded\", \"server_error\", \"timeout\", \"output_limit\"].includes("
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:432-439",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
+      "lines": [
+        [
+          432,
+          439
+        ]
+      ],
+      "literals": [
+        "Type.Literal(\"output_limit\"),"
       ]
     },
     {
@@ -3507,14 +4711,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/agent-runner-execution.ts:242-246",
+      "cite": "$UP/src/auto-reply/reply/agent-runner-execution.ts:292-296",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/auto-reply/reply/agent-runner-execution.ts",
       "lines": [
         [
-          242,
-          246
+          292,
+          296
         ]
       ],
       "literals": [
@@ -3523,99 +4727,78 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/bash-tools.exec-host-gateway.ts:1315-1337",
+      "cite": "$UP/packages/gateway-protocol/src/schema/questions.ts:74",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/bash-tools.exec-host-gateway.ts",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/questions.ts",
       "lines": [
         [
-          1315,
-          1337
+          74,
+          74
         ]
       ],
       "literals": [
-        "phase: \"waiting-approval\", approvalId, toolCallId: params.toolCallId"
+        "options: Type.Array(QuestionOptionSchema, { maxItems: 64 }),"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-subscribe.handlers.tools.completion.ts:483-513,546-563",
+      "cite": "$UP/src/gateway/question-validation.ts:28-33",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/embedded-agent-subscribe.handlers.tools.completion.ts",
+      "tag": "2026.10.33",
+      "path": "src/gateway/question-validation.ts",
       "lines": [
         [
-          483,
-          513
-        ],
-        [
-          546,
-          563
+          28,
+          33
         ]
       ],
       "literals": [
-        "status: approvalStatus,",
-        "phase: \"resolved\","
+        "supports at most four standard options"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-methods/chat-assistant-content.ts:218-226",
+      "cite": "$UP/packages/gateway-protocol/src/schema/questions.ts:50",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/gateway/server-methods/chat-assistant-content.ts",
+      "tag": "2026.10.33",
+      "path": "packages/gateway-protocol/src/schema/questions.ts",
       "lines": [
         [
-          218,
-          226
-        ]
-      ],
-      "literals": [
-        "content.push({ type: \"text\", text, openclawStatusNotice: true });"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/agent-runner-result-payloads.ts:421-444",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/auto-reply/reply/agent-runner-result-payloads.ts",
-      "lines": [
-        [
-          421,
-          444
-        ]
-      ],
-      "literals": [
-        "[...fallbackNoticePayloads, ...payloadArray]"
-      ]
-    },
-    {
-      "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/packages/gateway-client/src/session-projection-message-content.ts:38-50",
-      "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "packages/gateway-client/src/session-projection-message-content.ts",
-      "lines": [
-        [
-          38,
+          50,
           50
         ]
       ],
       "literals": [
-        "openclawStatusNotice !== true"
+        "value: Type.Optional(withSince(\"2026.9\", Type.String({ minLength: 1, maxLength: 4096 }))),"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-startup-post-attach.ts:979-982",
+      "cite": "$UP/src/gateway/question-manager.ts:118-129",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
+      "path": "src/gateway/question-manager.ts",
+      "lines": [
+        [
+          118,
+          129
+        ]
+      ],
+      "literals": [
+        "return matched ? (matched.value ?? matched.label) : candidate;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/src/gateway/server-startup-post-attach.ts:867-870",
+      "repo": "upstream",
+      "tag": "2026.10.33",
       "path": "src/gateway/server-startup-post-attach.ts",
       "lines": [
         [
-          979,
-          982
+          867,
+          870
         ]
       ],
       "literals": [
@@ -3624,14 +4807,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:62",
+      "cite": "$UP/src/agents/restart-recovery-prompt.ts:2",
       "repo": "upstream",
-      "tag": "2026.9.36",
-      "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
+      "tag": "2026.10.33",
+      "path": "src/agents/restart-recovery-prompt.ts",
       "lines": [
         [
-          62,
-          62
+          2,
+          2
         ]
       ],
       "literals": [
@@ -3640,14 +4823,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:453",
+      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:465",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
       "lines": [
         [
-          453,
-          453
+          465,
+          465
         ]
       ],
       "literals": [
@@ -3658,7 +4841,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/sessions/input-provenance.ts:24",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/sessions/input-provenance.ts",
       "lines": [
         [
@@ -3672,18 +4855,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:256,440",
+      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:265,452",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
       "lines": [
         [
-          256,
-          256
+          265,
+          265
         ],
         [
-          440,
-          440
+          452,
+          452
         ]
       ],
       "literals": [
@@ -3693,14 +4876,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:392",
+      "cite": "$UP/src/agents/main-session-recovery/main-session-restart-dispatch.ts:404",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "src/agents/main-session-recovery/main-session-restart-dispatch.ts",
       "lines": [
         [
-          392,
-          392
+          404,
+          404
         ]
       ],
       "literals": [
@@ -3709,14 +4892,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/system-notice-kinds.ts:28",
+      "cite": "$UP/ui/src/pages/chat/system-notice-kinds.ts:30",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/system-notice-kinds.ts",
       "lines": [
         [
-          28,
-          28
+          30,
+          30
         ]
       ],
       "literals": [
@@ -3725,14 +4908,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/chat-system-notice.ts:52",
+      "cite": "$UP/ui/src/pages/chat/chat-system-notice.ts:101",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/pages/chat/chat-system-notice.ts",
       "lines": [
         [
-          52,
-          52
+          101,
+          101
         ]
       ],
       "literals": [
@@ -3741,14 +4924,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/lib/chat/tool-cards.ts:178",
+      "cite": "$UP/ui/src/lib/chat/tool-cards.ts:162",
       "repo": "upstream",
-      "tag": "2026.9.36",
+      "tag": "2026.10.33",
       "path": "ui/src/lib/chat/tool-cards.ts",
       "lines": [
         [
-          178,
-          178
+          162,
+          162
         ]
       ],
       "literals": [

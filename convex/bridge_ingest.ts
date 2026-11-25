@@ -528,6 +528,8 @@ type IngestOp =
       messageId: string;
       phase: string;
       retry?: { attempt: number; maxAttempts: number };
+      retryReason?: string;
+      retryAt?: number;
       onlyIfRetrying?: boolean;
       runId?: string | null;
     }
@@ -626,6 +628,13 @@ type IngestOp =
       op: "updateRunId";
       messageId: string;
       runId: string;
+    }
+  | {
+      op: "linkRunBubble";
+      messageId: string;
+      clientRunId: string;
+      runId: string;
+      cursor?: string;
     }
   | {
       op: "heartbeat";
@@ -734,6 +743,8 @@ type IngestOp =
        *  gateway's requester-settle wake names (convex/lib/deliveryRuns.ts). */
       childRunId?: string;
       runTimeoutSeconds?: number;
+      /** The run whose terminal the gateway classed as a timeout (schema note). */
+      timedOutRunId?: string;
       kind?: "subagent" | "task";
       bornOfRun?: string;
       /** A TASK row of a projected turn (phase 5): the run whose tool frame started it. */
@@ -865,6 +876,14 @@ type IngestOp =
       answers?: Array<{ id: string; values: string[] }>;
       decision?: string;
     }
+  // The gateway said an exec approval's request FAILED: its command did not run, whatever
+  // was decided (convex/agentRequests.ts markGatewayFailedFromBridge). Which card, no text.
+  | {
+      op: "agentRequestGatewayFailed";
+      chatId: string;
+      providerRequestId: string;
+      providerCreatedAt?: number;
+    }
   // THE TRANSCRIPT PROJECTION (redesign phase 1, shadow): what one `chat.history` read
   // returned, as identities. Never touches a message (convex/transcriptProjection.ts).
   | {
@@ -980,6 +999,10 @@ function subAgentRecordArgs(body: Extract<IngestOp, { op: "upsertSubAgent" }>) {
       body.runTimeoutSeconds <= 7 * 24 * 60 * 60
         ? body.runTimeoutSeconds
         : undefined,
+    // A run id, in the one shape upstream mints: it is compared with the row's own.
+    ...(typeof body.timedOutRunId === "string" && CHILD_RUN_ID_RE.test(body.timedOutRunId)
+      ? { timedOutRunId: body.timedOutRunId }
+      : {}),
     kind: body.kind,
     bornOfRun: body.bornOfRun,
     // Phase 5: a run id, bounded like one (lib/transcriptProjection MAX_RUN_ID_CHARS).
@@ -1834,6 +1857,8 @@ export const ingest = httpAction(async (ctx, request) => {
         phase: body.phase,
         boundInstanceName,
         ...(body.retry !== undefined ? { retry: body.retry } : {}),
+        ...(typeof body.retryReason === "string" ? { retryReason: body.retryReason } : {}),
+        ...(typeof body.retryAt === "number" ? { retryAt: body.retryAt } : {}),
         ...(body.onlyIfRetrying === true ? { onlyIfRetrying: true } : {}),
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
@@ -1990,6 +2015,28 @@ export const ingest = httpAction(async (ctx, request) => {
         boundInstanceName,
       });
       return json({ ok: true });
+    }
+    case "linkRunBubble": {
+      if (
+        typeof body.messageId !== "string" ||
+        typeof body.clientRunId !== "string" ||
+        typeof body.runId !== "string" ||
+        (body.cursor !== undefined && typeof body.cursor !== "string")
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const result = await ctx.runMutation(internal.stream.linkRunBubble, {
+        messageId: body.messageId as Id<"messages">,
+        clientRunId: body.clientRunId,
+        runId: body.runId,
+        ...(body.cursor !== undefined ? { cursor: body.cursor } : {}),
+        boundInstanceName,
+      });
+      return json({
+        ok: true,
+        linked: result.linked,
+        ...(result.continueCursor !== undefined ? { continueCursor: result.continueCursor } : {}),
+      });
     }
     case "heartbeat": {
       await ctx.runMutation(internal.stream.heartbeatStream, {
@@ -2393,6 +2440,27 @@ export const ingest = httpAction(async (ctx, request) => {
       // What the settle DID — closed the card, kept the verdict for a card not recorded yet,
       // or nothing: the bridge reads it instead of taking any answer for a closed card.
       return json({ ok: true, settled: res.settled, outcome: res.outcome });
+    }
+    case "agentRequestGatewayFailed": {
+      if (typeof body.providerRequestId !== "string" || body.providerRequestId === "") {
+        return json({ ok: false, error: "invalid agent request gateway failure" }, 400);
+      }
+      const res = await ctx.runMutation(internal.agentRequests.markGatewayFailedFromBridge, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        providerRequestId: body.providerRequestId,
+        ...(typeof body.providerCreatedAt === "number" && Number.isFinite(body.providerCreatedAt)
+          ? { providerCreatedAt: body.providerCreatedAt }
+          : {}),
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        // Structural only — never the command.
+        meta: { op: body.op, outcome: res.outcome },
+      });
+      return json({ ok: true, outcome: res.outcome });
     }
     case "applyTranscript": {
       // Shape is re-validated by the mutation's validators (a malformed body is a 500

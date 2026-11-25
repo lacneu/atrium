@@ -195,6 +195,21 @@ const QUESTION_ID_RE = /^[a-z][a-z0-9_]*$/;
 
 export const OPENCLAW_QUESTION_EVENTS = new Set(["question.requested", "question.resolved"]);
 
+/** `Question.options` upper bound (schema/questions.ts `maxItems`): 4 up to 2026.9.36,
+ *  64 from 2026.10.33 on — where only a `presentation: "form"` question may carry more
+ *  than four (src/gateway/question-validation.ts). Every option the gateway sent is
+ *  kept; a list past the contract's own bound is not a question this can state. */
+export const OPENCLAW_MAX_OPTIONS = 64;
+/** `QuestionOption.value` upper bound (schema/questions.ts, 2026.10.33). */
+const OPENCLAW_MAX_OPTION_VALUE = 4096;
+
+/** The answer value each option of a question carries, by its LABEL — only the options
+ *  that declare one (`QuestionOption.value`). Atrium shows, stores and compares labels;
+ *  the gateway's canonical answer is `value ?? label` (question-manager.ts
+ *  `canonicalizeQuestionAnswer`), so the two vocabularies are translated at this boundary
+ *  and nowhere else. */
+export type OpenClawOptionValues = ReadonlyMap<string, ReadonlyMap<string, string>>;
+
 export interface OpenClawQuestion {
   id: string;
   sessionKey: string | null;
@@ -205,6 +220,9 @@ export interface OpenClawQuestion {
   /** A secret question is SHOWN as a credential (masked, never stored). */
   secret: boolean;
   questions: AgentRequestQuestion[];
+  /** Question id → option label → the option's `value` (see OpenClawOptionValues).
+   *  Kept OUT of `questions`: that array is the record Convex stores and shapes. */
+  optionValues: OpenClawOptionValues;
 }
 
 /**
@@ -218,6 +236,7 @@ export function readOpenClawQuestionRequested(payload: unknown): OpenClawQuestio
   if (id === undefined || !Array.isArray(p.questions)) return null;
   if (p.status !== undefined && p.status !== "pending") return null;
   const questions: AgentRequestQuestion[] = [];
+  const optionValues = new Map<string, Map<string, string>>();
   for (const raw of p.questions.slice(0, 3)) {
     const q = obj(raw);
     if (q === null) continue;
@@ -226,8 +245,13 @@ export function readOpenClawQuestionRequested(payload: unknown): OpenClawQuestio
     if (qid === null || text === undefined) continue;
     const options: AgentRequestQuestion["options"] = [];
     const rawOptionCount = Array.isArray(q.options) ? q.options.length : 0;
+    // Never a silent cut: a closed question shown with fewer choices than the agent
+    // offered asks another question. Past the contract's own bound the request is not
+    // one this can state — not recorded, like any other it cannot read whole.
+    if (rawOptionCount > OPENCLAW_MAX_OPTIONS) return null;
     if (Array.isArray(q.options)) {
-      for (const rawOpt of q.options.slice(0, 4)) {
+      const values = new Map<string, string>();
+      for (const rawOpt of q.options) {
         const o = obj(rawOpt);
         // VERBATIM: the label is also the answer value, and the gateway canonicalizes an
         // answer back to the option's own bytes (question-manager.ts:365-366) — a trimmed
@@ -236,7 +260,13 @@ export function readOpenClawQuestionRequested(payload: unknown): OpenClawQuestio
         if (label === undefined) continue;
         const description = str(o!.description);
         options.push(description === undefined ? { label } : { label, description });
+        // VERBATIM too, and never shown: the gateway matches it byte for byte.
+        const value = o!.value;
+        if (typeof value === "string" && value !== "" && value.length <= OPENCLAW_MAX_OPTION_VALUE) {
+          values.set(label, value);
+        }
       }
+      if (values.size > 0) optionValues.set(qid, values);
     }
     const header = str(q.header);
     const url = str(q.url);
@@ -269,6 +299,7 @@ export function readOpenClawQuestionRequested(payload: unknown): OpenClawQuestio
     createdAtMs: num(p.createdAtMs) ?? null,
     secret: questions.some((q) => q.secret),
     questions,
+    optionValues,
   };
 }
 
@@ -432,6 +463,52 @@ export function readOpenClawApprovalResolved(
     resolvedBy: typeof p.resolvedBy === "string" && p.resolvedBy !== "" ? p.resolvedBy : null,
   };
 }
+
+/**
+ * The gateway's own word that an exec approval's REQUEST FAILED: the `agent` event of
+ * stream `approval`, `phase: "resolved"`, `kind: "exec"`, `status: "failed"`, written when
+ * the exec tool completes (src/agents/embedded-agent-subscribe.handlers.tools.completion.ts
+ * `handleToolExecutionEnd`, identical at v2026.9.36 and v2026.10.33). On a `resolved` the
+ * status is `failed` or `denied`, nothing else: `failed` is the exec refused because waiting
+ * for the decision itself failed (`approval-request-failed`: bash-tools.exec-host-shared.ts
+ * `resolveExecApprovalWaitOutcome`, any error of the wait but an aborted run) — the command
+ * did not run, whatever was decided; `denied` is every other refusal (a person's deny, an
+ * expiry, an aborted run…), which this does not read.
+ *
+ * The frame names the TOOL CALL, never the approval id: the caller joins it to the EXEC
+ * request announced for that call (`request.toolCallId`). The Codex harness writes the same
+ * stream with another meaning (`failed` = the run stopped while it waited,
+ * extensions/codex/src/app-server/approval-bridge.ts): its frames name no tool call and its
+ * approvals are plugin ones, so neither is read nor joined. `message` (the command) and
+ * `title` are not read. Null for any other frame.
+ */
+export function readOpenClawApprovalRequestFailed(
+  frame: unknown,
+): { toolCallId: string; sessionKey: string | null; runId: string | null } | null {
+  const f = obj(frame);
+  if (f === null || f.type !== "event" || f.event !== "agent") return null;
+  const p = obj(f.payload);
+  if (p === null || p.stream !== "approval") return null;
+  const data = obj(p.data);
+  if (data === null) return null;
+  if (data.phase !== "resolved" || data.kind !== "exec" || data.status !== "failed") return null;
+  const toolCallId = providerId(data.toolCallId);
+  if (toolCallId === undefined) return null;
+  return { toolCallId, sessionKey: str(p.sessionKey) ?? null, runId: str(p.runId) ?? null };
+}
+
+/** An approval the gateway said it did not honour (`readOpenClawApprovalRequestFailed`),
+ *  as the bridge hands it to Convex: which card, never why in words. */
+export interface AgentRequestGatewayFailure {
+  chatId: string;
+  providerRequestId: string;
+  /** The generation concerned (see AgentRequestRecord.providerCreatedAt). */
+  providerCreatedAt?: number;
+}
+
+/** What Convex did with it: marked the card (`marked`, also when it already was), or found
+ *  no exec approval card of that request (`none`). */
+export type AgentRequestGatewayFailureOutcome = "marked" | "none";
 
 /**
  * Which request an `approval.get` snapshot says it is about: its generation (`createdAtMs`,
@@ -714,15 +791,41 @@ export function openClawDecision(decision: ApprovalDecision): "allow-once" | "al
   return decision === "allow-session" ? "allow-once" : decision;
 }
 
-/** The answer body `question.resolve` takes. */
+/** The answer body `question.resolve` takes. A picked option is sent as its `value` when
+ *  it declares one (the Control UI does the same: chat-question-answer-controls.tsx,
+ *  `option.value ?? option.label`). A label would be canonicalized by the gateway too —
+ *  except when it equals ANOTHER option's value, which the gateway reads first
+ *  (question-manager.ts `canonicalizeQuestionAnswer`): the value is the only form that
+ *  names one option whatever the others are called. */
 export function openClawQuestionAnswers(
   answers: ReadonlyArray<{ id: string; values: string[] }>,
+  optionValues?: OpenClawOptionValues,
 ): { answers: Record<string, string[]> } {
   const out: Record<string, string[]> = {};
   for (const a of answers) {
-    if (QUESTION_ID_RE.test(a.id)) out[a.id] = [...a.values];
+    if (!QUESTION_ID_RE.test(a.id)) continue;
+    const byLabel = optionValues?.get(a.id);
+    out[a.id] = a.values.map((v) => byLabel?.get(v) ?? v);
   }
   return { answers: out };
+}
+
+/** The reverse, for what the gateway RECORDED (`question.resolved`): its answers are
+ *  canonical (`value ?? label`), and everything downstream — the stored answer, the
+ *  "was it ours" comparison, the option the card marks — is in labels. An answer that is
+ *  no option's value (a label of an option without one, free text) is left as it is;
+ *  upstream refuses two options sharing a canonical value (question-validation.ts), so a
+ *  value names one label. */
+export function openClawAnswerLabels(
+  answers: ReadonlyArray<{ id: string; values: string[] }>,
+  optionValues: OpenClawOptionValues | undefined,
+): Array<{ id: string; values: string[] }> {
+  return answers.map((a) => {
+    const byLabel = optionValues?.get(a.id);
+    if (byLabel === undefined) return { id: a.id, values: [...a.values] };
+    const byValue = new Map([...byLabel].map(([label, value]) => [value, label]));
+    return { id: a.id, values: a.values.map((v) => byValue.get(v) ?? v) };
+  });
 }
 
 // ── Hermes ─────────────────────────────────────────────────────────────────────

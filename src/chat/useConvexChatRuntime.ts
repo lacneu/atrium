@@ -14,7 +14,7 @@ import {
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
-import type { ConvexId, ConvexMessageView } from "./convexTypes";
+import type { ConvexId, ConvexMessageView, PhaseRetry } from "./convexTypes";
 import { convertConvexMessage } from "./convertMessage";
 import { displayGroupPlaces, groupInputsChanged, groupInputsOf, type GroupInputs } from "./displayGroups";
 import {
@@ -598,7 +598,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         text: string;
         chunkSeq?: number;
         phase?: string;
-        phaseRetry?: { attempt: number; maxAttempts: number };
+        phaseRetry?: PhaseRetry;
       }
     >(
       streamingRows.map((r) => [
@@ -609,8 +609,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           phase: (r as { phase?: string }).phase,
           // The back-off counter travels WITH its phase; separating them is how
           // a label ends up reading "2/10" during a turn that already resumed.
-          phaseRetry: (r as { phaseRetry?: { attempt: number; maxAttempts: number } })
-            .phaseRetry,
+          phaseRetry: (r as { phaseRetry?: PhaseRetry }).phaseRetry,
         },
       ]),
     );

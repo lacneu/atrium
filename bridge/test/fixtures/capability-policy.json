@@ -16,7 +16,13 @@
     "has since retired (0.92.0 raised the OpenClaw floor to 2026.8.2 over entries dating",
     "from 2026.5.19). It discriminates the two floor rules: below the floor, nothing at",
     "all; an unknown version gets every capability AT OR BELOW the floor, not only those",
-    "equal to it."
+    "equal to it.",
+    "",
+    "`gapped` carries an `unvalidatedWindows` interval: the ceiling was raised from 1.5.0",
+    "to 3.0.0 and nothing in between was benched. `gapCap` (2.0.0) sits INSIDE the",
+    "interval, so it tells a version frozen at the interval's lower bound (off) from one",
+    "resolved as itself (on) — the same discrimination `unbenchedCap` gives above the",
+    "ceiling."
   ],
   "manifest": {
     "providers": {
@@ -29,6 +35,19 @@
           "midCap": "1.5.0",
           "maxCap": "2.0.0",
           "unbenchedCap": "3.0.0"
+        }
+      },
+      "gapped": {
+        "supportedRange": { "min": "1.0.0", "maxValidated": "3.0.0" },
+        "unvalidatedWindows": [
+          { "after": "1.5.0", "before": "3.0.0", "why": "never benched" }
+        ],
+        "validatedVersions": ["1.0.0", "1.5.0", "3.0.0"],
+        "capabilities": {
+          "floorCap": "1.0.0",
+          "midCap": "1.5.0",
+          "gapCap": "2.0.0",
+          "topCap": "3.0.0"
         }
       },
       "placeholder": {
@@ -154,6 +173,90 @@
         "midCap": false,
         "maxCap": false,
         "unbenchedCap": false
+      }
+    },
+    {
+      "name": "the lower bound of a never-benched interval is validated: itself, no flag",
+      "provider": "gapped",
+      "version": "1.5.0",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "gapCap": false,
+        "topCap": false
+      }
+    },
+    {
+      "name": "INSIDE a never-benched interval under the ceiling: frozen at the bound below it and flagged — `gapCap: false` is the whole point",
+      "provider": "gapped",
+      "version": "2.5.0",
+      "beyond": true,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "gapCap": false,
+        "topCap": false
+      }
+    },
+    {
+      "name": "just above the lower bound: already inside the interval",
+      "provider": "gapped",
+      "version": "1.5.1",
+      "beyond": true,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "gapCap": false,
+        "topCap": false
+      }
+    },
+    {
+      "name": "a pre-release of the upper bound sorts below it: inside the interval, never the bound's profile",
+      "provider": "gapped",
+      "version": "3.0.0-beta.1",
+      "beyond": true,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "gapCap": false,
+        "topCap": false
+      }
+    },
+    {
+      "name": "the upper bound is the validated ceiling: everything, no flag",
+      "provider": "gapped",
+      "version": "3.0.0",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "gapCap": true,
+        "topCap": true
+      }
+    },
+    {
+      "name": "beyond the ceiling of a gapped range: frozen at the ceiling, not at the interval",
+      "provider": "gapped",
+      "version": "3.5.0",
+      "beyond": true,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "gapCap": true,
+        "topCap": true
+      }
+    },
+    {
+      "name": "below the interval: resolved as itself, no flag",
+      "provider": "gapped",
+      "version": "1.2.0",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": false,
+        "gapCap": false,
+        "topCap": false
       }
     },
     {

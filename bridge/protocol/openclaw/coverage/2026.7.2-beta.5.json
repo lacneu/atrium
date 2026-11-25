@@ -38,7 +38,7 @@
         },
         "replace": {
           "status": "handled",
-          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex when the frame is fresh (run seq above every chat text applied for the run; never for a run adopted into the turn); a rewrite to the empty text clears the bubble; a bare `deltaText` marked replace takes the same path",
+          "by": "normalizer handleChat: the delta's `message` is the rewritten live text, written through the snapshot path with the shrink DECLARED to Convex when the frame is fresh (run seq above every chat text applied for the run; never for a run adopted into the turn); a rewrite to the empty text is held and written with what replaces the text shown — the run's next text or the terminal — or not written at all when the transcript recorded that text (`recordedText`; 2026.10.33 sends this frame for every text it records); a bare `deltaText` marked replace takes the same path",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "const rewrite = payload.replace === true;"

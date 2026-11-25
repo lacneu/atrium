@@ -10,6 +10,7 @@ import {
   LOST_RESPONSE_CODES,
   type DispatchErrorCode,
 } from "../src/core/dispatch-errors.js";
+import { classifyFailureText } from "../src/core/failure-classifier.js";
 
 describe("classifyGatewayError", () => {
   test("the canonical live failure: INVALID_REQUEST wrapping 'no longer exists' -> AGENT_NOT_FOUND", () => {
@@ -311,6 +312,35 @@ describe("a session that moved under a starting run is retriable, not malformed"
     ).toBe("session_init_conflict");
   });
 
+  test("2026.10.33: three more admission refusals that say `retry`, and the rebuilding transcript", () => {
+    // Thrown while chat.send is still being admitted and answered `INVALID_REQUEST` with the
+    // bare message (chat-send-admission.ts:461-466 → chat-send-pre-admission.ts:115-119,
+    // `formatForLog`): chat-send-session.ts:276, chat-send-admission.ts:205,
+    // chat-restart-recovery.ts:364. They fell to INVALID_REQUEST / UPSTREAM_ERROR — blamed
+    // on the request or on the bridge, never retried.
+    for (const sentence of [
+      "Session preparation changed; retry.",
+      "Worker placement owner changed during chat admission; retry.",
+      "Restart-safe chat freshness was not prepared; retry.",
+    ]) {
+      for (const raw2 of [`INVALID_REQUEST: Error: ${sentence}`, `UNAVAILABLE: ${sentence}`, sentence]) {
+        expect(classifyGatewayError(new Error(raw2)), raw2).toBe("session_init_conflict");
+        expect(classifyGatewayError(new Error(raw2), { hasAttachments: true }), raw2).toBe(
+          "session_init_conflict",
+        );
+      }
+    }
+    // `UNAVAILABLE`, `retryable: true, retryAfterMs: 250` (chat-send-pre-admission.ts:103-112);
+    // at 10.33 a duplicate send can reach it too (:252-264).
+    expect(
+      classifyGatewayError(new Error("UNAVAILABLE: session transcript is rebuilding; retry shortly")),
+    ).toBe("session_init_conflict");
+    // A sentence that merely ends in "retry" is not one of them.
+    expect(classifyGatewayError(new Error("UNAVAILABLE: Human mentions are unavailable; reconnect and retry."))).toBe(
+      "UPSTREAM_ERROR",
+    );
+  });
+
   // The same conflict on a send that CARRIES a file: the attachment fallback
   // fires on `hasAttachments && /invalid request/`, so this was classified
   // ATTACHMENT_REJECTED — terminal, and blaming a file that had nothing to do
@@ -570,6 +600,24 @@ describe("the gateway's own storage and agent-database refusals (OpenClaw 2026.9
     expect(
       classifyGatewayError(refused("agent-database-inspection-failed", ENOSPC_REASON, FAILED_HINT)),
     ).toBe("gateway_storage_unavailable");
+  });
+
+  test("2026.10.33: an agent refused because its database is LOCKED by another process", () => {
+    // src/state/agent-database-admission.ts:106-113: same code, a new reason and a new
+    // hint that names neither "Sessions remain unavailable" nor a doctor run.
+    const LOCKED_REASON = "database locked by another process";
+    const LOCKED_HINT =
+      "Close other processes accessing this database, then restart the Gateway to retry admission. Lock contention does not require database repair.";
+    // By its CODE on an answered request…
+    expect(
+      classifyGatewayError(refused("agent-database-inspection-failed", LOCKED_REASON, LOCKED_HINT)),
+    ).toBe("gateway_agent_db_closed");
+    // …and by its fixed hint when only the text travelled (a child's failure, a lifecycle
+    // error: `AgentDatabaseAdmissionError`'s message, :364-371). Not the contention class:
+    // a resend is refused the same way until the gateway is restarted.
+    const text = `Agent alice (/home/node/.openclaw/agents/alice/agent.sqlite): ${LOCKED_REASON}\n${LOCKED_HINT}`;
+    expect(classifyGatewayError(new Error(`UNAVAILABLE: ${text}`))).toBe("gateway_agent_db_closed");
+    expect(classifyFailureText(text)).toBe("gateway_agent_db_closed");
   });
 
   test("a details.code from another vocabulary is not read as an agent refusal", () => {

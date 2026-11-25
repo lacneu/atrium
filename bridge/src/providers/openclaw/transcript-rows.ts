@@ -764,6 +764,40 @@ export function toTranscriptRow(
   };
 }
 
+/** `openclawDeliveryMirror.kind` values that mark a row as a mirror even when its
+ *  provider/model were stripped (upstream OPENCLAW_DELIVERY_MIRROR_KINDS). */
+const DELIVERY_MIRROR_KINDS = new Set([
+  "channel-final",
+  "channel-final-suppressed",
+  "message-tool-source-reply",
+  "cron-direct-delivery-context",
+  "skill-workshop-change",
+  "model-fallback",
+]);
+
+/**
+ * An assistant row the GATEWAY authored on behalf of a run — a delivery mirror, an
+ * injected row — never the model's own message. Mirror of upstream
+ * `isTranscriptOnlyOpenClawAssistantMessage` (src/shared/
+ * transcript-only-openclaw-assistant.ts at v2026.9.36 and v2026.10.33): provider
+ * `openclaw` with one of its two bookkeeping models, or a valid mirror marker. Such a row
+ * is not a message of the run's stream (the stream handler skips them itself,
+ * src/agents/embedded-agent-subscribe.handlers.messages.stream.ts:36-45): its text is
+ * independent of the live text and records none of it.
+ */
+export function isGatewayAuthoredAssistantMessage(message: unknown): boolean {
+  const record = asRecord(message);
+  if (record === null || projString(record.role)?.toLowerCase() !== "assistant") return false;
+  if (
+    record.provider === "openclaw" &&
+    (record.model === "delivery-mirror" || record.model === "gateway-injected")
+  ) {
+    return true;
+  }
+  const kind = asRecord(record.openclawDeliveryMirror)?.kind;
+  return typeof kind === "string" && DELIVERY_MIRROR_KINDS.has(kind);
+}
+
 /** The identity facts a row states beside what it shows (projection `on`). */
 type ContentFacts = Pick<
   TranscriptRow,
@@ -1379,6 +1413,24 @@ export function classifySessionsChanged(payload: unknown): SessionsChangedAction
   }
   if (phase === "end" || phase === "error") return { reset: false, read: true, why: "run_end" };
   return { reset: false, read: false, why: null };
+}
+
+/**
+ * The run link a lifecycle `sessions.changed` states, or null: `runId` is the EXECUTION
+ * run, `clientRunId` the client run the gateway broadcasts its live frames under — sent
+ * only when the two differ (src/gateway/server-chat-lifecycle-publication.ts:122 at
+ * v2026.10.33; absent through v2026.9.36). The Control UI reads the pair the same way
+ * (ui/src/lib/sessions/session-row-reconcile.ts:311-313) and correlates its live run on
+ * `clientRunId ?? runId` (ui/src/pages/chat/chat-state-events.ts:182,345).
+ */
+export function sessionsChangedRunLink(
+  payload: unknown,
+): { runId: string; clientRunId: string } | null {
+  const p = asRecord(payload);
+  const runId = projString(p?.runId);
+  const clientRunId = projString(p?.clientRunId);
+  if (runId === null || clientRunId === null || runId === clientRunId) return null;
+  return { runId, clientRunId };
 }
 
 /** The session key a session event names (`sessionKey`, a trimmed non-empty string). */

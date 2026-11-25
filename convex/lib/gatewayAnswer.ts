@@ -30,6 +30,7 @@ export const GATEWAY_ANSWER_DETAIL_KEYS: readonly string[] = [
   "expectedRevisionHash",
   "idempotencyKey",
   "jobId",
+  "kind",
   "limit",
   "missingScope",
   "paths",
@@ -39,6 +40,7 @@ export const GATEWAY_ANSWER_DETAIL_KEYS: readonly string[] = [
   "requiredScopes",
   "sessionId",
   "source",
+  "warning",
 ];
 
 /** The fixed value of a code outside the vocabulary — never the string received. */

@@ -11,11 +11,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { ConvexWriter } from "../src/convex-writer.js";
+import type { TurnRetry } from "../src/core/events.js";
 import { TurnSink } from "../src/core/turn-sink.js";
 
 type PhaseCall = {
   phase: string;
-  retry?: { attempt: number; maxAttempts: number };
+  retry?: TurnRetry;
   onlyIfRetrying?: boolean;
 };
 
@@ -54,7 +55,7 @@ class PhaseWriter implements ConvexWriter {
   async setPhase(
     _messageId: string,
     phase: string,
-    retry?: { attempt: number; maxAttempts: number },
+    retry?: TurnRetry,
     onlyIfRetrying?: boolean,
   ): Promise<boolean> {
     // The fourth argument is CAPTURED. The earlier fake took three, so the scoped-clear
@@ -95,6 +96,30 @@ describe("the sink carries the back-off counter with its phase", () => {
       retry: { attempt: 2, maxAttempts: 10 },
       onlyIfRetrying: false,
     });
+  });
+
+  it("forwards WHY and UNTIL WHEN with the counter (2026.10.33), and only when well formed", async () => {
+    const calls = await phasesFor([
+      {
+        type: "turn.phase",
+        phase: "retrying",
+        retry: { attempt: 2, maxAttempts: 10, reason: "overloaded", retryAt: 1_800_000_060_000 },
+      },
+      // A reason outside the vocabulary and a non-finite time are dropped; the counter stays.
+      {
+        type: "turn.phase",
+        phase: "retrying",
+        retry: { attempt: 3, maxAttempts: 10, reason: "because", retryAt: Number.NaN, extra: "x" },
+      },
+    ]);
+    expect(calls.filter((c) => c.phase === "retrying")).toEqual([
+      {
+        phase: "retrying",
+        retry: { attempt: 2, maxAttempts: 10, reason: "overloaded", retryAt: 1_800_000_060_000 },
+        onlyIfRetrying: false,
+      },
+      { phase: "retrying", retry: { attempt: 3, maxAttempts: 10 }, onlyIfRetrying: false },
+    ]);
   });
 
   it("forwards NO counter when the event carries none", async () => {

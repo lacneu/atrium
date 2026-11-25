@@ -88,10 +88,13 @@ export type { ProvenancePart } from "./core/provenance.js";
 // The cron part shape lives in core/cron-part.ts (pure contract module).
 export type { CronPart } from "./core/cron-part.js";
 import type { CronPart } from "./core/cron-part.js";
+import type { TurnRetry, TurnRetryReason } from "./core/events.js";
 // The plan part shape lives in core/plan-part.ts (pure contract module).
 export type { PlanPart } from "./core/plan-part.js";
 import type { PlanPart } from "./core/plan-part.js";
 import type {
+  AgentRequestGatewayFailure,
+  AgentRequestGatewayFailureOutcome,
   AgentRequestRecord,
   AgentRequestSettle,
   AgentRequestSettleOutcome,
@@ -161,6 +164,13 @@ export interface SubAgentRecord {
    *  a child that died of a context overflow is now countable, not just
    *  readable. Allowlisted at the ingest boundary. */
   errorCode?: string;
+  /** The run whose own terminal the GATEWAY classed as a timeout: the `runId` of the
+   *  child's `chat` error frame carrying `errorKind:"timeout"`. A structured fact, never
+   *  read from the sentence. On OpenClaw 2026.10.33 a child cut off while a tool ran
+   *  leaves a session row that reads `interrupted` (as a restart does); this names the
+   *  run so the row's word can be told apart (convex/lib/sessionRowStatus.ts). A
+   *  top-level field, like `runTimeoutSeconds`: an older Convex ignores it. */
+  timedOutRunId?: string;
   // The tools the CHILD called -- NAME + lifecycle status ONLY here (the cheap,
   // always-loaded summary on the subAgents doc). The full per-tool DETAIL (args +
   // result) rides on `toolPart` below and is routed to a SEPARATE table. Deduped/
@@ -534,6 +544,12 @@ export interface ConvexWriter {
    *  media and terminal — onto that bubble. Verified by Convex against this bridge's
    *  bound instance, the chat, the session, the run and its segment. Null when none. */
   findProjectedBubble?(chatId: string, sessionKey: string, runId: string, segment: number): Promise<string | null>;
+  /** The gateway stated, after the bubble opened under a queued input's CLIENT run, that
+   *  the run's transcript rows carry `runId` (OpenClaw 2026.10.33 — run-manager
+   *  `linkLate`): Convex records it on the bubble, so those rows land on it. Resolves
+   *  once EVERY bubble of the run is covered (Convex takes them a page at a time). False
+   *  when Convex did not take it (the execution run already shows in another bubble). */
+  linkRunBubble?(messageId: string, clientRunId: string, runId: string): Promise<boolean>;
   /** The LIVE terminal of a run the transcript already closed (run-manager
    *  `reconcileTranscriptClosed`, codex phase 4 pass 18): carries THAT run's generation
    *  explicitly — the bubble may belong to another run by now (an announce took it
@@ -691,7 +707,7 @@ export interface ConvexWriter {
   setPhase?(
     messageId: string,
     phase: string,
-    retry?: { attempt: number; maxAttempts: number },
+    retry?: TurnRetry,
     onlyIfRetrying?: boolean,
   ): void | Promise<void | boolean>;
   /** Boot-time orphan sweep for this writer's instance (best-effort). */
@@ -954,6 +970,12 @@ export interface ConvexWriter {
    *  recorded yet (`kept`), or nothing (`none`: already closed, or nothing to keep). Void
    *  from writers that cannot tell. */
   settleAgentRequest?(settle: AgentRequestSettle): Promise<void | { outcome: AgentRequestSettleOutcome }>;
+  /** The gateway said an exec approval's request FAILED — its command did not run, whatever
+   *  was decided (core/agent-requests.ts readOpenClawApprovalRequestFailed) — and what
+   *  Convex did: marked the card, or found none. Void from writers that cannot tell. */
+  agentRequestGatewayFailed?(
+    failure: AgentRequestGatewayFailure,
+  ): Promise<void | { outcome: AgentRequestGatewayFailureOutcome }>;
   /**
    * Re-hydration DECISION trace (content-free reconstruction record) -> an
    * `openclaw.rehydrate` trace keyed `chatId:outboxId`. Emitted once per dispatch at
@@ -1043,6 +1065,7 @@ function subAgentRecordFields(record: SubAgentRecord) {
     phase: record.phase,
     errorMessage: record.errorMessage,
     ...(record.errorCode !== undefined ? { errorCode: record.errorCode } : {}),
+    ...(record.timedOutRunId !== undefined ? { timedOutRunId: record.timedOutRunId } : {}),
     tools: record.tools,
     sessionMeta: record.sessionMeta,
     telemetry: record.telemetry,
@@ -1392,6 +1415,9 @@ type IngestOp =
       // Only `retrying` carries it: the provider back-off's bounded counter, so
       // the label can say 2/10 instead of an unbounded "still working".
       retry?: { attempt: number; maxAttempts: number };
+      // …and why the provider is waited on, and until when (2026.10.33), when known.
+      retryReason?: TurnRetryReason;
+      retryAt?: number;
       // A clear that may ONLY remove a back-off, never another producer's phase.
       onlyIfRetrying?: boolean;
       runId?: string | null;
@@ -1454,6 +1480,7 @@ type IngestOp =
       text: string;
     }
   | { op: "updateRunId"; messageId: string; runId: string }
+  | { op: "linkRunBubble"; messageId: string; clientRunId: string; runId: string; cursor?: string }
   | { op: "heartbeat"; messageId: string }
   | { op: "splitSegment"; messageId: string; afterMessageId: string | null; text?: string }
   | {
@@ -1542,6 +1569,7 @@ type IngestOp =
     }
   | ({ op: "upsertAgentRequest" } & AgentRequestRecord)
   | ({ op: "settleAgentRequest" } & AgentRequestSettle)
+  | ({ op: "agentRequestGatewayFailed" } & AgentRequestGatewayFailure)
   | ({ op: "applyTranscript" } & TranscriptApplyReport)
   | ({ op: "transcriptFileCopied" } & TranscriptFileCopiedReport)
   | ({ op: "transcriptFileFailed" } & TranscriptFileFailedReport);
@@ -1815,6 +1843,12 @@ export class HttpConvexWriter implements ConvexWriter {
     // and the agent waited on a card nobody could see.
     "upsertAgentRequest",
     "settleAgentRequest",
+    // A mark on one card, set once: its replay finds it set and changes nothing.
+    "agentRequestGatewayFailed",
+    // A fact of the run's bubbles, set once: a repeat is answered with what Convex holds
+    // (convex/stream.ts `linkRunBubble`). Retried because the transcript's rows wait for
+    // it (run-manager `runLinksRecorded`).
+    "linkRunBubble",
     // The steer cut (projection `on`): a repeat of a split that committed answers the
     // segment it opened (convex/stream.ts `splitSegment`), so a lost answer is retried
     // instead of leaving the turn on the settled segment (codex pass 4).
@@ -2057,6 +2091,33 @@ export class HttpConvexWriter implements ConvexWriter {
       segment,
     });
     return typeof res?.messageId === "string" ? res.messageId : null;
+  }
+
+  /** Most pages of one run's bubbles a link asks for (Convex takes 32 a page — convex/
+   *  stream.ts `linkRunBubble`): beyond every segment a transcript read can place
+   *  (convex/lib/transcriptProjection.ts `MAX_CUTS_READ`). */
+  private static readonly MAX_LINK_PAGES = 64;
+
+  async linkRunBubble(messageId: string, clientRunId: string, runId: string): Promise<boolean> {
+    // EVERY bubble of the run, page after page: the link holds only once Convex answers
+    // without a cursor — until then it is owed, and the run's rows wait for it.
+    let cursor: string | undefined;
+    for (let page = 0; page < HttpConvexWriter.MAX_LINK_PAGES; page++) {
+      const res = await this.post<{ linked?: boolean; continueCursor?: unknown }>({
+        op: "linkRunBubble",
+        messageId,
+        clientRunId,
+        runId,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      if (res?.linked !== true) return false;
+      if (typeof res.continueCursor !== "string") return true;
+      cursor = res.continueCursor;
+    }
+    console.warn(
+      `[run-link] the run has more bubbles than a link covers: refused client=${clientRunId.slice(0, 60)} execution=${runId.slice(0, 60)}`,
+    );
+    return false;
   }
 
   async finalizeClosedRun(
@@ -2579,7 +2640,7 @@ export class HttpConvexWriter implements ConvexWriter {
   setPhase(
     messageId: string,
     phase: string,
-    retry?: { attempt: number; maxAttempts: number },
+    retry?: TurnRetry,
     onlyIfRetrying?: boolean,
   ): Promise<boolean> {
     // Best-effort hint — but RETURN the promise so an ORDER-sensitive caller
@@ -2593,7 +2654,13 @@ export class HttpConvexWriter implements ConvexWriter {
       op: "setPhase",
       messageId,
       phase,
-      ...(retry ? { retry } : {}),
+      // The counter as its own closed object, the reason and the time BESIDE it: a backend
+      // older than these two facts validates `retry` as exactly {attempt, maxAttempts} and
+      // would refuse the whole phase write for one more key inside it, while it ignores a
+      // body field it does not know. A newer bridge must never cost an older backend its label.
+      ...(retry ? { retry: { attempt: retry.attempt, maxAttempts: retry.maxAttempts } } : {}),
+      ...(retry?.reason !== undefined ? { retryReason: retry.reason } : {}),
+      ...(retry?.retryAt !== undefined ? { retryAt: retry.retryAt } : {}),
       ...(onlyIfRetrying ? { onlyIfRetrying: true } : {}),
       ...this.genTag(messageId),
     })
@@ -3563,6 +3630,16 @@ export class HttpConvexWriter implements ConvexWriter {
     if (outcome === "settled" || outcome === "kept" || outcome === "none") return { outcome };
     // A Convex that predates the outcome says `settled` only.
     return { outcome: res?.settled === true ? "settled" : "none" };
+  }
+
+  async agentRequestGatewayFailed(
+    failure: AgentRequestGatewayFailure,
+  ): Promise<{ outcome: AgentRequestGatewayFailureOutcome }> {
+    const res = await this.doPostWithRetry<{ outcome?: unknown } | null>({
+      op: "agentRequestGatewayFailed",
+      ...failure,
+    });
+    return { outcome: res?.outcome === "marked" ? "marked" : "none" };
   }
 
   async applyTranscript(
