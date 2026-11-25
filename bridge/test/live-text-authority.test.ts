@@ -152,11 +152,17 @@ function messageText(message: unknown): string | undefined {
  *  chat-stream-projection.ts `GatewayChatStreamProjection`). */
 async function replayAgainstControlUi(
   fx: Fixture,
-): Promise<{ writer: GuardedWriter; compared: number; differing: string[] }> {
+): Promise<{ writer: GuardedWriter; compared: number; differing: string[]; emptied: number }> {
   const writer = new GuardedWriter();
   const baselines = new Map<string, unknown>();
   const differing: string[] = [];
   let compared = 0;
+  /** Frames on which the Control UI's STREAM went empty while the bubble kept its text:
+   *  the gateway withdrew a text from the stream (2026.10.33 does so for every text it
+   *  records, and the Control UI then shows it from its durable row). The bubble's one
+   *  carrier is its live text, so it is told by what replaces that text — see
+   *  retired-live-text.test.ts. */
+  let emptied = 0;
   await replay(fx, writer, (frame, index) => {
     if (frame.type !== "event" || frame.event !== "chat") return;
     const payload = frame.payload as Record<string, unknown>;
@@ -168,13 +174,17 @@ async function replayAgainstControlUi(
     const controlUi = messageText(message);
     if (controlUi === undefined) return;
     compared++;
+    if (controlUi === "" && payload.replace === true && writer.shown !== "") {
+      emptied++;
+      return;
+    }
     if (writer.shown !== controlUi) {
       differing.push(
         `frame ${index}: Control UI ${controlUi.length} chars, Atrium ${writer.shown.length}`,
       );
     }
   });
-  return { writer, compared, differing };
+  return { writer, compared, differing, emptied };
 }
 
 describe("F1 — a later item's assistant text is not the bubble", () => {
@@ -195,9 +205,11 @@ describe("F1 — a later item's assistant text is not the bubble", () => {
     const versions = loadCorpus().filter((f) => f.header.scenario === "spawn-chain-merge");
     expect(versions.length).toBeGreaterThan(1);
     for (const fx of versions) {
-      const { writer, differing } = await replayAgainstControlUi(fx);
+      const { writer, differing, emptied } = await replayAgainstControlUi(fx);
       expect(writer.refused, fx.version).toEqual([]);
       expect(differing, fx.version).toEqual([]);
+      // Only 2026.10.33 withdraws recorded text from the stream: once per run here.
+      expect(emptied, fx.version).toBe(fx.version === "2026.10.33" ? 3 : 0);
     }
   });
 
@@ -540,14 +552,33 @@ describe("a retraction clears the bubble", () => {
   }
   const snaps = (events: BridgeEvent[]) => events.filter((e) => e.type === "message.snapshot");
 
-  it("hand-built: the empty rewrite is written, declared, and the stream goes on", () => {
+  // The emptying is the gateway's statement about its STREAM. It is held here at once and
+  // written with what replaces the text shown — the next text, or the terminal — never on
+  // its own: 2026.10.33 sends the very same frame for a text it has just recorded
+  // (retired-live-text.test.ts), and a bubble blanked on it stayed blank until the final.
+  it("hand-built: the empty rewrite is held, and written, declared, by the text that follows", () => {
     const { n, at } = turn();
     n.feed(chat("NO", 1), at());
-    expect(snaps(n.feed(chat("", 2, { replace: true }), at()))).toMatchObject([
+    expect(snaps(n.feed(chat("", 2, { replace: true }), at()))).toEqual([]);
+    expect(n.text).toBe("");
+    expect(snaps(n.feed(chat("The answer", 3), at()))).toMatchObject([
+      { type: "message.snapshot", text: "The answer", replace: true },
+    ]);
+  });
+
+  it("hand-built: with nothing after it, the empty rewrite is written at the terminal", () => {
+    const { n, at } = turn();
+    n.feed(chat("NO", 1), at());
+    n.feed(chat("", 2, { replace: true }), at());
+    const end = n.feed({ event: "chat", payload: { sessionKey: SK, runId: RUN, seq: 3, state: "final" } }, at());
+    expect(snaps(end)).toMatchObject([
       { type: "message.snapshot", text: "", replace: true, snapshotSource: "chat_delta_replace" },
     ]);
-    expect(n.text).toBe("");
-    expect(snaps(n.feed(chat("The answer", 3), at())).map((e) => e.text)).toEqual(["The answer"]);
+    expect(end.find((e) => e.type === "message.final")?.text).toBe("");
+    // …the empty snapshot first: Convex settles an empty final on the live text it holds.
+    expect(end.findIndex((e) => e.type === "message.snapshot")).toBeLessThan(
+      end.findIndex((e) => e.type === "message.final"),
+    );
   });
 
   it("hand-built: nothing to clear, or no `replace`: nothing is written", () => {

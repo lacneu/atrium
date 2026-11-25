@@ -304,6 +304,33 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
     expect(h.applies.some((a) => a.kind === "live" && a.rows.some((r) => r.entryId === "u9"))).toBe(true);
   });
 
+  // 2026.10.33 withdraws from the live stream the text it has just recorded: the run
+  // manager is told of the recording (retired-live-text.test.ts reads what it does with it).
+  it("a visible assistant row on the events socket is handed to the run manager as recorded", async () => {
+    const h = await harness("2026.10.33");
+    await performSend(h.session, body(), h.writer, null, null);
+    await settle(h.session);
+    const noted = vi.spyOn(h.session.runManager, "onAssistantRow");
+    const ev = h.eventSockets()[0]!.gw;
+    ev.emit(
+      sessionMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "t1", name: "exec", arguments: {} }],
+        __openclaw: { id: "a6", seq: 6, runId: "webchat-x" },
+      }),
+    );
+    ev.emit(
+      sessionMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "salut" }],
+        __openclaw: { id: "a7", seq: 7, runId: "webchat-x" },
+      }),
+    );
+    await sleep(20);
+    await settle(h.session);
+    expect(noted.mock.calls.map(([row]) => [row.runId, row.seq])).toEqual([["webchat-x", 7]]);
+  });
+
   it("NO duplicate delivery: a turn frame arriving on the events socket reaches no RunManager and writes nothing", async () => {
     const h = await harness("2026.9.6");
     await performSend(h.session, body(), h.writer, null, null);

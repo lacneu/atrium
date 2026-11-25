@@ -569,6 +569,25 @@ export class RunManager {
     });
   }
 
+  /**
+   * A transcript ASSISTANT row of this session that a reader sees (`session.message`):
+   * the run that wrote it has that text recorded. The live text needs the fact when the
+   * gateway then withdraws the text from the run's stream (2026.10.33 — normalizer.ts
+   * `recordedText`). Taken in the frames' own order, under the one name the run's frames
+   * are read by (`canonicalFrame`).
+   */
+  async onAssistantRow(row: { runId?: string; seq: number }): Promise<void> {
+    if (row.runId === undefined) return;
+    const runId = row.runId;
+    const execution = this.runAliases.get(runId);
+    await this.runOrdered(() => {
+      this.normalizer.noteAssistantRowRecorded(
+        execution === undefined ? [runId] : [execution, runId],
+        row.seq,
+      );
+    });
+  }
+
   /** The gateway will never run this input (cancelled, or no receipt when asked): no run
    *  is coming to answer it. */
   noteInputDropped(sendId: string): void {

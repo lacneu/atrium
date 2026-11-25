@@ -36,6 +36,11 @@ on) that only the new functions accept. No data migration on the Atrium side.
   message is streamed under one run id and written to the transcript under another, which
   produced two bubbles; the gateway states the link between the two and Atrium now treats
   them as one run.
+- **The reply no longer blanks just before it ends on 2026.10.33.** That gateway withdraws
+  from its live stream the text it has already recorded in the transcript, a few tens of
+  milliseconds before the turn ends. Atrium read it as the text being taken back: the reply
+  gave way to the waiting indicator, then came back whole. The text now stays on screen until
+  something replaces it.
 - **Failures are named again on 2026.10.33.** That release rewrote most of its failure
   messages (storage unavailable, session busy, model not found, provider needs a break,
   interrupted request…); Atrium recognises the new wording beside the 2026.9 one, so a

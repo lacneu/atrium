@@ -708,6 +708,43 @@ export class Normalizer {
    *  oldest first. */
   private readonly settledWindows = new Map<string, SettledWindow>();
   private static readonly MAX_SETTLED_WINDOWS = 16;
+  // --- THE LIVE STREAM EMPTIED (gateway 2026.10.33) ------------------------------------
+  //
+  // From 2026.10.33 the gateway withdraws from a run's chat buffer the text it has just
+  // recorded in the transcript (src/gateway/server-chat-transcript-publication.ts
+  // `retireTranscript`; src/gateway/server-chat-buffer.ts `retireBuffer`,
+  // `bufferVisibleText`): the delta that follows is `replace: true` and carries only the
+  // tail not recorded yet, usually nothing. The Control UI shows the recorded text from
+  // its durable row and the tail from the stream (ui/src/pages/chat/chat-gateway.ts,
+  // "ignoring it would keep already-saved text visible beside its durable row"). A live
+  // bubble here has ONE carrier, its live text — its rows make it only once its runs are
+  // over (convex/lib/bubbleProjection.ts) — so a withdrawal written as it arrives blanks
+  // an answer the reader is looking at until the terminal brings it back.
+  //
+  // On the wire that delta is the one a real retraction sends (a silent reply recognised
+  // late, src/gateway/server-chat.agent-events.test.ts "retracts a visible item replaced
+  // by NO_REPLY"). What tells them apart is the transcript, never the frame nor the
+  // gateway's version:
+  //  - a visible assistant row of the SAME run was recorded (`noteAssistantRowRecorded`):
+  //    the text changed carrier. The bubble keeps it (`recordedText`) and the stream's
+  //    later text is shown after it, as the gateway joins two items itself;
+  //  - nothing says so: the emptying stays the gateway's statement about the stream, held
+  //    here exactly as before — and it is WRITTEN with what replaces the text shown, the
+  //    run's next text or the turn's terminal, never on its own (`unshownEmptying`).
+  /** The text of the bubble its run's stream no longer carries because the transcript
+   *  holds it. A later text of that stream is shown after it (`withRecordedText`). */
+  private recordedText: { runId: string; text: string } | null = null;
+  /** A stream emptied with no row seen for it: `text` is what the bubble still shows,
+   *  while the text held here is already what the emptying leaves. Written by the next
+   *  write of the bubble (`applyVisible`) or by the terminal (`finalize`). */
+  private unshownEmptying: { runId: string; text: string } | null = null;
+  /** Runs with a visible assistant row recorded and no `chat` text read since: the
+   *  emptying that comes next for one of them is that row's (the gateway forces the flush
+   *  right after the recording). Any other text of the run ends it. */
+  private readonly recordedAhead = new Set<string>();
+  /** Per run, the highest transcript `seq` of a row already noted: the same row read
+   *  twice says nothing new. */
+  private readonly recordedRowSeq = new Map<string, number>();
   /** The frame being read is a `chat` terminal (`final`, `error`, `aborted`). */
   private frameChatTerminal = false;
   hasSnapshot: boolean;
@@ -1055,6 +1092,7 @@ export class Normalizer {
     this.segmentPrefix = null;
     this.chatSeqHigh.clear();
     this.textOrigin = null;
+    this.forgetEmptiedStream();
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.messageToolSends.clear();
@@ -1141,7 +1179,62 @@ export class Normalizer {
     this.segmentPrefix = (this.segmentPrefix ?? "") + lead + this.text;
     this.segmentLead = "";
     this.text = "";
+    // The cut settled the bubble with the text held here: nothing is left to write for
+    // it, and what it kept of a recorded text is the settled segment's.
+    this.forgetEmptiedStream();
     this.hasSnapshot = false;
+  }
+
+  /** Nothing of an emptied stream is left to decide (see `recordedText`). */
+  private forgetEmptiedStream(): void {
+    this.recordedText = null;
+    this.unshownEmptying = null;
+    this.recordedAhead.clear();
+    this.recordedRowSeq.clear();
+  }
+
+  /**
+   * The transcript recorded a VISIBLE assistant row of a run (`session.message`): under
+   * every name the run is known by (`runIds`), at transcript position `seq`.
+   *
+   * It is the fact that makes an emptying of that run's stream a change of carrier (see
+   * `recordedText`). The two arrive on two sockets, in either order (bench 2026-11-24 on
+   * 2026.10.33: the row first in 168 of 190 emptyings, up to 2 ms after the delta in the
+   * others), so the row either settles the emptying already read or waits for the next
+   * one. Only for a run of the open turn that writes its own bubble.
+   */
+  noteAssistantRowRecorded(runIds: readonly string[], seq: number): void {
+    const own = runIds.filter((id) => this.ownRunIds.has(id) && !this.adoptedRunIds.has(id));
+    if (own.length === 0) return;
+    if (own.every((id) => (this.recordedRowSeq.get(id) ?? -1) >= seq)) return;
+    for (const id of own) this.recordedRowSeq.set(id, seq);
+    const unshown = this.unshownEmptying;
+    if (unshown !== null && own.includes(unshown.runId)) {
+      // The text was never taken off the screen: it is the bubble's again, under the
+      // transcript's authority.
+      this.text = unshown.text;
+      this.recordedText = { runId: unshown.runId, text: unshown.text };
+      this.unshownEmptying = null;
+      return;
+    }
+    for (const id of own) this.recordedAhead.add(id);
+  }
+
+  /**
+   * A run's live stream text, after what the bubble keeps of that run's recorded text.
+   *
+   * The boundary is the gateway's own between two items (src/gateway/
+   * agent-event-assistant-text.ts `mergeAssistantText`, `boundaryNewlines`: padded to a
+   * blank line), which is what its terminal carries for the same texts
+   * (src/gateway/server-chat.wire.test.ts, "replaces committed live text and preserves an
+   * indented tail": `Saved.\n\n${tail} More.`).
+   */
+  private withRecordedText(streamText: string): string {
+    const recorded = this.recordedText;
+    if (recorded === null || recorded.runId !== this.frameRunId) return streamText;
+    if (recorded.text === "" || streamText === "") return streamText;
+    const pad = recorded.text.endsWith("\n\n") ? "" : recorded.text.endsWith("\n") ? "\n" : "\n\n";
+    return recorded.text + pad + streamText;
   }
 
   /** The CURRENT segment's whole visible text (what a cut settles it with). */
@@ -1947,8 +2040,12 @@ export class Normalizer {
     if (isFinal && isString(payload.stopReason)) {
       this.diagStopReason = bucketStopReason(payload.stopReason);
     }
-    const snapshotText = textFromMessage(message);
-    this.collectShortcodeWidgets(snapshotText, events);
+    const streamText = textFromMessage(message);
+    this.collectShortcodeWidgets(streamText, events);
+    // A terminal carries the run's COMPLETE text whatever the stream withdrew
+    // (src/gateway/server-chat.ts `emitChatTerminal`: `content` is the whole buffer, the
+    // tail goes in `openclawDisplayContent`); a delta carries the stream's.
+    const snapshotText = isFinal ? streamText : this.withRecordedText(streamText);
     // `replace` on a delta: the gateway REWROTE the live text instead of extending it
     // (src/gateway/server-chat-state.ts `takeBufferDelta`; every command snapshot,
     // src/gateway/server-methods/chat-broadcast.ts `broadcastChatFrame`), and such a
@@ -1966,6 +2063,9 @@ export class Normalizer {
       this.chatFrameIsFresh() &&
       (rewrite || (snapshotText.length < this.text.length && this.chatRewriteInOrder()));
     if (snapshotText) {
+      // The run's stream moved on: a row recorded before this text is not what an
+      // emptying read later would be about.
+      this.recordedAhead.delete(this.frameRunId);
       // BEHIND, not different: an unmarked text the bubble already starts with is an
       // older view of it (a late copy, a re-read that lost the race). Nothing to write —
       // sent, it would be a shrink Convex refuses. (The gateway marks a real cut back to
@@ -1987,12 +2087,17 @@ export class Normalizer {
         events,
         isFinal ? "chat_final" : rewrite ? "chat_delta_replace" : "chat_delta",
         mayShrink,
+        // Built from the text held here: not the gateway's cumulative one.
+        snapshotText !== streamText,
       );
       return;
     }
-    // A RETRACTION: a rewrite to the empty text (a silent reply recognised late, an
-    // errored message withdrawn — `flushBufferedChatDeltaIfNeeded`, `emitChatDelta` with
-    // an emptied buffer). The Control UI clears its stream; so does the bubble.
+    // THE STREAM EMPTIED: a rewrite to the empty text. Either the gateway recorded the
+    // text and withdrew it from the stream (2026.10.33, `retireTranscript`), or it took
+    // it back (a silent reply recognised late, an errored message withdrawn —
+    // `flushBufferedChatDeltaIfNeeded`, `emitChatDelta` with an emptied buffer). The
+    // Control UI clears its stream in both cases and shows what the transcript holds;
+    // see `recordedText` for what the bubble does.
     if (
       rewrite &&
       mayShrink &&
@@ -2001,15 +2106,23 @@ export class Normalizer {
       !this.finalized &&
       this.text !== ""
     ) {
-      this.text = "";
+      const run = this.frameRunId;
+      const shown = this.text;
+      // What the bubble keeps of this run whatever this emptying is.
+      const kept = this.recordedText?.runId === run ? this.recordedText.text : "";
+      if (kept === shown) return;
       this.hasSnapshot = false;
       this.noteTextOrigin(true);
-      events.push({
-        type: EVENT_MESSAGE_SNAPSHOT,
-        text: "",
-        replace: true,
-        snapshotSource: "chat_delta_replace" satisfies SnapshotSource,
-      });
+      if (this.recordedAhead.delete(run)) {
+        // RECORDED: the transcript holds a visible row of this run. Nothing is written —
+        // the text is where it was, under another authority.
+        this.recordedText = { runId: run, text: shown };
+        return;
+      }
+      // NOT KNOWN TO BE RECORDED: the stream is empty, and so is the text held here, as
+      // it always was. The bubble is told by what replaces its text, not before.
+      this.text = kept;
+      this.unshownEmptying = { runId: run, text: shown };
       return;
     }
     if (isString(deltaText) && deltaText) {
@@ -3868,6 +3981,11 @@ export class Normalizer {
     if (isSnapshot && !segmentLocal && this.segmentPrefix !== null) {
       candidate = this.stripSegmentPrefix(candidate);
     }
+    // The stream was emptied and the bubble not told (`unshownEmptying`): this write is
+    // what replaces the text it still shows, so it carries the emptying's own declaration
+    // — whatever its length, and whole (an append would land on the text still shown).
+    const replacesShown = this.unshownEmptying !== null;
+    if (replacesShown) authorizedShrink = true;
     let emitted: string;
     let eventType: string;
     // An ADOPTED run's snapshot REPLACES the text like any other: every run has its
@@ -3912,9 +4030,11 @@ export class Normalizer {
         return; // an authoritative snapshot already won; ignore deltas
       }
       this.text += candidate;
-      emitted = candidate;
-      eventType = EVENT_MESSAGE_DELTA;
+      emitted = replacesShown ? this.text : candidate;
+      eventType = replacesShown ? EVENT_MESSAGE_SNAPSHOT : EVENT_MESSAGE_DELTA;
     }
+    this.unshownEmptying = null;
+    const asSnapshot = eventType === EVENT_MESSAGE_SNAPSHOT;
     if (this.pendingApprovalCount() === 1 && this.approvalsRequested === 1) {
       // Real content resumed: the approval was answered somewhere (the gateway's
       // own `resolved` may not reach us on every version). Release the wait the
@@ -3972,10 +4092,12 @@ export class Normalizer {
       type: eventType,
       // A live snapshot stops before a tail the sanitiser may still rewrite.
       text: this.safeSanitizeText(
-        isSnapshot && !isFinal ? emitted.slice(0, liveStableLength(emitted)) : emitted,
+        asSnapshot && !isFinal ? emitted.slice(0, liveStableLength(emitted)) : emitted,
       ),
-      ...(isSnapshot && authorizedShrink ? { replace: true } : {}),
-      ...(isSnapshot && source !== null ? { snapshotSource: source } : {}),
+      ...(asSnapshot && authorizedShrink ? { replace: true } : {}),
+      ...(asSnapshot && (source !== null || !isSnapshot)
+        ? { snapshotSource: source ?? ("chat_delta_replace" satisfies SnapshotSource) }
+        : {}),
     });
     if (isFinal) {
       this.finalizeSuccess(now, "gateway_final", events);
@@ -4234,6 +4356,18 @@ export class Normalizer {
     }
     // Open tool cards close FIRST (see the flush above), then the terminal.
     const result: BridgeEvent[] = [finalEvent, statusEvent];
+    // The turn ends on an emptied stream nothing replaced (`unshownEmptying`): the
+    // emptying is written now, ahead of the terminal — Convex settles an empty final on
+    // the live text it still holds.
+    if (this.unshownEmptying !== null) {
+      result.unshift({
+        type: EVENT_MESSAGE_SNAPSHOT,
+        text: finalEvent.text,
+        replace: true,
+        snapshotSource: "chat_delta_replace" satisfies SnapshotSource,
+      });
+    }
+    this.forgetEmptiedStream();
     // The agent ran native media generation this turn but delivered NO media
     // (no MEDIA:/mediaUrls/outbound path) -> emit a content-free diagnostic so the
     // gap (agent omitted the delivery directive) is visible to the #7 loop.
@@ -4258,6 +4392,8 @@ export class Normalizer {
     this.text = "";
     this.chatSeqHigh.clear();
     this.textOrigin = null;
+    // The caller clears the bubble itself, and the replay is another attempt's stream.
+    this.forgetEmptiedStream();
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.messageToolSends.clear();

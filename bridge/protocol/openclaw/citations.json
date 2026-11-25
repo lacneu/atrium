@@ -1225,14 +1225,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:2015",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:2128",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          2015,
-          2015
+          2128,
+          2128
         ]
       ],
       "literals": [
@@ -1704,6 +1704,22 @@
       ],
       "literals": [
         "holdTerminal: (runId: string, publish: () => void): boolean =>"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:446-457",
+      "repo": "upstream",
+      "tag": "2026.10.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          446,
+          457
+        ]
+      ],
+      "literals": [
+        "replaceChatStream(state, hidden ? \"\" : next);"
       ]
     },
     {

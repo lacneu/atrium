@@ -273,6 +273,12 @@ export interface TranscriptShadowDeps {
   /** PROJECTION `on` (phase 3): every USER row read or received — the steer fact the
    *  live overlay cuts a run's bubble on (CU-20). Never awaited by the reconciler. */
   onUserRow?: (row: TranscriptRow) => void;
+  /** Every ASSISTANT row RECEIVED live (`session.message`) that names its run and shows
+   *  something a reader sees (visible, not hidden — the rows a bubble's text is made of):
+   *  the fact the live text reads an emptied stream against (normalizer.ts
+   *  `recordedText`). Never a row a read brought back: that one was recorded long before
+   *  the frames being read. Never awaited by the reconciler. */
+  onAssistantRow?: (row: TranscriptRow) => void;
   /** PROJECTION `on`: the gateway says it will never run this input (cancelled, or
    *  asked after its ACK and holding no receipt for it). */
   onInputDropped?: (sendId: string) => void;
@@ -494,6 +500,11 @@ export class TranscriptShadow {
     }
     const isUser = admission.role === "user";
     if (isUser && admission.row !== null) this.emitUserRow(admission.row);
+    // Whether or not CU-16 admits the row to the store now: that it was RECORDED is the
+    // event's own fact.
+    if (admission.role === "assistant" && admission.row !== null) {
+      this.emitAssistantRow(admission.row);
+    }
     if (foreground !== null && admission.hasActiveRun === true && !isUser) {
       // The turn is live: its rows reach the store by the read its terminal triggers.
       this.pump();
@@ -571,6 +582,15 @@ export class TranscriptShadow {
     if (row.sendId === undefined) return;
     try {
       this.deps.onUserRow?.(row);
+    } catch {
+      /* the overlay's bookkeeping never fails a read */
+    }
+  }
+
+  private emitAssistantRow(row: TranscriptRow): void {
+    if (row.runId === undefined || !row.visible || row.hidden) return;
+    try {
+      this.deps.onAssistantRow?.(row);
     } catch {
       /* the overlay's bookkeeping never fails a read */
     }

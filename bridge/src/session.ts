@@ -499,6 +499,13 @@ class Session implements BridgeSession {
           console.error("[send] steer split failed (non-fatal):", errForLog(e)),
         );
       },
+      // The transcript recorded a visible assistant row: what an emptied live stream is
+      // read against (2026.10.33 withdraws recorded text from the stream).
+      onAssistantRow: (row) => {
+        void this.runManager.onAssistantRow(row).catch((e) =>
+          console.error("[stream] recorded row not noted (non-fatal):", errForLog(e)),
+        );
+      },
       onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
       // One run, two names (2026.10.33): the gateway's own statement of the link.
       onRunLinked: (executionRunId, clientRunId) => {

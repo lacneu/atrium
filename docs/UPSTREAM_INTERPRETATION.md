@@ -98,8 +98,9 @@ holds received frames only):
   `lifecycle` `finishing`, with the `seq` of the run's last `agent` event — strictly above the
   last delta's — and its terminal follows 22 to 732 ms later (median 47 ms). None arrives in
   the middle of a reply and none carries a non-empty tail: no scenario makes a run commit one
-  assistant message and then write another. The bridge empties the live bubble on that frame
-  and the `final` writes the complete text; its log holds no `snapshot_regression`.
+  assistant message and then write another. The bridge of that run emptied the live bubble on
+  that frame and wrote the complete text at the `final` (its log holds no
+  `snapshot_regression`): the blank that reading left on screen is what §1 now avoids.
 - *Display content.* 191 of 216 `final` frames carry `openclawDisplayContent`: 189 empty
   lists, 2 holding the canvas block of an inline widget. `content` is the complete text in
   every one. The projection audit of the run reports no duplicated answer.
@@ -349,13 +350,17 @@ identical. The two broken anchors are real and are each recorded:
 **The RETRACTION delta, handled without a capture.** 2026.9.5 adds a retraction —
 `delta { deltaText: "", replace: true }`, carrying a `message` whose text is empty.
 The append path still drops any delta whose text is empty
-(`bridge/src/providers/openclaw/normalizer.ts:2015`, the `&& deltaText` guard), so
-the retraction has its own branch in `handleChat`: the bubble is cleared through a
-declared empty snapshot, as the Control UI clears its stream. It is covered by a
-deterministic test in the captured shape. From v2026.10.33 the same frame closes every run
-whose text was committed to the transcript (§1), so the full catalogue exercises it on each
-turn. The `assistant` stream's own
-retraction (`text: ""` with `replace`) is not read: the `chat` delta carries it.
+(`bridge/src/providers/openclaw/normalizer.ts:2128`, the `&& deltaText` guard), so
+the retraction has its own branch in `handleChat`. From v2026.10.33 the same frame closes
+every run whose text was committed to the transcript (§1): on the wire, a text taken back and
+a text recorded are one frame, and the Control UI tells them apart by its durable rows. The
+bubble does so by the transcript too (§1, "Live text is retired"): the emptying is held at
+once and WRITTEN with what replaces the text shown — the run's next text, or the terminal
+(a declared empty snapshot ahead of an empty final) — never on its own. A real retraction
+therefore still ends on an empty bubble; a recorded text never leaves the screen. Both are
+covered by deterministic tests, the retraction in upstream's own shape and the recording on
+frames captured at v2026.10.33 (`bridge/test/retired-live-text.test.ts`). The `assistant`
+stream's own retraction (`text: ""` with `replace`) is not read: the `chat` delta carries it.
 
 **Revision of 2026-09-12 (v2026.9.2 → v2026.9.4).** Re-verified zone by zone
 against the upstream tag (report:
@@ -543,12 +548,30 @@ sent by the bridge, all optional.
   `inFlightRun.text` is that tail too. The Control UI replaces its stream with the delta's
   `message`, whatever its length; the gateway now does the cutting the client used to do. On
   2026.9.36 a run's buffer stays cumulative from its first delta to its terminal.
-  **Atrium** reads the frame as the declared rewrite it is: the frame's seq is above the last
-  delta's, so the live bubble is emptied (or cut to the tail), and the run's `final` writes
-  the complete text. Measured on the bench (revision note above): the frame arrives once per
-  run, after the last text, with an empty tail, 22 to 732 ms before the terminal. A reply
-  that commits one message and then writes another — the tail non-empty, the retirement in
-  the middle of the answer — is not in the catalogue.
+  **Atrium** shows a live bubble from ONE carrier, its live text: its rows make its text only
+  once its runs are over (§7). Written as it arrives, the emptied tail therefore blanked the
+  answer on screen from that delta to the terminal (measured below: 22 to 732 ms, at the end
+  of every turn). The bridge reads the frame against the transcript instead, as the Control
+  UI's two carriers do (`$UP/ui/src/pages/chat/chat-gateway.ts:446-457`, "ignoring it would keep
+  already-saved text visible beside its durable row"):
+  - a VISIBLE assistant row of the same run was recorded (`session.message`, handed over by
+    the reconciler in the frames' order): the text changed carrier. Nothing is written, the
+    bubble keeps it, and the stream's later text is shown after it with the gateway's own
+    item boundary (`$UP/src/gateway/agent-event-assistant-text.ts`, `boundaryNewlines`) —
+    what the terminal's complete `content` then states. The row and the delta travel on two
+    sockets: measured, the row first in 168 of 190 emptyings and up to 2 ms after the delta
+    in the others, so a row settles the emptying already read or the next one;
+  - no such row is known (a text really taken back; a bridge that does not hear the
+    transcript): the emptying is held as before, and written with what replaces the text
+    shown — the run's next text or the terminal — never on its own.
+  A row is this emptying's only until the run's stream states another text: a `message`-tool
+  send is recorded as a visible row and withdraws nothing. A replacement to a NON-empty
+  shorter tail (one message recorded while the next is already streaming) is still read as
+  the declared rewrite it is: the bubble is cut to the tail until the terminal. Measured on
+  the bench (revision note above): the frame arrives once per run, after the last text, with
+  an empty tail, 22 to 732 ms before the terminal. A reply that commits one message and then
+  writes another — the retirement in the middle of the answer — is not in the catalogue: that
+  path is covered on hand-built frames in upstream's wire-test shape only.
 - **The terminal carries `openclawDisplayContent` beside `content`** when part of the text
   was retired: the tail's text blocks and the canvas blocks, while `content` stays the
   COMPLETE text (`$UP/src/gateway/server-chat.ts:842-866`). The Control UI swaps `content`
@@ -1947,7 +1970,7 @@ shutdown was announced on its socket and its transcript stops before an answer.
 | Model fallback | **Conformant on what is said, kept longer** — the Control UI's two sentences as a marker on the run's bubble, also when the frame follows the run's terminal; the reasons, the attempts and the previous model are not shown (§11) |
 | Status notices | **Shown apart from the answer** — a notice-only final after the answer is a notice line on the run's bubble, never the answer's text nor a bubble; the fallback's own notice is the fallback marker (§11) |
 | Provider retries | **Conformant** for the retry itself — read from the agent stream whatever the reason and from the `chat` status for its four waiting reasons, with Atrium's own wording and, from v2026.10.33, the time of the next attempt; the run's startup phases and the provider notices are not shown (§11) |
-| Retired live text (v2026.10.33) | **Conformant** — the `replace` delta that retires committed text empties or cuts the live bubble and the terminal writes the complete text; `openclawDisplayContent` is not read, the complete `content` is (§1) |
+| Retired live text (v2026.10.33) | **Conformant** — a text the gateway withdraws from the stream because the transcript holds it stays in the live bubble (the recorded row is the proof, as the durable row is the Control UI's), and an emptying with no such row is written with what replaces the text shown; a non-empty shorter tail still cuts the bubble until the terminal; `openclawDisplayContent` is not read, the complete `content` is (§1) |
 | Queued send identity (v2026.10.33) | **Conformant** — no empty final is expected at queue admission, the client run and the run that executes it are one run, a replayed `accepted` ACK is custody, and the `:pause` settle run has its own identity and settles no child (§2) |
 | Agent questions | **Narrower on forms** — every option is kept and answered by its value; `answerFormat`, `resource`, `allowEmpty`, `defaultAnswers`, thumbnails and previews are not read (§11) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
