@@ -349,6 +349,74 @@ describe("a linked run cut by a steer: every segment is the execution run's", ()
   });
 });
 
+// A run cut into more segments than one call reads (codex pass 3): the link is confirmed
+// only once every segment is named, a page at a time — the bridge asks again with the
+// answer's cursor (convex-writer `linkRunBubble`).
+describe("a linked run cut into more segments than one page", () => {
+  const SEGMENTS = 34;
+
+  /** The bubbles the live stream opened under the client run: segment 0 … SEGMENTS-1, the
+   *  last one still streaming (the statement arrives on it). */
+  async function cutRun(t: T, chatId: Id<"chats">): Promise<Id<"messages">[]> {
+    const first = await liveBubble(t, chatId);
+    const doc = (await t.run((ctx) => ctx.db.get(first)))!;
+    const { _id, _creationTime, ...base } = doc;
+    void _id;
+    void _creationTime;
+    const ids = [first];
+    for (let k = 1; k < SEGMENTS; k++) {
+      ids.push(
+        await t.run((ctx) =>
+          ctx.db.insert("messages", {
+            ...base,
+            runSegment: k,
+            status: k === SEGMENTS - 1 ? ("streaming" as const) : ("complete" as const),
+          }),
+        ),
+      );
+    }
+    await t.run((ctx) => ctx.db.patch(first, { status: "complete" as const }));
+    return ids;
+  }
+
+  /** What the bridge does: ask again with the cursor until Convex answers without one. */
+  async function linkAll(t: T, messageId: Id<"messages">) {
+    const answers: Array<{ linked: boolean; continueCursor?: string }> = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const res = await t.mutation(internal.stream.linkRunBubble, {
+        messageId,
+        clientRunId: C,
+        runId: X,
+        boundInstanceName: "prod",
+        ...(cursor !== undefined ? { cursor } : {}),
+      } as never);
+      answers.push(res);
+      if (!res.linked || res.continueCursor === undefined) break;
+      cursor = res.continueCursor;
+    }
+    return answers;
+  }
+
+  test("stated on the last segment: the first answer does not claim the run, and every segment ends up named", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const bubbles = await cutRun(t, ids.chatId);
+    const answers = await linkAll(t, bubbles.at(-1)!);
+    expect(answers[0]).toMatchObject({ linked: true, continueCursor: expect.any(String) });
+    expect(answers.at(-1)).toEqual({ linked: true });
+    const named = await t.run(async (ctx) => Promise.all(bubbles.map(async (b) => (await ctx.db.get(b))?.transcriptRunId)));
+    expect(named).toEqual(bubbles.map(() => X));
+    // Each segment is found under the execution run: its rows land on it, none makes another.
+    for (const k of [0, 31, 32, 33]) {
+      expect(await t.run((ctx) => liveBubbleFor(ctx as never, ids.chatId, X, k))).toBe(bubbles[k]);
+    }
+    // Asked again (a retried write): the same fact, nothing doubled.
+    expect((await linkAll(t, bubbles[0]!)).at(-1)).toEqual({ linked: true });
+    expect(await t.run((ctx) => ctx.db.query("runBubbles").collect())).toHaveLength(1);
+  });
+});
+
 describe("what the link is NOT taken for", () => {
   test("another instance's bridge cannot state it", async () => {
     const t = convexTest(schema, modules);

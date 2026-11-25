@@ -97,6 +97,31 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
     reg.closeAll();
   });
 
+  // A late run link (OpenClaw 2026.10.33) Convex has not recorded yet lives in the run
+  // manager, which dies with its socket: the registry hands it to the chat's next session
+  // of the SAME key, whose reconciler must hold the same rows back (codex pass 3).
+  it("carries a dropped session's OWED late run links to the next session of the same key — not to another key", async () => {
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => fakeConn() as never);
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const writer = { linkRunBubble: vi.fn(async () => { throw new Error("fetch failed"); }) };
+    const reg = new SessionRegistry(servedMap(config, writer as never));
+    const r = { chatId: "c1", openclawChatId: "oc1", agentId: "agent-a", canonical: "alice" };
+    const owed = [{ clientRunId: "webchat-c", executionRunId: "exec-x", messageId: "m1" }];
+    const first = await reg.acquire(r);
+    first.runManager.adoptOwedLateLinks(owed);
+    expect(first.runManager.owedLateLinks()).toEqual(owed);
+    first.connection.close();
+    const second = await reg.acquire(r);
+    expect(second).not.toBe(first);
+    expect(second.runManager.owedLateLinks()).toEqual(owed);
+    await expect(second.runManager.runLinksRecorded()).rejects.toThrow(/run link/);
+    // Re-keyed (another agent): the links were the old session's, never this one's.
+    const third = await reg.acquire({ ...r, agentId: "agent-b" });
+    expect(third.runManager.owedLateLinks()).toEqual([]);
+    reg.closeAll();
+    quiet.mockRestore();
+  });
+
   it("RE-KEYS (closes old, connects new) when the agent changes on the same chat", async () => {
     const connect = vi
       .spyOn(OpenClawConnection, "connect")

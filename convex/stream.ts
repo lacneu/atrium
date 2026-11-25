@@ -1509,16 +1509,30 @@ async function recordRotatedRunBubble(
  * already names another execution run, or when the execution run already shows in
  * another bubble (its rows arrived first and made one): nothing here chooses between
  * two bubbles, and no text is ever compared.
+ *
+ * EVERY bubble of the run, one bounded PAGE per call (codex pass 3: a run cut into more
+ * segments than one read takes was confirmed linked with segments left unnamed, and their
+ * rows made a second bubble). `continueCursor` in the answer: more segments remain — the
+ * link holds for none of the run until the caller has asked again with it and been
+ * answered without one (the bridge holds the run's rows back until then, convex-writer
+ * `linkRunBubble`). Each page is all or nothing; a refusal on a later page leaves the
+ * earlier ones linked — their rows land on their bubbles, and the refused segment already
+ * shows elsewhere, which a refusal of the whole run would only have repeated for each.
  */
 export const linkRunBubble = internalMutation({
   args: {
     messageId: v.id("messages"),
     clientRunId: v.string(),
     runId: v.string(),
+    /** The page to take (an answer's `continueCursor`); absent: the first. */
+    cursor: v.optional(v.string()),
     ...boundArg,
   },
-  returns: v.object({ linked: v.boolean() }),
-  handler: async (ctx, { messageId, clientRunId, runId, boundInstanceName }) => {
+  returns: v.object({ linked: v.boolean(), continueCursor: v.optional(v.string()) }),
+  handler: async (
+    ctx,
+    { messageId, clientRunId, runId, cursor, boundInstanceName },
+  ): Promise<{ linked: boolean; continueCursor?: string }> => {
     const refused = { linked: false };
     if (
       runId === clientRunId ||
@@ -1542,20 +1556,20 @@ export const linkRunBubble = internalMutation({
     if (message.boundInstance === undefined) await assertChatBound(ctx, message.chatId, boundInstanceName);
     if (message.runId !== clientRunId) return refused;
     // EVERY bubble of the run: a steered input cuts it into segments (`splitSegment`), all
-    // opened under the client run, and the statement can arrive on any of them. Bounded —
-    // a run cut more often than that keeps its further segments unlinked.
-    const segments = (
-      await ctx.db
-        .query("messages")
-        .withIndex("by_chat_run_segment", (q) => q.eq("chatId", message.chatId).eq("runId", clientRunId))
-        .take(MAX_LINKED_SEGMENTS)
-    ).filter(
+    // opened under the client run, and the statement can arrive on any of them — in
+    // segment order (the index's), one page per call.
+    const page = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_run_segment", (q) => q.eq("chatId", message.chatId).eq("runId", clientRunId))
+      .paginate({ numItems: LINK_PAGE_SEGMENTS, cursor: cursor ?? null });
+    const segments = page.page.filter(
       (m) =>
         m.role === "assistant" &&
         m.boundInstance === message.boundInstance &&
         m.turnSessionKey === message.turnSessionKey,
     );
-    if (!segments.some((m) => m._id === messageId)) segments.push(message);
+    const first = cursor === undefined;
+    if (first && !segments.some((m) => m._id === messageId)) segments.push(message);
     // All or nothing, decided before any write: a segment that names another execution
     // run, or whose rows already made a bubble of their own, refuses the whole link.
     for (const m of segments) {
@@ -1573,15 +1587,17 @@ export const linkRunBubble = internalMutation({
     // The execution run's record names its EARLIEST bubble: the first segment's, or — a
     // run cut before it showed anything, whose bubble was born at a later segment — that
     // one. Every later segment is found through it (`liveBubbleFor`); a record naming a
-    // later segment never stands for the first.
-    const earliest = segments.reduce((a, b) => (segmentOf(b) < segmentOf(a) ? b : a));
-    await recordRotatedRunBubble(ctx, earliest.chatId, runId, earliest._id);
-    return { linked: true };
+    // later segment never stands for the first. The first page holds it (segment order).
+    if (first) {
+      const earliest = segments.reduce((a, b) => (segmentOf(b) < segmentOf(a) ? b : a));
+      await recordRotatedRunBubble(ctx, earliest.chatId, runId, earliest._id);
+    }
+    return page.isDone ? { linked: true } : { linked: true, continueCursor: page.continueCursor };
   },
 });
 
-/** Bubbles of one client run a late link reaches (its steer segments). */
-const MAX_LINKED_SEGMENTS = 32;
+/** Bubbles of one client run a late link reaches per call (its steer segments). */
+const LINK_PAGE_SEGMENTS = 32;
 
 const segmentOf = (m: { runSegment?: number }): number =>
   m.runSegment !== undefined && m.runSegment > 0 ? m.runSegment : 0;

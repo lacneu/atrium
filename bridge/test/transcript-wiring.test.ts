@@ -591,7 +591,7 @@ describe("a linked run is one run for every reader of the socket", () => {
 
   it("linked LATE: the terminal broadcast under the client run is posted under the EXECUTION run", async () => {
     const h = await linkedLate(async () => true);
-    expect(h.session.runManager.noteRunLink(X, C)).toBe(true);
+    expect(h.session.runManager.noteRunLink(X, C, 1001)).toBe(true);
     h.applies.length = 0;
     h.gw.emit(chatFrame(C, { seq: 1, state: "final", message: said("ok") }));
     await sleep(20);
@@ -610,7 +610,7 @@ describe("a linked run is one run for every reader of the socket", () => {
       return true;
     });
     const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(h.session.runManager.noteRunLink(X, C)).toBe(true);
+    expect(h.session.runManager.noteRunLink(X, C, 1001)).toBe(true);
     await sleep(5);
     h.applies.length = 0;
     // A read is asked for (the session moved): its rows may be the execution run's.

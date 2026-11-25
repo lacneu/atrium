@@ -21,12 +21,13 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { ConvexIngestError, type ConvexWriter } from "../src/convex-writer.js";
+import { ConvexIngestError, HttpConvexWriter, type ConvexWriter } from "../src/convex-writer.js";
 import { LiveTextBaselines } from "../src/providers/openclaw/live-text-baseline.js";
 import type { GatewayFrame } from "../src/providers/openclaw/openclaw-client.js";
 import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
 import { sessionsChangedRunLink } from "../src/providers/openclaw/transcript-rows.js";
+import { parseLiveBubble } from "../src/server.js";
 import { loadCorpus } from "./helpers/golden-corpus.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -137,7 +138,7 @@ async function replay(
       await rm.feed(baselines.project(wire as unknown as GatewayFrame).frame, now);
     } else if (sessionEvents && e.frame.event === "sessions.changed") {
       const link = sessionsChangedRunLink(e.frame.payload);
-      if (link !== null) rm.noteRunLink(link.runId, link.clientRunId);
+      if (link !== null) rm.noteRunLink(link.runId, link.clientRunId, now);
     }
     if (e.n === settleAfter) await rm.settleFromTranscript([X], now);
   }
@@ -231,7 +232,7 @@ describe("the captured 2026.10.33 sequence — a queued input executed under two
 
   it("the link stated FIRST (a `sessions.changed` ahead of every frame of the run) gives the same bubble", async () => {
     const { rm, calls } = heldSession();
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await replay(rm, { sessionEvents: false });
     expect(opens(calls)).toEqual([ANNOUNCE, X]);
     expect(terminals(calls).filter((t) => t.messageId === "m2").map((t) => t.cause)).toEqual([
@@ -286,7 +287,7 @@ describe("a bridge restart in the middle of the linked run", () => {
     const { writer, calls } = recordingWriter();
     const rm = new RunManager("chat1", KEY, writer);
     await rm.resumeTurn(1000, "bubbleX", X);
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await replay(rm, { from: 204, sessionEvents: false, settleAfter: null });
     expect(opens(calls)).toEqual([]);
     expect(terminals(calls)).toEqual([
@@ -306,9 +307,9 @@ describe("a bridge restart in the middle of the linked run", () => {
 
   it("a client run names ONE execution: a second, different statement is refused, the same one holds", () => {
     const { rm } = heldSession();
-    expect(rm.noteRunLink(X, C)).toBe(true);
-    expect(rm.noteRunLink(X, C)).toBe(true);
-    expect(rm.noteRunLink("another-execution", C)).toBe(false);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
+    expect(rm.noteRunLink("another-execution", C, 1001)).toBe(false);
     const frame = { type: "event", event: "chat", payload: { sessionKey: KEY, runId: C, state: "final" } };
     expect((rm.canonicalFrame(frame) as typeof frame).payload.runId).toBe(X);
     // The same frame is the same renamed object wherever it is asked again.
@@ -319,7 +320,7 @@ describe("a bridge restart in the middle of the linked run", () => {
   it("a link the session knows from neither side is not taken", () => {
     const { writer } = recordingWriter();
     const rm = new RunManager("chat1", KEY, writer);
-    expect(rm.noteRunLink("someone-elses-execution", "someone-elses-client-run")).toBe(false);
+    expect(rm.noteRunLink("someone-elses-execution", "someone-elses-client-run", 1001)).toBe(false);
     const frame = { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "someone-elses-client-run", state: "final" } };
     expect(rm.canonicalFrame(frame)).toBe(frame);
   });
@@ -443,7 +444,7 @@ describe("the stated link, for an input another run was taken to answer", () => 
 
   it("the execution run opens its bubble though no input is left waiting", async () => {
     const { rm, calls } = await answeredByAnAnnounce();
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await reply(rm);
     expect(opens(calls)).toEqual([ANNOUNCE, X]);
     expect(terminals(calls).map((t) => [t.messageId, t.status])).toEqual([
@@ -456,7 +457,7 @@ describe("the stated link, for an input another run was taken to answer", () => 
     const C2 = `webchat-${"d".repeat(64)}`;
     const { rm, calls } = await answeredByAnAnnounce();
     rm.noteHeldInput(C2, C2, "user2", [ANNOUNCE]);
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await reply(rm);
     expect(opens(calls)).toEqual([ANNOUNCE, X]);
     expect(rm.outstandingInputs).toEqual([C2]);
@@ -592,7 +593,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
 
   it("ONE bubble: Convex is told it shows the execution run, the transcript closes it, the live terminal joins it", async () => {
     const { rm, calls } = await spokenFirst();
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await rm.recordRunLinks();
     expect(links(calls)).toEqual([["m1", C, X]]);
     // The turn keeps the name it was opened under: nothing is renamed at the door, and a
@@ -624,9 +625,9 @@ describe("the link stated AFTER the client run opened its turn", () => {
 
   it("stated twice (`phase: model`, then `end`): one write; another execution for the same client run is refused", async () => {
     const { rm, calls } = await spokenFirst();
-    expect(rm.noteRunLink(X, C)).toBe(true);
-    expect(rm.noteRunLink(X, C)).toBe(true);
-    expect(rm.noteRunLink("another-execution", C)).toBe(false);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
+    expect(rm.noteRunLink("another-execution", C, 1001)).toBe(false);
     await rm.recordRunLinks();
     expect(links(calls)).toEqual([["m1", C, X]]);
   });
@@ -635,7 +636,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     const { rm, calls } = await spokenFirst();
     await rm.feed(chat(C, { seq: 1, state: "final", message: said("Hi") }), 1001);
     expect(rm.turnActive).toBe(false);
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await rm.recordRunLinks();
     expect(links(calls)).toEqual([["m1", C, X]]);
   });
@@ -646,7 +647,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     const { writer, calls } = recordingWriter();
     const rm = new RunManager("chat1", KEY, writer);
     await rm.resumeTurn(1000, "bubbleC", C);
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await rm.recordRunLinks();
     expect(links(calls)).toEqual([["bubbleC", C, X]]);
     await rm.feed(delta(8, "Hi there"), 1001);
@@ -662,7 +663,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     await rm.feed(delta(7, ""), 1000);
     expect(rm.activeRunIds).toEqual([C]);
     expect(opens(calls)).toEqual([]);
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await rm.recordRunLinks();
     expect(links(calls)).toEqual([]);
     await rm.feed(delta(8, "Hi"), 1001);
@@ -677,7 +678,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     rm.noteHeldInput(C, C, "userMsg");
     await rm.feed(delta(7, ""), 1000);
     expect(rm.activeRunIds).toEqual([C]);
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     expect(await rm.settleFromTranscript([X], 1001)).toBe(true);
     await rm.recordRunLinks();
     await rm.feed(chat(C, { seq: 1, state: "final", message: said("Hi") }), 1002);
@@ -696,7 +697,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     link.mockRejectedValueOnce(new Error("convex unreachable"));
     const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
     // The statement asks at once (the write that fails)…
-    expect(failing.rm.noteRunLink(X, C)).toBe(true);
+    expect(failing.rm.noteRunLink(X, C, 1001)).toBe(true);
     await failing.rm.lanesIdle();
     await new Promise((r) => setTimeout(r, 0));
     expect(link).toHaveBeenCalledTimes(1);
@@ -715,7 +716,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     const second = refused.writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
     second.mockResolvedValueOnce(false);
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(refused.rm.noteRunLink(X, C)).toBe(true);
+    expect(refused.rm.noteRunLink(X, C, 1001)).toBe(true);
     await refused.rm.recordRunLinks();
     await refused.rm.recordRunLinks();
     expect(second).toHaveBeenCalledTimes(1);
@@ -726,7 +727,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     // 2026.10.33 withdraws recorded text from the stream (retired-live-text.test.ts): the
     // row names the execution run, the stream the client run.
     const { rm, calls } = await spokenFirst();
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await rm.onAssistantRow({ runId: X, seq: 16 });
     await rm.feed(chat(C, { seq: 9, state: "delta", deltaText: "", replace: true, message: said("") }), 1001);
     await rm.feed(chat(C, { seq: 1, state: "final", message: said("Hi") }), 1002);
@@ -744,7 +745,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     rm.noteHeldInput(C, C, "userMsg");
     await rm.feed(delta(6, "Hi"), 1002);
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(rm.noteRunLink(X, C)).toBe(false);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(false);
     warned.mockRestore();
     await rm.recordRunLinks();
     expect(links(calls)).toEqual([]);
@@ -760,7 +761,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
     for (const [name, target] of [["the execution run (the transcript's name)", X], ["the client run", C]] as const) {
       it(`its row names ${name}: the bubble is cut, the answer goes to a new segment`, async () => {
         const { rm, calls } = await spokenFirst();
-        expect(rm.noteRunLink(X, C)).toBe(true);
+        expect(rm.noteRunLink(X, C, 1001)).toBe(true);
         await rm.recordRunLinks();
         rm.noteHeldInput(C2, C2, "userMsg2", [C]);
         await rm.onUserRow({ sendId: C2, steerTargetRunId: target });
@@ -777,7 +778,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
       rm.noteHeldInput(C2, C2, "userMsg2", [C]);
       await rm.onUserRow({ sendId: C2, steerTargetRunId: C });
       expect(splits(calls)).toEqual([["m1", "userMsg2"]]);
-      expect(rm.noteRunLink(X, C)).toBe(true);
+      expect(rm.noteRunLink(X, C, 1001)).toBe(true);
       await rm.recordRunLinks();
       expect(links(calls)).toEqual([["m1+", C, X]]);
     });
@@ -801,7 +802,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
       // The statement asks at once (a network failure), then each post asks again.
       link.mockRejectedValueOnce(new Error("fetch failed")).mockRejectedValueOnce(transient()).mockRejectedValueOnce(new Error("fetch failed"));
       const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
-      expect(rm.noteRunLink(X, C)).toBe(true);
+      expect(rm.noteRunLink(X, C, 1001)).toBe(true);
       await expect(rm.runLinksRecorded()).rejects.toThrow(/run link/);
       await expect(rm.runLinksRecorded()).rejects.toThrow(/run link/);
       // Convex answers: recorded, the post goes on — and nothing is asked again.
@@ -818,7 +819,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
         if (refusal === false) link.mockResolvedValueOnce(false);
         else link.mockRejectedValueOnce(refusal);
         const quiet = [vi.spyOn(console, "warn").mockImplementation(() => {}), vi.spyOn(console, "error").mockImplementation(() => {})];
-        expect(rm.noteRunLink(X, C)).toBe(true);
+        expect(rm.noteRunLink(X, C, 1001)).toBe(true);
         await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
         await rm.runLinksRecorded();
         expect(link).toHaveBeenCalledTimes(1);
@@ -831,7 +832,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
       const link = writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
       link.mockRejectedValue(transient());
       const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
-      expect(rm.noteRunLink(X, C)).toBe(true);
+      expect(rm.noteRunLink(X, C, 1001)).toBe(true);
       let held = 0;
       for (let i = 0; i < 20; i++) {
         try {
@@ -854,10 +855,90 @@ describe("the link stated AFTER the client run opened its turn", () => {
       const link = writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
       link.mockRejectedValue(new ConvexIngestError("linkRunBubble", null, "Convex ingest linkRunBubble timed out after 20000ms"));
       const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
-      expect(rm.noteRunLink(X, C)).toBe(true);
+      expect(rm.noteRunLink(X, C, 1001)).toBe(true);
       for (let i = 0; i < 30; i++) await expect(rm.runLinksRecorded()).rejects.toThrow(/run link/);
       link.mockResolvedValue(true);
       await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      quiet.mockRestore();
+    });
+
+    // A bridge RESTART: the run manager's memory is gone. Convex keeps what it recorded,
+    // and hands it back with the bubble it asks the new process to resume.
+    it("after a restart, a link Convex recorded comes back with the resumed bubble: the transcript's word reaches the turn", async () => {
+      const { writer, calls } = recordingWriter();
+      const rm = new RunManager("chat1", KEY, writer);
+      await rm.resumeTurn(1000, "m1", C, undefined, X);
+      expect(rm.activeTranscriptRunIds).toEqual([X]);
+      expect(rm.sameRun(X, C)).toBe(true);
+      // Recorded already: nothing owed, nothing asked.
+      await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      expect(links(calls)).toEqual([]);
+      expect(await rm.settleFromTranscript([X], 1001)).toBe(true);
+    });
+
+    it("the resumed bubble's `transcriptRunId` is read bounded, and never as the run's own name", () => {
+      expect(parseLiveBubble({ messageId: "m1", runId: C, transcriptRunId: X })).toMatchObject({ transcriptRunId: X });
+      for (const bad of [C, "", "x".repeat(257), 7]) {
+        expect(parseLiveBubble({ messageId: "m1", runId: C, transcriptRunId: bad })).not.toHaveProperty("transcriptRunId");
+      }
+    });
+
+    it("…without it (a bubble with no recorded link), the resumed turn is the client run's alone, as before", async () => {
+      const { writer } = recordingWriter();
+      const rm = new RunManager("chat1", KEY, writer);
+      await rm.resumeTurn(1000, "m1", C);
+      expect(rm.activeTranscriptRunIds).toEqual([C]);
+      expect(await rm.settleFromTranscript([X], 1001)).toBe(false);
+    });
+
+    // A SOCKET closed (a reconnection): the registry replaces the chat's session, and the
+    // new run manager knows nothing of its own. The links its predecessor still owed are
+    // carried over (SessionRegistry `owedLateLinks`), and hold the rows back there too.
+    it("a link still owed when the socket closes is carried to the next session: its rows wait, the write is asked again", async () => {
+      const failing = await spokenFirst();
+      const link = failing.writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
+      link.mockRejectedValue(new Error("fetch failed"));
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+      expect(failing.rm.noteRunLink(X, C, 1001)).toBe(true);
+      await expect(failing.rm.runLinksRecorded()).rejects.toThrow(/run link/);
+      const owed = failing.rm.owedLateLinks();
+      expect(owed).toEqual([{ clientRunId: C, executionRunId: X, messageId: "m1" }]);
+      // The next session: no turn (the run is over), the same writer.
+      const next = new RunManager("chat1", KEY, failing.writer);
+      next.adoptOwedLateLinks(owed);
+      await expect(next.runLinksRecorded()).rejects.toThrow(/run link/);
+      link.mockResolvedValue(true);
+      await expect(next.runLinksRecorded()).resolves.toBeUndefined();
+      expect(link.mock.calls.at(-1)).toEqual(["m1", C, X]);
+      expect(next.owedLateLinks()).toEqual([]);
+      // The transcript's name of the run is the turn's here too, and a statement heard
+      // again on this socket is the same late link — never an early one.
+      expect(next.sameRun(X, C)).toBe(true);
+      next.noteHeldInput(C, C, "userMsg");
+      expect(next.noteRunLink(X, C, 1002)).toBe(true);
+      expect(next.canonicalFrame(delta(9, "x"))).toEqual(delta(9, "x"));
+      quiet.mockRestore();
+    });
+
+    // THE LIMIT (codex pass 3, finding 1), pinned as it is: a link whose write never landed
+    // lives only in the process that observed it. The gateway does not state it again after
+    // its `phase: "end"` statement, and no durable record of the gateway pairs the two names
+    // (the session row keeps `lastRunId` = the client run, the rows the execution run, the
+    // input receipts the user row): a restart in that window loses it, and the rows of the
+    // execution run then make their own bubble — what a statement never received leaves.
+    it("LIMIT: a link still OWED when the PROCESS restarts is lost with it — nothing holds the new process's posts", async () => {
+      const failing = await spokenFirst();
+      const link = failing.writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
+      link.mockRejectedValue(new Error("fetch failed"));
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+      expect(failing.rm.noteRunLink(X, C, 1001)).toBe(true);
+      await expect(failing.rm.runLinksRecorded()).rejects.toThrow(/run link/);
+      // The restart: Convex resumes the bubble, with no link to hand back.
+      const { writer } = recordingWriter();
+      const restarted = new RunManager("chat1", KEY, writer);
+      await restarted.resumeTurn(1002, "m1", C);
+      await expect(restarted.runLinksRecorded()).resolves.toBeUndefined();
+      expect(restarted.activeTranscriptRunIds).toEqual([C]);
       quiet.mockRestore();
     });
 
@@ -866,7 +947,7 @@ describe("the link stated AFTER the client run opened its turn", () => {
       const rm = new RunManager("chat1", KEY, writer);
       rm.noteHeldInput(C, C, "userMsg");
       await rm.feed(delta(7, ""), 1000);
-      expect(rm.noteRunLink(X, C)).toBe(true);
+      expect(rm.noteRunLink(X, C, 1001)).toBe(true);
       await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
       expect(links(calls)).toEqual([]);
     });
@@ -880,10 +961,55 @@ describe("the link stated AFTER the client run opened its turn", () => {
     (writer as unknown as { setPhase: unknown }).setPhase = vi.fn(async (...args: unknown[]) => {
       calls.push({ op: "setPhase", args });
     });
-    expect(rm.noteRunLink(X, C)).toBe(true);
+    expect(rm.noteRunLink(X, C, 1001)).toBe(true);
     await rm.recordRunLinks();
     await rm.noteApprovalRequested("appr-1", { kind: "exec", runId: X, toolCallId: "call-1", expiresInSec: 600 }, 1001);
     expect(calls.filter((c) => c.op === "setPhase").map((c) => c.args.slice(0, 2))).toContainEqual(["m1", "awaiting_approval"]);
+  });
+
+  // A reconnection's pending list can name the request BEFORE the statement arrives
+  // (codex pass 3): the turn does not own the execution run yet, so nothing holds it then.
+  // The request is kept under its own name and holds the turn once the link makes the
+  // run the turn's.
+  it("an exec approval noted BEFORE the late link holds the turn once the link is stated", async () => {
+    const { rm, writer, calls } = await spokenFirst();
+    (writer as unknown as { setPhase: unknown }).setPhase = vi.fn(async (...args: unknown[]) => {
+      calls.push({ op: "setPhase", args });
+    });
+    const phases = () => calls.filter((c) => c.op === "setPhase").map((c) => c.args.slice(0, 2));
+    await rm.noteApprovalRequested("appr-1", { kind: "exec", runId: X, toolCallId: "call-1", expiresInSec: 600 }, 1001);
+    expect(phases()).not.toContainEqual(["m1", "awaiting_approval"]);
+    expect(rm.noteRunLink(X, C, 1002)).toBe(true);
+    await rm.lanesIdle();
+    expect(phases()).toContainEqual(["m1", "awaiting_approval"]);
+  });
+
+  it("…not once it was settled, and not for a request of another run", async () => {
+    const { rm, writer, calls } = await spokenFirst();
+    (writer as unknown as { setPhase: unknown }).setPhase = vi.fn(async (...args: unknown[]) => {
+      calls.push({ op: "setPhase", args });
+    });
+    await rm.noteApprovalRequested("appr-1", { kind: "exec", runId: X, toolCallId: "call-1", expiresInSec: 600 }, 1001);
+    await rm.noteApprovalSettled("appr-1", 1001.5);
+    await rm.noteApprovalRequested("appr-2", { kind: "exec", runId: "another-run", toolCallId: "call-2", expiresInSec: 600 }, 1001);
+    expect(rm.noteRunLink(X, C, 1002)).toBe(true);
+    await rm.lanesIdle();
+    expect(calls.filter((c) => c.op === "setPhase").map((c) => c.args.slice(0, 2))).not.toContainEqual(["m1", "awaiting_approval"]);
+  });
+
+  it("a request kept with NO turn (the reconnection's list) holds the turn resumed under the client run once linked", async () => {
+    const { writer, calls } = recordingWriter();
+    (writer as unknown as { setPhase: unknown }).setPhase = vi.fn(async (...args: unknown[]) => {
+      calls.push({ op: "setPhase", args });
+    });
+    const rm = new RunManager("chat1", KEY, writer);
+    await rm.noteApprovalRequested("appr-1", { kind: "exec", runId: X, toolCallId: "call-1", expiresInSec: 600 }, 1000);
+    await rm.resumeTurn(1001, "m-resumed", C);
+    const phases = () => calls.filter((c) => c.op === "setPhase").map((c) => c.args.slice(0, 2));
+    expect(phases()).not.toContainEqual(["m-resumed", "awaiting_approval"]);
+    expect(rm.noteRunLink(X, C, 1002)).toBe(true);
+    await rm.lanesIdle();
+    expect(phases()).toContainEqual(["m-resumed", "awaiting_approval"]);
   });
 
   it("…and one naming ANOTHER run does not (unchanged without a link)", async () => {
@@ -898,13 +1024,13 @@ describe("the link stated AFTER the client run opened its turn", () => {
   it("the two names are ONE run to whoever asks (`sameRun`), linked early or late; strangers are not", async () => {
     const late = await spokenFirst();
     expect(late.rm.sameRun(X, C)).toBe(false);
-    late.rm.noteRunLink(X, C);
+    late.rm.noteRunLink(X, C, 1001);
     expect(late.rm.sameRun(X, C)).toBe(true);
     expect(late.rm.sameRun(C, X)).toBe(true);
     expect(late.rm.sameRun(C, C)).toBe(true);
     expect(late.rm.sameRun(C, "another")).toBe(false);
     const early = heldSession();
-    early.rm.noteRunLink(X, C);
+    early.rm.noteRunLink(X, C, 1001);
     expect(early.rm.sameRun(C, X)).toBe(true);
   });
 
@@ -915,5 +1041,44 @@ describe("the link stated AFTER the client run opened its turn", () => {
       return f.event === "sessions.changed" && sessionsChangedRunLink(f.payload) !== null;
     });
     expect(stated).toEqual([]);
+  });
+});
+
+// A run cut into more segments than Convex links in one call (codex pass 3): the writer
+// asks page after page, and the link holds — the rows stop waiting — only once Convex
+// answers without a cursor.
+describe("the writer covers every bubble of the run before it says linked", () => {
+  function writerAnswering(answers: Array<Record<string, unknown> | Error>) {
+    const sent: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_url: unknown, init: { body: unknown }) => {
+      sent.push(JSON.parse(init.body as string) as Record<string, unknown>);
+      const next = answers.shift() ?? { ok: true, linked: true };
+      if (next instanceof Error) throw next;
+      return { ok: true, status: 200, json: async () => next } as unknown as Response;
+    }) as unknown as typeof fetch;
+    return { sent, w: new HttpConvexWriter({ convexHttpActionsUrl: "http://test.invalid", ingestSecret: "s", fetchImpl }) };
+  }
+
+  it("pages until Convex answers without a cursor", async () => {
+    const { sent, w } = writerAnswering([
+      { ok: true, linked: true, continueCursor: "p2" },
+      { ok: true, linked: true, continueCursor: "p3" },
+      { ok: true, linked: true },
+    ]);
+    expect(await w.linkRunBubble("m1", C, X)).toBe(true);
+    expect(sent.map((b) => b.cursor)).toEqual([undefined, "p2", "p3"]);
+  });
+
+  it("a page refused refuses the link", async () => {
+    const { w } = writerAnswering([{ ok: true, linked: true, continueCursor: "p2" }, { ok: true, linked: false }]);
+    expect(await w.linkRunBubble("m1", C, X)).toBe(false);
+  });
+
+  it("a run with more pages than any read can place is refused, not confirmed", async () => {
+    const { sent, w } = writerAnswering(Array.from({ length: 200 }, () => ({ ok: true, linked: true, continueCursor: "again" })));
+    const quiet = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await w.linkRunBubble("m1", C, X)).toBe(false);
+    expect(sent.length).toBe(64);
+    quiet.mockRestore();
   });
 });

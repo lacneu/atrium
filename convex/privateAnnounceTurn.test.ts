@@ -346,6 +346,79 @@ describe("a card the live stream left OPEN, completed by the rows (the socket cl
   });
 });
 
+// The rows of a call can give its ARGUMENTS after a later call's plan was derived (a live
+// card A left open without them, completed by a later read): the plans of the rows are
+// ordered by the transcript, never by when a read gave them (codex pass 3).
+describe("an earlier call's arguments recovered AFTER a later call's plan was derived", () => {
+  const RUN = "webchat-late-args-run";
+  const A = "tool_call:call_x_fc_y:abc:progress_card:1";
+  const B = "tool_call:call_x_fc_y:abc:progress_card:2";
+  const DONE = ADVANCED.map((s) => ({ ...s, status: "completed" }));
+  const rowsWith = (inputA: unknown, planB: unknown) => [
+    {
+      entryId: "l1",
+      seq: 501,
+      role: "custom",
+      runId: RUN,
+      hidden: false,
+      visible: false,
+      blocks: [
+        { type: "tool", toolCallId: A, name: "progress_card", status: "call", ...(inputA === undefined ? {} : { input: inputA }) },
+        { type: "tool", toolCallId: A, name: "progress_card", status: "result", output: { content: [] } },
+      ],
+    },
+    {
+      entryId: "l2",
+      seq: 502,
+      role: "custom",
+      runId: RUN,
+      hidden: false,
+      visible: false,
+      blocks: [
+        { type: "tool", toolCallId: B, name: "progress_card", status: "call", input: { plan: planB } },
+        { type: "tool", toolCallId: B, name: "progress_card", status: "result", output: { content: [] } },
+      ],
+    },
+    { entryId: "l3", seq: 503, role: "assistant", runId: RUN, hidden: false, visible: true, text: "fait", blocks: [{ type: "text", text: "fait" }], stopReason: "stop" },
+  ];
+  /** A later row of the run (its layout grows, so the bubble's parts are derived again). */
+  const more = { entryId: "l4", seq: 504, role: "assistant", runId: RUN, hidden: false, visible: true, text: "et voilà", blocks: [{ type: "text", text: "et voilà" }], stopReason: "stop" };
+  const read = (n: number, inputA: unknown, planB: unknown) => ({
+    kind: "delta",
+    deltaCursor: `cursor-late-args-${n}`,
+    readAt: 5000 + n,
+    rows: n === 1 ? rowsWith(inputA, planB) : [...rowsWith(inputA, planB), more],
+    terminals: [{ runId: RUN, status: "completed", at: 4990 }],
+    hasActiveRun: false,
+    activeRunIds: [],
+  });
+
+  for (const [name, planB] of [["a later plan", DONE], ["a later CLEAR (`plan: []`)", []]] as const) {
+    test(`${name} stays the current one`, async () => {
+      const t = convexTest(schema, modules);
+      const ids = await seed(t);
+      const m = (await t.mutation(internal.stream.startAssistant, { chatId: ids.chatId, runId: RUN, turnSessionKey: SK, boundInstanceName: "prod" } as never)) as Id<"messages">;
+      await t.mutation(internal.stream.addPart, {
+        messageId: m,
+        part: { kind: "tool", name: "progress_card", phase: "started", toolCallId: A, textOffset: 0 },
+        boundInstanceName: "prod",
+      } as never);
+      // First read: A's call without its arguments — only B states a plan.
+      await applyRaw(t, ids.chatId, read(1, undefined, planB));
+      await settle(t);
+      let plans = plansOf(await partsOf(t, m));
+      expect(plans[currentPlanIndex(plans)]).toEqual({ kind: "plan", steps: planB });
+      // A later read gives A's arguments: A's plan is older than B's in the transcript.
+      await applyRaw(t, ids.chatId, read(2, { plan: ADVANCED }, planB));
+      await settle(t);
+      const parts = await partsOf(t, m);
+      expect(parts.find((p) => p.part.kind === "tool" && p.part.toolCallId === A && p.part.input !== undefined)).toBeDefined();
+      plans = plansOf(parts);
+      expect(plans[currentPlanIndex(plans)]).toEqual({ kind: "plan", steps: planB });
+    });
+  }
+});
+
 describe("a `progress_card` call that CLEARS the checklist (`plan: []`)", () => {
   const RUN = "announce:v1:agent:files:subagent:k:clear";
   const call = (n: number, plan: unknown) => {

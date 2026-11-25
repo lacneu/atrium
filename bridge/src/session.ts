@@ -29,7 +29,7 @@ import {
 import { TALK_CALL_HOLD_MS } from "./core/talk-relay.js";
 import { presentedIdentity } from "./providers/openclaw/gateway-identity.js";
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
-import { RunManager } from "./providers/openclaw/run-manager.js";
+import { RunManager, type OwedLateLink } from "./providers/openclaw/run-manager.js";
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import { ChildRowStatus } from "./providers/openclaw/child-row-status.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
@@ -517,7 +517,7 @@ class Session implements BridgeSession {
       onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
       // One run, two names (2026.10.33): the gateway's own statement of the link.
       onRunLinked: (executionRunId, clientRunId) => {
-        this.runManager.noteRunLink(executionRunId, clientRunId);
+        this.runManager.noteRunLink(executionRunId, clientRunId, this.clock());
       },
       // PROJECTION `on` (final design step 2): the files Convex has no copy of yet. Called
       // only in `on` (TranscriptShadow.emitFiles).
@@ -1397,6 +1397,13 @@ export class SessionDisplaceRefusedError extends Error {
 
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
+  /** The late run links a chat's dropped session still owed Convex (RunManager
+   *  `owedLateLinks`), by chat, with the session key they belong to: handed to the next
+   *  session of that key, whose reconciler must hold the same rows back. In-process
+   *  only — a bridge restart loses them (no local store; the gateway does not state a
+   *  link again). Bounded, oldest first. */
+  private readonly owedLateLinks = new Map<string, { sessionKey: string; links: OwedLateLink[] }>();
+  private static readonly MAX_OWED_LINK_CHATS = 256;
   private readonly inflight = new Map<string, Promise<Session>>();
   // RECENT session keys per chat (bounded history): the sessions map keeps
   // ONE entry per chat, so an agent/instance re-key drops the previous key
@@ -1459,6 +1466,20 @@ export class SessionRegistry {
     this.served.set(instanceName, bundle);
   }
 
+  /** What a dropped session still owed Convex of its late run links, for the chat's next
+   *  session (`owedLateLinks`). */
+  private keepOwedLateLinks(chatId: string, session: Session): void {
+    const links = session.runManager.owedLateLinks();
+    if (links.length === 0) return;
+    this.owedLateLinks.delete(chatId);
+    this.owedLateLinks.set(chatId, { sessionKey: session.sessionKey, links });
+    while (this.owedLateLinks.size > SessionRegistry.MAX_OWED_LINK_CHATS) {
+      const oldest = this.owedLateLinks.keys().next().value;
+      if (oldest === undefined) break;
+      this.owedLateLinks.delete(oldest);
+    }
+  }
+
   /** Start the idle-session sweeper on first use (lazy, so pure-helper tests that
    *  never acquire don't spin a timer). The interval is unref'd — it never keeps
    *  the process alive — and is cleared by closeAll. */
@@ -1490,6 +1511,7 @@ export class SessionRegistry {
             /* already gone */
           }
         }
+        this.keepOwedLateLinks(chatId, session);
         this.sessions.delete(chatId);
         reaped++;
       }
@@ -1616,6 +1638,7 @@ export class SessionRegistry {
         }
         existing.close();
       }
+      this.keepOwedLateLinks(chatId, existing);
       this.sessions.delete(chatId);
     }
     const pending = this.inflight.get(chatId);
@@ -1793,6 +1816,9 @@ export class SessionRegistry {
     );
     session.widgetsWanted = widgetsWanted;
     session.runManager.setWidgetsEnabled(declared.includes(INLINE_WIDGETS_CAP));
+    const owed = this.owedLateLinks.get(chatId);
+    this.owedLateLinks.delete(chatId);
+    if (owed !== undefined && owed.sessionKey === session.sessionKey) session.runManager.adoptOwedLateLinks(owed.links);
     session.startConsumer();
     this.sessions.set(chatId, session);
     {

@@ -923,6 +923,9 @@ export const resumeTarget = internalQuery({
       kind: "ask" as const,
       sessionCursors,
       segmentPrefix,
+      // A run linked late (stream.ts `linkRunBubble`): the name its rows carry, so the
+      // restarted bridge reads the transcript's word on the resumed turn under it.
+      transcriptRunId: msg.transcriptRunId,
       chatId: msg.chatId,
       ownerId: chat.userId,
       runId: msg.runId,
@@ -1097,6 +1100,7 @@ export const resumeOrClose = internalAction({
                 ...(target.segmentPrefix !== undefined
                   ? { segmentPrefix: target.segmentPrefix }
                   : {}),
+                ...(target.transcriptRunId !== undefined ? { transcriptRunId: target.transcriptRunId } : {}),
               },
             }),
           });

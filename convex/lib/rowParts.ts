@@ -10,7 +10,8 @@
 //     never followed live), by its `toolCallId` — the live frames name the same ids;
 //   - a PLAN part per successful work-plan call among the bubble's tool blocks, by the
 //     call's id (`transcriptPlanCall`), when no plan of the live stream is on the bubble
-//     (`planPartOfRowTool`) — whoever made the call's card, the rows or the live stream.
+//     (`planPartOfRowTool`) — whoever made the call's card, the rows or the live stream —
+//     and never for a call the transcript places before one whose plan is already derived.
 // Idempotent: a part already derived is never derived twice. What a reader SEES of them is
 // the layout's decision (convex/messages.ts, lib/displayDedup.ts), never this function's.
 
@@ -200,6 +201,17 @@ export async function syncBubbleRowParts(
     if (p.transcriptFileId !== undefined) fileIds.add(String(p.transcriptFileId));
     if (p.transcriptPlanCall !== undefined) plannedCalls.add(p.transcriptPlanCall);
   }
+  // Where each call stands in the TRANSCRIPT (the layout's order), and the latest call whose
+  // plan the rows already gave: a plan derived from the rows is unstamped and orders by
+  // insertion (lib/planOrder.ts), so an earlier call whose arguments a later read brings
+  // is older than that plan — never inserted after it (codex pass 3: it showed as current,
+  // and resurrected a checklist a later call had cleared).
+  const callPosition = new Map<string, number>();
+  for (const row of message.rowLayout) {
+    for (const t of row.tools ?? []) if (!callPosition.has(t.toolCallId)) callPosition.set(t.toolCallId, callPosition.size);
+  }
+  let latestPlanned = -1;
+  for (const call of plannedCalls) latestPlanned = Math.max(latestPlanned, callPosition.get(call) ?? -1);
   const chat = await ctx.db.get(message.chatId);
   // The payloads the bubble's rows carry, read once and only when a card needs them.
   let payloadMap: Map<string, ToolPayload> | null = null;
@@ -251,6 +263,8 @@ export async function syncBubbleRowParts(
       // result to: the gateway publishes a plan for a successful call only. Unstamped:
       // within the bubble it orders by insertion, the rows' order (lib/planOrder.ts).
       if (livePlan || t.status !== "result" || plannedCalls.has(t.toolCallId)) continue;
+      const position = callPosition.get(t.toolCallId) ?? -1;
+      if (position < latestPlanned) continue;
       const card = cards.get(t.toolCallId);
       const name = card?.name ?? t.name;
       if (name !== "progress_card" && name !== "update_plan") continue;
@@ -259,6 +273,7 @@ export async function syncBubbleRowParts(
       const plan = planPartOfRowTool(name, card?.input ?? (await payloads()).get(t.toolCallId)?.input);
       if (plan === null) continue;
       await ctx.db.insert("messageParts", { messageId, order: order++, part: plan, transcriptPlanCall: t.toolCallId });
+      latestPlanned = position;
       out.plans++;
     }
   }
