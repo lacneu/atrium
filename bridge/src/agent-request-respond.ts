@@ -22,6 +22,7 @@
 
 import {
   hermesChoice,
+  OPENCLAW_MAX_OPTIONS,
   openClawDecision,
   openClawQuestionAnswers,
   questionShape,
@@ -110,8 +111,10 @@ const MAX_VALUE = 8000;
  *  text of one request (convex/lib/agentRequests.ts MAX_OPTIONS_TEXT, 120 000), plus at
  *  most 5 question texts of 4000: the shape of anything it recorded fits. */
 const MAX_SHAPE = 200_000;
-/** Mirrors convex/lib/agentRequests.ts MAX_ANSWER_VALUES. */
-const MAX_ANSWER_VALUES = 64;
+/** Mirrors convex/lib/agentRequests.ts MAX_ANSWER_VALUES: every option of a question
+ *  (OPENCLAW_MAX_OPTIONS) plus the one free answer of an `isOther` question. Upstream
+ *  bounds the options, not the answer (schema/questions.ts QuestionAnswersSchema). */
+const MAX_ANSWER_VALUES = OPENCLAW_MAX_OPTIONS + 1;
 
 /** Parse and bound the POST body. Null for anything malformed. */
 export function parseRespondBody(raw: string): RespondBody | null {

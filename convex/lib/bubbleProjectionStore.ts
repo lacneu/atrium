@@ -724,7 +724,11 @@ async function loadBubble(
     budget,
   );
   const runIdsOfBubble = new Set<string>();
-  if (message.runId !== undefined) runIdsOfBubble.add(message.runId);
+  // The run under the name its ROWS carry: a bubble the live stream opened under a
+  // queued input's client run names its execution run beside it (stream.ts
+  // `linkRunBubble`) — the client name has no rows and no run state of its own.
+  const ownRun = message.transcriptRunId ?? message.runId;
+  if (ownRun !== undefined) runIdsOfBubble.add(ownRun);
   for (const m of merged.docs) runIdsOfBubble.add(m.runId);
   // A bubble whose rows, texts or merges overflow the bounds is never recomposed: an
   // unknown run in its set keeps it uncovered.

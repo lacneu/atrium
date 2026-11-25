@@ -331,6 +331,54 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
     expect(noted.mock.calls.map(([row]) => [row.runId, row.seq])).toEqual([["webchat-x", 7]]);
   });
 
+  // One run, two names, the link stated after the bubble opened (run-manager `linkLate`):
+  // Convex must hold the link before it is given the rows of the execution run, and is
+  // asked about the foreground turn under the name its rows carry.
+  it("a run link stated late is recorded BEFORE each transcript post, and the foreground run is named as the transcript names it", async () => {
+    const h = await harness("2026.10.33");
+    await performSend(h.session, body(), h.writer, null, null);
+    await settle(h.session);
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    vi.spyOn(h.session.runManager, "recordRunLinks").mockImplementation(async () => {
+      order.push("links:asked");
+      await held;
+      order.push("links:recorded");
+    });
+    (h.writer as unknown as { applyTranscript: (r: TranscriptApplyReport) => Promise<unknown> }).applyTranscript =
+      async (r) => {
+        order.push(`apply:${r.kind}`);
+        h.applies.push(r);
+      };
+    // A turn in the foreground whose link was stated late: its own name here, the
+    // execution run's in the transcript.
+    vi.spyOn(h.session.runManager, "turnActive", "get").mockReturnValue(true);
+    vi.spyOn(h.session.runManager, "activeRunIds", "get").mockReturnValue(["client-run"]);
+    vi.spyOn(h.session.runManager, "activeTranscriptRunIds", "get").mockReturnValue(["execution-run"]);
+    const before = h.applies.length;
+    h.eventSockets()[0]!.gw.emit(
+      sessionMessage({ role: "user", content: "encore", __openclaw: { id: "u9", seq: 9, idempotencyKey: "s9:user" } }),
+    );
+    await sleep(20);
+    // Asked, not answered: nothing was posted meanwhile.
+    expect(order).toEqual(["links:asked"]);
+    release();
+    await sleep(20);
+    await settle(h.session);
+    expect(order.slice(0, 3)).toEqual(["links:asked", "links:recorded", expect.stringMatching(/^apply:/)]);
+    // Every post is preceded by its own ask.
+    order.forEach((step, i) => {
+      if (step.startsWith("apply:")) expect(order.slice(0, i)).toContain("links:recorded");
+    });
+    const posted = h.applies.slice(before);
+    expect(posted.length).toBeGreaterThan(0);
+    // (A texts-only post carries rows' texts and asks nothing about the turn.)
+    const asking = posted.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+    expect(asking.length).toBeGreaterThan(0);
+    for (const a of asking) expect(a.foregroundRunIds).toEqual(["execution-run"]);
+  });
+
   it("NO duplicate delivery: a turn frame arriving on the events socket reaches no RunManager and writes nothing", async () => {
     const h = await harness("2026.9.6");
     await performSend(h.session, body(), h.writer, null, null);

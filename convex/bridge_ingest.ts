@@ -630,6 +630,12 @@ type IngestOp =
       runId: string;
     }
   | {
+      op: "linkRunBubble";
+      messageId: string;
+      clientRunId: string;
+      runId: string;
+    }
+  | {
       op: "heartbeat";
       messageId: string;
     }
@@ -2000,6 +2006,22 @@ export const ingest = httpAction(async (ctx, request) => {
         boundInstanceName,
       });
       return json({ ok: true });
+    }
+    case "linkRunBubble": {
+      if (
+        typeof body.messageId !== "string" ||
+        typeof body.clientRunId !== "string" ||
+        typeof body.runId !== "string"
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const result = await ctx.runMutation(internal.stream.linkRunBubble, {
+        messageId: body.messageId as Id<"messages">,
+        clientRunId: body.clientRunId,
+        runId: body.runId,
+        boundInstanceName,
+      });
+      return json({ ok: true, linked: result.linked });
     }
     case "heartbeat": {
       await ctx.runMutation(internal.stream.heartbeatStream, {

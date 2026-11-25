@@ -490,9 +490,14 @@ class Session implements BridgeSession {
       apply: async (report) => (await writer.applyTranscript?.(report)) ?? undefined,
       ...(sessionEvents === undefined ? {} : { events: sessionEvents }),
       // READ-ONLY view of the turn: the run in the foreground, for CU-16's admission.
+      // Under the names the TRANSCRIPT gives the runs (a link stated late keeps the
+      // turn under the client run: run-manager `linkLate`).
       foregroundRunId: () =>
-        this.runManager.turnActive ? (this.runManager.activeRunIds[0] ?? null) : null,
-      foregroundRunIds: () => (this.runManager.turnActive ? this.runManager.activeRunIds : []),
+        this.runManager.turnActive ? (this.runManager.activeTranscriptRunIds[0] ?? null) : null,
+      foregroundRunIds: () =>
+        this.runManager.turnActive ? this.runManager.activeTranscriptRunIds : [],
+      // A link stated late is recorded in Convex before the rows it concerns.
+      beforeApply: () => this.runManager.recordRunLinks(),
       // The live overlay's transcript facts (phase 3).
       onUserRow: (row) => {
         void this.runManager.onUserRow(row).catch((e) =>

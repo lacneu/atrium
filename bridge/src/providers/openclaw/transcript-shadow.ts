@@ -49,6 +49,7 @@ import {
   INPUT_RUN_ID_MAX_CHARS,
   capDisplayedRow,
   isDisplayCapped,
+  isGatewayAuthoredAssistantMessage,
   parseHistoryReply,
   rowContentBytes,
   toTranscriptRow,
@@ -285,6 +286,9 @@ export interface TranscriptShadowDeps {
   /** The gateway stated that an execution run is broadcast under a client run
    *  (`sessionsChangedRunLink`): one run for the live overlay. Never awaited. */
   onRunLinked?: (executionRunId: string, clientRunId: string) => void;
+  /** Awaited before rows are posted: what Convex must hold first for them to be placed
+   *  (a run link stated after its bubble opened). A failure never fails the post. */
+  beforeApply?: () => Promise<void>;
   /** PROJECTION `on` (phase 4): runs the transcript proved OVER (Convex's run table — a
    *  terminal, or a fresh read that found the session idle). A foreground turn among
    *  them ends here: a fact, never a timer. Never awaited by the reconciler. */
@@ -501,8 +505,14 @@ export class TranscriptShadow {
     const isUser = admission.role === "user";
     if (isUser && admission.row !== null) this.emitUserRow(admission.row);
     // Whether or not CU-16 admits the row to the store now: that it was RECORDED is the
-    // event's own fact.
-    if (admission.role === "assistant" && admission.row !== null) {
+    // event's own fact. Only the model's own message records text of the run's stream: a
+    // row the gateway wrote on the run's behalf (delivery mirror, injected row) carries a
+    // text of its own, and taken for a record it would keep a text the gateway retracts.
+    if (
+      admission.role === "assistant" &&
+      admission.row !== null &&
+      !isGatewayAuthoredAssistantMessage(payload.message)
+    ) {
       this.emitAssistantRow(admission.row);
     }
     if (foreground !== null && admission.hasActiveRun === true && !isUser) {
@@ -575,6 +585,14 @@ export class TranscriptShadow {
       this.deps.copyFiles?.(files);
     } catch {
       /* the copier's bookkeeping never fails a read */
+    }
+  }
+
+  private async settleBeforeApply(): Promise<void> {
+    try {
+      await this.deps.beforeApply?.();
+    } catch {
+      /* the overlay's bookkeeping never fails a read */
     }
   }
 
@@ -984,6 +1002,7 @@ export class TranscriptShadow {
       ...(unreadable.length > 0 ? { inputUnreadable: unreadable } : {}),
     };
     try {
+      await this.settleBeforeApply();
       // THE TEXTS FIRST, each chunk persisted before the next is sent, the read last: a
       // failure anywhere throws before the read — the cursor never moves past a row whose
       // text was not stored (codex phase 4 pass 6).
@@ -1102,6 +1121,7 @@ export class TranscriptShadow {
       ...this.foregroundOpt(),
     };
     try {
+      await this.settleBeforeApply();
       if (oversized) await this.postTexts(sessionId, all, payload.readAt);
       const answer = await this.deps.apply(payload);
       this.emitSettled(answer);

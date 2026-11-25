@@ -65,9 +65,10 @@ describe("parsing", () => {
         answers: [{ id: "tags", values: Array.from({ length: n }, (_, i) => `v${i}`) }],
       });
     // The bound is the most options one question may carry (64 from OpenClaw 2026.10.33
-    // on): every option of a multi-select question can be picked.
-    expect(parseRespondBody(body(64))?.answers?.[0]?.values).toHaveLength(64);
-    expect(parseRespondBody(body(65))).toBeNull();
+    // on) plus the one free answer of an `isOther` question: every option of a
+    // multi-select question can be picked, and "other" filled in as well.
+    expect(parseRespondBody(body(65))?.answers?.[0]?.values).toHaveLength(65);
+    expect(parseRespondBody(body(66))).toBeNull();
   });
 
   it("refuses a provider that contradicts the source", () => {
@@ -88,6 +89,40 @@ describe("OpenClaw questions", () => {
     expect(calls).toEqual([
       ["question.get", { id: "ask_1" }],
       ["question.resolve", { id: "ask_1", answers: { answers: { format: ["PDF"] } }, resolvedBy: "atrium" }],
+    ]);
+  });
+
+  it("relays every option of a 64-option question plus its free answer: 65 values reach the gateway", async () => {
+    // What Convex POSTs once a person ticked all 64 options and typed "other"; upstream
+    // bounds the options, not the answer (schema/questions.ts QuestionAnswersSchema).
+    const labels = Array.from({ length: 64 }, (_, i) => `Région ${i + 1}`);
+    const record = {
+      id: "ask_1",
+      sessionKey: SESSION,
+      status: "pending",
+      createdAtMs: 1_000,
+      questions: [
+        {
+          questionId: "regions",
+          header: "Régions",
+          question: "Lesquelles ?",
+          presentation: "form",
+          multiSelect: true,
+          isOther: true,
+          options: labels.map((label) => ({ label })),
+        },
+      ],
+    };
+    const values = [...labels, "Ailleurs"];
+    const posted = parseRespondBody(
+      JSON.stringify({ ...body({}), answers: [{ id: "regions", values }] }),
+    );
+    expect(posted).not.toBeNull();
+    const { calls, gw } = recorder({ "question.get": { question: record }, "question.resolve": { status: "answered" } });
+    expect(await respondOpenClaw(posted!, gw, false, LIVE)).toEqual({ ok: true });
+    expect(calls[1]).toEqual([
+      "question.resolve",
+      { id: "ask_1", answers: { answers: { regions: values } }, resolvedBy: "atrium" },
     ]);
   });
 

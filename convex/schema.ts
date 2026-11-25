@@ -2324,6 +2324,13 @@ export default defineSchema({
       v.literal("system"),
     ),
     runId: v.optional(v.string()),
+    // ASSISTANT rows: the run's name IN THE TRANSCRIPT when the live stream opened the
+    // bubble under another one. From OpenClaw 2026.10.33 a queued input's execution is
+    // broadcast under the input's client run while its rows keep the execution run; when
+    // the gateway's statement of that link reaches the bridge after the bubble opened,
+    // `runId` stays the name the bridge writes with (its generation) and this is the run
+    // whose rows the bubble shows (stream.ts `linkRunBubble`). Absent everywhere else.
+    transcriptRunId: v.optional(v.string()),
     // USER rows only: the send identity of the dispatch that carried this message (the
     // outbox row's `sendId`, see there) — the key the transcript's `"<sendId>:user"` row
     // is reconciled on (invariant I3). The LAST dispatch wins (a regenerate re-sends the

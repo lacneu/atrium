@@ -339,8 +339,10 @@ describe("captured on 2026.10.33 — the turn replayed in its arrival order", ()
 
   // Two `message`-tool sends are recorded mid-run as VISIBLE rows of the run (delivery
   // mirrors) and withdraw nothing from the stream; the run's own answer streams after
-  // them, is recorded, and only then is the stream emptied.
-  it("messageToolRows: mirror rows recorded mid-run change nothing, and the answer keeps its text once recorded", () => {
+  // them, is recorded, and only then is the stream emptied. The mirrors (seq 150, 156) are
+  // the gateway's rows, not the stream's: only the model's own message (158) is handed
+  // over as a record of the live text.
+  it("messageToolRows: mirror rows recorded mid-run are not records of the stream, and the answer keeps its text once recorded", () => {
     const turn = CAPTURED.messageToolRows;
     const { emptying, final, complete } = landmarks(turn);
     const n = new Normalizer(turn.sessionKey, null);
@@ -376,7 +378,13 @@ describe("captured on 2026.10.33 — the turn replayed in its arrival order", ()
       shownAfter.push(n.text);
     });
     shadow.close();
-    expect(noted).toEqual([150, 156, 158]);
+    const mirrors = turn.entries
+      .filter((e) => e.socket === "session-events")
+      .map((e) => payloadOf(e))
+      .filter((p) => (p.message as { model?: string }).model === "delivery-mirror")
+      .map((p) => p.messageSeq);
+    expect(mirrors).toEqual([150, 156]);
+    expect(noted).toEqual([158]);
     expect(empties).toEqual([]);
     const before = shownAfter[emptying - 1]!;
     expect(before).toBe(complete);
@@ -694,6 +702,42 @@ describe("TranscriptShadow — which rows are handed over as recorded", () => {
     await r.flush();
     expect(r.rows).toEqual([{ runId: "run-1", seq: 7 }]);
   });
+
+  // A row the GATEWAY wrote on behalf of the run — never the model's streamed message
+  // (src/shared/transcript-only-openclaw-assistant.ts at v2026.10.33; the stream itself
+  // skips them, embedded-agent-subscribe.handlers.messages.stream.ts:36-45). Shapes: the
+  // delivery mirror captured on the bench run 2026-11-24T22-39-08-086Z
+  // (settle-message-tool-codemode), the injected row of chat-transcript-inject.ts, and
+  // a mirror whose provider/model were stripped (the marker alone, upstream #99470).
+  it("a row the gateway wrote on behalf of the run records nothing of its stream", async () => {
+    const r = rig();
+    r.shadow.configure({});
+    await r.flush();
+    const artifact = { api: "openclaw-transcript", provider: "openclaw" };
+    r.send(
+      row(2, [{ type: "text", text: "Sent by the message tool." }], {
+        ...artifact,
+        model: "delivery-mirror",
+        openclawDeliveryMirror: { kind: "message-tool-source-reply", final: false },
+        idempotencyKey: "run-1:mirror:1",
+      }),
+    );
+    r.send(row(3, [{ type: "text", text: "Stopped." }], { ...artifact, model: "gateway-injected" }));
+    r.send(
+      row(4, [{ type: "text", text: "Delivered." }], {
+        openclawDeliveryMirror: { kind: "channel-final" },
+      }),
+    );
+    // The model's own message, whatever its provider says of itself.
+    r.send(row(5, [{ type: "text", text: "The answer." }], { api: "openai-responses", provider: "openai", model: "gpt-x" }));
+    // Not the marker's shape: an ordinary row.
+    r.send(row(6, [{ type: "text", text: "More." }], { openclawDeliveryMirror: { kind: "something-else" } }));
+    await r.flush();
+    expect(r.rows).toEqual([
+      { runId: "run-1", seq: 5 },
+      { runId: "run-1", seq: 6 },
+    ]);
+  });
 });
 
 // --- The run manager's hand-over ---------------------------------------------------------
@@ -729,6 +773,45 @@ describe("RunManager.onAssistantRow — in the frames' order", () => {
     // the emptying: the final would then carry the emptying's declaration.
     expect(writer.states.filter((s) => s.declared)).toEqual([]);
     expect([...writer.finals.values()]).toEqual([{ status: "complete", text: "The answer." }]);
+  });
+
+  // The whole chain, as session.ts wires it: a delivery mirror of the SAME run is recorded
+  // while a text is on screen, then the gateway takes that text back for good (upstream's
+  // retraction: the emptying, then a final with no message). The mirror's text is its
+  // own — it says nothing about the text the stream showed.
+  it("a delivery mirror of the run does not keep a text the gateway then retracts", async () => {
+    const writer = new LiveBubbles();
+    const manager = new RunManager("chat-1", SK, writer);
+    const shadow = shadowFor(SK, manager);
+    await manager.beginTurn(1000, RUN);
+    await manager.feed(
+      chat({ seq: 1, state: "delta", deltaText: "Provisional answer", message: text("Provisional answer") }),
+      1000.01,
+    );
+    await shadow.message({
+      sessionKey: SK,
+      sessionId: "s-1",
+      messageId: "m-7",
+      messageSeq: 7,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Sent by the message tool." }],
+        api: "openclaw-transcript",
+        provider: "openclaw",
+        model: "delivery-mirror",
+        stopReason: "stop",
+        openclawDeliveryMirror: { kind: "message-tool-source-reply", final: false },
+        idempotencyKey: `${RUN}:mirror:1`,
+        __openclaw: { runId: RUN, id: "m-7", seq: 7, idempotencyKey: `${RUN}:mirror:1` },
+      },
+    });
+    await manager.feed(chat({ seq: 2, state: "delta", deltaText: "", replace: true, message: text("") }), 1000.02);
+    await manager.feed(chat({ seq: 3, state: "final" }), 1000.05);
+    await manager.completionsIdle();
+    shadow.close();
+    expect([...writer.finals.values()].map((f) => f.text)).toEqual([""]);
+    expect([...writer.text.values()]).toEqual([""]);
+    expect(shadow.rows).toEqual([]);
   });
 
   it("a row with no run is nobody's", async () => {
