@@ -232,9 +232,17 @@ const MAX_DETAIL = 16_384;
 const MAX_COMMAND = 16_384 + 64;
 const MAX_SHORT = 200;
 export const MAX_ANSWER_CHARS = 8000;
-/** The most values one answer may carry (the bridge refuses more, never cuts): every
- *  option of a multi-select question may be picked, so the bound is MAX_OPTIONS. */
-export const MAX_ANSWER_VALUES = 64;
+/** The most values one answer may carry on the wire (the bridge refuses more, never
+ *  cuts): every option of a multi-select question may be picked, plus the ONE free
+ *  answer of a question that also takes one. OpenClaw bounds the options, never the
+ *  answer (schema/questions.ts `QuestionAnswersSchema`; question-manager.ts
+ *  `validateAnswers` accepts any value of an `isOther` question beside its options). */
+export const MAX_ANSWER_VALUES = MAX_OPTIONS + 1;
+/** The same bound for ONE question: the free answer counts only where the question
+ *  offers options AND takes another answer. */
+function maxAnswerValues(q: Pick<AgentRequestQuestion, "options" | "allowOther">): number {
+  return q.allowOther && q.options.length > 0 ? MAX_ANSWER_VALUES : MAX_OPTIONS;
+}
 const QUESTION_ID_RE = /^[a-z][a-z0-9_]*$/;
 
 function clip(value: unknown, max: number): string | undefined {
@@ -519,7 +527,7 @@ export function validateAnswers(
     }
     // Bounded, never cut: the bridge relays at most this many, and a stored answer the agent
     // did not receive in full would claim an answer nobody gave (codex P3).
-    if (given.values.length > MAX_ANSWER_VALUES) {
+    if (given.values.length > maxAnswerValues(q)) {
       return { ok: false, refusal: { code: "too_many", questionId: q.id } };
     }
     if (!q.multiSelect && given.values.length > 1) {

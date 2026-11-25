@@ -19,6 +19,7 @@ import {
   MAX_OPTIONS_TEXT,
   questionShape,
 } from "./lib/agentRequests";
+import { answersFromDrafts } from "../src/chat/agentRequestsView";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -186,7 +187,7 @@ describe("the bridge records what an agent asked", () => {
     const row = await t.run((ctx) => ctx.db.get(res.id!));
     expect(row!.questions![0]!.options).toEqual(forty);
     expect(MAX_OPTIONS).toBe(64);
-    expect(MAX_ANSWER_VALUES).toBe(MAX_OPTIONS);
+    expect(MAX_ANSWER_VALUES).toBe(MAX_OPTIONS + 1);
     // Every option picked: accepted whole, labels restored exactly.
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     const out = await t
@@ -199,6 +200,67 @@ describe("the bridge records what an agent asked", () => {
     expect((await t.run((ctx) => ctx.db.get(res.id!)))!.answers).toEqual([
       { id: "regions", values: forty.map((o) => o.label) },
     ]);
+  });
+
+  test("every option of a 64-option question AND its free answer: the card's 65 values pass and reach the bridge whole", async () => {
+    // OpenClaw bounds the OPTIONS (64), never the answer (`QuestionAnswersSchema`:
+    // `Type.Array(Type.String())`; question-manager.ts `validateAnswers` only requires
+    // an `isOther` question's values to be non-empty). The card can produce every option
+    // plus the one "other" field.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const options = Array.from({ length: MAX_OPTIONS }, (_, i) => ({ label: `Région ${i + 1}` }));
+    const question = { id: "regions", text: "Lesquelles ?", options, multiSelect: true, allowOther: true, secret: false };
+    const res = await t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...ASK,
+      providerRequestId: "ask_all_and_other",
+      questions: [question],
+    });
+    expect(res.id).not.toBeNull();
+    const drafted = answersFromDrafts([question], {
+      regions: { selected: options.map((o) => o.label), other: "  Ailleurs  " },
+    });
+    if (!drafted.ok) throw new Error("the card refused its own draft");
+    expect(drafted.answers[0]!.values).toHaveLength(MAX_OPTIONS + 1);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const out = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .action(api.agentRequests.answer, { requestId: res.id!, answers: drafted.answers });
+    expect(out).toMatchObject({ ok: true });
+    const expected = [{ id: "regions", values: [...options.map((o) => o.label), "Ailleurs"] }];
+    expect(sentBody().answers).toEqual(expected);
+    expect((await t.run((ctx) => ctx.db.get(res.id!)))!.answers).toEqual(expected);
+    // The free answer is ONE: a closed question gains nothing, and a second free value
+    // on top of every option is past what the card can produce.
+    const closed = await t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...ASK,
+      providerRequestId: "ask_all_closed",
+      questions: [{ ...question, allowOther: false }],
+    });
+    const refused = (requestId: Id<"agentRequests">, values: string[]) =>
+      t
+        .withIdentity({ subject: `${userId}|session` })
+        .action(api.agentRequests.answer, { requestId, answers: [{ id: "regions", values }] });
+    expect(await refused(closed.id!, [...options.map((o) => o.label), "Ailleurs"])).toEqual({
+      ok: false,
+      reason: "AGENT_REQUEST_INVALID_ANSWER:too_many:regions",
+    });
+    const second = await t.mutation(internal.agentRequests.upsertFromBridge, {
+      chatId,
+      boundInstanceName: INSTANCE,
+      ...ASK,
+      providerRequestId: "ask_two_others",
+      questions: [question],
+    });
+    expect(await refused(second.id!, [...options.map((o) => o.label), "Ailleurs", "Encore"])).toEqual({
+      ok: false,
+      reason: "AGENT_REQUEST_INVALID_ANSWER:too_many:regions",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test("a question past the option bound, or past the option-text budget, is REFUSED whole — never recorded short", async () => {

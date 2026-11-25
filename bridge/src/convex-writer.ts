@@ -542,6 +542,11 @@ export interface ConvexWriter {
    *  media and terminal — onto that bubble. Verified by Convex against this bridge's
    *  bound instance, the chat, the session, the run and its segment. Null when none. */
   findProjectedBubble?(chatId: string, sessionKey: string, runId: string, segment: number): Promise<string | null>;
+  /** The gateway stated, after the bubble opened under a queued input's CLIENT run, that
+   *  the run's transcript rows carry `runId` (OpenClaw 2026.10.33 — run-manager
+   *  `linkLate`): Convex records it on the bubble, so those rows land on it. False when
+   *  Convex did not take it (the execution run already shows in another bubble). */
+  linkRunBubble?(messageId: string, clientRunId: string, runId: string): Promise<boolean>;
   /** The LIVE terminal of a run the transcript already closed (run-manager
    *  `reconcileTranscriptClosed`, codex phase 4 pass 18): carries THAT run's generation
    *  explicitly — the bubble may belong to another run by now (an announce took it
@@ -1466,6 +1471,7 @@ type IngestOp =
       text: string;
     }
   | { op: "updateRunId"; messageId: string; runId: string }
+  | { op: "linkRunBubble"; messageId: string; clientRunId: string; runId: string }
   | { op: "heartbeat"; messageId: string }
   | { op: "splitSegment"; messageId: string; afterMessageId: string | null; text?: string }
   | {
@@ -2069,6 +2075,11 @@ export class HttpConvexWriter implements ConvexWriter {
       segment,
     });
     return typeof res?.messageId === "string" ? res.messageId : null;
+  }
+
+  async linkRunBubble(messageId: string, clientRunId: string, runId: string): Promise<boolean> {
+    const res = await this.post<{ linked?: boolean }>({ op: "linkRunBubble", messageId, clientRunId, runId });
+    return res?.linked === true;
   }
 
   async finalizeClosedRun(

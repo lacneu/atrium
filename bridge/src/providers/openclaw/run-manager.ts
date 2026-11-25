@@ -87,6 +87,9 @@ interface RunLane {
   messageId: string | null;
   /** The run segment that bubble is (the steer cuts before it opened). */
   segment: number;
+  /** Set when the destination is the bubble the transcript made under the run's OTHER
+   *  name (a link stated late): the name that bubble's writes carry. */
+  transcriptRunId?: string;
   /** Frames waiting for the destination to be known (bounded with the lane). */
   awaiting: Array<{ frame: unknown; now: number }>;
   /** Destination lookups made so far (bounded). */
@@ -434,10 +437,130 @@ export class RunManager {
    * resumed after a restart no longer remembers the input). Returns whether it holds.
    */
   noteRunLink(executionRunId: string, clientRunId: string): boolean {
+    if (this.hasOwnTurn(clientRunId) && !this.runAliases.has(clientRunId)) {
+      return this.linkLate(clientRunId, executionRunId);
+    }
     const ours =
       this.inputAckRuns.has(clientRunId) ||
       ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(executionRunId));
     return ours && this.linkRuns(clientRunId, executionRunId);
+  }
+
+  // ── THE LINK STATED LATE ─────────────────────────────────────────────────────────
+  //
+  // The statement and the stream travel on two sockets: the client run can SPEAK before
+  // anything named its execution run (no frame under that run, no statement yet). Its
+  // turn is then open under the client run, with every per-run fact of the stream keyed
+  // by it — renaming the frames from there would split the run (`linkRuns` refuses).
+  // The turn keeps the name it was opened under, which is also the one the gateway
+  // stops (`foregroundRunId`), and the link is held the other way round: the
+  // TRANSCRIPT's name of the run is translated where the transcript speaks to the turn
+  // (`settleFromTranscript`, `onAssistantRow`, the foreground runs Convex is asked
+  // about), and Convex is told that the bubble shows the execution run's rows
+  // (`linkRunBubble`) before any row of that run is posted (`recordRunLinks`). Convex
+  // keeps the fact with the bubble, so a bridge restarted between the first delta and
+  // the statement — its turn resumed under the client run — takes the same path.
+  /** Client run a turn of this session runs (or ran) under → its execution run. */
+  private readonly lateExecutionRuns = new Map<string, string>();
+  /** The reverse: the transcript's name → the name the turn has here. */
+  private readonly lateClientRuns = new Map<string, string>();
+  /** Late links Convex has not recorded yet: no bubble to record them on so far, or a
+   *  write that failed. Asked again before each transcript post. */
+  private readonly unrecordedLinks = new Set<string>();
+  private linkWrites: Promise<void> = Promise.resolve();
+
+  /** `runId` is, or was, a turn's own run here. */
+  private hasOwnTurn(runId: string): boolean {
+    return this.normalizer.ownRunIds.has(runId) || this.ownedRunHistory.has(runId);
+  }
+
+  /** The gateway states that `clientRunId`, which already has a turn here, is the wire
+   *  name of `executionRunId`. Returns whether the link holds. */
+  private linkLate(clientRunId: string, executionRunId: string): boolean {
+    if (clientRunId === executionRunId) return false;
+    const known = this.lateExecutionRuns.get(clientRunId);
+    if (known !== undefined) {
+      // Stated again (`phase: "end"` after `phase: "model"`): a write still owed is retried.
+      if (known === executionRunId) void this.recordRunLinks();
+      return known === executionRunId;
+    }
+    // No chain, no loop — and an execution run that has a turn of its own here already
+    // has its bubble: two exist, and nothing joins them.
+    if (
+      this.runAliases.has(executionRunId) ||
+      this.clientRunIds.has(executionRunId) ||
+      this.clientRunIds.has(clientRunId) ||
+      this.lateClientRuns.has(executionRunId) ||
+      this.lateExecutionRuns.has(executionRunId) ||
+      this.hasOwnTurn(executionRunId)
+    ) {
+      console.warn(
+        `[run-link] late link refused: a name is already taken client=${clientRunId.slice(0, 60)} execution=${executionRunId.slice(0, 60)}`,
+      );
+      return false;
+    }
+    this.lateExecutionRuns.set(clientRunId, executionRunId);
+    this.lateClientRuns.set(executionRunId, clientRunId);
+    while (this.lateExecutionRuns.size > RunManager.MAX_RUN_ALIASES) {
+      const oldest = this.lateExecutionRuns.keys().next().value as string;
+      this.lateClientRuns.delete(this.lateExecutionRuns.get(oldest) as string);
+      this.lateExecutionRuns.delete(oldest);
+      this.unrecordedLinks.delete(oldest);
+    }
+    this.unrecordedLinks.add(clientRunId);
+    console.log(
+      `[run-link] stated after the client run opened its turn: client=${clientRunId.slice(0, 60)} execution=${executionRunId.slice(0, 60)}`,
+    );
+    void this.recordRunLinks();
+    return true;
+  }
+
+  /** The bubble a turn of `runId` shows or left: `undefined` while its turn is open with
+   *  nothing shown yet, `null` when it ended without one. */
+  private bubbleOfOwnRun(runId: string): string | null | undefined {
+    if ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(runId)) {
+      return this.sink.currentMessageId ?? undefined;
+    }
+    return this.settledRuns.get(runId)?.messageId ?? null;
+  }
+
+  /**
+   * Tell Convex every late link it does not hold yet (one write per link, in order).
+   * Resolves once each has been asked; never rejects. The transcript reader awaits it
+   * before posting rows: the rows of an execution run must find the bubble its client
+   * run opened, not give birth to a second one.
+   */
+  recordRunLinks(): Promise<void> {
+    if (this.unrecordedLinks.size === 0) return this.linkWrites;
+    this.linkWrites = this.linkWrites.then(async () => {
+      for (const client of [...this.unrecordedLinks]) {
+        const execution = this.lateExecutionRuns.get(client);
+        const messageId = this.bubbleOfOwnRun(client);
+        if (messageId === undefined) continue;
+        if (execution === undefined || messageId === null || this.writer.linkRunBubble === undefined) {
+          // No bubble under the client run to record it on: the rows make the run's.
+          this.unrecordedLinks.delete(client);
+          continue;
+        }
+        try {
+          const linked = await this.writer.linkRunBubble(messageId, client, execution);
+          this.unrecordedLinks.delete(client);
+          if (!linked) {
+            console.warn(
+              `[run-link] Convex did not take the late link (the execution run already shows elsewhere) client=${client.slice(0, 60)} execution=${execution.slice(0, 60)}`,
+            );
+          }
+        } catch (err) {
+          console.error("[run-link] the late link was not recorded (asked again):", errForLog(err));
+        }
+      }
+    });
+    return this.linkWrites;
+  }
+
+  /** The foreground turn's runs under the names the TRANSCRIPT gives them. */
+  get activeTranscriptRunIds(): string[] {
+    return this.activeRunIds.map((id) => this.lateExecutionRuns.get(id) ?? id);
   }
 
   /** The runs the foreground turn owns (empty when no turn is live). */
@@ -579,12 +702,10 @@ export class RunManager {
   async onAssistantRow(row: { runId?: string; seq: number }): Promise<void> {
     if (row.runId === undefined) return;
     const runId = row.runId;
-    const execution = this.runAliases.get(runId);
+    // The other name of the run, whichever of the two its turn has here.
+    const other = this.runAliases.get(runId) ?? this.lateClientRuns.get(runId);
     await this.runOrdered(() => {
-      this.normalizer.noteAssistantRowRecorded(
-        execution === undefined ? [runId] : [execution, runId],
-        row.seq,
-      );
+      this.normalizer.noteAssistantRowRecorded(other === undefined ? [runId] : [other, runId], row.seq);
     });
   }
 
@@ -2505,8 +2626,10 @@ export class RunManager {
    * write is the sink's own close (a no-op there: the first terminal wins).
    * Returns whether a turn ended.
    */
-  async settleFromTranscript(runIds: readonly string[], now: number): Promise<boolean> {
+  async settleFromTranscript(transcriptRunIds: readonly string[], now: number): Promise<boolean> {
     if (!this.sink.active || this.normalizer.finalized) return false;
+    // A run whose link was stated late has its turn under the client run here.
+    const runIds = transcriptRunIds.map((id) => this.lateClientRuns.get(id) ?? id);
     // Only the run the turn is CURRENTLY following: a turn keeps the ids of the runs it
     // owned before (a compaction that resumed the turn on a new run, an abandoned
     // generation), and one of those ending says nothing about the run still writing —
@@ -2591,8 +2714,14 @@ export class RunManager {
     }
     lane.lookups++;
     try {
-      const id = await this.writer.findProjectedBubble(this.chatId, this.sessionKey, lane.runId, lane.segment);
-      if (id !== null) lane.messageId = id;
+      // The rows' bubble is the EXECUTION run's (a link stated late keeps the turn under
+      // the client run): asked, and then written to, under the transcript's name.
+      const transcriptRunId = this.lateExecutionRuns.get(lane.runId) ?? lane.runId;
+      const id = await this.writer.findProjectedBubble(this.chatId, this.sessionKey, transcriptRunId, lane.segment);
+      if (id !== null) {
+        lane.messageId = id;
+        if (transcriptRunId !== lane.runId) lane.transcriptRunId = transcriptRunId;
+      }
     } catch (err) {
       protocolDrift.observeException({ closedRun: lane.runId }, err, "feed");
       console.error("[transcript] a closed run's bubble lookup failed (will retry):", errForLog(err));
@@ -2717,7 +2846,7 @@ export class RunManager {
         // and settles what waited for the run's media.
         await this.writer.finalizeClosedRun?.(
           messageId,
-          lane.runId,
+          lane.transcriptRunId ?? lane.runId,
           status,
           f.error,
           f.errorKind,

@@ -63,8 +63,8 @@ import { drainNextQueued, endProjectedActivityOfRun, MAX_QUEUED_PER_CHAT } from 
 import { MAX_ADDRESSED_AGENTS } from "./lib/agentMentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { regroupIfLaunchWaits, scheduleRegroup } from "./displayGroups";
-import { deletedRunSegment, purgeRowTextsOfMessage, transcriptStoredText } from "./lib/transcriptProjection";
-import { bubbleInScope, reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
+import { deletedRunSegment, MAX_RUN_ID_CHARS, purgeRowTextsOfMessage, transcriptStoredText } from "./lib/transcriptProjection";
+import { bubbleInScope, liveBubbleFor, reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
 import { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
 import { isExplicitTerminal, utf8Bytes } from "./lib/bubbleProjection";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
@@ -1487,6 +1487,71 @@ async function recordRotatedRunBubble(
   if (existing !== null) return;
   await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
 }
+
+/**
+ * ONE RUN, TWO NAMES, the link stated LATE (OpenClaw 2026.10.33). A queued input's
+ * execution is broadcast under the input's CLIENT run while its transcript rows keep the
+ * EXECUTION run (src/gateway/server-methods/chat-send-turn-adoption.ts:289-302,
+ * src/gateway/server-chat.ts:1158 at v2026.10.33). The bridge reads both under the
+ * execution run once it knows the link — but the live stream can speak first, and its
+ * bubble is then open under the client run when the gateway's statement arrives
+ * (`sessions.changed` with `clientRunId` ≠ `runId`, another socket, best-effort).
+ *
+ * The statement is recorded as a fact of THAT bubble: it keeps the name the bridge
+ * writes with (`runId`, its generation), gains the run its rows carry
+ * (`transcriptRunId`), and the execution run gets its run → bubble record — what both
+ * "one run, one bubble" doors read (lib/projectedRuns `liveBubbleFor`,
+ * `settledProjectedBubble`; lib/bubbleProjectionStore `liveBubbleCharged`, `loadBubble`).
+ * Durable, so a bridge that restarts between the first delta and the statement, or
+ * after it, changes nothing.
+ *
+ * Refused, with nothing written, when the bubble is not the client run's, when it
+ * already names another execution run, or when the execution run already shows in
+ * another bubble (its rows arrived first and made one): nothing here chooses between
+ * two bubbles, and no text is ever compared.
+ */
+export const linkRunBubble = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    clientRunId: v.string(),
+    runId: v.string(),
+    ...boundArg,
+  },
+  returns: v.object({ linked: v.boolean() }),
+  handler: async (ctx, { messageId, clientRunId, runId, boundInstanceName }) => {
+    const refused = { linked: false };
+    if (
+      runId === clientRunId ||
+      runId.length === 0 ||
+      runId.length > MAX_RUN_ID_CHARS ||
+      clientRunId.length === 0 ||
+      clientRunId.length > MAX_RUN_ID_CHARS
+    ) {
+      return refused;
+    }
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant") return refused;
+    // The bubble's durable stamp wins; an unstamped one falls back to the chat's barrier.
+    if (
+      boundInstanceName !== undefined &&
+      message.boundInstance !== undefined &&
+      message.boundInstance !== boundInstanceName
+    ) {
+      throw new Error(CROSS_INSTANCE);
+    }
+    if (message.boundInstance === undefined) await assertChatBound(ctx, message.chatId, boundInstanceName);
+    if (message.runId !== clientRunId) return refused;
+    if (message.transcriptRunId !== undefined) return { linked: message.transcriptRunId === runId };
+    const segment = message.runSegment !== undefined && message.runSegment > 0 ? message.runSegment : 0;
+    const shown = await liveBubbleFor(ctx, message.chatId, runId, segment);
+    if (shown !== null && shown !== messageId) return refused;
+    await ctx.db.patch(messageId, { transcriptRunId: runId });
+    // The record serves a run's FIRST segment (`liveBubbleFor`): a later one is found by
+    // its own name only.
+    if (segment === 0) await recordRotatedRunBubble(ctx, message.chatId, runId, messageId);
+    return { linked: true };
+  },
+});
 
 /** The bubble run `run` wrote to in this chat, or null when that is not KNOWN.
  *
