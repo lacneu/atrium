@@ -62,6 +62,10 @@ function setup(
     get?: () => Promise<unknown> | unknown;
     gatewayFailed?: (f: AgentRequestGatewayFailure) => Promise<unknown>;
     sessionKey?: string;
+    /** The reply of `plugin.approval.list`, when a test holds it back. */
+    pluginList?: () => Promise<unknown>;
+    sameRun?: (a: string, b: string) => boolean;
+    nowMs?: () => number;
   } = {},
 ) {
   const writes: string[] = [];
@@ -81,7 +85,9 @@ function setup(
               ? await (opts.get ?? (() => line(209).frame.payload))()
               : method === "question.list"
                 ? { questions: [] }
-                : [];
+                : method === "plugin.approval.list" && opts.pluginList !== undefined
+                  ? await opts.pluginList()
+                  : [];
         return { type: "res", ok: true, payload };
       },
     },
@@ -106,7 +112,8 @@ function setup(
     noteQuestionSettled: async () => {},
     noteApprovalSettled: async () => {},
     wake: () => {},
-    nowMs: () => 1795567236000,
+    nowMs: opts.nowMs ?? (() => 1795567236000),
+    ...(opts.sameRun !== undefined ? { sameRun: opts.sameRun } : {}),
   });
   /** As the session does: only a frame the observer says it handles reaches it. */
   const feed = async (frame: unknown): Promise<boolean> => {
@@ -128,7 +135,11 @@ const approvalFrame = (data: Record<string, unknown>, sessionKey: string | undef
 
 describe("the fact, read from the frame alone", () => {
   it("the captured frame is read: the tool call and the session, nothing else", () => {
-    expect(readOpenClawApprovalRequestFailed(FAILED)).toEqual({ toolCallId: TOOL_CALL, sessionKey: SESSION });
+    expect(readOpenClawApprovalRequestFailed(FAILED)).toEqual({
+      toolCallId: TOOL_CALL,
+      sessionKey: SESSION,
+      runId: "webchat-69495ecfa7f05ab4aa5f95a8629c03de146edbf551ca9c89bd83a452b3dd5169",
+    });
   });
 
   it("only `resolved` / `exec` / `failed` is the fact — every other status, kind and phase reads as nothing", () => {
@@ -206,6 +217,116 @@ describe("the captured sequence, replayed on one socket", () => {
     await t.flush();
     expect(t.settles.map((s) => s.status)).toEqual(["allowed"]);
     expect(t.failures).toEqual([]);
+  });
+});
+
+// The three pending lists are awaited TOGETHER (replayApprovals): while one of them is
+// slow, the request another already returned can be allowed and then fail on the gateway.
+// Its resolution waits for the entry (the early resolutions); its failure must too.
+describe("the failure received while the pending lists are still being read", () => {
+  const RUN = "webchat-69495ecfa7f05ab4aa5f95a8629c03de146edbf551ca9c89bd83a452b3dd5169";
+  const failedFor = (over: { sessionKey?: string | undefined; runId?: string; toolCallId?: string }) => ({
+    type: "event",
+    event: "agent",
+    payload: {
+      runId: over.runId ?? RUN,
+      ...("sessionKey" in over ? (over.sessionKey !== undefined ? { sessionKey: over.sessionKey } : {}) : { sessionKey: SESSION }),
+      stream: "approval",
+      data: { phase: "resolved", kind: "exec", status: "failed", toolCallId: over.toolCallId ?? TOOL_CALL },
+    },
+  });
+  /** A replay whose plugin list is held back; `during` runs while it waits. */
+  async function replayWith(t: ReturnType<typeof setup>, release: () => void, during: () => Promise<void>) {
+    const replay = t.obs.replayPending();
+    await t.flush();
+    await during();
+    await t.flush();
+    release();
+    await replay;
+    await t.flush();
+  }
+  function held(extra: Parameters<typeof setup>[0] = {}) {
+    let release: () => void = () => {};
+    const slow = new Promise<unknown>((r) => (release = () => r([])));
+    const t = setup({ pluginList: () => slow, ...extra });
+    return { t, release: () => release() };
+  }
+
+  it("allowed, then failed, BEFORE the lists are read: the card is settled allowed, then marked", async () => {
+    const { t, release } = held();
+    await replayWith(t, release, async () => {
+      for (const n of [305, 306, 309, 314]) await t.feed(line(n).frame);
+      // The request is not announced here yet: no card to mark so far.
+      expect(t.failures).toEqual([]);
+    });
+    // The verdict is written by the resolution, and again when its entry is read (the same
+    // settle, idempotent in Convex) — the mark comes after both.
+    expect(new Set(t.settles.map((s) => `${s.providerRequestId}:${s.status}`))).toEqual(new Set([`${APPROVAL}:allowed`]));
+    expect(t.failures).toEqual([{ chatId: "c1", providerRequestId: APPROVAL, providerCreatedAt: CREATED }]);
+    expect(t.writes.indexOf("gateway-failed")).toBeGreaterThan(t.writes.lastIndexOf("verdict"));
+    expect(t.writes.filter((w) => w === "gateway-failed")).toHaveLength(1);
+  });
+
+  it("kept for the request of THAT tool call only: another call's failure marks nothing", async () => {
+    const { t, release } = held();
+    await replayWith(t, release, async () => {
+      await t.feed(failedFor({ toolCallId: "tool_call:another:exec:1" }));
+    });
+    expect(t.failures).toEqual([]);
+  });
+
+  it("a failure that names another session, or none, is not kept", async () => {
+    for (const sessionKey of ["agent:alice:atrium:chat:u-other:turn-x", undefined]) {
+      const { t, release } = held();
+      await replayWith(t, release, async () => {
+        await t.feed(failedFor({ sessionKey }));
+      });
+      expect(t.failures, String(sessionKey)).toEqual([]);
+    }
+  });
+
+  it("a failure of ANOTHER run that reused the tool call id is not joined; the same run under its other name is", async () => {
+    const other = held();
+    await replayWith(other.t, other.release, async () => {
+      await other.t.feed(failedFor({ runId: "another-run" }));
+    });
+    expect(other.t.failures).toEqual([]);
+    // One run, two names (a queued input's execution, 2026.10.33): the session says so.
+    const linked = held({ sameRun: (a, b) => a === b || (a === "execution-run" && b === RUN) || (b === "execution-run" && a === RUN) });
+    await replayWith(linked.t, linked.release, async () => {
+      await linked.t.feed(failedFor({ runId: "execution-run" }));
+    });
+    expect(linked.t.failures.map((f) => f.providerRequestId)).toEqual([APPROVAL]);
+  });
+
+  it("bounded in time: a failure older than the wait a replay can take is not joined", async () => {
+    let now = 1795567236000;
+    const { t, release } = held({ nowMs: () => now });
+    await replayWith(t, release, async () => {
+      await t.feed(FAILED);
+      now += 10 * 60_000;
+    });
+    expect(t.failures).toEqual([]);
+  });
+
+  it("bounded in number: the oldest kept failures give way", async () => {
+    const { t, release } = held();
+    await replayWith(t, release, async () => {
+      await t.feed(FAILED);
+      for (let i = 0; i < 200; i += 1) await t.feed(failedFor({ toolCallId: `tool_call:flood-${i}:exec:1` }));
+    });
+    expect(t.failures).toEqual([]);
+  });
+
+  it("joined once: the same request listed again is not marked a second time", async () => {
+    const { t, release } = held();
+    await replayWith(t, release, async () => {
+      await t.feed(FAILED);
+    });
+    expect(t.failures).toHaveLength(1);
+    await t.obs.replayPending();
+    await t.flush();
+    expect(t.failures).toHaveLength(1);
   });
 });
 

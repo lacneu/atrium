@@ -484,7 +484,7 @@ export function readOpenClawApprovalResolved(
  */
 export function readOpenClawApprovalRequestFailed(
   frame: unknown,
-): { toolCallId: string; sessionKey: string | null } | null {
+): { toolCallId: string; sessionKey: string | null; runId: string | null } | null {
   const f = obj(frame);
   if (f === null || f.type !== "event" || f.event !== "agent") return null;
   const p = obj(f.payload);
@@ -494,7 +494,7 @@ export function readOpenClawApprovalRequestFailed(
   if (data.phase !== "resolved" || data.kind !== "exec" || data.status !== "failed") return null;
   const toolCallId = providerId(data.toolCallId);
   if (toolCallId === undefined) return null;
-  return { toolCallId, sessionKey: str(p.sessionKey) ?? null };
+  return { toolCallId, sessionKey: str(p.sessionKey) ?? null, runId: str(p.runId) ?? null };
 }
 
 /** An approval the gateway said it did not honour (`readOpenClawApprovalRequestFailed`),

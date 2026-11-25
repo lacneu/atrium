@@ -13,7 +13,7 @@ import { deliveryRefusedByStop, dropVanishedBubble, finalizeMessageCore, insertA
 import { ALL_SEGMENTS, deletedMergeOf, segmentDeleted, steerSeqsOf, tombstonedSegments } from "./transcriptProjection";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { isDeliveryRun } from "./deliveryRuns";
-import { bubbleInScope, type BubbleScope } from "./projectedRuns";
+import { bubbleInScope, laterLinkedSegment, type BubbleScope } from "./projectedRuns";
 import { isWatchdogOrphan } from "./streamOrphan";
 import { isRecoveryEntry, noteRecoveredRun, recoveryFactsOf, resolveEntryAfterRun, resolveRecovery, sameCalls } from "./restartRecovery";
 import { syncBubbleRowParts } from "./rowParts";
@@ -650,7 +650,7 @@ async function liveBubbleCharged(
     );
     for (const r of recorded.docs) {
       const m = await messageOf(ctx, r.messageId, budget);
-      if (m !== null && m.chatId === chatId && bubbleInScope(m, scope)) return r.messageId;
+      if (m !== null && m.chatId === chatId && bubbleInScope(m, scope) && !laterLinkedSegment(m, runId)) return r.messageId;
     }
   }
   const own = await readBounded(
@@ -663,7 +663,31 @@ async function liveBubbleCharged(
     budget,
   );
   for (const m of own.docs) budget.messages.set(String(m._id), m);
-  return own.docs.find((m) => m.role === "assistant" && bubbleInScope(m, scope))?._id ?? null;
+  const found = own.docs.find((m) => m.role === "assistant" && bubbleInScope(m, scope));
+  if (found !== undefined || segment === 0) return found?._id ?? null;
+  // A later segment of a run linked late to the client run its bubbles were opened under
+  // (lib/projectedRuns.ts `liveBubbleFor`, the same rule, charged).
+  const recorded = await readBounded(
+    ctx.db.query("runBubbles").withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId)),
+    4,
+    budget,
+  );
+  for (const r of recorded.docs) {
+    const first = await messageOf(ctx, r.messageId, budget);
+    if (first === null || first.chatId !== chatId || first.transcriptRunId !== runId || !bubbleInScope(first, scope)) continue;
+    const client = first.runId;
+    if (client === undefined) continue;
+    const linked = await readBounded(
+      ctx.db
+        .query("messages")
+        .withIndex("by_chat_run_segment", (q) => q.eq("chatId", chatId).eq("runId", client).eq("runSegment", segment)),
+      4,
+      budget,
+    );
+    for (const m of linked.docs) budget.messages.set(String(m._id), m);
+    return linked.docs.find((m) => m.role === "assistant" && m.transcriptRunId === runId && bubbleInScope(m, scope))?._id ?? null;
+  }
+  return null;
 }
 
 /** A bubble the plan may touch, with every run it shows (charged). */

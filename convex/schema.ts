@@ -3386,6 +3386,10 @@ export default defineSchema({
     // PROJECTION `on`: a WIDGET part derived from the bubble's transcript rows (not posted
     // live) — it exists only while the current rows name its view (lib/rowParts.ts).
     transcriptWidget: v.optional(v.boolean()),
+    // PROJECTION `on`: a PLAN part derived from a work-plan call of the bubble's transcript
+    // rows — the id of that call (lib/rowParts.ts). The identity that derives each call's
+    // plan once, whether the call's card came from the rows or from the live stream.
+    transcriptPlanCall: v.optional(v.string()),
   })
     .index("by_message", ["messageId"])
     .index("by_storage", ["storageId"])

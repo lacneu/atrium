@@ -8,8 +8,9 @@
 //     with its record (`transcriptFileId`) and mirrored in `files`;
 //   - a TOOL part per tool block no part of the bubble shows yet (a bubble born from rows,
 //     never followed live), by its `toolCallId` — the live frames name the same ids;
-//   - a PLAN part per successful work-plan call among those tool blocks, when no plan of the
-//     live stream is on the bubble (`planPartOfRowTool`).
+//   - a PLAN part per successful work-plan call among the bubble's tool blocks, by the
+//     call's id (`transcriptPlanCall`), when no plan of the live stream is on the bubble
+//     (`planPartOfRowTool`) — whoever made the call's card, the rows or the live stream.
 // Idempotent: a part already derived is never derived twice. What a reader SEES of them is
 // the layout's decision (convex/messages.ts, lib/displayDedup.ts), never this function's.
 
@@ -80,8 +81,10 @@ type RowPlanPart = {
  * argument the gateway's plan stream is built from.
  *
  * Same shape and bounds as the live reader. `progress_card` REPLACES the card on every
- * call, so one without steps drops the checklist: an empty plan, as the live stream states
- * it (`planPartFromPlanStream`). Null: not a plan call, or nothing readable in it. The
+ * call, so one without steps — `plan` absent or empty — drops the checklist: an empty plan,
+ * as the live stream states it (`planPartFromPlanStream`, `steps: []`; upstream
+ * src/session-cards/progress-card-input.ts at v2026.9.36 and v2026.10.33). Null: not a
+ * plan call, or nothing readable in it. The
  * gateway's "n/m complete" note is its own wording and is not rebuilt here.
  */
 export function planPartOfRowTool(name: string | undefined, input: unknown): RowPlanPart | null {
@@ -102,7 +105,13 @@ export function planPartOfRowTool(name: string | undefined, input: unknown): Row
       if (steps.length >= PLAN_MAX_STEPS) break;
     }
   }
-  if (steps.length === 0) return name === "progress_card" && args.plan === undefined ? { kind: "plan", steps: [] } : null;
+  if (steps.length === 0) {
+    // No step at all, absent or an EMPTY array alike (upstream `normalizeProgressCardInput`
+    // keeps no `steps` for either, and the put replaces the card): the checklist is
+    // cleared. Anything else without a readable step is not a call that succeeded.
+    const cleared = args.plan === undefined || (Array.isArray(args.plan) && args.plan.length === 0);
+    return name === "progress_card" && cleared ? { kind: "plan", steps: [] } : null;
+  }
   const explanation = typeof args.explanation === "string" && args.explanation !== "" ? args.explanation.slice(0, PLAN_EXPLANATION_CAP) : undefined;
   return { kind: "plan", steps, ...(explanation !== undefined ? { explanation } : {}) };
 }
@@ -180,9 +189,16 @@ export async function syncBubbleRowParts(
   // A plan the LIVE stream wrote (the sink stamps each one, core/turn-sink.ts): the run was
   // followed live and its plan is that stream's — the rows add none beside it.
   const livePlan = parts.some((p) => p.part.kind === "plan" && p.part.stamp !== undefined);
+  // The calls whose plan the rows already gave, and the cards the bubble holds.
+  const plannedCalls = new Set<string>();
+  const cards = new Map<string, { name: string; input?: unknown }>();
   for (const p of parts) {
-    if (p.part.kind === "tool" && p.part.toolCallId !== undefined) toolIds.add(p.part.toolCallId);
+    if (p.part.kind === "tool" && p.part.toolCallId !== undefined) {
+      toolIds.add(p.part.toolCallId);
+      cards.set(p.part.toolCallId, p.part);
+    }
     if (p.transcriptFileId !== undefined) fileIds.add(String(p.transcriptFileId));
+    if (p.transcriptPlanCall !== undefined) plannedCalls.add(p.transcriptPlanCall);
   }
   const chat = await ctx.db.get(message.chatId);
   // The payloads the bubble's rows carry, read once and only when a card needs them.
@@ -219,25 +235,31 @@ export async function syncBubbleRowParts(
       out.files++;
     }
     for (const t of row.tools ?? []) {
-      if (toolIds.has(t.toolCallId)) continue;
-      toolIds.add(t.toolCallId);
-      // With the arguments and result the rows carry (codex review 11): a card rebuilt from
-      // the transcript is the live card it stands for.
-      const card = hydrateToolPart({ kind: "tool", name: t.name ?? "tool", phase: TOOL_PHASE[t.status], toolCallId: t.toolCallId }, (await payloads()).get(t.toolCallId));
-      await ctx.db.insert("messageParts", { messageId, order: order++, part: card });
-      out.tools++;
-      // The plan of a call the rows alone show (never followed live): written with its
-      // card, so once — a card already on the bubble is never derived again. Only a call
-      // the transcript gives a result to: the gateway publishes a plan for a successful
-      // call only. Unstamped: within the bubble it orders by insertion, the rows' order
-      // (lib/planOrder.ts).
-      if (!livePlan && t.status === "result") {
-        const plan = planPartOfRowTool(card.name, (card as { input?: unknown }).input);
-        if (plan !== null) {
-          await ctx.db.insert("messageParts", { messageId, order: order++, part: plan });
-          out.plans++;
-        }
+      if (!toolIds.has(t.toolCallId)) {
+        toolIds.add(t.toolCallId);
+        // With the arguments and result the rows carry (codex review 11): a card rebuilt
+        // from the transcript is the live card it stands for.
+        const card = hydrateToolPart({ kind: "tool", name: t.name ?? "tool", phase: TOOL_PHASE[t.status], toolCallId: t.toolCallId }, (await payloads()).get(t.toolCallId));
+        await ctx.db.insert("messageParts", { messageId, order: order++, part: card });
+        cards.set(t.toolCallId, card);
+        out.tools++;
       }
+      // The plan of a call no plan of the live stream shows. Its identity is the CALL's
+      // (`transcriptPlanCall`), never the card's birth: a card the live stream opened and
+      // left without its result (the socket closed while the tool ran) is completed by
+      // the rows, and its plan is theirs to give too. Only a call the transcript gives a
+      // result to: the gateway publishes a plan for a successful call only. Unstamped:
+      // within the bubble it orders by insertion, the rows' order (lib/planOrder.ts).
+      if (livePlan || t.status !== "result" || plannedCalls.has(t.toolCallId)) continue;
+      const card = cards.get(t.toolCallId);
+      const name = card?.name ?? t.name;
+      if (name !== "progress_card" && name !== "update_plan") continue;
+      plannedCalls.add(t.toolCallId);
+      // The card's own arguments, else the rows' (a live card left open has none yet).
+      const plan = planPartOfRowTool(name, card?.input ?? (await payloads()).get(t.toolCallId)?.input);
+      if (plan === null) continue;
+      await ctx.db.insert("messageParts", { messageId, order: order++, part: plan, transcriptPlanCall: t.toolCallId });
+      out.plans++;
     }
   }
   // …and a live card the rows complete (one without its arguments or result) gets them;
@@ -421,7 +443,8 @@ export async function catchUpLiveBubbleFromRows(ctx: MutationCtx, messageId: Id<
   // writer is `runId` (its own run, or the announce run a reopened parent now carries).
   if (message === null || message.role !== "assistant" || message.status !== "streaming" || message.turnSessionKey === undefined) return;
   // The segment the run writes into this bubble: its own run's segment, else the first.
-  const segment = message.runId === runId ? (message.runSegment ?? 0) : 0;
+  // (Its own run under the name its rows carry: stream.ts `linkRunBubble`.)
+  const segment = (message.transcriptRunId ?? message.runId) === runId ? (message.runSegment ?? 0) : 0;
   const sessionKey = message.turnSessionKey;
   const docs = await ctx.db
     .query("transcriptRows")

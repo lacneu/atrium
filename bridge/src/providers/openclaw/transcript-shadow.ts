@@ -287,7 +287,9 @@ export interface TranscriptShadowDeps {
    *  (`sessionsChangedRunLink`): one run for the live overlay. Never awaited. */
   onRunLinked?: (executionRunId: string, clientRunId: string) => void;
   /** Awaited before rows are posted: what Convex must hold first for them to be placed
-   *  (a run link stated after its bubble opened). A failure never fails the post. */
+   *  (a run link stated after its bubble opened). A REJECTION means it does not hold it
+   *  yet: nothing is posted — a read fails like any other and is asked again, its cursor
+   *  unmoved; directly applied rows are dropped, the read brings them. */
   beforeApply?: () => Promise<void>;
   /** PROJECTION `on` (phase 4): runs the transcript proved OVER (Convex's run table — a
    *  terminal, or a fresh read that found the session idle). A foreground turn among
@@ -588,12 +590,10 @@ export class TranscriptShadow {
     }
   }
 
+  /** Never swallowed: rows posted before what they depend on are placed wrongly, and
+   *  Convex cannot move them afterwards. */
   private async settleBeforeApply(): Promise<void> {
-    try {
-      await this.deps.beforeApply?.();
-    } catch {
-      /* the overlay's bookkeeping never fails a read */
-    }
+    await this.deps.beforeApply?.();
   }
 
   private emitUserRow(row: TranscriptRow): void {

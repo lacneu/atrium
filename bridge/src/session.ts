@@ -459,6 +459,7 @@ class Session implements BridgeSession {
       upsert: writer.upsertAgentRequest?.bind(writer),
       settle: writer.settleAgentRequest?.bind(writer),
       gatewayFailed: writer.agentRequestGatewayFailed?.bind(writer),
+      sameRun: (a, b) => this.runManager.sameRun(a, b),
       currentMessageId: () =>
         this.runManager.turnActive ? this.runManager.currentMessageId : null,
       noteQuestion: (id, expiresInSec) =>
@@ -497,8 +498,9 @@ class Session implements BridgeSession {
         this.runManager.turnActive ? (this.runManager.activeTranscriptRunIds[0] ?? null) : null,
       foregroundRunIds: () =>
         this.runManager.turnActive ? this.runManager.activeTranscriptRunIds : [],
-      // A link stated late is recorded in Convex before the rows it concerns.
-      beforeApply: () => this.runManager.recordRunLinks(),
+      // A link stated late is recorded in Convex before the rows it concerns: while its
+      // write is owed, nothing is posted (the read is asked again).
+      beforeApply: () => this.runManager.runLinksRecorded(),
       // The live overlay's transcript facts (phase 3).
       onUserRow: (row) => {
         void this.runManager.onUserRow(row).catch((e) =>
@@ -940,7 +942,9 @@ class Session implements BridgeSession {
         // session asks for a read. Read-only — the frame went through the feed above
         // untouched, and nothing here can change what it did.
         try {
-          this.transcriptShadow.observeFrame(frame);
+          // Under the name the transcript gives the run (a link stated late keeps the
+          // turn under the client run: Convex files the terminal beside the run's rows).
+          this.transcriptShadow.observeFrame(this.runManager.transcriptFrame(frame));
         } catch (err) {
           // Shadow-only: a failure here loses a READ trigger, never a frame (the feed
           // above already consumed it), so it is logged rather than sensed.

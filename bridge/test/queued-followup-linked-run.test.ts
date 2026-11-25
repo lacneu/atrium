@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { ConvexWriter } from "../src/convex-writer.js";
+import { ConvexIngestError, type ConvexWriter } from "../src/convex-writer.js";
 import { LiveTextBaselines } from "../src/providers/openclaw/live-text-baseline.js";
 import type { GatewayFrame } from "../src/providers/openclaw/openclaw-client.js";
 import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
@@ -61,6 +61,7 @@ function recordingWriter(rowBubble: string | null = null) {
       calls.push({ op, args });
       if (op === "startAssistant") return `m${++opened}`;
       if (op === "findProjectedBubble") return rowBubble;
+      if (op === "splitSegment") return `${String(args[0])}+`;
       return op === "addMedia" || op === "setSnapshot" || op === "linkRunBubble" ? true : undefined;
     });
   const writer = {
@@ -71,6 +72,7 @@ function recordingWriter(rowBubble: string | null = null) {
     finalizeClosedRun: rec("finalizeClosedRun"),
     findProjectedBubble: rec("findProjectedBubble"),
     linkRunBubble: rec("linkRunBubble"),
+    splitSegment: rec("splitSegment"),
     addToolPart: rec("addToolPart"),
     addProvenancePart: rec("addProvenancePart"),
     addCompactionPart: rec("addCompactionPart"),
@@ -746,6 +748,164 @@ describe("the link stated AFTER the client run opened its turn", () => {
     warned.mockRestore();
     await rm.recordRunLinks();
     expect(links(calls)).toEqual([]);
+  });
+
+  // A message steered into the run: its transcript row names the run it was injected
+  // into as the TRANSCRIPT knows it — the execution run — while the turn here is the
+  // client run's.
+  describe("a steer into the linked run", () => {
+    const C2 = `webchat-${"d".repeat(64)}`;
+    const splits = (calls: Call[]) => calls.filter((c) => c.op === "splitSegment").map((c) => c.args.slice(0, 2));
+
+    for (const [name, target] of [["the execution run (the transcript's name)", X], ["the client run", C]] as const) {
+      it(`its row names ${name}: the bubble is cut, the answer goes to a new segment`, async () => {
+        const { rm, calls } = await spokenFirst();
+        expect(rm.noteRunLink(X, C)).toBe(true);
+        await rm.recordRunLinks();
+        rm.noteHeldInput(C2, C2, "userMsg2", [C]);
+        await rm.onUserRow({ sendId: C2, steerTargetRunId: target });
+        expect(splits(calls)).toEqual([["m1", "userMsg2"]]);
+        await rm.feed(delta(9, "Hi again"), 1002);
+        // What the run writes next lands on the new segment, never on the cut bubble.
+        expect(calls.filter((c) => c.op === "appendDelta" || c.op === "setSnapshot").at(-1)?.args[0]).toBe("m1+");
+        expect(opens(calls)).toEqual([C]);
+      });
+    }
+
+    it("the link stated AFTER the cut is recorded on the open segment (Convex links every segment of the run from it)", async () => {
+      const { rm, calls } = await spokenFirst();
+      rm.noteHeldInput(C2, C2, "userMsg2", [C]);
+      await rm.onUserRow({ sendId: C2, steerTargetRunId: C });
+      expect(splits(calls)).toEqual([["m1", "userMsg2"]]);
+      expect(rm.noteRunLink(X, C)).toBe(true);
+      await rm.recordRunLinks();
+      expect(links(calls)).toEqual([["m1+", C, X]]);
+    });
+
+    it("an unlinked turn is not cut by a steer into another run (through 2026.9.36: unchanged)", async () => {
+      const { rm, calls } = await spokenFirst();
+      rm.noteHeldInput(C2, C2, "userMsg2", [C]);
+      await rm.onUserRow({ sendId: C2, steerTargetRunId: X });
+      expect(splits(calls)).toEqual([]);
+    });
+  });
+
+  // The rows of the execution run must not reach Convex before the link: posted first,
+  // they give birth to a bubble of their own, and the link is then refused for good.
+  describe("the transcript post waits for the link (`runLinksRecorded`)", () => {
+    const transient = () => new ConvexIngestError("linkRunBubble", 503, "Convex ingest linkRunBubble -> HTTP 503");
+
+    it("a write that failed transiently holds the post back, and is asked again at the next one", async () => {
+      const { rm, writer } = await spokenFirst();
+      const link = writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
+      // The statement asks at once (a network failure), then each post asks again.
+      link.mockRejectedValueOnce(new Error("fetch failed")).mockRejectedValueOnce(transient()).mockRejectedValueOnce(new Error("fetch failed"));
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+      expect(rm.noteRunLink(X, C)).toBe(true);
+      await expect(rm.runLinksRecorded()).rejects.toThrow(/run link/);
+      await expect(rm.runLinksRecorded()).rejects.toThrow(/run link/);
+      // Convex answers: recorded, the post goes on — and nothing is asked again.
+      await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      expect(link.mock.calls).toEqual([["m1", C, X], ["m1", C, X], ["m1", C, X], ["m1", C, X]]);
+      quiet.mockRestore();
+    });
+
+    it("a link Convex REFUSES releases the post at once (the rows then make the run's own bubble)", async () => {
+      for (const refusal of [false, new ConvexIngestError("linkRunBubble", 400, "Convex ingest linkRunBubble -> HTTP 400: unknown op")]) {
+        const { rm, writer } = await spokenFirst();
+        const link = writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
+        if (refusal === false) link.mockResolvedValueOnce(false);
+        else link.mockRejectedValueOnce(refusal);
+        const quiet = [vi.spyOn(console, "warn").mockImplementation(() => {}), vi.spyOn(console, "error").mockImplementation(() => {})];
+        expect(rm.noteRunLink(X, C)).toBe(true);
+        await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+        await rm.runLinksRecorded();
+        expect(link).toHaveBeenCalledTimes(1);
+        quiet.forEach((q) => q.mockRestore());
+      }
+    });
+
+    it("a Convex that keeps ANSWERING with an error is not waited on for ever: bounded, then the post goes on", async () => {
+      const { rm, writer } = await spokenFirst();
+      const link = writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
+      link.mockRejectedValue(transient());
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+      expect(rm.noteRunLink(X, C)).toBe(true);
+      let held = 0;
+      for (let i = 0; i < 20; i++) {
+        try {
+          await rm.runLinksRecorded();
+          break;
+        } catch {
+          held++;
+        }
+      }
+      expect(held).toBeGreaterThan(0);
+      expect(held).toBeLessThan(10);
+      const asked = link.mock.calls.length;
+      await rm.runLinksRecorded();
+      expect(link).toHaveBeenCalledTimes(asked);
+      quiet.mockRestore();
+    });
+
+    it("an UNREACHABLE Convex never gives the link up: the rows could not be posted either", async () => {
+      const { rm, writer } = await spokenFirst();
+      const link = writer.linkRunBubble as unknown as ReturnType<typeof vi.fn>;
+      link.mockRejectedValue(new ConvexIngestError("linkRunBubble", null, "Convex ingest linkRunBubble timed out after 20000ms"));
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+      expect(rm.noteRunLink(X, C)).toBe(true);
+      for (let i = 0; i < 30; i++) await expect(rm.runLinksRecorded()).rejects.toThrow(/run link/);
+      link.mockResolvedValue(true);
+      await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      quiet.mockRestore();
+    });
+
+    it("a link with no bubble to record it on yet holds nothing back", async () => {
+      const { writer, calls } = recordingWriter();
+      const rm = new RunManager("chat1", KEY, writer);
+      rm.noteHeldInput(C, C, "userMsg");
+      await rm.feed(delta(7, ""), 1000);
+      expect(rm.noteRunLink(X, C)).toBe(true);
+      await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      expect(links(calls)).toEqual([]);
+    });
+  });
+
+  // An exec approval names the run that asked under its EXECUTION name (upstream
+  // exec-approval.ts: `operationalRunInstance.runId`), while the turn here is the client
+  // run's: the request read off its broadcast or a pending list must still hold it.
+  it("an exec approval naming the execution run holds the turn opened under the client run", async () => {
+    const { rm, writer, calls } = await spokenFirst();
+    (writer as unknown as { setPhase: unknown }).setPhase = vi.fn(async (...args: unknown[]) => {
+      calls.push({ op: "setPhase", args });
+    });
+    expect(rm.noteRunLink(X, C)).toBe(true);
+    await rm.recordRunLinks();
+    await rm.noteApprovalRequested("appr-1", { kind: "exec", runId: X, toolCallId: "call-1", expiresInSec: 600 }, 1001);
+    expect(calls.filter((c) => c.op === "setPhase").map((c) => c.args.slice(0, 2))).toContainEqual(["m1", "awaiting_approval"]);
+  });
+
+  it("…and one naming ANOTHER run does not (unchanged without a link)", async () => {
+    const { rm, writer, calls } = await spokenFirst();
+    (writer as unknown as { setPhase: unknown }).setPhase = vi.fn(async (...args: unknown[]) => {
+      calls.push({ op: "setPhase", args });
+    });
+    await rm.noteApprovalRequested("appr-1", { kind: "exec", runId: X, toolCallId: "call-1", expiresInSec: 600 }, 1001);
+    expect(calls.filter((c) => c.op === "setPhase").map((c) => c.args.slice(0, 2))).not.toContainEqual(["m1", "awaiting_approval"]);
+  });
+
+  it("the two names are ONE run to whoever asks (`sameRun`), linked early or late; strangers are not", async () => {
+    const late = await spokenFirst();
+    expect(late.rm.sameRun(X, C)).toBe(false);
+    late.rm.noteRunLink(X, C);
+    expect(late.rm.sameRun(X, C)).toBe(true);
+    expect(late.rm.sameRun(C, X)).toBe(true);
+    expect(late.rm.sameRun(C, C)).toBe(true);
+    expect(late.rm.sameRun(C, "another")).toBe(false);
+    const early = heldSession();
+    early.rm.noteRunLink(X, C);
+    expect(early.rm.sameRun(C, X)).toBe(true);
   });
 
   it("through 2026.9.36 nothing states a link: the 9.36 capture of the scenario records none", async () => {
