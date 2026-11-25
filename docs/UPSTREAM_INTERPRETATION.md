@@ -926,7 +926,20 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
 - **An exec approval granted while a session is created is still refused afterwards**: the
   requester's authority is re-checked after the decision
   (`$UP/src/gateway/server-methods/approval-request-authority.ts:197-199`). Atrium's
-  mitigation (§10) stays necessary.
+  mitigation (§10) stays necessary. When it happens anyway, an exec that waited in place
+  ends refused and the run says so on its `approval` stream — `phase: "resolved"`,
+  `kind: "exec"`, `status: "failed"`, naming the tool call
+  (`$UP/src/agents/embedded-agent-subscribe.handlers.tools.completion.ts`
+  `handleToolExecutionEnd`; the same frame at 2026.9.36). `failed` is written for
+  `approval-request-failed` alone — any failure of the wait for the decision but an aborted
+  run (`$UP/src/agents/bash-tools.exec-host-shared.ts` `resolveExecApprovalWaitOutcome`) —
+  and every other refusal says `denied`. Atrium joins the frame to the card by the tool call
+  its request named and, when the card was allowed, shows it as allowed but not run
+  (`bridge/src/core/agent-requests.ts` `readOpenClawApprovalRequestFailed`). The frame does
+  not say why the wait failed. An exec that returned instead of waiting reports the same
+  failure as a follow-up message, not as a tool result
+  (`$UP/src/agents/bash-tools.exec-host-gateway.ts` `sendApprovalRequestFailedFollowup`):
+  no such frame is written for it, and the card stays as it was.
 
 ### Atrium behavior and verdict
 

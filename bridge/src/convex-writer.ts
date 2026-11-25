@@ -93,6 +93,8 @@ import type { TurnRetry, TurnRetryReason } from "./core/events.js";
 export type { PlanPart } from "./core/plan-part.js";
 import type { PlanPart } from "./core/plan-part.js";
 import type {
+  AgentRequestGatewayFailure,
+  AgentRequestGatewayFailureOutcome,
   AgentRequestRecord,
   AgentRequestSettle,
   AgentRequestSettleOutcome,
@@ -967,6 +969,12 @@ export interface ConvexWriter {
    *  recorded yet (`kept`), or nothing (`none`: already closed, or nothing to keep). Void
    *  from writers that cannot tell. */
   settleAgentRequest?(settle: AgentRequestSettle): Promise<void | { outcome: AgentRequestSettleOutcome }>;
+  /** The gateway said an exec approval's request FAILED — its command did not run, whatever
+   *  was decided (core/agent-requests.ts readOpenClawApprovalRequestFailed) — and what
+   *  Convex did: marked the card, or found none. Void from writers that cannot tell. */
+  agentRequestGatewayFailed?(
+    failure: AgentRequestGatewayFailure,
+  ): Promise<void | { outcome: AgentRequestGatewayFailureOutcome }>;
   /**
    * Re-hydration DECISION trace (content-free reconstruction record) -> an
    * `openclaw.rehydrate` trace keyed `chatId:outboxId`. Emitted once per dispatch at
@@ -1560,6 +1568,7 @@ type IngestOp =
     }
   | ({ op: "upsertAgentRequest" } & AgentRequestRecord)
   | ({ op: "settleAgentRequest" } & AgentRequestSettle)
+  | ({ op: "agentRequestGatewayFailed" } & AgentRequestGatewayFailure)
   | ({ op: "applyTranscript" } & TranscriptApplyReport)
   | ({ op: "transcriptFileCopied" } & TranscriptFileCopiedReport)
   | ({ op: "transcriptFileFailed" } & TranscriptFileFailedReport);
@@ -1833,6 +1842,8 @@ export class HttpConvexWriter implements ConvexWriter {
     // and the agent waited on a card nobody could see.
     "upsertAgentRequest",
     "settleAgentRequest",
+    // A mark on one card, set once: its replay finds it set and changes nothing.
+    "agentRequestGatewayFailed",
     // The steer cut (projection `on`): a repeat of a split that committed answers the
     // segment it opened (convex/stream.ts `splitSegment`), so a lost answer is retried
     // instead of leaving the turn on the settled segment (codex pass 4).
@@ -3592,6 +3603,16 @@ export class HttpConvexWriter implements ConvexWriter {
     if (outcome === "settled" || outcome === "kept" || outcome === "none") return { outcome };
     // A Convex that predates the outcome says `settled` only.
     return { outcome: res?.settled === true ? "settled" : "none" };
+  }
+
+  async agentRequestGatewayFailed(
+    failure: AgentRequestGatewayFailure,
+  ): Promise<{ outcome: AgentRequestGatewayFailureOutcome }> {
+    const res = await this.doPostWithRetry<{ outcome?: unknown } | null>({
+      op: "agentRequestGatewayFailed",
+      ...failure,
+    });
+    return { outcome: res?.outcome === "marked" ? "marked" : "none" };
   }
 
   async applyTranscript(

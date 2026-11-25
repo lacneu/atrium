@@ -2607,6 +2607,8 @@
   "areq_outcome_allowed_session": "Autorisé pour la session",
   "areq_outcome_allowed_always": "Toujours autorisé",
   "areq_outcome_allowed_elsewhere": "Autorisé ailleurs",
+  "areq_outcome_not_run": "Autorisé, non exécuté",
+  "areq_not_run_note": "L'autorisation a été donnée, mais la passerelle l'a invalidée avant d'exécuter la commande. La commande n'a pas été lancée. Pour qu'elle le soit, demandez-la de nouveau à l'agent.",
   "areq_outcome_denied": "Refusé",
   "areq_outcome_denied_elsewhere": "Refusé ailleurs",
   "areq_outcome_expired": "Expirée sans réponse",

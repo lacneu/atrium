@@ -3873,6 +3873,12 @@ export default defineSchema({
      *  or was refused by the gateway (`saidBy: "gateway"`, every OpenClaw one since 0.103.5).
      *  A verdict, never reopened as a closure of Atrium's. */
     closedByGateway: v.optional(v.boolean()),
+    /** The GATEWAY said this exec approval's request FAILED: the exec was refused and its
+     *  command did not run, whatever was decided (OpenClaw `agent` event, stream `approval`,
+     *  `resolved` / `failed` — agentRequests.markGatewayFailedFromBridge). Beside `allowed`,
+     *  the card says the authorisation was not honoured; beside any other status it changes
+     *  nothing shown. A structured fact only: no error text ever sets it. */
+    gatewayFailed: v.optional(v.boolean()),
   })
     .index("by_chat_and_created", ["chatId", "createdAt"])
     .index("by_chat_and_status", ["chatId", "status"])

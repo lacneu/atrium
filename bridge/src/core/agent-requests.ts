@@ -465,6 +465,52 @@ export function readOpenClawApprovalResolved(
 }
 
 /**
+ * The gateway's own word that an exec approval's REQUEST FAILED: the `agent` event of
+ * stream `approval`, `phase: "resolved"`, `kind: "exec"`, `status: "failed"`, written when
+ * the exec tool completes (src/agents/embedded-agent-subscribe.handlers.tools.completion.ts
+ * `handleToolExecutionEnd`, identical at v2026.9.36 and v2026.10.33). On a `resolved` the
+ * status is `failed` or `denied`, nothing else: `failed` is the exec refused because waiting
+ * for the decision itself failed (`approval-request-failed`: bash-tools.exec-host-shared.ts
+ * `resolveExecApprovalWaitOutcome`, any error of the wait but an aborted run) — the command
+ * did not run, whatever was decided; `denied` is every other refusal (a person's deny, an
+ * expiry, an aborted run…), which this does not read.
+ *
+ * The frame names the TOOL CALL, never the approval id: the caller joins it to the EXEC
+ * request announced for that call (`request.toolCallId`). The Codex harness writes the same
+ * stream with another meaning (`failed` = the run stopped while it waited,
+ * extensions/codex/src/app-server/approval-bridge.ts): its frames name no tool call and its
+ * approvals are plugin ones, so neither is read nor joined. `message` (the command) and
+ * `title` are not read. Null for any other frame.
+ */
+export function readOpenClawApprovalRequestFailed(
+  frame: unknown,
+): { toolCallId: string; sessionKey: string | null } | null {
+  const f = obj(frame);
+  if (f === null || f.type !== "event" || f.event !== "agent") return null;
+  const p = obj(f.payload);
+  if (p === null || p.stream !== "approval") return null;
+  const data = obj(p.data);
+  if (data === null) return null;
+  if (data.phase !== "resolved" || data.kind !== "exec" || data.status !== "failed") return null;
+  const toolCallId = providerId(data.toolCallId);
+  if (toolCallId === undefined) return null;
+  return { toolCallId, sessionKey: str(p.sessionKey) ?? null };
+}
+
+/** An approval the gateway said it did not honour (`readOpenClawApprovalRequestFailed`),
+ *  as the bridge hands it to Convex: which card, never why in words. */
+export interface AgentRequestGatewayFailure {
+  chatId: string;
+  providerRequestId: string;
+  /** The generation concerned (see AgentRequestRecord.providerCreatedAt). */
+  providerCreatedAt?: number;
+}
+
+/** What Convex did with it: marked the card (`marked`, also when it already was), or found
+ *  no exec approval card of that request (`none`). */
+export type AgentRequestGatewayFailureOutcome = "marked" | "none";
+
+/**
  * Which request an `approval.get` snapshot says it is about: its generation (`createdAtMs`,
  * on every snapshot) and the raising session when it names one — a terminal snapshot's
  * reviewer-safe `source.sessionKey`, a pending one's `sourceSessionKey` (set only on a

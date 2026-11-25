@@ -21,6 +21,7 @@ import { buildSessionKey } from "../src/providers/openclaw/session-keys.js";
 import {
   execApprovalRequestedFrame,
   execApprovalRequestedPayload,
+  execApprovalResolvedFrame,
   pendingApprovalGet,
   type ApprovalIds,
 } from "./helpers/approval-frames-2026.9.36.js";
@@ -232,6 +233,71 @@ describe("approvals on the real Session: its own session's only", () => {
     expect(upserts.map((u) => [u.providerRequestId, u.sessionKey])).toEqual([
       [own.approvalId, PARENT],
       [own.approvalId, PARENT],
+    ]);
+    reg.closeAll();
+  });
+
+  // The gateway version served here (2026.9.36) writes the frame exactly as 2026.10.33 does:
+  // the same treatment applies to both.
+  it("an approval allowed, then failed on the gateway: the session hands the word to the writer, for that card", async () => {
+    const state = { pending: [own] as ApprovalIds[], rows: new Map<string, Record<string, unknown>>() };
+    const sockets: Array<ReturnType<typeof conversationSocket>> = [];
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      const c = conversationSocket(state);
+      sockets.push(c);
+      return c as never;
+    });
+    const writes: Array<[string, unknown]> = [];
+    const writer = {
+      startAssistant: async () => "msg-1",
+      appendDelta: async () => {},
+      setSnapshot: async () => true,
+      addToolPart: async () => {},
+      addMedia: async () => {},
+      finalize: async () => {},
+      reportSessionMeta: async () => {},
+      getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
+      upsertSubAgent: async () => {},
+      upsertAgentRequest: async () => ({ recorded: true }),
+      settleAgentRequest: async (s: { status: string }) => {
+        writes.push(["settle", s.status]);
+        return { outcome: "settled" };
+      },
+      agentRequestGatewayFailed: async (f: unknown) => {
+        writes.push(["gateway-failed", f]);
+        return { outcome: "marked" };
+      },
+    } as unknown as ConvexWriter;
+    const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
+    const s1 = await reg.acquire(ROUTING);
+    await sleep(5);
+    const conv = sockets.at(-1)!;
+    await s1.runManager.beginTurn(1000, own.runId);
+    s1.wake();
+    conv.push(execApprovalRequestedFrame(own));
+    await sleep(30);
+    conv.push(execApprovalResolvedFrame(own, "allow-once"));
+    conv.push({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: own.runId,
+        sessionKey: PARENT,
+        stream: "approval",
+        data: { phase: "resolved", kind: "exec", status: "failed", title: "<masked>", toolCallId: own.toolCallId, message: "<masked>" },
+      },
+    });
+    await sleep(40);
+    expect(writes).toEqual([
+      ["settle", "allowed"],
+      [
+        "gateway-failed",
+        {
+          chatId: "c1",
+          providerRequestId: own.approvalId,
+          providerCreatedAt: execApprovalRequestedPayload(own).createdAtMs,
+        },
+      ],
     ]);
     reg.closeAll();
   });

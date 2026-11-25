@@ -458,6 +458,7 @@ class Session implements BridgeSession {
       gateway: connection,
       upsert: writer.upsertAgentRequest?.bind(writer),
       settle: writer.settleAgentRequest?.bind(writer),
+      gatewayFailed: writer.agentRequestGatewayFailed?.bind(writer),
       currentMessageId: () =>
         this.runManager.turnActive ? this.runManager.currentMessageId : null,
       noteQuestion: (id, expiresInSec) =>
