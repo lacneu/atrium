@@ -179,7 +179,7 @@
         },
         "resolved": {
           "status": "handled",
-          "by": "the exec's result was an approval refusal: releases THIS request's hold when it is still held (releaseApproval) — after an in-place wait it follows the run's approval-resolved and finds nothing left",
+          "by": "the exec's result was an approval refusal: releases THIS request's hold when it is still held (releaseApproval) — after an in-place wait it follows the run's approval-resolved and finds nothing left; with status `failed` it is also the gateway's word that the approval REQUEST failed and the command did not run, whatever was decided: joined by toolCallId to the exec request announced for that call and written on its card (agent-request-observer onApprovalRequestFailed)",
           "anchor": {
             "file": "src/providers/openclaw/normalizer.ts",
             "token": "} else if (phase === \"resolved\") {"
@@ -222,8 +222,17 @@
           "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
         },
         "kind": {
-          "status": "ignored",
-          "why": "presentation of the approval: the card is built from the request broadcast and approval.get (agent-request-observer), never from this stream frame"
+          "status": "handled",
+          "by": "read by value on a `resolved` / `failed`: only an `exec` one is joined to a card (the Codex harness writes the stream for its own plugin approvals, with another meaning for `failed`)",
+          "anchor": {
+            "file": "src/core/agent-requests.ts",
+            "token": "data.kind !== \"exec\" || data.status !== \"failed\""
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/approval-invalidated-by-gateway.test.ts",
+            "note": "the captured frames are all `exec` (the bench runs the API runtime, never the Codex harness); the test builds the other kinds from AgentApprovalEventData"
+          }
         },
         "message": {
           "status": "ignored",
@@ -248,15 +257,15 @@
         },
         "status": {
           "status": "handled",
-          "by": "on a `requested`: `unavailable` means nobody can be asked, so the turn is not held; on a `resolved` (denied / failed) it is not read",
+          "by": "on a `requested`: `unavailable` means nobody can be asked, so the turn is not held (normalizer). On a `resolved`: `failed` — the exec refused because waiting for the decision failed (approval-request-failed), so the command did not run — marks the card of that request; `denied` (every other refusal) is not read, and the card stays what the request's own resolution made it",
           "anchor": {
-            "file": "src/providers/openclaw/normalizer.ts",
-            "token": "if (data.status === \"unavailable\") return;"
+            "file": "src/core/agent-requests.ts",
+            "token": "data.kind !== \"exec\" || data.status !== \"failed\""
           },
           "proof": {
             "kind": "deterministic-test",
-            "ref": "bridge/test/approval-stream-after-wait.test.ts",
-            "note": "`requested` was never captured in either status (the bench's execs wait in place); frames built from handleToolExecutionEnd"
+            "ref": "bridge/test/approval-invalidated-by-gateway.test.ts",
+            "note": "captured on the bench where the upstream defect occurred (runs 2026-11-24T21-28-40-832Z and 2026-11-25T00-13-54-548Z, scenario approval-wait-vs-existing-session-claim: allow-once, then resolved / failed) — both runs are NO-GO, which the promoter refuses, so the capture cannot enter the golden corpus; the test replays an extract of the second, free text masked"
           }
         },
         "title": {

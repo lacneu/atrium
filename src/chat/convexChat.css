@@ -12153,6 +12153,7 @@ button.oc-perm__opt:disabled {
 .dark .oc-areq__outcome--allowed_always {
   color: oklch(0.78 0.13 150);
 }
+.oc-areq__outcome--not_run,
 .oc-areq__outcome--denied,
 .oc-areq__outcome--failed {
   color: var(--destructive);

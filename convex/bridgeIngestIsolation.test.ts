@@ -1622,3 +1622,68 @@ describe("upsertSubAgentBatch keeps the single op's isolation", () => {
     expect(await rowsOf(t, b.chatId)).toHaveLength(0);
   });
 });
+
+describe("the ingest route takes the gateway's word that an approval request failed", () => {
+  const card = (chatId: unknown, messageId: unknown) => ({
+    op: "upsertAgentRequest",
+    chatId,
+    messageId,
+    source: "openclaw.exec",
+    providerRequestId: "ap_failed",
+    providerCreatedAt: 7,
+    approvalKind: "exec",
+    approval: { command: "ls SECRET_COMMAND_TEXT", decisions: ["allow-once", "deny"] },
+  });
+  const failed = (chatId: unknown, over: Record<string, unknown> = {}) => ({
+    op: "agentRequestGatewayFailed",
+    chatId,
+    providerRequestId: "ap_failed",
+    providerCreatedAt: 7,
+    ...over,
+  });
+
+  test("marks the card of the proven instance, says what it did, and traces no content", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    expect((await post(t, card(a.chatId, a.messageId), a.secret)).status).toBe(200);
+    await post(
+      t,
+      { op: "settleAgentRequest", chatId: a.chatId, providerRequestId: "ap_failed", providerCreatedAt: 7, family: "approval", status: "allowed", decision: "allow-once" },
+      a.secret,
+    );
+    // Whatever else the body carries — the frame's own text included — is not read.
+    const res = await post(t, failed(a.chatId, { message: "ls SECRET_COMMAND_TEXT", status: "allowed" }), a.secret);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, outcome: "marked" });
+    const rows = await t.run((ctx) => ctx.db.query("agentRequests").collect());
+    expect(rows.map((r) => [r.status, r.gatewayFailed])).toEqual([["allowed", true]]);
+    const traced = await t.run(async (ctx) =>
+      (await ctx.db.query("traceEvents").collect()).map((e) => `${e.kind} ${e.meta ?? ""}`).join("\n"),
+    );
+    expect(traced).toContain('"op":"agentRequestGatewayFailed","outcome":"marked"');
+    expect(traced).toContain('"phase":"gateway_failed"');
+    expect(traced).not.toContain("SECRET_COMMAND_TEXT");
+  });
+
+  test("no card: `none`; no request id: refused", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const none = await post(t, failed(a.chatId), a.secret);
+    expect(await none.json()).toEqual({ ok: true, outcome: "none" });
+    expect((await post(t, failed(a.chatId, { providerRequestId: 12 }), a.secret)).status).toBe(400);
+  });
+
+  test("another instance's bridge is refused, and the card is left as it was", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const b = await seedInstanceWithChat(t, admin, "beta");
+    await post(t, card(a.chatId, a.messageId), a.secret);
+    const res = await post(t, failed(a.chatId), b.secret);
+    expect(res.status).toBe(403);
+    const rows = await t.run((ctx) => ctx.db.query("agentRequests").collect());
+    expect(rows.map((r) => r.gatewayFailed)).toEqual([undefined]);
+  });
+});

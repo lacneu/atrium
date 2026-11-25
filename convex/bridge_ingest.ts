@@ -875,6 +875,14 @@ type IngestOp =
       answers?: Array<{ id: string; values: string[] }>;
       decision?: string;
     }
+  // The gateway said an exec approval's request FAILED: its command did not run, whatever
+  // was decided (convex/agentRequests.ts markGatewayFailedFromBridge). Which card, no text.
+  | {
+      op: "agentRequestGatewayFailed";
+      chatId: string;
+      providerRequestId: string;
+      providerCreatedAt?: number;
+    }
   // THE TRANSCRIPT PROJECTION (redesign phase 1, shadow): what one `chat.history` read
   // returned, as identities. Never touches a message (convex/transcriptProjection.ts).
   | {
@@ -2425,6 +2433,27 @@ export const ingest = httpAction(async (ctx, request) => {
       // What the settle DID — closed the card, kept the verdict for a card not recorded yet,
       // or nothing: the bridge reads it instead of taking any answer for a closed card.
       return json({ ok: true, settled: res.settled, outcome: res.outcome });
+    }
+    case "agentRequestGatewayFailed": {
+      if (typeof body.providerRequestId !== "string" || body.providerRequestId === "") {
+        return json({ ok: false, error: "invalid agent request gateway failure" }, 400);
+      }
+      const res = await ctx.runMutation(internal.agentRequests.markGatewayFailedFromBridge, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        providerRequestId: body.providerRequestId,
+        ...(typeof body.providerCreatedAt === "number" && Number.isFinite(body.providerCreatedAt)
+          ? { providerCreatedAt: body.providerCreatedAt }
+          : {}),
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        // Structural only — never the command.
+        meta: { op: body.op, outcome: res.outcome },
+      });
+      return json({ ok: true, outcome: res.outcome });
     }
     case "applyTranscript": {
       // Shape is re-validated by the mutation's validators (a malformed body is a 500

@@ -2607,6 +2607,8 @@
   "areq_outcome_allowed_session": "Allowed for the session",
   "areq_outcome_allowed_always": "Always allowed",
   "areq_outcome_allowed_elsewhere": "Allowed elsewhere",
+  "areq_outcome_not_run": "Allowed, not run",
+  "areq_not_run_note": "The authorization was given, but the gateway invalidated it before running the command. The command did not run. To have it run, ask the agent again.",
   "areq_outcome_denied": "Denied",
   "areq_outcome_denied_elsewhere": "Denied elsewhere",
   "areq_outcome_expired": "Expired unanswered",
