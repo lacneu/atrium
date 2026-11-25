@@ -579,7 +579,11 @@ export class RunManager {
   }
 
   /** A late link Convex already holds (read back with a resumed bubble): known again,
-   *  owed nothing. Taken only under the conditions a statement is (`linkLate`). */
+   *  and asked once more before the transcript's rows are posted. Convex records a link
+   *  page by page (`linkRunBubble`), so the bubble that came back may carry it while a
+   *  later page of the run's segments does not — a process stopped between two pages.
+   *  The repeat is the same fact (Convex completes what is missing and changes nothing
+   *  else). Taken only under the conditions a statement is (`linkLate`). */
   private restoreRecordedLateLink(clientRunId: string, executionRunId: string): void {
     if (clientRunId === executionRunId || this.lateExecutionRuns.get(clientRunId) === executionRunId) return;
     if (
@@ -596,6 +600,7 @@ export class RunManager {
     }
     this.lateExecutionRuns.set(clientRunId, executionRunId);
     this.lateClientRuns.set(executionRunId, clientRunId);
+    this.unrecordedLinks.set(clientRunId, 0);
     this.trimLateLinks();
   }
 

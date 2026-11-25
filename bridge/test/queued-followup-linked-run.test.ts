@@ -870,10 +870,28 @@ describe("the link stated AFTER the client run opened its turn", () => {
       await rm.resumeTurn(1000, "m1", C, undefined, X);
       expect(rm.activeTranscriptRunIds).toEqual([X]);
       expect(rm.sameRun(X, C)).toBe(true);
-      // Recorded already: nothing owed, nothing asked.
+      // Asked once more before any row (the record that came back may be partial), once.
       await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
-      expect(links(calls)).toEqual([]);
+      expect(links(calls)).toEqual([["m1", C, X]]);
+      await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      expect(links(calls)).toHaveLength(1);
       expect(await rm.settleFromTranscript([X], 1001)).toBe(true);
+    });
+
+    // A process stopped between two PAGES of a link (a run cut into more segments than one
+    // page holds): the resumed bubble carries the link, a later page does not. Rows posted
+    // on the restored link alone would give the unlinked segment a second bubble.
+    it("after a restart, the restored link holds the rows until Convex has confirmed it again", async () => {
+      const { writer } = recordingWriter();
+      const link = vi.fn().mockRejectedValueOnce(new Error("fetch failed")).mockResolvedValue(true);
+      (writer as { linkRunBubble?: unknown }).linkRunBubble = link;
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+      const rm = new RunManager("chat1", KEY, writer);
+      await rm.resumeTurn(1000, "m1", C, undefined, X);
+      await expect(rm.runLinksRecorded()).rejects.toThrow(/run link/);
+      await expect(rm.runLinksRecorded()).resolves.toBeUndefined();
+      expect(link).toHaveBeenLastCalledWith("m1", C, X);
+      quiet.mockRestore();
     });
 
     it("the resumed bubble's `transcriptRunId` is read bounded, and never as the run's own name", () => {
