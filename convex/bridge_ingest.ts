@@ -634,6 +634,7 @@ type IngestOp =
       messageId: string;
       clientRunId: string;
       runId: string;
+      cursor?: string;
     }
   | {
       op: "heartbeat";
@@ -2019,7 +2020,8 @@ export const ingest = httpAction(async (ctx, request) => {
       if (
         typeof body.messageId !== "string" ||
         typeof body.clientRunId !== "string" ||
-        typeof body.runId !== "string"
+        typeof body.runId !== "string" ||
+        (body.cursor !== undefined && typeof body.cursor !== "string")
       ) {
         return json({ error: "invalid body" }, 400);
       }
@@ -2027,9 +2029,14 @@ export const ingest = httpAction(async (ctx, request) => {
         messageId: body.messageId as Id<"messages">,
         clientRunId: body.clientRunId,
         runId: body.runId,
+        ...(body.cursor !== undefined ? { cursor: body.cursor } : {}),
         boundInstanceName,
       });
-      return json({ ok: true, linked: result.linked });
+      return json({
+        ok: true,
+        linked: result.linked,
+        ...(result.continueCursor !== undefined ? { continueCursor: result.continueCursor } : {}),
+      });
     }
     case "heartbeat": {
       await ctx.runMutation(internal.stream.heartbeatStream, {

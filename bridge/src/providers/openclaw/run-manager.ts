@@ -107,6 +107,14 @@ interface RunLane {
 
 /** A settled run's bubble (null: none) and whole visible text. */
 type SettledRecord = { messageId: string | null; text: string };
+
+/** A late run link Convex has not recorded yet, with the bubble it is to be recorded on
+ *  (RunManager `owedLateLinks`). */
+export interface OwedLateLink {
+  clientRunId: string;
+  executionRunId: string;
+  messageId: string;
+}
 /** A settled bubble's write queue (see `RunManager.offerCompletion`): the completion it
  *  is owed — the latest text offered for that bubble, null when the queue was opened by
  *  a late final and nothing is owed — the record of the turn that settled it, and how
@@ -436,9 +444,21 @@ export class RunManager {
    * run of an input it holds, or the execution run is the foreground turn's (a turn
    * resumed after a restart no longer remembers the input). Returns whether it holds.
    */
-  noteRunLink(executionRunId: string, clientRunId: string): boolean {
-    if (this.hasOwnTurn(clientRunId) && !this.runAliases.has(clientRunId)) {
-      return this.linkLate(clientRunId, executionRunId);
+  noteRunLink(executionRunId: string, clientRunId: string, now: number): boolean {
+    // A late link known already — stated here, read back with a resumed bubble, or carried
+    // from the chat's previous socket — is never taken again as an early one.
+    const lateKnown = this.lateExecutionRuns.has(clientRunId);
+    if (lateKnown || (this.hasOwnTurn(clientRunId) && !this.runAliases.has(clientRunId))) {
+      const linked = this.linkLate(clientRunId, executionRunId);
+      // The approvals of the execution run noted BEFORE the statement (a reconnection's
+      // pending list can precede it) hold the turn now: the run's `waiting-approval` went
+      // to the socket that closed, and the observer notes each request once.
+      if (linked && this.hasOwnTurn(clientRunId)) {
+        void this.holdKeptApprovals(clientRunId, now).catch((err: unknown) =>
+          console.error("[approval] hold after a late run link failed:", errForLog(err)),
+        );
+      }
+      return linked;
     }
     const ours =
       this.inputAckRuns.has(clientRunId) ||
@@ -470,6 +490,9 @@ export class RunManager {
    *  so far, or a write that failed — with how many times Convex ANSWERED that write
    *  with an error. Asked again before each transcript post. */
   private readonly unrecordedLinks = new Map<string, number>();
+  /** The bubble each late link carried from the chat's previous socket is owed on
+   *  (`adoptOwedLateLinks`): no turn here knows it. */
+  private readonly inheritedLinkBubbles = new Map<string, string>();
   private linkWrites: Promise<void> = Promise.resolve();
   /** Errors Convex may ANSWER a link's write with before the link is given up (each
    *  write is already retried by the writer). A Convex that does not answer at all is
@@ -535,12 +558,7 @@ export class RunManager {
     }
     this.lateExecutionRuns.set(clientRunId, executionRunId);
     this.lateClientRuns.set(executionRunId, clientRunId);
-    while (this.lateExecutionRuns.size > RunManager.MAX_RUN_ALIASES) {
-      const oldest = this.lateExecutionRuns.keys().next().value as string;
-      this.lateClientRuns.delete(this.lateExecutionRuns.get(oldest) as string);
-      this.lateExecutionRuns.delete(oldest);
-      this.unrecordedLinks.delete(oldest);
-    }
+    this.trimLateLinks();
     this.unrecordedLinks.set(clientRunId, 0);
     console.log(
       `[run-link] stated after the client run opened its turn: client=${clientRunId.slice(0, 60)} execution=${executionRunId.slice(0, 60)}`,
@@ -549,13 +567,74 @@ export class RunManager {
     return true;
   }
 
+  /** Bounded, oldest first: a late link and everything kept with it go together. */
+  private trimLateLinks(): void {
+    while (this.lateExecutionRuns.size > RunManager.MAX_RUN_ALIASES) {
+      const oldest = this.lateExecutionRuns.keys().next().value as string;
+      this.lateClientRuns.delete(this.lateExecutionRuns.get(oldest) as string);
+      this.lateExecutionRuns.delete(oldest);
+      this.unrecordedLinks.delete(oldest);
+      this.inheritedLinkBubbles.delete(oldest);
+    }
+  }
+
+  /** A late link Convex already holds (read back with a resumed bubble): known again,
+   *  owed nothing. Taken only under the conditions a statement is (`linkLate`). */
+  private restoreRecordedLateLink(clientRunId: string, executionRunId: string): void {
+    if (clientRunId === executionRunId || this.lateExecutionRuns.get(clientRunId) === executionRunId) return;
+    if (
+      this.lateExecutionRuns.has(clientRunId) ||
+      this.runAliases.has(clientRunId) ||
+      this.runAliases.has(executionRunId) ||
+      this.clientRunIds.has(executionRunId) ||
+      this.clientRunIds.has(clientRunId) ||
+      this.lateClientRuns.has(executionRunId) ||
+      this.lateExecutionRuns.has(executionRunId) ||
+      this.hasOwnTurn(executionRunId)
+    ) {
+      return;
+    }
+    this.lateExecutionRuns.set(clientRunId, executionRunId);
+    this.lateClientRuns.set(executionRunId, clientRunId);
+    this.trimLateLinks();
+  }
+
   /** The bubble a turn of `runId` shows or left: `undefined` while its turn is open with
    *  nothing shown yet, `null` when it ended without one. */
   private bubbleOfOwnRun(runId: string): string | null | undefined {
     if ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(runId)) {
       return this.sink.currentMessageId ?? undefined;
     }
-    return this.settledRuns.get(runId)?.messageId ?? null;
+    return this.settledRuns.get(runId)?.messageId ?? this.inheritedLinkBubbles.get(runId) ?? null;
+  }
+
+  /** The late links still OWED, each with the bubble it is to be recorded on: what the
+   *  session that replaces this one on the chat (its socket closed) carries on
+   *  (SessionRegistry). A link with no bubble yet is not carried: it holds nothing back. */
+  owedLateLinks(): OwedLateLink[] {
+    const owed: OwedLateLink[] = [];
+    for (const clientRunId of this.unrecordedLinks.keys()) {
+      const executionRunId = this.lateExecutionRuns.get(clientRunId);
+      const messageId = this.bubbleOfOwnRun(clientRunId);
+      if (executionRunId !== undefined && typeof messageId === "string") owed.push({ clientRunId, executionRunId, messageId });
+    }
+    return owed;
+  }
+
+  /** The late links the chat's previous session still owed when its socket closed: owed
+   *  here, and the transcript's rows wait for them as they waited there — the new
+   *  socket's reconciler reads the same session, and rows posted before the link make
+   *  a second bubble for good. */
+  adoptOwedLateLinks(links: readonly OwedLateLink[]): void {
+    for (const { clientRunId, executionRunId, messageId } of links) {
+      if (clientRunId === executionRunId || this.lateExecutionRuns.has(clientRunId) || this.lateClientRuns.has(executionRunId)) continue;
+      this.lateExecutionRuns.set(clientRunId, executionRunId);
+      this.lateClientRuns.set(executionRunId, clientRunId);
+      this.inheritedLinkBubbles.set(clientRunId, messageId);
+      this.unrecordedLinks.set(clientRunId, 0);
+    }
+    this.trimLateLinks();
+    if (links.length > 0) void this.recordRunLinks();
   }
 
   /**
@@ -1452,6 +1531,9 @@ export class RunManager {
     messageId: string,
     runId: string,
     segmentPrefix?: string,
+    /** The name the run's transcript rows carry, when Convex recorded a late link on the
+     *  bubble (convex/stream.ts `linkRunBubble`). */
+    transcriptRunId?: string,
   ): Promise<void> {
     // Behind a pre-ack replay, like a frame: no turn is resumed between two replayed frames.
     if (this.replayGate !== null) await this.behindReplay();
@@ -1467,6 +1549,10 @@ export class RunManager {
     // segments, which their own bubbles already show.
     if (segmentPrefix !== undefined) this.normalizer.restoreSegmentPrefix(segmentPrefix);
     this.normalizer.noteRunStarted(runId, now);
+    // The late link the previous process stated is Convex's fact of the bubble: read again
+    // here, the transcript's word on the run (its settle, its approvals, its foreground
+    // name) reaches the resumed turn as it reached the turn that opened it.
+    if (transcriptRunId !== undefined) this.restoreRecordedLateLink(runId, transcriptRunId);
     this.frameTally.clear();
     this.frameSampled.clear();
     this.tallyDumped = false;
@@ -1474,16 +1560,26 @@ export class RunManager {
     // The approvals of THIS run noted before the turn came back — a reconnection's replay
     // lists them while `/resume` still reads the session — hold it now, each until its own
     // deadline: the run's `waiting-approval` went to the socket that closed, and the
-    // observer notes each request once. Only what still waits: a request — an identity —
-    // seen resolved is never held again.
+    // observer notes each request once.
+    await this.holdKeptApprovals(runId, now);
+  }
+
+  /** Hold the active turn of `runId` (its name HERE) for every kept request of that run
+   *  still waiting, each until its own deadline. A request kept under the other name of
+   *  a linked run is that run's: the name is resolved when it is applied, never when it
+   *  was kept. Only what still waits: a request — an identity — seen resolved is never
+   *  held again. */
+  private async holdKeptApprovals(runId: string, now: number): Promise<void> {
+    if (!this.sink.active) return;
     for (const kept of [...this.approvalsWithoutTurn.values()]) {
-      if (kept.runId !== runId || this.approvalsResolved.has(kept.approvalId, kept.generation)) continue;
+      if (kept.runId === null || this.localRunName(kept.runId) !== runId) continue;
+      if (this.approvalsResolved.has(kept.approvalId, kept.generation)) continue;
       await this.applyOrdered(() =>
         this.normalizer.noteApprovalRequested(
           kept.approvalId,
           {
             kind: kept.kind,
-            runId: kept.runId,
+            runId,
             toolCallId: kept.toolCallId,
             expiresInSec: kept.deadline === null ? null : Math.max(0, kept.deadline - now),
             generation: kept.generation,
@@ -1506,11 +1602,13 @@ export class RunManager {
    *  known. */
   private readonly approvalGenerations = new ApprovalGenerations(RunManager.MAX_APPROVALS_WITHOUT_TURN);
 
-  /** This session's approval requests noted while no turn was active, by identity, each
-   *  with its own deadline on this clock (null: none known): re-applied to the turn that
-   *  resumes their run (resumeTurn), forgotten once settled. Kept apart from the observer's
-   *  memory of the cards, which notes each request once. Bounded like the normalizer's
-   *  deadlines. */
+  /** This session's exec approval requests no turn held when they were noted — none was
+   *  active, or the active one did not own the run they name (yet: a link stated late) —
+   *  by identity, each with its own deadline on this clock (null: none known) and the run
+   *  under the name the REQUEST gave it: re-applied to the turn that resumes their run
+   *  (resumeTurn) or that a late link makes theirs (noteRunLink), forgotten once settled.
+   *  Kept apart from the observer's memory of the cards, which notes each request once.
+   *  Bounded like the normalizer's deadlines. */
   private readonly approvalsWithoutTurn = new Map<
     string,
     {
@@ -1613,17 +1711,23 @@ export class RunManager {
     this.approvalGenerations.announce(approvalId, generation);
     // Already decided: a list read before the decision and answered after it is stale.
     if (this.approvalsResolved.has(approvalId, generation)) return;
-    // The request names the run that asked by its EXECUTION name (upstream
-    // exec-approval.ts `operationalRunInstance.runId`); a turn linked late runs here under
-    // its client name. Read under the name the turn has here.
-    const named = facts.runId === null ? facts : { ...facts, runId: this.localRunName(facts.runId) };
     if (!this.sink.active) {
-      this.keepApprovalWithoutTurn(approvalId, generation, named, now);
+      this.keepApprovalWithoutTurn(approvalId, generation, facts, now);
       return;
     }
-    await this.applyOrdered(() =>
-      this.normalizer.noteApprovalRequested(approvalId, { ...named, generation }, now),
-    );
+    await this.applyOrdered(() => {
+      // The request names the run that asked by its EXECUTION name (upstream
+      // exec-approval.ts `operationalRunInstance.runId`); a turn linked late runs here under
+      // its client name. Read under the name the turn has here — when the request is
+      // APPLIED, behind the frames before it.
+      const named = facts.runId === null ? facts : { ...facts, runId: this.localRunName(facts.runId) };
+      // A run the turn does not own (yet): kept under the request's own name, for the
+      // statement that would make it the turn's.
+      if (facts.kind === "exec" && named.runId !== null && !this.normalizer.ownRunIds.has(named.runId)) {
+        this.keepApprovalWithoutTurn(approvalId, generation, facts, now);
+      }
+      return this.normalizer.noteApprovalRequested(approvalId, { ...named, generation }, now);
+    });
   }
 
   /** An approval of this session was settled outside its frames (see

@@ -1105,6 +1105,9 @@ export interface LiveBubble {
   heldInputs?: Array<{ sendId: string; messageId: string }>;
   /** A later segment of a cut run: the earlier segments' text. */
   segmentPrefix?: string;
+  /** A run linked late (OpenClaw 2026.10.33, run-manager `linkLate`): the name its
+   *  transcript rows carry, as Convex recorded it on the bubble. */
+  transcriptRunId?: string;
 }
 
 export function parseLiveBubble(raw: unknown): LiveBubble | null {
@@ -1114,6 +1117,7 @@ export function parseLiveBubble(raw: unknown): LiveBubble | null {
     runId?: unknown;
     heldInputs?: unknown;
     segmentPrefix?: unknown;
+    transcriptRunId?: unknown;
   };
   if (typeof b.messageId !== "string" || b.messageId === "" || b.messageId.length > 64) return null;
   if (typeof b.runId !== "string" || b.runId === "" || b.runId.length > 256) return null;
@@ -1139,6 +1143,12 @@ export function parseLiveBubble(raw: unknown): LiveBubble | null {
     ...(held.length > 0 ? { heldInputs: held } : {}),
     ...(typeof b.segmentPrefix === "string" && b.segmentPrefix.length <= 200_000
       ? { segmentPrefix: b.segmentPrefix }
+      : {}),
+    ...(typeof b.transcriptRunId === "string" &&
+    b.transcriptRunId !== "" &&
+    b.transcriptRunId.length <= 256 &&
+    b.transcriptRunId !== b.runId
+      ? { transcriptRunId: b.transcriptRunId }
       : {}),
   };
 }
@@ -3455,6 +3465,7 @@ export async function planProjectedSend(
       body.liveBubble.messageId,
       body.liveBubble.runId,
       body.liveBubble.segmentPrefix,
+      body.liveBubble.transcriptRunId,
     );
     // The inputs accepted while that bubble streamed, known again BEFORE any frame of
     // the run that answers them is consumed (their bookkeeping died with the process).

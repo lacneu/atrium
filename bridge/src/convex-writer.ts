@@ -546,8 +546,9 @@ export interface ConvexWriter {
   findProjectedBubble?(chatId: string, sessionKey: string, runId: string, segment: number): Promise<string | null>;
   /** The gateway stated, after the bubble opened under a queued input's CLIENT run, that
    *  the run's transcript rows carry `runId` (OpenClaw 2026.10.33 — run-manager
-   *  `linkLate`): Convex records it on the bubble, so those rows land on it. False when
-   *  Convex did not take it (the execution run already shows in another bubble). */
+   *  `linkLate`): Convex records it on the bubble, so those rows land on it. Resolves
+   *  once EVERY bubble of the run is covered (Convex takes them a page at a time). False
+   *  when Convex did not take it (the execution run already shows in another bubble). */
   linkRunBubble?(messageId: string, clientRunId: string, runId: string): Promise<boolean>;
   /** The LIVE terminal of a run the transcript already closed (run-manager
    *  `reconcileTranscriptClosed`, codex phase 4 pass 18): carries THAT run's generation
@@ -1479,7 +1480,7 @@ type IngestOp =
       text: string;
     }
   | { op: "updateRunId"; messageId: string; runId: string }
-  | { op: "linkRunBubble"; messageId: string; clientRunId: string; runId: string }
+  | { op: "linkRunBubble"; messageId: string; clientRunId: string; runId: string; cursor?: string }
   | { op: "heartbeat"; messageId: string }
   | { op: "splitSegment"; messageId: string; afterMessageId: string | null; text?: string }
   | {
@@ -2092,9 +2093,31 @@ export class HttpConvexWriter implements ConvexWriter {
     return typeof res?.messageId === "string" ? res.messageId : null;
   }
 
+  /** Most pages of one run's bubbles a link asks for (Convex takes 32 a page — convex/
+   *  stream.ts `linkRunBubble`): beyond every segment a transcript read can place
+   *  (convex/lib/transcriptProjection.ts `MAX_CUTS_READ`). */
+  private static readonly MAX_LINK_PAGES = 64;
+
   async linkRunBubble(messageId: string, clientRunId: string, runId: string): Promise<boolean> {
-    const res = await this.post<{ linked?: boolean }>({ op: "linkRunBubble", messageId, clientRunId, runId });
-    return res?.linked === true;
+    // EVERY bubble of the run, page after page: the link holds only once Convex answers
+    // without a cursor — until then it is owed, and the run's rows wait for it.
+    let cursor: string | undefined;
+    for (let page = 0; page < HttpConvexWriter.MAX_LINK_PAGES; page++) {
+      const res = await this.post<{ linked?: boolean; continueCursor?: unknown }>({
+        op: "linkRunBubble",
+        messageId,
+        clientRunId,
+        runId,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      if (res?.linked !== true) return false;
+      if (typeof res.continueCursor !== "string") return true;
+      cursor = res.continueCursor;
+    }
+    console.warn(
+      `[run-link] the run has more bubbles than a link covers: refused client=${clientRunId.slice(0, 60)} execution=${runId.slice(0, 60)}`,
+    );
+    return false;
   }
 
   async finalizeClosedRun(

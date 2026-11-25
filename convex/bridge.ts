@@ -4055,6 +4055,7 @@ export const liveBubbleForSession = internalQuery({
     runId: string;
     heldInputs?: Array<{ sendId: string; messageId: string }>;
     segmentPrefix?: string;
+    transcriptRunId?: string;
   } | null> => {
     const m = await ctx.db
       .query("messages")
@@ -4072,6 +4073,8 @@ export const liveBubbleForSession = internalQuery({
       runId: m.runId,
       ...(held.length > 0 ? { heldInputs: held } : {}),
       ...(prefix !== undefined ? { segmentPrefix: prefix } : {}),
+      // A run linked late (stream.ts `linkRunBubble`): the name its rows carry.
+      ...(m.transcriptRunId !== undefined ? { transcriptRunId: m.transcriptRunId } : {}),
     };
   },
 });
