@@ -573,4 +573,57 @@ describe("a linked run is one run for every reader of the socket", () => {
     expect(terminals).toContain(X);
     expect(terminals).not.toContain(C);
   });
+
+  /** The client run speaks FIRST (its bubble opens under it); the link is stated after. */
+  async function linkedLate(linkRunBubble: (...args: unknown[]) => Promise<boolean>) {
+    const h = await harness("2026.10.33");
+    (h.writer as unknown as { linkRunBubble: unknown }).linkRunBubble = linkRunBubble;
+    await performSend(h.session, body(), h.writer, null, null);
+    h.gw.emit(chatFrame("webchat-x", { state: "final", message: said("salut") }));
+    await settle(h.session);
+    h.session.runManager.noteHeldInput(C, C, "um-2", ["webchat-x"]);
+    h.gw.emit(chatFrame(C, { seq: 4, state: "delta", deltaText: "ok", message: said("ok") }));
+    await sleep(10);
+    await settle(h.session);
+    expect(h.session.runManager.activeRunIds).toEqual([C]);
+    return h;
+  }
+
+  it("linked LATE: the terminal broadcast under the client run is posted under the EXECUTION run", async () => {
+    const h = await linkedLate(async () => true);
+    expect(h.session.runManager.noteRunLink(X, C)).toBe(true);
+    h.applies.length = 0;
+    h.gw.emit(chatFrame(C, { seq: 1, state: "final", message: said("ok") }));
+    await sleep(20);
+    await settle(h.session);
+    const terminals = h.applies.flatMap((a) => a.terminals.map((t) => t.runId));
+    expect(terminals).toContain(X);
+    expect(terminals).not.toContain(C);
+  });
+
+  it("linked LATE, the link's write FAILING: no row is posted until Convex holds the link", async () => {
+    let fail = true;
+    const asked: unknown[][] = [];
+    const h = await linkedLate(async (...args) => {
+      asked.push(args);
+      if (fail) throw new Error("fetch failed");
+      return true;
+    });
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(h.session.runManager.noteRunLink(X, C)).toBe(true);
+    await sleep(5);
+    h.applies.length = 0;
+    // A read is asked for (the session moved): its rows may be the execution run's.
+    h.session.transcriptShadow!.requestRead("test");
+    await settle(h.session);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(h.applies).toEqual([]);
+    // Convex takes the link: the next read is posted.
+    fail = false;
+    h.session.transcriptShadow!.requestRead("test");
+    await settle(h.session);
+    expect(h.applies.length).toBeGreaterThan(0);
+    expect(asked.at(-1)).toEqual(["msg-1", C, X]);
+    quiet.mockRestore();
+  });
 });

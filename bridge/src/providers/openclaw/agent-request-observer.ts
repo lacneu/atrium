@@ -80,6 +80,9 @@ export interface AgentRequestObserverDeps {
   /** The gateway said an exec approval's request FAILED (its command did not run). Resolves
    *  with what Convex did (`{ outcome }`, convex-writer.ts), or nothing. */
   gatewayFailed?: (failure: AgentRequestGatewayFailure) => Promise<unknown>;
+  /** Whether two run ids name ONE run (a queued input's execution has two from OpenClaw
+   *  2026.10.33 — run-manager `sameRun`). Absent: only an id is itself. */
+  sameRun?: (a: string, b: string) => boolean;
   /** The active turn's bubble, when this chat is driving one. */
   currentMessageId: () => string | null;
   noteQuestion: (id: string, expiresInSec: number | null) => Promise<boolean>;
@@ -149,6 +152,10 @@ const QUESTION_REPLAY_LATER_MS = 15_000;
  *  (the writer's own retries spent). Bounded: past the last, an open card is left to
  *  Convex's expiry sweep. */
 const SETTLE_RETRY_MS = [2_000, 10_000, 30_000, 120_000];
+/** A failure heard before its request is announced here (`earlyFailures`): how many are
+ *  kept, and for how long — the reads of one connection's pending lists, generously. */
+const MAX_EARLY_FAILURES = 32;
+const EARLY_FAILURE_TTL_MS = 120_000;
 /** What an approval's write ends in when its `approval.get` answered a TERMINAL snapshot:
  *  the request was settled from it (recordApproval), and its resolution has nothing left
  *  to settle. */
@@ -584,6 +591,21 @@ export class OpenClawAgentRequestObserver {
   private async onApproval(event: string, payload: unknown, listedBefore?: number): Promise<boolean> {
     const a = readOpenClawApprovalRequested(event, payload);
     if (a === null || !this.ours(a.sessionKey)) return false;
+    const recorded = await this.admitApproval(event, payload, a, listedBefore);
+    // The gateway's word that THIS request failed, heard before the request was known
+    // here: joined now that its card's write and its verdict's are in flight.
+    if (a.kind === "exec" && a.toolCallId !== null && this.takeEarlyFailure(a.toolCallId, a.runId)) {
+      this.markAfterWrites(a.id, a.createdAtMs);
+    }
+    return recorded;
+  }
+
+  private async admitApproval(
+    event: string,
+    payload: unknown,
+    a: NonNullable<ReturnType<typeof readOpenClawApprovalRequested>>,
+    listedBefore?: number,
+  ): Promise<boolean> {
     const generation = a.createdAtMs;
     this.remember(aKey(a.id), "approval");
     this.routedApprovals.add(a.id, generation);
@@ -879,20 +901,60 @@ export class OpenClawAgentRequestObserver {
     if (failed.sessionKey !== null && !this.ours(failed.sessionKey)) return;
     const request = this.approvalsByToolCall.get(failed.toolCallId);
     if (request === undefined) {
+      const kept = this.keepEarlyFailure(failed);
       console.log(
-        `[agent-request] approval request failed on the gateway chat=${this.deps.chatId}: no card to mark (tool call not announced here)`,
+        `[agent-request] approval request failed on the gateway chat=${this.deps.chatId}: ${
+          kept ? "its request is not announced here yet (kept for it)" : "no card to mark (tool call not announced here)"
+        }`,
       );
       return;
     }
-    const key = aKey(approvalIdentity(request.id, request.generation));
-    // After the card's own write and its verdict's: the mark is about a card Convex holds.
+    this.markAfterWrites(request.id, request.generation);
+  }
+
+  /** After the card's own write and its verdict's: the mark is about a card Convex holds. */
+  private markAfterWrites(id: string, generation: ApprovalGeneration): void {
+    const key = aKey(approvalIdentity(id, generation));
     void Promise.allSettled([this.writes.get(key), this.verdictWrites.get(key)]).then(() =>
       this.markGatewayFailed({
         chatId: this.deps.chatId,
-        providerRequestId: request.id,
-        ...(request.generation !== null ? { providerCreatedAt: request.generation } : {}),
+        providerRequestId: id,
+        ...(generation !== null ? { providerCreatedAt: generation } : {}),
       }),
     );
+  }
+
+  /**
+   * Failures heard BEFORE their request was announced on this socket, by tool call. A
+   * request is learnt from its broadcast or from the pending lists read at connection
+   * (`replayApprovals`, three lists awaited together): while a list is slow, a request
+   * another one already returned can be allowed and then fail, and dropping that word
+   * left the card saying "allowed". Kept only with what ties it to one request: THIS
+   * session, stated by the frame (a frame naming none could be anyone's), the tool call,
+   * and the run — a request that names another run is not the one that failed. Bounded
+   * in number and in time (the bridge's own clock at both ends).
+   */
+  private readonly earlyFailures = new Map<string, { runId: string | null; atMs: number }>();
+  private keepEarlyFailure(failed: { toolCallId: string; sessionKey: string | null; runId: string | null }): boolean {
+    if (!this.ours(failed.sessionKey)) return false;
+    this.earlyFailures.delete(failed.toolCallId);
+    this.earlyFailures.set(failed.toolCallId, { runId: failed.runId, atMs: this.deps.nowMs() });
+    while (this.earlyFailures.size > MAX_EARLY_FAILURES) {
+      const oldest = this.earlyFailures.keys().next().value;
+      if (oldest === undefined) break;
+      this.earlyFailures.delete(oldest);
+    }
+    return true;
+  }
+  /** The failure kept for the exec request just announced for `toolCallId`, consumed:
+   *  whether there is one, still fresh, of the request's own run. */
+  private takeEarlyFailure(toolCallId: string, requestRunId: string | null): boolean {
+    const kept = this.earlyFailures.get(toolCallId);
+    if (kept === undefined) return false;
+    this.earlyFailures.delete(toolCallId);
+    if (this.deps.nowMs() - kept.atMs > EARLY_FAILURE_TTL_MS) return false;
+    if (kept.runId === null || requestRunId === null || kept.runId === requestRunId) return true;
+    return this.deps.sameRun?.(kept.runId, requestRunId) === true;
   }
 
   /** Write the mark, again on the settle's back-off while Convex cannot take it or holds no

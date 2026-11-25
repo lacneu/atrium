@@ -23,6 +23,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
+import { currentPlanIndex } from "./lib/planOrder";
 import { planPartOfRowTool } from "./lib/rowParts";
 import schema from "./schema";
 
@@ -294,6 +295,90 @@ describe("a run followed LIVE keeps the plan of its stream", () => {
   });
 });
 
+describe("a card the live stream left OPEN, completed by the rows (the socket closed while the tool ran)", () => {
+  const RUN = "webchat-cut-run";
+  const CALL = "tool_call:call_x_fc_y:abc:progress_card:1";
+  const rows = [
+    {
+      entryId: "c1",
+      seq: 401,
+      role: "custom",
+      runId: RUN,
+      hidden: false,
+      visible: false,
+      blocks: [
+        { type: "tool", toolCallId: CALL, name: "progress_card", status: "call", input: { plan: ADVANCED } },
+        { type: "tool", toolCallId: CALL, name: "progress_card", status: "result", output: { content: [] } },
+      ],
+    },
+    { entryId: "c2", seq: 402, role: "assistant", runId: RUN, hidden: false, visible: true, text: "fait", blocks: [{ type: "text", text: "fait" }], stopReason: "stop" },
+  ];
+  const over = { kind: "delta", deltaCursor: "cursor-cut", readAt: 4000, rows, terminals: [{ runId: RUN, status: "completed", at: 3990 }], hasActiveRun: false, activeRunIds: [] };
+
+  /** The bubble as the dead socket left it: streaming, its one card `started`, no plan. */
+  async function cutBubble(t: T, chatId: Id<"chats">) {
+    const m = (await t.mutation(internal.stream.startAssistant, { chatId, runId: RUN, turnSessionKey: SK, boundInstanceName: "prod" } as never)) as Id<"messages">;
+    await t.mutation(internal.stream.addPart, {
+      messageId: m,
+      part: { kind: "tool", name: "progress_card", phase: "started", toolCallId: CALL, textOffset: 0 },
+      boundInstanceName: "prod",
+    } as never);
+    return m;
+  }
+
+  test("the card gets its arguments and result, AND the plan its call states is derived — once", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const m = await cutBubble(t, ids.chatId);
+    await applyRaw(t, ids.chatId, over);
+    await settle(t);
+    let parts = await partsOf(t, m);
+    expect(parts.filter((p) => p.part.kind === "tool").map((p) => (p.part.kind === "tool" ? [p.part.toolCallId, p.part.phase, p.part.input] : null))).toEqual([
+      [CALL, "completed", { plan: ADVANCED }],
+    ]);
+    expect(plansOf(parts)).toEqual([{ kind: "plan", steps: ADVANCED }]);
+    // Read again (a reconnect's replay): the card and the plan are found, not doubled.
+    await applyRaw(t, ids.chatId, { ...over, deltaCursor: "cursor-cut-2", readAt: 4100 });
+    await settle(t);
+    parts = await partsOf(t, m);
+    expect(parts.filter((p) => p.part.kind === "tool").length).toBe(1);
+    expect(plansOf(parts).length).toBe(1);
+  });
+});
+
+describe("a `progress_card` call that CLEARS the checklist (`plan: []`)", () => {
+  const RUN = "announce:v1:agent:files:subagent:k:clear";
+  const call = (n: number, plan: unknown) => {
+    const id = `tool_call:call_x_fc_y:abc:progress_card:${n}`;
+    return [
+      { type: "tool", toolCallId: id, name: "progress_card", status: "call", input: { plan } },
+      { type: "tool", toolCallId: id, name: "progress_card", status: "result", output: { content: [] } },
+    ];
+  };
+
+  test("after a plan in the same bubble: an empty plan is derived, and it is the current one", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await applyRaw(t, ids.chatId, {
+      kind: "delta",
+      deltaCursor: "cursor-clear",
+      readAt: 3000,
+      rows: [
+        { entryId: "k1", seq: 301, role: "custom", runId: RUN, hidden: false, visible: false, blocks: call(1, ADVANCED) },
+        { entryId: "k2", seq: 302, role: "custom", runId: RUN, hidden: false, visible: false, blocks: call(2, []) },
+        { entryId: "k3", seq: 303, role: "assistant", runId: RUN, hidden: false, visible: true, text: "fin", blocks: [{ type: "text", text: "fin" }], stopReason: "stop" },
+      ],
+      hasActiveRun: false,
+      activeRunIds: [],
+    });
+    await settle(t);
+    const [born] = await bubblesOf(t, ids.chatId, RUN);
+    const plans = plansOf(await partsOf(t, born!._id));
+    expect(plans).toEqual([{ kind: "plan", steps: ADVANCED }, { kind: "plan", steps: [] }]);
+    expect(currentPlanIndex(plans)).toBe(1);
+  });
+});
+
 describe("only a call the transcript gives a result to states a plan", () => {
   const RUN = "announce:v1:agent:files:subagent:k:r";
   const CALL = "tool_call:call_x_fc_y:abc:progress_card:1";
@@ -357,7 +442,9 @@ describe("planPartOfRowTool — the plan a row's call states", () => {
   test("a `progress_card` without steps replaces the card: an empty plan; an unreadable one says nothing", () => {
     expect(planPartOfRowTool("progress_card", { markdown: "note" })).toEqual({ kind: "plan", steps: [] });
     expect(planPartOfRowTool("progress_card", { plan: "x" })).toBeNull();
-    expect(planPartOfRowTool("progress_card", { plan: [] })).toBeNull();
+    // An EMPTY array clears the checklist as an absent one does (upstream
+    // `normalizeProgressCardInput`: no step → no `steps`, and the put replaces the card).
+    expect(planPartOfRowTool("progress_card", { plan: [] })).toEqual({ kind: "plan", steps: [] });
     expect(planPartOfRowTool("update_plan", {})).toBeNull();
   });
 });

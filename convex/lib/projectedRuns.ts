@@ -42,7 +42,7 @@ export async function liveBubbleFor(
       .take(4);
     for (const r of recorded) {
       const m = await ctx.db.get(r.messageId);
-      if (m !== null && m.chatId === chatId && bubbleInScope(m, scope)) return r.messageId;
+      if (m !== null && m.chatId === chatId && bubbleInScope(m, scope) && !laterLinkedSegment(m, runId)) return r.messageId;
     }
   }
   const own = (
@@ -56,7 +56,47 @@ export async function liveBubbleFor(
       )
       .take(4)
   ).find((m) => m.role === "assistant" && bubbleInScope(m, scope));
-  return own?._id ?? null;
+  if (own !== undefined || segment === 0) return own?._id ?? null;
+  // A LATER segment of a run whose bubbles the live stream opened under its other name
+  // (stream.ts `linkRunBubble`): they carry that name, found through the first segment's.
+  const client = await linkedClientRunOf(ctx, chatId, runId, scope);
+  if (client === null) return null;
+  const linked = (
+    await ctx.db
+      .query("messages")
+      .withIndex("by_chat_run_segment", (q) => q.eq("chatId", chatId).eq("runId", client).eq("runSegment", segment))
+      .take(4)
+  ).find((m) => m.role === "assistant" && m.transcriptRunId === runId && bubbleInScope(m, scope));
+  return linked?._id ?? null;
+}
+
+/** A late link's record names the run's EARLIEST bubble (stream.ts `linkRunBubble`): one
+ *  born at a later segment (the run was cut before it showed anything) is that segment's,
+ *  never the first's. */
+export function laterLinkedSegment(m: { transcriptRunId?: string; runSegment?: number }, runId: string): boolean {
+  return m.transcriptRunId === runId && m.runSegment !== undefined && m.runSegment > 0;
+}
+
+/** The CLIENT run the live stream opened the bubbles of execution run `runId` under, when
+ *  the gateway stated that link late (stream.ts `linkRunBubble`) — read from the earliest
+ *  bubble, the one the run's record names. Null for every other run. */
+export async function linkedClientRunOf(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  scope: BubbleScope = {},
+): Promise<string | null> {
+  const recorded = await ctx.db
+    .query("runBubbles")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+    .take(4);
+  for (const r of recorded) {
+    const m = await ctx.db.get(r.messageId);
+    if (m !== null && m.chatId === chatId && m.transcriptRunId === runId && m.runId !== undefined && bubbleInScope(m, scope)) {
+      return m.runId;
+    }
+  }
+  return null;
 }
 
 /**

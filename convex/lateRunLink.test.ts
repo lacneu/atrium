@@ -18,6 +18,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { liveBubbleFor } from "./lib/projectedRuns";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -232,6 +233,119 @@ describe("the link stated after the bubble opened under the client run", () => {
     });
     expect(again).toBe(bubble);
     expect((await answers(t, chatId)).map((m) => m._id)).toEqual([bubble]);
+  });
+});
+
+// A message STEERED into the linked run cuts its bubble (stream.splitSegment): the run
+// then shows in one bubble per segment, all opened under the client run, and the rows of
+// EACH segment carry the execution run.
+describe("a linked run cut by a steer: every segment is the execution run's", () => {
+  const C2 = `webchat-${"d".repeat(64)}`;
+
+  async function steeredInput(t: T, ids: Ids): Promise<Id<"messages">> {
+    return await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId: ids.chatId,
+        userId: ids.userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "et aussi ?",
+        sendId: C2,
+        updatedAt: 2,
+      }),
+    );
+  }
+  const cut = async (t: T, bubble: Id<"messages">, after: Id<"messages">) => {
+    const next = (await t.mutation(internal.stream.splitSegment, {
+      messageId: bubble,
+      afterMessageId: after,
+      text: "avant",
+      boundInstanceName: "prod",
+    })) as Id<"messages">;
+    await t.mutation(internal.stream.appendDelta, { messageId: next, text: "après", expectedRunId: C, boundInstanceName: "prod" } as never);
+    return next;
+  };
+  /** The durable read: both segments' rows under the EXECUTION run, the steer between them. */
+  const steeredRead = (t: T, chatId: Id<"chats">) =>
+    apply(
+      t,
+      chatId,
+      [
+        { entryId: "u2", seq: 2, role: "user", runId: C, sendId: C, hidden: false, visible: true, text: "question" },
+        { entryId: "a3", seq: 3, role: "assistant", runId: X, hidden: false, visible: true, text: "avant" },
+        { entryId: "s4", seq: 4, role: "user", runId: C2, sendId: C2, steerTargetRunId: X, hidden: false, visible: true, text: "et aussi ?" },
+        { entryId: "a5", seq: 5, role: "assistant", runId: X, hidden: false, visible: true, text: "après" },
+      ],
+      { terminals: [{ runId: X, status: "completed", at: Date.now() }], hasActiveRun: false, activeRunIds: [] },
+    );
+  const placed = async (t: T, chatId: Id<"chats">) =>
+    Object.fromEntries((await rowsOf(t, chatId)).filter((r) => r.role === "assistant").map((r) => [r.entryId, r.messageId]));
+
+  test("linked BEFORE the cut: the new segment is born naming the execution run, and each segment takes its rows", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const first = await liveBubble(t, ids.chatId);
+    await link(t, first);
+    const second = await cut(t, first, await steeredInput(t, ids));
+    expect(await t.run((ctx) => ctx.db.get(second))).toMatchObject({ runId: C, runSegment: 1, transcriptRunId: X });
+    await steeredRead(t, ids.chatId);
+    const all = await answers(t, ids.chatId);
+    expect(all.map((m) => m._id).sort()).toEqual([first, second].sort());
+    expect(await placed(t, ids.chatId)).toEqual({ a3: first, a5: second });
+    expect(all.find((m) => m._id === second)).toMatchObject({ status: "complete", text: "après" });
+  });
+
+  test("linked AFTER the cut (stated on the open segment): every bubble of the run is linked", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const first = await liveBubble(t, ids.chatId);
+    const second = await cut(t, first, await steeredInput(t, ids));
+    expect(await link(t, second)).toEqual({ linked: true });
+    expect((await t.run((ctx) => ctx.db.get(first)))?.transcriptRunId).toBe(X);
+    expect((await t.run((ctx) => ctx.db.get(second)))?.transcriptRunId).toBe(X);
+    // Asked again, on either segment: the same fact.
+    expect(await link(t, first)).toEqual({ linked: true });
+    expect(await link(t, second)).toEqual({ linked: true });
+    await steeredRead(t, ids.chatId);
+    const all = await answers(t, ids.chatId);
+    expect(all.map((m) => m._id).sort()).toEqual([first, second].sort());
+    expect(await placed(t, ids.chatId)).toEqual({ a3: first, a5: second });
+  });
+
+  // Cut BEFORE it showed anything (the bridge's deferred opening counts the cut,
+  // turn-sink `pendingSegment`): the run's only bubble is born at segment 1, and no first
+  // segment exists to carry the run's record.
+  test("the only bubble is a LATER segment: linked, it takes that segment's rows and stands for no other segment", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await steeredInput(t, ids);
+    const only = (await t.mutation(internal.stream.startAssistant, {
+      chatId: ids.chatId,
+      runId: C,
+      turnSessionKey: SK,
+      boundInstanceName: "prod",
+      projectedTurn: true,
+      runSegment: 1,
+    } as never)) as Id<"messages">;
+    await t.mutation(internal.stream.appendDelta, { messageId: only, text: "après", expectedRunId: C, boundInstanceName: "prod" } as never);
+    expect(await link(t, only)).toEqual({ linked: true });
+    expect(await link(t, only)).toEqual({ linked: true });
+    // The run's record names that bubble; it stands for segment 1, never for the first.
+    expect(await t.run((ctx) => liveBubbleFor(ctx as never, ids.chatId, X, 1))).toBe(only);
+    expect(await t.run((ctx) => liveBubbleFor(ctx as never, ids.chatId, X, 0))).toBeNull();
+    await apply(
+      t,
+      ids.chatId,
+      [
+        { entryId: "u2", seq: 2, role: "user", runId: C, sendId: C, hidden: false, visible: true, text: "question" },
+        { entryId: "s4", seq: 4, role: "user", runId: C2, sendId: C2, steerTargetRunId: X, hidden: false, visible: true, text: "et aussi ?" },
+        { entryId: "a5", seq: 5, role: "assistant", runId: X, hidden: false, visible: true, text: "après" },
+      ],
+      { terminals: [{ runId: X, status: "completed", at: Date.now() }], hasActiveRun: false, activeRunIds: [] },
+    );
+    const all = await answers(t, ids.chatId);
+    expect(all.map((m) => m._id)).toEqual([only]);
+    expect(await placed(t, ids.chatId)).toEqual({ a5: only });
   });
 });
 

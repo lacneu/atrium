@@ -25,7 +25,7 @@ import {
   isRelayOwnedTalkRun,
   isTalkConsultRunId,
 } from "../../core/talk-consult.js";
-import { lateFinalAskedOnce, type ConvexWriter } from "../../convex-writer.js";
+import { ConvexIngestError, lateFinalAskedOnce, type ConvexWriter } from "../../convex-writer.js";
 import { EVENT_SESSION_OVERFULL, type BridgeEvent } from "../../core/events.js";
 import { modelFallbackFromFrame, type ModelFallback } from "./model-fallback.js";
 import { sanitizeText } from "./sanitize.js";
@@ -455,19 +455,53 @@ export class RunManager {
   // The turn keeps the name it was opened under, which is also the one the gateway
   // stops (`foregroundRunId`), and the link is held the other way round: the
   // TRANSCRIPT's name of the run is translated where the transcript speaks to the turn
-  // (`settleFromTranscript`, `onAssistantRow`, the foreground runs Convex is asked
-  // about), and Convex is told that the bubble shows the execution run's rows
-  // (`linkRunBubble`) before any row of that run is posted (`recordRunLinks`). Convex
-  // keeps the fact with the bubble, so a bridge restarted between the first delta and
-  // the statement — its turn resumed under the client run — takes the same path.
+  // (`settleFromTranscript`, `onAssistantRow`, `onUserRow`, the foreground runs Convex is
+  // asked about, the terminal the reconciler posts — `transcriptFrame`), and Convex is
+  // told that the bubble shows the execution run's rows (`linkRunBubble`) before any row
+  // of that run is posted (`runLinksRecorded`). Convex keeps the fact with the bubble —
+  // with every bubble of the run, when a steer cuts it into segments — so a bridge
+  // restarted between the first delta and the statement, its turn resumed under the
+  // client run, takes the same path.
   /** Client run a turn of this session runs (or ran) under → its execution run. */
   private readonly lateExecutionRuns = new Map<string, string>();
   /** The reverse: the transcript's name → the name the turn has here. */
   private readonly lateClientRuns = new Map<string, string>();
-  /** Late links Convex has not recorded yet: no bubble to record them on so far, or a
-   *  write that failed. Asked again before each transcript post. */
-  private readonly unrecordedLinks = new Set<string>();
+  /** Late links Convex has not recorded yet (by client run): no bubble to record them on
+   *  so far, or a write that failed — with how many times Convex ANSWERED that write
+   *  with an error. Asked again before each transcript post. */
+  private readonly unrecordedLinks = new Map<string, number>();
   private linkWrites: Promise<void> = Promise.resolve();
+  /** Errors Convex may ANSWER a link's write with before the link is given up (each
+   *  write is already retried by the writer). A Convex that does not answer at all is
+   *  never counted: it cannot take the rows either. */
+  private static readonly MAX_LINK_WRITE_ERRORS = 3;
+
+  /** The name the turn of `runId` has HERE: a linked run's other name when the turn runs
+   *  under that one (the execution run of a link stated first, the client run of one
+   *  stated late), else `runId` itself. */
+  private localRunName(runId: string): string {
+    return this.runAliases.get(runId) ?? this.lateClientRuns.get(runId) ?? runId;
+  }
+
+  /** Whether two run ids name ONE run, as far as this session knows the gateway's links. */
+  sameRun(a: string, b: string): boolean {
+    return a === b || this.localRunName(a) === this.localRunName(b);
+  }
+
+  /**
+   * The frame under the name the TRANSCRIPT gives its run: a frame of a turn whose link
+   * was stated late — still read here under the client run — is returned as a copy
+   * naming the execution run; any other frame as it is. For the reader that files what
+   * it sees beside the transcript's rows (the reconciler's terminal observation).
+   */
+  transcriptFrame<T>(frame: T): T {
+    if (this.lateExecutionRuns.size === 0) return frame;
+    const runId = sessionRunIdFor(frame, this.sessionKey);
+    const execution = runId === null ? undefined : this.lateExecutionRuns.get(runId);
+    if (execution === undefined) return frame;
+    const original = frame as unknown as { payload: Record<string, unknown> };
+    return { ...original, payload: { ...original.payload, runId: execution } } as unknown as T;
+  }
 
   /** `runId` is, or was, a turn's own run here. */
   private hasOwnTurn(runId: string): boolean {
@@ -507,7 +541,7 @@ export class RunManager {
       this.lateExecutionRuns.delete(oldest);
       this.unrecordedLinks.delete(oldest);
     }
-    this.unrecordedLinks.add(clientRunId);
+    this.unrecordedLinks.set(clientRunId, 0);
     console.log(
       `[run-link] stated after the client run opened its turn: client=${clientRunId.slice(0, 60)} execution=${executionRunId.slice(0, 60)}`,
     );
@@ -526,14 +560,21 @@ export class RunManager {
 
   /**
    * Tell Convex every late link it does not hold yet (one write per link, in order).
-   * Resolves once each has been asked; never rejects. The transcript reader awaits it
-   * before posting rows: the rows of an execution run must find the bubble its client
-   * run opened, not give birth to a second one.
+   * Resolves once each has been asked; never rejects. The write is the same fact
+   * however often it is asked (Convex answers a repeat with what it holds).
+   *
+   * A write that FAILED leaves its link owed, and the transcript's rows wait for it
+   * (`runLinksRecorded`). It stops being owed when Convex REFUSES it — `linked: false`,
+   * or a rejection of the request itself (a 4xx: a Convex without the op, a bubble of
+   * another instance) — or keeps ANSWERING with an error: the link is then given up,
+   * said in the log, and the rows of the execution run make that run's own bubble
+   * beside the client run's (two bubbles for one answer — what a statement that never
+   * arrives leaves too).
    */
   recordRunLinks(): Promise<void> {
     if (this.unrecordedLinks.size === 0) return this.linkWrites;
     this.linkWrites = this.linkWrites.then(async () => {
-      for (const client of [...this.unrecordedLinks]) {
+      for (const client of [...this.unrecordedLinks.keys()]) {
         const execution = this.lateExecutionRuns.get(client);
         const messageId = this.bubbleOfOwnRun(client);
         if (messageId === undefined) continue;
@@ -551,11 +592,40 @@ export class RunManager {
             );
           }
         } catch (err) {
+          const status = err instanceof ConvexIngestError ? err.status : null;
+          const errors = (this.unrecordedLinks.get(client) ?? 0) + (status === null ? 0 : 1);
+          const rejected = status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429;
+          if (rejected || errors >= RunManager.MAX_LINK_WRITE_ERRORS) {
+            this.unrecordedLinks.delete(client);
+            console.error(
+              `[run-link] the late link is GIVEN UP (${rejected ? "Convex rejected it" : "Convex keeps failing it"}): the execution run's rows will make a bubble of their own client=${client.slice(0, 60)} execution=${execution.slice(0, 60)}:`,
+              errForLog(err),
+            );
+            continue;
+          }
+          if (this.unrecordedLinks.has(client)) this.unrecordedLinks.set(client, errors);
           console.error("[run-link] the late link was not recorded (asked again):", errForLog(err));
         }
       }
     });
     return this.linkWrites;
+  }
+
+  /**
+   * What the transcript reader awaits before it posts rows: every late link that has a
+   * bubble to be recorded on IS recorded, or was refused. Rejects while one is still owed
+   * (its write failed): the rows of an execution run posted before their link give birth
+   * to a second bubble, after which Convex refuses the link for good — so the post is not
+   * made, and the read is asked again (TranscriptShadow `beforeApply`). A link whose turn
+   * has shown nothing yet has no bubble to name and holds nothing back.
+   */
+  async runLinksRecorded(): Promise<void> {
+    await this.recordRunLinks();
+    for (const client of this.unrecordedLinks.keys()) {
+      if (typeof this.bubbleOfOwnRun(client) === "string") {
+        throw new Error("a run link stated late is not recorded in Convex yet");
+      }
+    }
   }
 
   /** The foreground turn's runs under the names the TRANSCRIPT gives them. */
@@ -657,8 +727,10 @@ export class RunManager {
     // Claimed at once (the live event and a read can deliver the same row), and released
     // if the cut fails before Convex has it: a later delivery of the row re-arms it.
     held.steered = true;
-    const target = row.steerTargetRunId;
     await this.runOrdered(async () => {
+      // The row names the run as the TRANSCRIPT knows it; the turn may run under its
+      // other name here (a link stated late). Resolved in the frames' own order.
+      const target = this.localRunName(row.steerTargetRunId!);
       if (!this.sink.active || !this.normalizer.ownRunIds.has(target)) {
         // Steered into a run that is not the foreground turn here (one the gateway was
         // already running when the input was accepted): that run now answers it — it
@@ -1541,12 +1613,16 @@ export class RunManager {
     this.approvalGenerations.announce(approvalId, generation);
     // Already decided: a list read before the decision and answered after it is stale.
     if (this.approvalsResolved.has(approvalId, generation)) return;
+    // The request names the run that asked by its EXECUTION name (upstream
+    // exec-approval.ts `operationalRunInstance.runId`); a turn linked late runs here under
+    // its client name. Read under the name the turn has here.
+    const named = facts.runId === null ? facts : { ...facts, runId: this.localRunName(facts.runId) };
     if (!this.sink.active) {
-      this.keepApprovalWithoutTurn(approvalId, generation, facts, now);
+      this.keepApprovalWithoutTurn(approvalId, generation, named, now);
       return;
     }
     await this.applyOrdered(() =>
-      this.normalizer.noteApprovalRequested(approvalId, { ...facts, generation }, now),
+      this.normalizer.noteApprovalRequested(approvalId, { ...named, generation }, now),
     );
   }
 

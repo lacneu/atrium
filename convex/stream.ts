@@ -1541,17 +1541,50 @@ export const linkRunBubble = internalMutation({
     }
     if (message.boundInstance === undefined) await assertChatBound(ctx, message.chatId, boundInstanceName);
     if (message.runId !== clientRunId) return refused;
-    if (message.transcriptRunId !== undefined) return { linked: message.transcriptRunId === runId };
-    const segment = message.runSegment !== undefined && message.runSegment > 0 ? message.runSegment : 0;
-    const shown = await liveBubbleFor(ctx, message.chatId, runId, segment);
-    if (shown !== null && shown !== messageId) return refused;
-    await ctx.db.patch(messageId, { transcriptRunId: runId });
-    // The record serves a run's FIRST segment (`liveBubbleFor`): a later one is found by
-    // its own name only.
-    if (segment === 0) await recordRotatedRunBubble(ctx, message.chatId, runId, messageId);
+    // EVERY bubble of the run: a steered input cuts it into segments (`splitSegment`), all
+    // opened under the client run, and the statement can arrive on any of them. Bounded —
+    // a run cut more often than that keeps its further segments unlinked.
+    const segments = (
+      await ctx.db
+        .query("messages")
+        .withIndex("by_chat_run_segment", (q) => q.eq("chatId", message.chatId).eq("runId", clientRunId))
+        .take(MAX_LINKED_SEGMENTS)
+    ).filter(
+      (m) =>
+        m.role === "assistant" &&
+        m.boundInstance === message.boundInstance &&
+        m.turnSessionKey === message.turnSessionKey,
+    );
+    if (!segments.some((m) => m._id === messageId)) segments.push(message);
+    // All or nothing, decided before any write: a segment that names another execution
+    // run, or whose rows already made a bubble of their own, refuses the whole link.
+    for (const m of segments) {
+      if (m.transcriptRunId !== undefined) {
+        if (m.transcriptRunId !== runId) return refused;
+        continue;
+      }
+      const shown = await liveBubbleFor(ctx, m.chatId, runId, segmentOf(m));
+      if (shown !== null && shown !== m._id) return refused;
+    }
+    for (const m of segments) {
+      if (m.transcriptRunId === runId) continue;
+      await ctx.db.patch(m._id, { transcriptRunId: runId });
+    }
+    // The execution run's record names its EARLIEST bubble: the first segment's, or — a
+    // run cut before it showed anything, whose bubble was born at a later segment — that
+    // one. Every later segment is found through it (`liveBubbleFor`); a record naming a
+    // later segment never stands for the first.
+    const earliest = segments.reduce((a, b) => (segmentOf(b) < segmentOf(a) ? b : a));
+    await recordRotatedRunBubble(ctx, earliest.chatId, runId, earliest._id);
     return { linked: true };
   },
 });
+
+/** Bubbles of one client run a late link reaches (its steer segments). */
+const MAX_LINKED_SEGMENTS = 32;
+
+const segmentOf = (m: { runSegment?: number }): number =>
+  m.runSegment !== undefined && m.runSegment > 0 ? m.runSegment : 0;
 
 /** The bubble run `run` wrote to in this chat, or null when that is not KNOWN.
  *
@@ -6474,6 +6507,8 @@ export const splitSegment = internalMutation({
         : {}),
       role: "assistant",
       runId: message.runId,
+      // A run linked late keeps its transcript name on every segment (`linkRunBubble`).
+      ...(message.transcriptRunId !== undefined ? { transcriptRunId: message.transcriptRunId } : {}),
       status: "streaming",
       runSegment: (message.runSegment ?? 0) + 1,
       ...(message.routedInstanceName !== undefined
@@ -6503,7 +6538,8 @@ export const splitSegment = internalMutation({
     });
     // The one opening point (see startAssistant): what the run's rows of the NEW segment
     // already said (a steer and its show_widget result read before this cut) is taken up now.
-    if (message.runId !== undefined) await catchUpLiveBubbleFromRows(ctx, next, message.runId);
+    const rowsRun = message.transcriptRunId ?? message.runId;
+    if (rowsRun !== undefined) await catchUpLiveBubbleFromRows(ctx, next, rowsRun);
     return next;
   },
 });

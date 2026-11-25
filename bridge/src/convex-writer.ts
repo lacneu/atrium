@@ -1844,6 +1844,10 @@ export class HttpConvexWriter implements ConvexWriter {
     "settleAgentRequest",
     // A mark on one card, set once: its replay finds it set and changes nothing.
     "agentRequestGatewayFailed",
+    // A fact of the run's bubbles, set once: a repeat is answered with what Convex holds
+    // (convex/stream.ts `linkRunBubble`). Retried because the transcript's rows wait for
+    // it (run-manager `runLinksRecorded`).
+    "linkRunBubble",
     // The steer cut (projection `on`): a repeat of a split that committed answers the
     // segment it opened (convex/stream.ts `splitSegment`), so a lost answer is retried
     // instead of leaving the turn on the settled segment (codex pass 4).
