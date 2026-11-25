@@ -9,8 +9,8 @@ that stays on 2026.9.36. **Deploy the Convex functions before the bridge**: the 
 new ingest fields (the reason and time of a provider wait, the run a child agent timed out
 on) that only the new functions accept. No data migration on the Atrium side.
 
-- **OpenClaw 2026.10.33 is validated.** Full live suite GO, 31 of 31 scenarios, on the
-  published distribution image `openclaw-2026.10.33-r9`. The gateway's reply to a send, its
+- **OpenClaw 2026.10.33 is validated.** Full live suite GO on the published distribution
+  image `openclaw-2026.10.33-r9`, both ways a child agent's result can come back exercised. The gateway's reply to a send, its
   failure wording, the status of a child agent and the shape of a question changed with this
   release; the bridge reads both generations.
 - **The versions between the two validated releases are not claimed.** OpenClaw 2026.10.1 to
@@ -45,6 +45,16 @@ on) that only the new functions accept. No data migration on the Atrium side.
   messages (storage unavailable, session busy, model not found, provider needs a break,
   interrupted request…); Atrium recognises the new wording beside the 2026.9 one, so a
   failed turn keeps its specific explanation instead of a generic one.
+- **An allowed command that did not run says so.** When the gateway invalidates an approval
+  the user has just granted, the command is refused and never runs; the card kept showing
+  "Allowed". It now opens on its own and reads "Allowed, not run", says the gateway
+  invalidated the authorization before the command started, and that asking the agent again
+  is the way to have it run. Read from the gateway's own approval event, on 2026.9.36 too.
+  Each occurrence leaves a trace (no command text) so its frequency can be measured.
+- **A child agent's result that comes back privately shows its plan.** On 2026.10.33 the
+  turn in which the parent takes a child's result can be private: the gateway streams nothing
+  of it. Atrium shows that turn's reply once it is recorded, and the plan it updated now
+  advances instead of staying at its first step.
 - **No "Sources" card for a search that found nothing.** A knowledge search that returned no
   result was shown as one context source; such a reply is no longer counted as a source, on
   stored messages too.
@@ -57,10 +67,17 @@ directory is readable by the gateway's user (one unreadable file, a root-owned b
 instance, stops the start), and the volume has free space for the migration, which copies
 the databases. Upgrade Atrium (Convex, then the bridge) before the gateway.
 
-**Known limits.** The upstream defect where an exec approval is granted and the command is
-then refused when a session is created during the wait (openclaw/openclaw#170994) is still
-present on 2026.10.33. A question the agent presents as an advanced form is shown as a plain
-list of options, not as a form. Some 2026.10.33 failure messages are not classified yet and
+**Known limits.** The upstream defect where an exec approval is granted and then refused
+(openclaw/openclaw#170994) is still present in every published release, 2026.10.33
+included, and happens more often there: the gateway invalidates a pending approval whenever
+its global access revision moves, which session creation, worker placement and the
+2026.10.33 background skill review all do. Atrium now says that the command did not run; it
+cannot prevent it. A turn in which the parent takes a child's result privately shows no text
+until it is recorded, has no Stop button, and its end is inferred from the transcript. A
+message sent during a turn can still show its reply twice when the bridge restarts or
+reconnects at a precise moment: the gateway keeps the link between the two run ids in memory
+only. A question the agent presents as an advanced form is shown as a plain
+list of options, not as a form (a free answer beside 64 options is accepted). Some 2026.10.33 failure messages are not classified yet and
 fall back to the generic explanation. The thumbnail of a video card is fetched from YouTube
 as soon as the message is displayed, before any click. Not exercised on the bench, so read
 in the gateway's sources only: a provider retry, a question with more than four options, a
