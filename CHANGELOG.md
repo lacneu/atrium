@@ -1,6 +1,11 @@
 # Changelog
 
-## [0.105.0] — OpenClaw 2026.10.33 is supported
+## [0.105.1] — OpenClaw 2026.10.33 is supported
+
+The tag 0.105.0 was pushed but its release stopped at the type check (a test outside the
+shipped code reached a bridge module whose types only the bridge installs); nothing was
+published but the bridge image. 0.105.1 is the same code with that test kept out of the root
+type check, and is the release to deploy.
 
 Gateway support release. Atrium now supports OpenClaw 2026.10.33, the next extended-stable
 release (published upstream on 2026-11-18), beside the 2026.9 line, which stays supported as
