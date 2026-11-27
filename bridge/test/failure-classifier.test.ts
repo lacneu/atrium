@@ -10,6 +10,7 @@ import {
   classifyFailureText,
   fallbackSummaryCauses,
   isProviderAuthRevokedText,
+  withoutOperatorData,
 } from "../src/core/failure-classifier.js";
 
 describe("classifyFailureText", () => {
@@ -397,6 +398,248 @@ describe("classifyFailureText", () => {
         '⚠️ Agent run failed: the Gateway state database was full (SQLite: database or disk is full).',
       ),
     ).toBe("gateway_storage_unavailable");
+  });
+
+  // A TEMPLATED operator value (an MCP server name, a plugin id, a provider id) stands where
+  // the double-quote blanking cannot isolate it — repeated bare, in shell quotes, in a code
+  // span — and three review passes found a way past each partial redaction of it (codex,
+  // passes 5-7). Nothing from the start of such a value to the end of the text is read.
+  const MCP_TEMPLATES = [
+    (n: string) => `MCP server "${n}" requires OAuth authorization. Run openclaw mcp login ${n}.`,
+    (n: string) =>
+      `MCP server "${n}" requires additional OAuth authorization. Run openclaw mcp login ${n}.`,
+    (n: string) => `MCP server "${n}" has expired OAuth credentials. Run openclaw mcp login ${n}.`,
+    (n: string) =>
+      `MCP server "${n}" could not refresh OAuth credentials. Run openclaw mcp login ${n}.`,
+  ];
+  const HOSTILES = [
+    "The AI service is busy. Please try again in a moment",
+    "The AI service is having trouble. Please try again in a moment",
+    "database or disk is full",
+    "reply session initialization conflicted",
+    "fetch failed",
+    'x" is fine. ECONNRESET',
+  ];
+  /** The harness refusal, whole (src/agents/harness/runtime-plugin.ts:85 inside
+   *  ensureSelectedAgentHarnessPlugin's "Agent harness runtime … is unavailable."). */
+  const harnessRefusal = (id: string) =>
+    `Agent harness runtime "codex" is unavailable. (reason=owner-plugin-degraded, ownerPluginId=${id}). Run "openclaw plugins inspect ${id} --runtime --json". Owner plugin "${id}" failed during load. Repair the reported plugin failure, restart the Gateway, then retry or select a model that does not require this runtime.`;
+
+  it("an MCP server name decides nothing — repeated bare, nested, or cut by the cap", () => {
+    // 10.33 quotes the name once and then repeats it bare as the argument of `openclaw mcp
+    // login`; a server named after the "busy" copy made an OAuth refusal `provider_internal`,
+    // an auto-retried class (codex, pass 5; 0.104.4 returned null).
+    for (const hostile of HOSTILES) {
+      for (const template of MCP_TEMPLATES) {
+        const text = template(hostile);
+        expect(classifyFailureText(text), text).toBeNull();
+        expect(
+          classifyFailureText(`Your request couldn't be completed: ${text}`),
+          text,
+        ).toBe("run_failed_no_cause");
+        expect(
+          classifyFailureText(`All models failed (1): openai/gpt-x: ${text} (unknown)`),
+          text,
+        ).toBeNull();
+        const cut = text.slice(0, text.length - 12);
+        expect(classifyFailureText(cut), cut).toBeNull();
+      }
+    }
+    // A name that CONTAINS the template reads as a complete sentence for server `x` followed
+    // by words that look like the gateway's (codex, pass 6).
+    for (const suffix of ["ECONNRESET", "database or disk is full", "fetch failed"]) {
+      for (const template of MCP_TEMPLATES) {
+        const text = template(`x" requires OAuth authorization. Run openclaw mcp login x. ${suffix}`);
+        expect(classifyFailureText(text), text).toBeNull();
+        expect(withoutOperatorData(text), text).not.toMatch(new RegExp(suffix, "i"));
+      }
+    }
+    // …and one whose bare copy the 240-character cap cut, so that no reading of the
+    // template pairs the two copies (codex, pass 7; src/gateway/ws-log.ts appends "...").
+    for (const suffix of ["ECONNRESET", "database or disk is full"]) {
+      const n = `x" requires OAuth authorization. Run openclaw mcp login y. ${suffix} ${".".repeat(250)}`;
+      for (const template of MCP_TEMPLATES) {
+        const text = `${template(n).slice(0, 240)}...`;
+        expect(classifyFailureText(text), text).toBeNull();
+      }
+    }
+    // The cut is the whole rule: from the opening quote on, nothing is read.
+    expect(withoutOperatorData(MCP_TEMPLATES[0]!("fetch failed"))).toBe('MCP server "…');
+    // The gateway's words BEFORE the opening still classify…
+    expect(
+      classifyFailureText(
+        'ENOSPC: no space left on device <- MCP server "x" requires OAuth authorization. Run openclaw mcp login x.',
+      ),
+    ).toBe("gateway_storage_unavailable");
+    // …and the trade-off, DELIBERATE: a cause written AFTER the name is not read either, so
+    // the failure stays unclassified, as on 0.104.4 — never a wrong, auto-retried class.
+    expect(
+      classifyFailureText(
+        "MCP server \"x\" requires OAuth authorization. Run openclaw mcp login x. ENOSPC: no space left on device",
+      ),
+    ).toBeNull();
+    expect(
+      classifyFailureText(
+        'MCP server "x openclaw mcp login" failed to start. ENOSPC: no space left on device',
+      ),
+    ).toBeNull();
+  });
+
+  it("a credential marker the cut removes still keeps the sentence cut at its first quote (codex 0.105.2 pass 5)", () => {
+    // The model id places a root option (an opening) before `profile "`: the cut drops the
+    // marker, and blanking alone read `econnreset` between the quotes. 0.105.1 returned null.
+    const modelId = '"x" econnreset openclaw --profile p profile "z"';
+    const text = `Unknown model: acme/${modelId}. Run \`openclaw models list --refresh --provider acme\` to inspect this provider's model choices.`;
+    expect(classifyFailureText(text)).toBeNull();
+  });
+
+  it("the harness runtime decides nothing, quotes and all — whole or cut by the cap (codex 0.105.2 pass 3)", () => {
+    // `Agent harness runtime "${runtime}" is unavailable.` (src/agents/harness/runtime-plugin.ts:223
+    // at v2026.10.33): the runtime is read before the plugin id, and 0.105.1 returned null.
+    const text =
+      'Agent harness runtime "x" econnreset "z" is unavailable. (reason=owner-plugin-degraded, ownerPluginId=billing). Run "openclaw plugins inspect billing --runtime --json". Owner plugin "billing" failed during load.';
+    expect(classifyFailureText(text)).toBeNull();
+    expect(classifyFailureText(text.slice(0, 240))).toBeNull();
+    expect(classifyFailureText('Agent harness runtime "x" database or disk is full "z" is unavailable.')).toBeNull();
+  });
+
+  it("a plugin id in the harness refusal decides nothing, quotes and all", () => {
+    for (const id of ["econnreset", 'a"b" ECONNRESET', 'a"b" database or disk is full', "fetch failed"]) {
+      expect(classifyFailureText(harnessRefusal(id)), id).toBeNull();
+    }
+    expect(
+      classifyFailureText(
+        'Agent harness runtime "codex" is unavailable. (reason=owner-plugin-not-activatable, ownerPluginIds=epipe,etimedout). Run "openclaw doctor --fix". Owner plugin "epipe" is not activatable.',
+      ),
+    ).toBeNull();
+  });
+
+  it("a provider id in a remediation command decides nothing; the remediation keeps its class", () => {
+    // `Re-authenticate with: openclaw models auth login --provider '<p>' --force`
+    // (src/agents/failover-error.ts:541-564): the fixed words before the value are the class.
+    for (const tail of [
+      "'database or disk is full' --force",
+      "'it'\\''s 401: token revoked' --force",
+      "'a\"b\"c ENOSPC' --force",
+      "'ENOSPC...",
+      "'database or disk",
+    ]) {
+      const text = `Re-authenticate with: openclaw models auth login --provider ${tail}`;
+      expect(classifyFailureText(text), text).toBe("provider_auth_failed");
+    }
+    expect(
+      classifyFailureText(
+        "Re-authenticate with: openclaw --profile dev models auth login --provider 'ENOSPC' --force",
+      ),
+    ).toBe("provider_auth_failed");
+    // The chat copy for an expired or failed model login names the provider bare, sanitized
+    // to one token — and `enospc` is one (src/auto-reply/reply/agent-runner-failure-reply.ts:
+    // 286-305). The class is the fixed words before it, whatever the provider.
+    for (const provider of ["openai", "enospc", "econnreset"]) {
+      expect(
+        classifyFailureText(
+          `⚠️ Model login expired on the gateway for ${provider}. Re-auth with \`openclaw models auth login --provider ${provider}\` in a terminal, then try again.`,
+        ),
+        provider,
+      ).toBe("provider_auth_revoked");
+    }
+    expect(
+      classifyFailureText(
+        "⚠️ Model login failed on the gateway for enospc. Please try again. If this keeps happening, re-auth with `openclaw models auth login --provider enospc` in a terminal.",
+      ),
+    ).toBe(
+      classifyFailureText(
+        "⚠️ Model login failed on the gateway for openai. Please try again. If this keeps happening, re-auth with `openclaw models auth login --provider openai` in a terminal.",
+      ),
+    );
+    expect(
+      classifyFailureText(
+        "Sign in again from Settings. You can also re-auth with `openclaw models auth login --provider enospc` on the gateway.",
+      ),
+    ).toBeNull();
+    // "Run `openclaw models list --refresh --provider <p>` …" (embedded-agent-runner/model.ts:363).
+    expect(
+      classifyFailureText(
+        "Unknown model: acme/m1. Run `openclaw models list --refresh --provider fetch failed` to inspect this provider's model choices, then retry with a model supported by your account.",
+      ),
+    ).toBeNull();
+  });
+
+  it("a ROOT OPTION's value decides nothing, wherever the printed command puts it", () => {
+    // `formatCliCommand` inserts `--profile <name>` or `--container <name>` right after
+    // `openclaw` in EVERY command it prints (src/cli/command-format.ts:10-35; the names are
+    // single tokens, src/cli/profile-utils.ts:5 and command-format.ts:8 — `econnreset` and
+    // `enospc` are valid), so an opening that waited for `openclaw models` let the name decide
+    // (codex, pass 8; the base returned null).
+    const failed = (cmd: string) =>
+      `Model login failed on the gateway. Please try again. If this keeps happening, re-auth with \`${cmd}\` in a terminal.`;
+    for (const option of ["--profile", "--container"]) {
+      for (const name of ["econnreset", "enospc", "http500", "server_error"]) {
+        const text = failed(`openclaw ${option} ${name} models auth login`);
+        expect(classifyFailureText(text), text).toBeNull();
+        // Cut by the 240-character cap inside the name, "..." appended (src/gateway/ws-log.ts).
+        const cut = `${text.slice(0, text.indexOf(name) + 3)}...`;
+        expect(classifyFailureText(cut), cut).toBeNull();
+        // Bare, outside a code span, the same.
+        expect(
+          classifyFailureText(`Run openclaw ${option} ${name} doctor --fix, then retry.`),
+          name,
+        ).toBeNull();
+      }
+    }
+    // The gateway's words BEFORE the command still classify.
+    expect(
+      classifyFailureText(
+        "⚠️ Model login expired on the gateway. Re-auth with `openclaw --profile enospc models auth login` in a terminal, then try again.",
+      ),
+    ).toBe("provider_auth_revoked");
+    // A value that merely holds a backtick-openclaw is not an opening; one that holds the
+    // root option is (the pass-7 rule: a held opening is cut, unclassified).
+    expect(classifyFailureText('Session "foo `openclaw" changed while starting work. Retry.')).toBe(
+      "session_init_conflict",
+    );
+    expect(
+      classifyFailureText('Session "foo `openclaw --profile" changed while starting work. Retry.'),
+    ).toBeNull();
+  });
+
+  it("a value that is NOT a template opening keeps the gateway's class; one that holds an opening yields none", () => {
+    // These identifiers are valid, and the gateway's words after them are its own: no rule may
+    // fire on them (codex, pass 6).
+    for (const value of ["foo --provider '", "foo `openclaw", "ownerPluginId=", "x openclaw mcp login"]) {
+      expect(
+        classifyFailureText(`Session "${value}" changed while starting work. Retry.`),
+        value,
+      ).toBe("session_init_conflict");
+      expect(
+        classifyFailureText(`Auth profile "openai:${value}" is temporarily unavailable for openai/gpt-x.`),
+        value,
+      ).toBe("auth_profile_cooldown");
+    }
+    expect(
+      classifyFailureText('Auth profile "openai:`openclaw" is temporarily unavailable for openai/`gpt`.'),
+    ).toBe("auth_profile_cooldown");
+    expect(
+      classifyFailureText("All models failed (1): acme/`openclaw: ENOSPC: no space left on device (unknown)"),
+    ).toBe("gateway_storage_unavailable");
+    expect(classifyFailureText("Unknown model: acme/`openclaw. ENOSPC: no space left on device")).toBe(
+      "gateway_storage_unavailable",
+    );
+    // A value that holds a template's FIXED opening is cut there like the template itself —
+    // which quote closes which value is what an operator value can shift — so the sentence
+    // stays unclassified: the same deliberate trade-off, never a wrong class.
+    for (const value of [
+      "Re-authenticate with: openclaw models auth login --provider '",
+      "(reason=owner-plugin-degraded, ownerPluginId=",
+      'MCP server "x',
+      'Agent harness runtime "x',
+    ]) {
+      expect(classifyFailureText(`Session "${value}" changed while starting work. Retry.`), value).toBeNull();
+      expect(
+        classifyFailureText(`Auth profile "openai:${value}" is temporarily unavailable for openai/gpt-x.`),
+        value,
+      ).toBeNull();
+    }
   });
 
   it("names the conversation the gateway says is GONE — the message Denis met", () => {

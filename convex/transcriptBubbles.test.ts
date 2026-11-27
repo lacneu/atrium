@@ -491,6 +491,36 @@ describe("steered inputs and ownership", () => {
     expect((await get(t, s1))?.status).toBe("complete");
   });
 
+  test("on: a cut confirmed AFTER its user row was stored places the steer's answer in its own segment (OpenClaw 2026.10.33)", async () => {
+    // The gateway records the steered row first, then rewrites it with its
+    // `steerTargetRunId`; a read serves the first copy, the live post the rewrite
+    // (bench busy-send-2026-11-26T16-54-21-040Z/bs-steer-default, frames 114-116).
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, "on");
+    const s0 = await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId: ids.chatId,
+        userId: ids.userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        runId: "sendA",
+        finalizeCause: "steer_segment",
+        boundInstance: "prod",
+        updatedAt: 2,
+      }),
+    );
+    const s1 = await liveBubble(t, ids, "sendA", "après", { runSegment: 1 });
+    await apply(t, ids.chatId, [said("a1", 2, "sendA", "avant"), user("u2", 3, "sendB")], { hasActiveRun: true });
+    await apply(t, ids.chatId, [user("u2", 3, "sendB", { steerTargetRunId: "sendA" })], { kind: "live" });
+    await apply(t, ids.chatId, [said("a2", 4, "sendA", "après")], { hasActiveRun: false, terminals: [terminal("sendA")] });
+    expect((await get(t, s0))?.text).toBe("avant");
+    expect((await get(t, s1))?.text).toBe("après");
+    expect((await get(t, s1))?.status).toBe("complete");
+    const placed = await t.run((ctx) => ctx.db.query("transcriptRows").collect());
+    expect(placed.find((r) => r.entryId === "a2")?.messageId).toBe(s1);
+  });
+
   test("on: another instance's bubble is never settled nor rewritten from here", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t, "on");

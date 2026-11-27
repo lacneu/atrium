@@ -6503,11 +6503,15 @@ export const splitSegment = internalMutation({
     // Strictly after the steered message, whatever its stamp (a queued-then-drained
     // send carries a logical orderTime later than its _creationTime).
     let orderTime: number | undefined;
+    // …and the send that steered (schema `segmentSendId`): the cut that starts the new
+    // segment in the transcript is that send's user row.
+    let segmentSendId: string | undefined;
     if (afterMessageId !== undefined) {
       const after = await ctx.db.get(afterMessageId);
       if (after !== null && after.chatId === message.chatId) {
         const floor = effectiveOrder(after) + 1;
         if (floor > now) orderTime = floor;
+        if (after.role === "user" && after.sendId !== undefined) segmentSendId = after.sendId;
       }
     }
     // A delivery's own bubble stays one across its segments (phase 5, codex pass 3 #1): born
@@ -6527,6 +6531,7 @@ export const splitSegment = internalMutation({
       ...(message.transcriptRunId !== undefined ? { transcriptRunId: message.transcriptRunId } : {}),
       status: "streaming",
       runSegment: (message.runSegment ?? 0) + 1,
+      ...(segmentSendId !== undefined ? { segmentSendId } : {}),
       ...(message.routedInstanceName !== undefined
         ? { routedInstanceName: message.routedInstanceName }
         : {}),

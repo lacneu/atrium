@@ -82,10 +82,11 @@ export const MEDIA_TOO_LARGE_CODE = "media_too_large";
  *   - invalid_filename -> empty / "." / ".." / separator in the basename
  *   - fetch_error      -> a transport/IO failure specific to a network fetcher
  *                         (incl. a timeout/abort — never lets the turn hang)
- *   - route_absent     -> the gateway has no `/__openclaw__/assistant-media` route
- *                         (gateway-http mode against a pre-6.x gateway): a
- *                         DISTINCT, actionable signal to switch to shared-fs,
- *                         not a transient transport blip
+ *   - route_absent     -> the gateway answered 404 on `/__openclaw__/assistant-media`:
+ *                         no route at all on a pre-6.x gateway (switch to shared-fs),
+ *                         but on every supported gateway a PER-REQUEST refusal (the
+ *                         session's policy, the client's authority or the session's
+ *                         placement changed during the read) — a copy asks again
  */
 export type MediaSkipReason =
   | "not_found"

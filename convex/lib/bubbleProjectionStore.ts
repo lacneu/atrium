@@ -10,7 +10,14 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { deliveryRefusedByStop, dropVanishedBubble, finalizeMessageCore, insertAssistantBubble, settleTurnEnd } from "../stream";
-import { ALL_SEGMENTS, deletedMergeOf, segmentDeleted, steerSeqsOf, tombstonedSegments } from "./transcriptProjection";
+import {
+  ALL_SEGMENTS,
+  awaitedBoundary,
+  deletedMergeOf,
+  segmentDeleted,
+  steerSeqsOf,
+  tombstonedSegments,
+} from "./transcriptProjection";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { isDeliveryRun } from "./deliveryRuns";
 import { bubbleInScope, laterLinkedSegment, type BubbleScope } from "./projectedRuns";
@@ -468,6 +475,14 @@ async function projectRun(
   budget.bytes += 1024 * runCuts.seqs.length;
   const steers = runCuts.seqs;
   const cutsComplete = runCuts.complete;
+  // A deleted later segment of a late-linked answer whose cut is not read yet (schema
+  // `awaitsCut`): the rows past the last cut known may be its own or a kept segment's —
+  // they cannot be told apart, so NONE of them is placed, recomposed or settled from, on a
+  // running run or a terminal one (codex 0.105.1 pass 7). Their texts stay stored; the cut,
+  // when it arrives, projects the run again (`awaitedCutRuns`). OpenClaw does not
+  // guarantee it ever does: what the person deleted is then never shown, and the kept
+  // bubble keeps the text it was written with.
+  const heldFrom = cutsComplete && tombs.awaiting.some((a) => awaitedBoundary(a.k, runCuts, a.send) === null) ? steers.length : null;
   const own = cutsComplete ? rows.filter((d) => d.role.toLowerCase() !== "user") : [];
   const segmentsAll = new Set<number>(own.map((d) => segmentOf(d.seq, steers)));
   for (let k = 0; k <= steers.length; k++) segmentsAll.add(k);
@@ -486,6 +501,8 @@ async function projectRun(
    *  (open-ended, as every deleted span — codex phase 4 pass 27). */
   let steerDeletedFrom: { to?: Id<"messages"> } | null = null;
   for (const k of segments) {
+    // Held: neither placed nor tombstoned — its rows stay unassigned until the cut.
+    if (heldFrom !== null && k >= heldFrom) continue;
     const before = {
       rows: planRows.length,
       live: new Map(liveBubbleOf),
@@ -555,7 +572,7 @@ async function projectRun(
       ctx,
       scope,
       id,
-      id === runId ? complete && textsComplete && cutsComplete : await mergedRunKnown(ctx, scope, id, budget),
+      id === runId ? complete && textsComplete && cutsComplete && heldFrom === null : await mergedRunKnown(ctx, scope, id, budget),
       budget,
     );
     if (f !== undefined) facts.set(id, f);

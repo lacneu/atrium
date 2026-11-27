@@ -311,8 +311,10 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
     if (this.warnedRouteAbsent) return;
     this.warnedRouteAbsent = true;
     console.warn(
-      `[media] gateway-http: the gateway has no ${MEDIA_ROUTE} route (HTTP ${status}) — ` +
-        `outbound files will be dropped. If your gateway predates OpenClaw 6.x, set ` +
+      `[media] gateway-http: the gateway answered HTTP ${status} on ${MEDIA_ROUTE}. ` +
+        `On OpenClaw 6.x and later the route exists and this refusal is per request (the ` +
+        `session or the client's access changed during the read): the file is asked again. ` +
+        `If every file is refused, the gateway predates OpenClaw 6.x: set ` +
         `OPENCLAW_MEDIA_MODE=shared-fs (with a read-only mount) instead.`,
     );
   }

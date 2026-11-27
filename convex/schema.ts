@@ -2331,6 +2331,12 @@ export default defineSchema({
     // `runId` stays the name the bridge writes with (its generation) and this is the run
     // whose rows the bubble shows (stream.ts `linkRunBubble`). Absent everywhere else.
     transcriptRunId: v.optional(v.string()),
+    // A LATER SEGMENT of a run (`runSegment` > 0) opened by a steer cut (stream.ts
+    // `splitSegment`): the send of the steered user message that opened it — the cut in the
+    // transcript that starts the segment is the user row of THAT send (OpenClaw counts every
+    // steer, Atrium splits only on its own). Absent everywhere else, and on segments opened
+    // before 0.105.2.
+    segmentSendId: v.optional(v.string()),
     // USER rows only: the send identity of the dispatch that carried this message (the
     // outbox row's `sendId`, see there) — the key the transcript's `"<sendId>:user"` row
     // is reconciled on (invariant I3). The LAST dispatch wins (a regenerate re-sends the
@@ -3094,6 +3100,17 @@ export default defineSchema({
     // earlier or inside — never moves it. Absent: an answer's own tombstone not yet
     // resolved by its deletion's follow-up (read conservatively from its ordinal meanwhile).
     fromSeq: v.optional(v.number()),
+    // A LATE-LINKED answer's later segment (OpenClaw 2026.10.33, `messages.transcriptRunId`):
+    // its ordinal counts the live splits, while its rows — under the execution run — usually
+    // arrive after the deletion. Until the run's cuts show the cut that starts it, the span
+    // takes NOTHING for deleted (read as the run's start, it purged the kept segment's rows
+    // for good); the live door still refuses the segment. Absent on every other tombstone.
+    awaitsCut: v.optional(v.literal(true)),
+    // …the send whose cut starts that segment (`messages.segmentSendId`): the span is told by
+    // THAT cut, never by the k-th one — a steer sent from elsewhere counts among the run's
+    // cuts and not among Atrium's splits (codex 0.105.2 pass 7). Absent: never told, so the
+    // span takes nothing for deleted (the deleted text stays unshown, nothing is purged).
+    cutSendId: v.optional(v.string()),
     // The bubble that was deleted (gone — kept as the rows' sticky tombstone target).
     messageId: v.optional(v.id("messages")),
     createdAt: v.number(),

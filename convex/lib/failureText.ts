@@ -114,6 +114,9 @@ const STATUS_BODY_OPEN_RE =
 const SESSION_GONE_REASON_RE =
   /(?:(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)|openclaw couldn't shorten it\.\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)/;
 
+const OPERATOR_VALUE_OPENING_RE =
+  /\bMCP server "|\bAgent harness runtime "|\(reason=owner-plugin-(?:degraded|not-activatable), ownerPluginIds?=|\bre-authenticate with:\s+openclaw\b|\bmodel login (?:expired|failed) on the gateway for |`+openclaw models (?:list --refresh --provider |auth login\b)|\bopenclaw --(?:profile|container)\b/i;
+
 /** Every mirrored pattern by its bridge name — read by the lockstep test only. */
 export const MIRRORED_PATTERNS: Readonly<Record<string, RegExp>> = {
   STATUS_401_RE,
@@ -165,6 +168,7 @@ export const MIRRORED_PATTERNS: Readonly<Record<string, RegExp>> = {
   RATE_LIMIT_COPY_RE,
   STATUS_BODY_OPEN_RE,
   SESSION_GONE_REASON_RE,
+  OPERATOR_VALUE_OPENING_RE,
 };
 
 const PERMISSION_403_RE = new RegExp(
@@ -297,9 +301,20 @@ function blankQuotedValues(raw: string): string {
   return out.replace(/"[^"]*"/g, '"…"');
 }
 
+/** The bridge's `cutAtOperatorValue`: nothing from the start of a templated operator value to
+ *  the end of the text is read. */
+function cutAtOperatorValue(raw: string): string {
+  const opening = OPERATOR_VALUE_OPENING_RE.exec(raw);
+  return opening === null ? raw : `${raw.slice(0, opening.index + opening[0].length)}…`;
+}
+
 /** The bridge's `withoutOperatorData`: only what the GATEWAY wrote may decide. */
-export function withoutOperatorData(raw: string): string {
-  if (!namesACredential(raw)) return blankQuotedValues(exposeProviderErrorBodies(raw));
+export function withoutOperatorData(input: string): string {
+  const raw = cutAtOperatorValue(input);
+  // Whether a credential is named is read on the WHOLE text (codex 0.105.2 pass 5): the cut
+  // can remove the marker (`profile "`) a value placed after an opening, and blanking alone
+  // would then read what the value put before it.
+  if (!namesACredential(input)) return blankQuotedValues(exposeProviderErrorBodies(raw));
   const firstQuote = raw.indexOf('"');
   const before = firstQuote === -1 ? raw : raw.slice(0, firstQuote);
   if (/\bauth profile\s+$/i.test(before)) {

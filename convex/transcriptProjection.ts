@@ -43,6 +43,8 @@ import {
   ANY_SESSION,
   RUN_START,
   type RunTombs,
+  awaitedBoundary,
+  MAX_TOMBSTONES_READ,
   boundaryOfOrdinal,
   type RunCuts,
   tombstonedSegments,
@@ -285,7 +287,7 @@ function tombstoneCheck(ctx: MutationCtx, chatId: Id<"chats">, sessionKey: strin
     // Stable boundaries need no cut; only an ordinal not yet resolved is read against the
     // current cuts (codex phase 4 pass 27).
     if (entry.cuts === undefined) {
-      if (entry.tombs.size > 0) {
+      if (entry.tombs.unresolved) {
         budget.queries++;
         entry.cuts = await steerSeqsOf(ctx, chatId, sessionKey, runId);
       } else {
@@ -619,6 +621,8 @@ async function upsertRows(
   textedRuns: string[];
   /** Launch facts stored now (phase 5). */
   spawnIds: Array<Id<"transcriptSpawns">>;
+  /** Runs a cut read now may release from an `awaitsCut` hold (to project again). */
+  awaitedCutRuns: string[];
 }> {
   let inserted = 0;
   let updated = 0;
@@ -705,7 +709,10 @@ async function upsertRows(
           role: next.role,
           runId: next.runId,
           sendId: next.sendId,
-          steerTargetRunId: next.steerTargetRunId,
+          // APPEND-ONLY: the gateway broadcasts a steered row first without its target, then
+          // with it (src/sessions/user-turn-transcript-updates.ts `confirmPersistedSteerTargetRunId`
+          // at v2026.10.33 only ever adds it) — a late first copy never erases the cut.
+          steerTargetRunId: next.steerTargetRunId ?? stored.steerTargetRunId,
           mirrorOrigin: next.mirrorOrigin,
           runTerminal: next.runTerminal,
           hidden: next.hidden,
@@ -810,11 +817,34 @@ async function upsertRows(
       chatId: a.chatId,
       sessionKey: a.sessionKey,
       runIds: cutRuns.slice(MAX_CUT_PURGES_PER_APPLY),
+      // …with the projection's scope: a run among them may await its cut (codex 0.105.1
+      // pass 8), and only a projection places what it held back.
+      instanceName: a.instanceName,
+      sessionId: a.sessionId,
     });
   }
+  /** Runs whose rows waited for a cut this read brought (`awaitsCut`): projected again by
+   *  the caller, now that the rows held back can be told apart. */
+  const awaitedCutRuns: string[] = [];
+  // EVERY run a new cut reached is frozen here, past the purge bound too (codex 0.105.2
+  // pass 4): handed on, its freeze would wait for a continuation a later read can overtake
+  // with a cut that moves its span. One indexed probe per run, nearly always empty.
+  // …within FREEZE_READ_BYTES: a run left unfrozen when it is spent is frozen by the
+  // continuation it is handed to anyway (`purgeCutRuns`, `purgeTombstonedRun`).
+  const frozenRuns = new Set<string>();
+  const freezeMeter: ReadMeter = { bytes: 0 };
+  for (const runId of cutRuns) {
+    if (freezeMeter.bytes >= FREEZE_READ_BYTES) break;
+    const freeze = await freezeAwaitedCuts(ctx, a.chatId, runId, freezeMeter);
+    budget.queries += freeze.queries;
+    if (freeze.frozen) frozenRuns.add(runId);
+  }
+  budget.bytes += freezeMeter.bytes;
   for (const runId of cutRuns.slice(0, MAX_CUT_PURGES_PER_APPLY)) {
     budget.queries++;
-    if (!(await tombstonedSegments(ctx, a.chatId, a.sessionKey, runId)).any) continue;
+    const tombs = await tombstonedSegments(ctx, a.chatId, a.sessionKey, runId);
+    if (!tombs.any) continue;
+    if (frozenRuns.has(runId) || tombs.awaiting.length > 0) awaitedCutRuns.push(runId);
     await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeTombstonedRun, {
       chatId: a.chatId,
       sessionKey: a.sessionKey,
@@ -851,7 +881,7 @@ async function upsertRows(
     if (live !== null) await deriveRowWidgetsOnLiveBubble(ctx, live, widgets);
   }
   const textedRuns = [...new Set(stored.flatMap((w) => (w.row.runId === undefined ? [] : [w.row.runId])))];
-  return { inserted, updated, maxSeq, seqByRun, textedRuns, spawnIds };
+  return { inserted, updated, maxSeq, seqByRun, textedRuns, spawnIds, awaitedCutRuns };
 }
 
 /** Store the launches one row states (phase 5): one probe for the row's facts, one insert
@@ -1782,6 +1812,7 @@ export const followUpDeletion = internalMutation({
         runId: v.optional(v.string()),
         user: v.optional(v.boolean()),
         segment: v.optional(v.number()),
+        transcriptRunId: v.optional(v.string()),
         sends: v.optional(v.array(v.string())),
         steerIndex: v.optional(v.number()),
         sendsAfter: v.optional(v.number()),
@@ -1820,16 +1851,24 @@ export const followUpDeletion = internalMutation({
       // segment as the cuts known NOW place it, which can only be at or before the one
       // the answer started at (cuts only get added): conservative, then frozen.
       if (bubble.user !== true && bubble.segment !== undefined && bubble.sessionKey !== undefined && bubble.runId !== undefined) {
-        const { segment, sessionKey, runId } = bubble;
-        queries += 2;
-        const cuts = await steerSeqsOf(ctx, args.chatId, sessionKey, runId, meter);
-        const doc = await ctx.db
-          .query("transcriptTombstones")
-          .withIndex("by_message", (q) => q.eq("messageId", bubble.id).eq("runId", runId).eq("segment", segment))
-          .first();
-        meter.bytes += docReadBytes(doc);
-        if (doc !== null && doc.fromSeq === undefined) {
-          await ctx.db.patch(doc._id, { fromSeq: boundaryOfOrdinal(segment, cuts) });
+        const { segment, sessionKey } = bubble;
+        // A late-linked answer's segment under the execution run too, by THAT run's cuts.
+        const runs = bubble.transcriptRunId !== undefined ? [bubble.runId, bubble.transcriptRunId] : [bubble.runId];
+        for (const runId of runs) {
+          queries += 2;
+          const cuts = await steerSeqsOf(ctx, args.chatId, sessionKey, runId, meter);
+          const doc = await ctx.db
+            .query("transcriptTombstones")
+            .withIndex("by_message", (q) => q.eq("messageId", bubble.id).eq("runId", runId).eq("segment", segment))
+            .first();
+          meter.bytes += docReadBytes(doc);
+          if (doc !== null && doc.fromSeq === undefined) {
+            // A tombstone awaiting its cut (schema `awaitsCut`) is frozen only at that cut;
+            // not read yet, it keeps waiting — every reader reads it against the cuts known.
+            const from =
+              doc.awaitsCut === true ? awaitedBoundary(segment, cuts, doc.cutSendId) : boundaryOfOrdinal(segment, cuts);
+            if (from !== null) await ctx.db.patch(doc._id, { fromSeq: from });
+          }
         }
         const { segment: _resolved, ...rest } = bubble;
         deleted[i] = rest;
@@ -2060,6 +2099,9 @@ export const purgeTombstonedRun = internalMutation({
     cursor: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { chatId, sessionKey, runId, cursor }) => {
+    // The step a read hands a cut run to freezes what that read could not (its freezes'
+    // reads spent, FREEZE_READ_BYTES): one run, bounded.
+    if (cursor === null) await freezeAwaitedCuts(ctx, chatId, runId, { bytes: 0 });
     const tombs = await tombstonedSegments(ctx, chatId, sessionKey, runId);
     if (!tombs.any) return { purged: 0 };
     const cuts = await steerSeqsOf(ctx, chatId, sessionKey, runId);
@@ -2173,15 +2215,75 @@ export const continueUserRows = internalMutation({
   },
 });
 
+/** What the freezes of one mutation may read (`freezeAwaitedCuts`): one run reads at most
+ *  MAX_TOMBSTONES_READ tombstones and MAX_CUTS_READ cuts, so a call stops BEFORE a run once
+ *  this is spent and hands the rest on, far under Convex's 16 MiB read limit (codex 0.105.2
+ *  pass 6). Nearly every run reads one empty range. */
+const FREEZE_READ_BYTES = 2 * 1024 * 1024;
+
+/** The tombstones of `runId` that awaited their cut (`awaitsCut`) and can be told now,
+ *  FROZEN at it (`fromSeq`), as the follow-up freezes the ones it can tell (codex 0.105.2
+ *  pass 3): read again against the cuts of each later read, a cut stored late between two
+ *  known ones would move the span back over rows already shown as kept, and purge them.
+ *  Called once the cut rows of a read are stored, before anything reads the spans. */
+async function freezeAwaitedCuts(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  meter: ReadMeter,
+): Promise<{ frozen: boolean; queries: number }> {
+  const docs = await ctx.db
+    .query("transcriptTombstones")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+    .take(MAX_TOMBSTONES_READ);
+  for (const d of docs) meter.bytes += docReadBytes(d);
+  let queries = 1;
+  let frozen = false;
+  const cutsBySession = new Map<string, Awaited<ReturnType<typeof steerSeqsOf>>>();
+  for (const doc of docs) {
+    if (doc.awaitsCut !== true || doc.fromSeq !== undefined || doc.sessionKey === ANY_SESSION) continue;
+    let cuts = cutsBySession.get(doc.sessionKey);
+    if (cuts === undefined) {
+      cuts = await steerSeqsOf(ctx, chatId, doc.sessionKey, runId, meter);
+      cutsBySession.set(doc.sessionKey, cuts);
+      queries++;
+    }
+    const from = awaitedBoundary(doc.segment, cuts, doc.cutSendId);
+    if (from === null) continue;
+    await ctx.db.patch(doc._id, { fromSeq: from });
+    frozen = true;
+  }
+  return { frozen, queries };
+}
+
 /** The runs new cut rows redrew beyond one apply's bound (`upsertRows`): each probed for a
  *  tombstone and, when it has one, re-purged (`purgeTombstonedRun`) — MAX_CUT_PURGES_PER_APPLY
  *  per step, the rest continued. Ids only. Not scoped to the mode: a purge is owed after a
- *  rollback too. */
+ *  rollback too. A run that awaited its cut (`awaitsCut`) is also handed to the projection's
+ *  own continuation (`continueProjection`: bounded, the mode and the cursor read again) —
+ *  even when the follow-up froze that tombstone since the read (`RunTombs.awaitedCut`). */
 export const purgeCutRuns = internalMutation({
-  args: { chatId: v.id("chats"), sessionKey: v.string(), runIds: v.array(v.string()) },
-  handler: async (ctx, { chatId, sessionKey, runIds }) => {
+  args: {
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    runIds: v.array(v.string()),
+    /** The projection's scope (absent from a step scheduled before it was carried). */
+    instanceName: v.optional(v.string()),
+    sessionId: v.optional(v.string()),
+  },
+  handler: async (ctx, { chatId, sessionKey, runIds, instanceName, sessionId }) => {
+    const awaited: string[] = [];
+    const meter: ReadMeter = { bytes: 0 };
+    // The runs this step takes: at most MAX_CUT_PURGES_PER_APPLY, fewer once the freezes'
+    // reads are spent (FREEZE_READ_BYTES) — always one, the rest handed on.
+    let taken = 0;
     for (const runId of runIds.slice(0, MAX_CUT_PURGES_PER_APPLY)) {
-      if (!(await tombstonedSegments(ctx, chatId, sessionKey, runId)).any) continue;
+      if (taken > 0 && meter.bytes >= FREEZE_READ_BYTES) break;
+      taken++;
+      await freezeAwaitedCuts(ctx, chatId, runId, meter);
+      const tombs = await tombstonedSegments(ctx, chatId, sessionKey, runId, meter);
+      if (!tombs.any) continue;
+      if (tombs.awaitedCut) awaited.push(runId);
       await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeTombstonedRun, {
         chatId,
         sessionKey,
@@ -2189,11 +2291,22 @@ export const purgeCutRuns = internalMutation({
         cursor: null,
       });
     }
-    if (runIds.length > MAX_CUT_PURGES_PER_APPLY) {
+    if (awaited.length > 0 && instanceName !== undefined && sessionId !== undefined) {
+      await ctx.scheduler.runAfter(0, internal.transcriptProjection.continueProjection, {
+        chatId,
+        sessionKey,
+        sessionId,
+        instanceName,
+        runIds: awaited,
+      });
+    }
+    if (runIds.length > taken) {
       await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeCutRuns, {
         chatId,
         sessionKey,
-        runIds: runIds.slice(MAX_CUT_PURGES_PER_APPLY),
+        runIds: runIds.slice(taken),
+        ...(instanceName !== undefined ? { instanceName } : {}),
+        ...(sessionId !== undefined ? { sessionId } : {}),
       });
     }
   },
@@ -2258,9 +2371,24 @@ export const purgeDeletedBubbleTexts = internalMutation({
       const wholeRun = doc.sessionKey === ANY_SESSION || (doc.fromSeq === undefined && doc.segment === ALL_SEGMENTS);
       // The span's STABLE start (codex phase 4 pass 27): its boundary, or — not resolved
       // yet — its ordinal read conservatively against the current cuts.
+      // A tombstone still awaiting its cut purges nothing yet: the rows past that cut are
+      // purged as they arrive (`writeRowTexts`), or when it arrives (`purgeTombstonedRun`).
       const from = wholeRun
         ? RUN_START
-        : (doc.fromSeq ?? boundaryOfOrdinal(doc.segment, await steerSeqsOf(ctx, chatId, doc.sessionKey, doc.runId)));
+        : (doc.fromSeq ??
+          (doc.awaitsCut === true
+            ? awaitedBoundary(doc.segment, await steerSeqsOf(ctx, chatId, doc.sessionKey, doc.runId), doc.cutSendId)
+            : boundaryOfOrdinal(doc.segment, await steerSeqsOf(ctx, chatId, doc.sessionKey, doc.runId))));
+      // An awaited cut read for the first time is frozen here too: a cut stored later
+      // never moves what was deleted (`freezeAwaitedCuts`).
+      if (doc.awaitsCut === true && doc.fromSeq === undefined && from !== null) {
+        await ctx.db.patch(doc._id, { fromSeq: from });
+      }
+      if (from === null) {
+        const after = await nextTombstone(ctx, messageId, tomb);
+        if (after !== null) await next({ tomb: { runId: after.runId, segment: after.segment }, cursor: null });
+        return { purged };
+      }
       const page = await ctx.db
         .query("transcriptRows")
         .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", doc.runId))
@@ -2525,7 +2653,9 @@ async function applyTranscriptImpl(
       );
       // …and what it stored is projected: the identities may have come FIRST (a post split
       // the other way round), and then this post is the one that completes the rows.
-      if (projectionOn && cursor !== null && res.textedRuns.length > 0) {
+      // A cut stored here is no new cut to the post that follows: the runs it releases from
+      // an `awaitsCut` hold are projected now (codex 0.105.1 pass 8).
+      if (projectionOn && cursor !== null && (res.textedRuns.length > 0 || res.awaitedCutRuns.length > 0)) {
         await projectAll(
           ctx,
           {
@@ -2536,7 +2666,7 @@ async function applyTranscriptImpl(
             floorSeq: cursor.floorSeq,
             gaps: cursor.gaps ?? [],
           },
-          res.textedRuns,
+          [...res.textedRuns, ...res.awaitedCutRuns],
           undefined,
           budget,
         );
@@ -2594,7 +2724,7 @@ async function applyTranscriptImpl(
         };
         const assignLeft = await assignUserRows(ctx, scope, rows, budget);
         await continueUserRowsLater(ctx, scope, custodyLeft, assignLeft);
-        await projectAll(ctx, scope, [...res.seqByRun.keys()], undefined, budget);
+        await projectAll(ctx, scope, [...res.seqByRun.keys(), ...res.awaitedCutRuns], undefined, budget);
         // Phase 5: a live row may place a bubble or state a launch (design §14.3).
         if (rows.length > 0) await scheduleRegroup(ctx, args.chatId, res.spawnIds);
       } else {
@@ -2963,7 +3093,13 @@ async function applyTranscriptImpl(
         gaps,
       };
       await continueUserRowsLater(ctx, scope, [], await assignUserRows(ctx, scope, rows, budget));
-      await projectAll(ctx, scope, [...seqByRun.keys(), ...terminalRuns, ...settledRuns, ...retracted.runs], undefined, budget);
+      await projectAll(
+        ctx,
+        scope,
+        [...seqByRun.keys(), ...terminalRuns, ...settledRuns, ...retracted.runs, ...upserted.awaitedCutRuns],
+        undefined,
+        budget,
+      );
       const released = await releaseAdmittedRuns(
         ctx,
         { chatId: args.chatId, sessionKey: args.sessionKey, instanceName: args.boundInstanceName },

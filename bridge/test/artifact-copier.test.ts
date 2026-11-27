@@ -331,6 +331,31 @@ describe("src/gateway/control-ui-assistant-media-policy.test.ts (v2026.9.33) —
     expect(await harness({ fetcher: answer("fetch_error") }).copier.copyOnce(file)).toEqual({ kind: "retry", reason: "fetch_error" });
   });
 
+  // The media route answers 404 PER REQUEST on every supported gateway (src/gateway/
+  // control-ui.ts `handleControlUiAssistantMediaRequest` at v2026.10.33: the session's policy
+  // gone, the client's authority or the session's placement changed during the read —
+  // `hasCurrentClientAuthority`, `assertAssistantMediaPolicyCurrent`). 2026.10.33 moves the
+  // global access revision often (its autonomous skill review): bench run
+  // 2026-11-26T00-38-00-322Z refused a file for good on one such 404.
+  it("a 404 of the media route is retried, not a refusal: the next read gets the file", async () => {
+    let calls = 0;
+    const fetcher: MediaFetcher = {
+      open: async () =>
+        ++calls === 1
+          ? { ok: false, reason: "route_absent" }
+          : { ok: true, stream: Readable.from([Buffer.from(BYTES)]), mimeType: "text/plain", size: 16 },
+    };
+    const file = { fileId: "m1", sessionKey: SK, mediaSource: "/x/a.txt", kind: "document", attempts: 0 };
+    expect(await harness({ fetcher: { open: async () => ({ ok: false, reason: "route_absent" }) } }).copier.copyOnce(file)).toEqual({
+      kind: "retry",
+      reason: "route_absent",
+    });
+    const h = harness({ fetcher });
+    expect(await h.copier.copyWithRetries(file)).toMatchObject({ kind: "copied" });
+    expect(calls).toBe(2);
+    expect(h.copied[0]).toMatchObject({ sha256: SHA, sizeBytes: 16 });
+  });
+
   it("the copied MEDIA bytes carry their own sha256", async () => {
     const fetcher: MediaFetcher = {
       open: async () => ({ ok: true, stream: Readable.from([Buffer.from(BYTES)]), mimeType: "text/plain", size: 16 }),

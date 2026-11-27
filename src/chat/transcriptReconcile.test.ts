@@ -228,6 +228,45 @@ describe("codex review 7 — an active bubble shows its rows' text now, and only
   });
 });
 
+// ONE RUN, TWO NAMES (OpenClaw 2026.10.33, codex 0.105.1 #2): the live bubble is open under
+// the queued input's CLIENT run and linked late to the EXECUTION run its rows carry
+// (stream.ts `linkRunBubble`). The rows of an active bubble are read under that name, and
+// handed to the SPA under the bubble's own: this converter is the 0.105.1 one, so a tab left
+// open across the Convex deploy reads the same view (codex 0.105.2 pass 1).
+describe("a late-linked active bubble shows its execution run's rows now", () => {
+  const C = "webchat-client-run";
+  const X = "exec-run";
+  const ANSWER = "PERSISTED_ANSWER";
+  const activeX = { hasActiveRun: true, activeRunIds: [X] };
+  async function linkedLive(t: T, chatId: Id<"chats">) {
+    const m = (await t.mutation(internal.stream.startAssistant, { chatId, runId: C, turnSessionKey: SK, boundInstanceName: "prod" } as never)) as Id<"messages">;
+    expect(await t.mutation(internal.stream.linkRunBubble, { messageId: m, clientRunId: C, runId: X, boundInstanceName: "prod" })).toEqual({ linked: true });
+    return m;
+  }
+  const answerRow: Row = { entryId: "a1", seq: 3, role: "assistant", runId: X, hidden: false, visible: true, text: ANSWER, blocks: [{ type: "text", text: ANSWER }] };
+
+  test("no live text: the row's answer is shown at once", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await linkedLive(t, ids.chatId);
+    await apply(t, ids.chatId, [answerRow], activeX);
+    const b = await bubble(t, ids);
+    expect(b!.status).toBe("streaming");
+    expect(b!.activeRows?.text).toBe(ANSWER);
+    expect(b!.rowLayout).toHaveLength(1);
+    expect(texts(b)).toEqual([ANSWER]);
+  });
+
+  test("live text past the row: the row once, then only the message in progress", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const m = await linkedLive(t, ids.chatId);
+    await apply(t, ids.chatId, [answerRow], activeX);
+    await t.mutation(internal.stream.setSnapshot, { messageId: m, text: `${ANSWER}\n\nSuite en cours`, expectedRunId: C, boundInstanceName: "prod" } as never);
+    expect(texts(await bubble(t, ids))).toEqual([ANSWER, "Suite en cours"]);
+  });
+});
+
 // CODEX REVIEW 8.
 describe("codex review 8 — the view of an active bubble does not depend on when it opened, and keeps the text as written", () => {
   test("rows, then the copy, then the bubble opens, then the same read: the file is shown copied and the widget at once", async () => {

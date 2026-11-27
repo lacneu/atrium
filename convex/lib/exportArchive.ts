@@ -120,6 +120,9 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   // The same run under the name its transcript rows carry (a queued input's execution,
   // OpenClaw 2026.10.33): the source gateway's run identity, like `runId`.
   "transcriptRunId",
+  // …and the send that opened a later segment (`runSegment`): placement state of the same
+  // source run.
+  "segmentSendId",
   // Correlation with the SOURCE deployment's live run. The fork path excludes
   // the same fields for the same reason: they belong to sessions that are not
   // ours.

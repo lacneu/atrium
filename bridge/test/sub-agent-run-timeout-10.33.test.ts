@@ -106,6 +106,45 @@ describe("the observer: the run the gateway classed as a timeout", () => {
     expect(terminal(otherKind)?.timedOutRunId).toBeUndefined();
   });
 
+  // "Interagir" re-wakes a child that has ended: its next run is the interaction's, and
+  // its terminal is the interaction's reply (never the child's result). The gateway
+  // classes that run's end the same way (server-chat.ts:509-514), and the row it leaves
+  // reads `interrupted` for it the same way (session-lifecycle-state.ts:196-212).
+  describe("the run of an interaction", () => {
+    const interactionTimedOut = (frame: Captured["frame"]) => {
+      const obs = new SubAgentObserver(PARENT, "chat1");
+      obs.armInteraction(CHILD, "ix", 1);
+      return obs.observe(frame, 2, null, "msgA");
+    };
+
+    it("is named too, beside the reply — the child's own result and status untouched", () => {
+      const records = interactionTimedOut(CHAT_ERROR);
+      const reply = records.find((r) => r.interactionReply !== undefined);
+      expect(reply?.interactionReply).toMatchObject({ interactionId: "ix", status: "error" });
+      const named = records.filter((r) => r.timedOutRunId !== undefined);
+      expect(named).toHaveLength(1);
+      // Written to the row BEFORE the reply, whose flush has the row read again.
+      expect(records.indexOf(named[0]!)).toBeLessThan(records.indexOf(reply!));
+      expect(named[0]).toEqual({
+        chatId: "chat1",
+        parentMessageId: null,
+        childSessionKey: CHILD,
+        // A placeholder that never patches an ended row (convex/subAgents.ts).
+        status: "running",
+        timedOutRunId: RUN,
+      });
+    });
+
+    it("only on the gateway's own class, and only for a run id that is one", () => {
+      const withoutKind = structuredClone(CHAT_ERROR);
+      delete withoutKind.payload.errorKind;
+      expect(interactionTimedOut(withoutKind).filter((r) => r.timedOutRunId !== undefined)).toEqual([]);
+      const bad = structuredClone(CHAT_ERROR);
+      bad.payload.runId = "announce:requester-settle:alice:x";
+      expect(interactionTimedOut(bad).filter((r) => r.timedOutRunId !== undefined)).toEqual([]);
+    });
+  });
+
   it("a run id that is not one is not forwarded", () => {
     const bad = structuredClone(CHAT_ERROR);
     bad.payload.runId = "announce:requester-settle:alice:x";

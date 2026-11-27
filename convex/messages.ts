@@ -89,7 +89,7 @@ import { deleteMessageAgentRequests } from "./agentRequests";
 import { textIsYieldAcknowledgment, type YieldAckToolPart } from "./lib/toolOutcome";
 import { isTrashed } from "./lib/trash";
 import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
-import { deletionTombstones, segmentOfRow, steerSeqsOf } from "./lib/transcriptProjection";
+import { deletionTombstones, segmentOfRow, steerSeqsOf, tombstonedSegments } from "./lib/transcriptProjection";
 import { meteredCtx, ReadBudgetExceeded, type ArmedReadMeter } from "./lib/meteredReads";
 import { deletionStart } from "./lib/displayGroupHead";
 import { traceRegressionSummary } from "./lib/streamTrace";
@@ -1090,18 +1090,22 @@ type ActiveRows = {
 
 async function activeRowLayout(ctx: QueryCtx, message: Doc<"messages">): Promise<ActiveRows | undefined> {
   if (message.runId === undefined || message.turnSessionKey === undefined) return undefined;
-  const runId = message.runId;
+  // The run under the name its ROWS carry: a bubble the live stream opened under a queued
+  // input's client run names its execution run beside it (stream.ts `linkRunBubble`) — the
+  // client name has no rows, no cuts.
+  const runId = message.transcriptRunId ?? message.runId;
   const docs = await ctx.db
     .query("transcriptRows")
     .withIndex("by_chat_run", (q) => q.eq("chatId", message.chatId).eq("runId", runId))
     .take(LAYOUT_MAX_ROWS);
   const cuts = await steerSeqsOf(ctx, message.chatId, message.turnSessionKey, runId);
+  const held = await unassignedRowsHeld(ctx, message.chatId, message.turnSessionKey, runId);
   const own = docs.filter(
     (d) =>
       d.sessionKey === message.turnSessionKey &&
       d.role.toLowerCase() !== "user" &&
       d.retracted !== true &&
-      (d.messageId === undefined || d.messageId === message._id) &&
+      (d.messageId === undefined ? !held : d.messageId === message._id) &&
       (segmentOfRow(d.seq, cuts) ?? 0) === (message.runSegment ?? 0),
   );
   if (own.length === 0) return undefined;
@@ -1124,7 +1128,10 @@ async function activeRowLayout(ctx: QueryCtx, message: Doc<"messages">): Promise
     if (d.role.toLowerCase() === "assistant" && !d.hidden) {
       persisted.push({
         role: "assistant",
-        runId: d.presentationOwner === true ? null : (d.runId ?? null),
+        // Under the BUBBLE's run name, the one the SPA tells the live text's recorded prefix
+        // by: a late-linked bubble's rows carry its execution run, every row read here does
+        // (`runId` above), and a client that knows only `message.runId` reads them the same.
+        runId: d.presentationOwner === true ? null : (message.runId ?? null),
         ...(d.streamSegment === true ? { commentaryItemId: "segment" } : {}),
         text: doc?.text ?? null,
       });
@@ -1148,6 +1155,19 @@ async function activeRowLayout(ctx: QueryCtx, message: Doc<"messages">): Promise
   return layout.length > 0 || persisted.length > 0
     ? { layout, text, persisted, payloads: toolPayloadsOf(toolBlocks) }
     : undefined;
+}
+
+/** Whether the UNASSIGNED rows of `runId` are held back from every bubble: a deleted segment
+ *  of the run still awaits the cut that starts it (`transcriptTombstones.awaitsCut`), so
+ *  which segment such a row belongs to cannot be told yet — the projection places none of
+ *  them until the cut (transcriptProjection.ts), and no view shows one meanwhile. */
+async function unassignedRowsHeld(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  sessionKey: string,
+  runId: string,
+): Promise<boolean> {
+  return (await tombstonedSegments(ctx, chatId, sessionKey, runId)).awaiting.length > 0;
 }
 
 /** The state of each file a bubble's rows name (final design step 3). */
@@ -2013,9 +2033,19 @@ export const getRowReasoning = query({
         q.eq("chatId", message.chatId).eq("sessionKey", message.turnSessionKey!).eq("entryId", entryId),
       )
       .first();
-    // The row of THIS bubble: assigned to it, or still unassigned on its active run.
+    // The row of THIS bubble: assigned to it, or still unassigned on its active run — under
+    // the name its rows carry, as the active layout reads them (`activeRowLayout`: a bubble
+    // opened under a queued input's client run names its execution run beside it).
     if (row === null || row.retracted === true || row.hidden === true) return null;
-    if (row.messageId !== undefined ? row.messageId !== messageId : row.runId !== message.runId) return null;
+    const rowsRunId = message.transcriptRunId ?? message.runId;
+    if (row.messageId !== undefined ? row.messageId !== messageId : row.runId !== rowsRunId) return null;
+    // …and, unassigned, a row of the bubble's own segment, which no deleted segment awaiting
+    // its cut may share — the rows the active layout shows, no other (codex 0.105.2 pass 4).
+    if (row.messageId === undefined) {
+      const cuts = await steerSeqsOf(ctx, message.chatId, message.turnSessionKey, rowsRunId!);
+      if ((segmentOfRow(row.seq, cuts) ?? 0) !== (message.runSegment ?? 0)) return null;
+      if (await unassignedRowsHeld(ctx, message.chatId, message.turnSessionKey, rowsRunId!)) return null;
+    }
     const reasoning = await ctx.db.query("transcriptRowReasoning").withIndex("by_row", (q) => q.eq("rowId", row._id)).first();
     if (reasoning === null || reasoning.text.trim() === "") return null;
     return { text: reasoning.text, ...(reasoning.truncated === true ? { truncated: true as const } : {}) };

@@ -404,7 +404,15 @@ function eventSource() {
 
 /** The rig, with events, a foreground run and a reply script that RECORDS the
  *  inputRunIds each read asked about. */
-function rig2(opts: { replies?: Reply[]; foreground?: () => string | null; now?: () => number } = {}) {
+function rig2(
+  opts: {
+    replies?: Reply[];
+    foreground?: () => string | null;
+    now?: () => number;
+    /** Called while an apply is in flight (before it resolves): what arrives meanwhile. */
+    onApply?: (p: TranscriptApply) => void;
+  } = {},
+) {
   const replies = [...(opts.replies ?? [])];
   const reads: Array<{ cursor: string | null; inputRunIds?: readonly string[] }> = [];
   const applies: TranscriptApply[] = [];
@@ -430,6 +438,8 @@ function rig2(opts: { replies?: Reply[]; foreground?: () => string | null; now?:
         throw new Error("convex down");
       }
       applies.push(p);
+      opts.onApply?.(p);
+      await Promise.resolve();
     },
     events: src.source,
     foregroundRunId: opts.foreground ?? (() => null),
@@ -503,6 +513,156 @@ describe("phase 2 — the session-events connection feeds the reconciler", () =>
     r.src.listener!.onSessionMessage(userEnv("u5", 5, "webchat-a"));
     await flush(r.shadow);
     expect(r.applies.map((a) => a.kind)).toEqual(["delta"]);
+  });
+
+  it("a live copy that arrives AFTER the read left is newer than the read's: posted, before any later read (OpenClaw 2026.10.33 steer rewrite)", async () => {
+    // The gateway records a steered user row, then rewrites it in place with its
+    // `steerTargetRunId` (src/sessions/user-turn-transcript-updates.ts
+    // `confirmPersistedSteerTargetRunId`) and publishes the rewrite as a second
+    // `session.message` of the same entry; a delta read never serves the rewrite again.
+    // Captured: busy-send-2026-11-26T16-54-21-040Z/bs-steer-default frames 114-116.
+    const steered: Reply = {
+      sessionKey: KEY,
+      sessionId: "s-1",
+      message: {
+        role: "user",
+        content: "q",
+        __openclaw: { id: "u8", seq: 8, idempotencyKey: "webchat-b:user", steerTargetRunId: "webchat-a" },
+      },
+    };
+    let rewritten = false;
+    const r = rig2({
+      replies: [page("c:1")],
+      onApply: (p) => {
+        // The rewrite lands while the read that served the first copy is being posted.
+        if (!rewritten && p.kind === "delta" && p.rows.some((x) => x.entryId === "u8")) {
+          rewritten = true;
+          r.src.listener!.onSessionMessage(steered);
+        }
+      },
+    });
+    r.shadow.configure({});
+    await flush(r.shadow);
+    r.push(delta("c:2", [userEnv("u8", 8, "webchat-b")]));
+    r.push(delta("c:3", [assistantRow("a9", 9, "webchat-a", "BS_B_OK")].map(env)));
+    r.applies.length = 0;
+    r.src.listener!.onSessionMessage(userEnv("u8", 8, "webchat-b"));
+    await flush(r.shadow);
+    expect(rewritten).toBe(true);
+    const posts = r.applies.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+    const steerPost = posts.findIndex(
+      (a) => a.kind === "live" && a.rows.some((x) => x.entryId === "u8" && x.steerTargetRunId === "webchat-a"),
+    );
+    expect(steerPost).toBeGreaterThan(-1);
+    // Stored before the read that brings the answer row: its segment is told by that cut.
+    const answerPost = posts.findIndex((a) => a.rows.some((x) => x.entryId === "a9"));
+    expect(answerPost).toBeGreaterThan(steerPost);
+  });
+
+  it("the steer target goes out alone: another live row admitted meanwhile waits for the ordinary drain (codex 0.105.2 pass 6)", async () => {
+    // A stale notification of a file row arriving with the confirmed steer must not ride the
+    // immediate post: the read that follows may correct that row, and 0.105.1 never posted it
+    // ahead of that read.
+    const steered: Reply = {
+      sessionKey: KEY,
+      sessionId: "s-1",
+      message: {
+        role: "user",
+        content: "q",
+        __openclaw: { id: "u8", seq: 8, idempotencyKey: "webchat-b:user", steerTargetRunId: "webchat-a" },
+      },
+    };
+    let admitted = false;
+    const r = rig2({
+      replies: [page("c:1")],
+      foreground: () => "webchat-a",
+      onApply: (p) => {
+        if (!admitted && p.kind === "delta" && p.rows.some((x) => x.entryId === "u8")) {
+          admitted = true;
+          r.src.listener!.onSessionMessage(steered);
+          r.src.listener!.onSessionMessage({ ...env(assistantRow("a9", 9, "webchat-a", "MEDIA:/tmp/first.pdf")), runId: "webchat-a" });
+        }
+      },
+    });
+    r.shadow.configure({});
+    await flush(r.shadow);
+    r.push(delta("c:2", [userEnv("u8", 8, "webchat-b")]));
+    r.applies.length = 0;
+    r.src.listener!.onSessionMessage(userEnv("u8", 8, "webchat-b"));
+    await flush(r.shadow);
+    expect(admitted).toBe(true);
+    expect(r.shadow.stats.liveRows).toBeGreaterThanOrEqual(2);
+    const posts = r.applies.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+    const steerPost = posts.find((a) => a.kind === "live" && a.rows.some((x) => x.entryId === "u8" && x.steerTargetRunId === "webchat-a"));
+    expect(steerPost).toBeDefined();
+    expect(steerPost!.rows.map((x) => x.entryId)).toEqual(["u8"]);
+  });
+
+  it("a live copy admitted while a RESET is posted is older than the fresh page: never re-posted over it (codex 0.105.2 pass 1)", async () => {
+    // The read after a reset reflects every live row admitted before IT left: the first
+    // copy (no target) received while the reset was applied is behind the page's confirmed
+    // row, and re-posted after it, it would erase the cut on a Convex without the
+    // append-only rule (0.105.1).
+    const confirmed: Reply = {
+      role: "user",
+      content: "q",
+      __openclaw: { id: "u8", seq: 8, idempotencyKey: "webchat-b:user", steerTargetRunId: "webchat-a" },
+    };
+    let admitted = false;
+    const r = rig2({
+      replies: [page("c:1")],
+      onApply: (p) => {
+        if (!admitted && p.kind === "reset") {
+          admitted = true;
+          r.src.listener!.onSessionMessage(userEnv("u8", 8, "webchat-b"));
+        }
+      },
+    });
+    r.shadow.configure({});
+    await flush(r.shadow);
+    r.push({ kind: "reset" });
+    r.push(page("c:5", [confirmed]));
+    r.applies.length = 0;
+    r.shadow.observeFrame(chatFrame({ runId: "webchat-a", state: "final", message: {} }));
+    await flush(r.shadow);
+    expect(admitted).toBe(true);
+    const posts = r.applies.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+    const pageAt = posts.findIndex((a) => a.rows.some((x) => x.entryId === "u8" && x.steerTargetRunId === "webchat-a"));
+    expect(pageAt).toBeGreaterThan(-1);
+    const staleAfter = posts
+      .slice(pageAt + 1)
+      .some((a) => a.rows.some((x) => x.entryId === "u8" && x.steerTargetRunId === undefined));
+    expect(staleAfter).toBe(false);
+  });
+
+  it("a LATE first notification of a row the read already has rewritten is never re-posted over it (codex 0.105.2 pass 2)", async () => {
+    // The order of arrival proves nothing about which copy is newer: the page carries the
+    // row as rewritten (a file reference), its first notification arrives while the page is
+    // applied. 0.105.1 dropped it; it still does — only a steer target is ever taken.
+    let admitted = false;
+    const r = rig2({
+      replies: [page("c:1")],
+      foreground: () => "webchat-a",
+      onApply: (p) => {
+        if (!admitted && p.kind === "delta" && p.rows.some((x) => x.entryId === "a9")) {
+          admitted = true;
+          // Admitted as the finishing run's own row (the event names its producer).
+          r.src.listener!.onSessionMessage({ ...env(assistantRow("a9", 9, "webchat-a", "MEDIA:/tmp/report.pdf")), runId: "webchat-a" });
+        }
+      },
+    });
+    r.shadow.configure({});
+    await flush(r.shadow);
+    r.push(delta("c:3", [env(assistantRow("a9", 9, "webchat-a", "rapport joint"))]));
+    r.applies.length = 0;
+    r.shadow.observeFrame(chatFrame({ runId: "webchat-a", state: "final", message: {} }));
+    await flush(r.shadow);
+    expect(admitted).toBe(true);
+    expect(r.shadow.stats.liveRows).toBe(1);
+    const posts = r.applies.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+    const readAt = posts.findIndex((a) => a.kind === "delta" && a.rows.some((x) => x.entryId === "a9"));
+    expect(readAt).toBeGreaterThan(-1);
+    expect(posts.slice(readAt + 1).some((a) => a.rows.some((x) => x.entryId === "a9"))).toBe(false);
   });
 
   it("while the turn is live, a non-user row of it asks for no read (its terminal will)", async () => {

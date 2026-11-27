@@ -333,8 +333,11 @@ export class TranscriptShadow {
   private readWanted: string | null = null;
   private closed = false;
   private pendingTerminals: TerminalObservation[] = [];
-  /** Rows CU-16 admitted from `session.message`, by entry id, waiting for their post. */
-  private readonly pendingLive = new Map<string, TranscriptRow>();
+  /** Rows CU-16 admitted from `session.message`, by entry id, waiting for their post —
+   *  each with the ordinal of its admission (`liveAdmitted`). */
+  private readonly pendingLive = new Map<string, { row: TranscriptRow; at: number }>();
+  /** Live rows admitted so far: a read reflects every row admitted before it left. */
+  private liveAdmitted = 0;
   /** The gateway session the live rows were published in (the event's snapshot). */
   private liveSessionId: string | null = null;
   /** Bumped by a session reset: a read issued before it never moves the cursor. */
@@ -497,7 +500,7 @@ export class TranscriptShadow {
         this.pendingLive.clear();
       }
       if (sessionId !== null) this.liveSessionId = sessionId;
-      this.pendingLive.set(admission.row.entryId, admission.row);
+      this.pendingLive.set(admission.row.entryId, { row: admission.row, at: ++this.liveAdmitted });
       this.stats.liveRows++;
       while (this.pendingLive.size > MAX_PENDING_LIVE_ROWS) {
         const oldest = this.pendingLive.keys().next().value as string;
@@ -737,6 +740,8 @@ export class TranscriptShadow {
       // stamp is synthetic and the ACK's would come from a clock that can repeat a
       // millisecond or go back.
       let ackedBefore = this.ackedNow();
+      // The live rows this read can reflect: those admitted before it left.
+      let liveMark = this.liveAdmitted;
       read = parseHistoryReply(
         await this.deps.readHistory(this.cursor?.deltaCursor ?? null, { inputRunIds: asked }),
         this.displayOpt().display,
@@ -750,12 +755,15 @@ export class TranscriptShadow {
         // A normal cursor discontinuity (logs-chat.ts `ChatHistoryResetResultSchema`):
         // record it, drop the cursor, and take a fresh tail page in the SAME read.
         this.stats.resets++;
-        await this.post(read, readAt, asked, ackedBefore, epoch);
+        await this.post(read, readAt, asked, ackedBefore, epoch, liveMark);
         this.cursor = null;
         this.stats.reads++;
         readAt = this.nextReadAt();
         asked = this.inputRunIds;
         ackedBefore = this.ackedNow();
+        // …and the live rows THIS read can reflect: a copy admitted while the reset was
+        // posted is older than what the fresh page brings, never a newer one to re-post.
+        liveMark = this.liveAdmitted;
         read = parseHistoryReply(
           await this.deps.readHistory(null, { inputRunIds: asked }),
           this.displayOpt().display,
@@ -766,7 +774,7 @@ export class TranscriptShadow {
         }
       }
       read = await this.completeCapped(read);
-      await this.post(read, readAt, asked, ackedBefore, epoch);
+      await this.post(read, readAt, asked, ackedBefore, epoch, liveMark);
       this.readsApplied = Math.max(this.readsApplied, seq);
       this.failedReads = 0;
       await this.scanCappedTail(epoch);
@@ -965,6 +973,7 @@ export class TranscriptShadow {
     asked: readonly string[],
     ackedBefore: ReadonlySet<string>,
     epoch: number,
+    liveMark: number,
   ): Promise<void> {
     const terminals = this.pendingTerminals;
     this.pendingTerminals = [];
@@ -1022,10 +1031,28 @@ export class TranscriptShadow {
       throw err;
     }
     for (const id of settled) this.custody.delete(id);
+    const steered = new Set<string>();
     for (const row of read.rows) {
       if (row.role === "user") this.emitUserRow(row);
-      // A row the read brought needs no direct post of its own.
-      this.pendingLive.delete(row.entryId);
+      // A row the read brought needs no direct post of its own — except the one rewrite a
+      // delta never serves again: OpenClaw 2026.10.33 records a steered user row, then
+      // confirms its `steerTargetRunId` in place and publishes that copy
+      // (src/sessions/user-turn-transcript-updates.ts `confirmPersistedSteerTargetRunId`,
+      // which only ever adds it). Dropped, the cut is lost for good and the steer's answer
+      // joins the segment before it. Only that ADDITION is taken from a live copy admitted
+      // after the read left, onto the read's row: the order of arrival proves nothing else
+      // about which copy is newer (a late first notification of a row the read already has
+      // rewritten — a file reference — must never replace it).
+      const live = this.pendingLive.get(row.entryId);
+      if (live !== undefined) {
+        const target = live.row.steerTargetRunId;
+        if (live.at > liveMark && row.role === "user" && row.steerTargetRunId === undefined && target !== undefined) {
+          this.pendingLive.set(row.entryId, { row: { ...row, steerTargetRunId: target }, at: live.at });
+          steered.add(row.entryId);
+        } else {
+          this.pendingLive.delete(row.entryId);
+        }
+      }
       if (row.runId !== undefined && !row.hidden && (row.visible || row.role === "toolresult")) {
         this.visibleRuns.add(row.runId);
       }
@@ -1053,6 +1080,11 @@ export class TranscriptShadow {
     if (read.deltaCursor !== null && epoch === this.epoch) {
       this.cursor = { sessionId, deltaCursor: read.deltaCursor };
     }
+    // The steer target is stored before any later read: that read may bring the rows its cut
+    // places (the steer's answer). Those rows ONLY — every other live row waits for the
+    // ordinary drain, as it did (codex 0.105.2 pass 6: a stale notification of a file row
+    // went out ahead of the read that corrects it).
+    if (steered.size > 0) await this.postLive(steered);
   }
 
   /** Post what `rows` SAY, ahead of their read, in `textsOnly` chunks Convex can persist
@@ -1101,9 +1133,11 @@ export class TranscriptShadow {
   /** Post the rows CU-16 admitted (kind `live`): rows only — Convex moves no cursor, no
    *  floor and no session state for them (convex/transcriptProjection.ts). A failure
    *  drops them: the read the same event asked for brings them back. */
-  private async postLive(): Promise<void> {
-    const all = [...this.pendingLive.values()];
-    this.pendingLive.clear();
+  private async postLive(only?: ReadonlySet<string>): Promise<void> {
+    const picked = [...this.pendingLive.entries()].filter(([id]) => only === undefined || only.has(id));
+    for (const [id] of picked) this.pendingLive.delete(id);
+    const all = picked.map(([, p]) => p.row);
+    if (all.length === 0) return;
     const sessionId = this.liveSessionId ?? this.cursor?.sessionId ?? "";
     // Over one apply's text bounds: the texts go ahead in chunks, the post carries the
     // identities (the same rule as a read's).

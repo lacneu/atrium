@@ -554,6 +554,17 @@ export class SubAgentObserver {
           // keeping the original error message (codex P2).
           obs.status = "error";
         }
+        // The gateway's own class for THIS run, kept apart from `errorCode` (which may
+        // come from the sentence): `errorKind:"timeout"` is minted from the run's
+        // terminal classification (src/gateway/server-chat.ts:509-514 at v2026.10.33),
+        // and the frame's `runId` is the id the session row then carries as `lastRunId`
+        // (src/gateway/session-lifecycle-state.ts:260-264). On 2026.10.33 a run cut off
+        // while a tool was executing leaves a row that reads `interrupted`
+        // (session-lifecycle-state.ts:196-212); this is what tells it from a restart.
+        const timedOutRun =
+          term === "error" && readString(payload, "errorKind") === "timeout"
+            ? validChildRunId(readString(payload, "runId"))
+            : null;
         // Phase 2c: this terminal is the reply to a USER INTERACTION -> route it to
         // the interaction record ONLY (the subAgents.resultText keeps the ORIGINAL
         // answer). `aborted` reads as an error for the interaction.
@@ -602,8 +613,27 @@ export class SubAgentObserver {
             // said, so Convex refuses a new interaction until the grace is over.
             if (term === "error") reply.provisional = true;
           }
+          // The interaction's run timed out: the row the flush has read next names it
+          // `interrupted`, like a restart. Its identity goes to the child's row first —
+          // alone, under a placeholder status that never patches an ended row
+          // (convex/subAgents.ts) — so the row's word is told apart as for the child's
+          // own run; the result stays the original answer.
+          const timedOut: SubAgentUpsert[] =
+            timedOutRun === null
+              ? []
+              : [
+                  {
+                    chatId: this.chatId,
+                    parentMessageId: obs.parentMessageId,
+                    ...(obs.anchorExact !== undefined ? { anchorExact: obs.anchorExact } : {}),
+                    childSessionKey: childKey,
+                    status: "running",
+                    timedOutRunId: timedOutRun,
+                  },
+                ];
           return [
             ...meta,
+            ...timedOut,
             {
               chatId: this.chatId,
               childSessionKey: childKey,
@@ -667,17 +697,6 @@ export class SubAgentObserver {
               errorDetail: readField(payload, "errorDetail"),
             }) ?? classifyFailureText(reason);
           if (code) rec.errorCode = code;
-          // The gateway's own class for THIS run, kept apart from `errorCode` (which may
-          // come from the sentence): `errorKind:"timeout"` is minted from the run's
-          // terminal classification (src/gateway/server-chat.ts:509-514 at v2026.10.33),
-          // and the frame's `runId` is the id the session row then carries as `lastRunId`
-          // (src/gateway/session-lifecycle-state.ts:260-264). On 2026.10.33 a run cut off
-          // while a tool was executing leaves a row that reads `interrupted`
-          // (session-lifecycle-state.ts:196-212); this is what tells it from a restart.
-          const timedOutRun =
-            term === "error" && readString(payload, "errorKind") === "timeout"
-              ? validChildRunId(readString(payload, "runId"))
-              : null;
           if (timedOutRun !== null) rec.timedOutRunId = timedOutRun;
         }
         return [...meta, rec];

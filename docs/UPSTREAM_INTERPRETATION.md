@@ -1926,6 +1926,30 @@ preselected), thumbnails and previews. The bench run asks one question — two o
 `value` — answered from Atrium; an option with a value and a form of more than four options
 are covered by deterministic tests only.
 
+### A steered message, published twice
+
+**Upstream.** From v2026.10.33 a message steered into a running turn is recorded first, then
+rewritten in place with the run it redirects (`steerTargetRunId`, added by
+`confirmPersistedSteerTargetRunId` in `src/sessions/user-turn-transcript-updates.ts`, which
+only ever adds it). Both versions are published as `session.message` under the same entry and
+the same `seq`; a later delta read does not serve the rewrite again.
+
+**Atrium.** The steer cut that puts the answer after the message is read from that field, so
+the second copy is never dropped: when a live copy received after a read has left carries a
+target that the read's row lacks, the read's row is posted again with that target added, as
+soon as that read is applied and before any later read
+(`bridge/src/providers/openclaw/transcript-shadow.ts`). Nothing else is taken from such a copy:
+the order of arrival does not tell which copy of a row is newer. Convex keeps the field once a copy
+carries it: a first copy that arrives late never erases the cut
+(`convex/transcriptProjection.ts`, `upsertRows`). Captured on the bench (`bs-steer-default`).
+
+A steer sent from another client of the session is a cut of the run too, while Atrium opens a
+segment only for its own sends. Atrium therefore keeps, on each segment it opens, the send
+whose user row starts it, and the deleted part of a late-linked answer is told by that row
+(`awaitedBoundary` in `convex/lib/transcriptProjection.ts`). Rows the projection has already
+placed are still placed by counting the run's cuts, as in 0.105.1: with a steer sent from
+elsewhere, they can land in the segment after their own.
+
 ## 12. A turn the gateway cut, and its own recovery
 
 ### Upstream contract

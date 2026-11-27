@@ -243,9 +243,20 @@ export const ANY_SESSION = "";
  */
 export class RunTombs extends Map<number, Id<"messages"> | undefined> {
   spans: Array<{ from: number; messageId?: Id<"messages"> }> = [];
+  /** Ordinals that wait for their cut (`transcriptTombstones.awaitsCut`): segment `k` spans
+   *  from the run's k-th cut once the cuts show it, and takes nothing for deleted before. */
+  awaiting: Array<{ k: number; send?: string; messageId?: Id<"messages"> }> = [];
+  /** Some tombstone was written awaiting its cut, resolved since (`fromSeq`, in `spans`) or
+   *  not: the run's rows may have been held back for that cut and owe a projection once it
+   *  is read — the follow-up can freeze it between the read and a continuation. */
+  awaitedCut = false;
   /** Any tombstone at all (resolved or not). */
   get any(): boolean {
-    return this.size > 0 || this.spans.length > 0;
+    return this.size > 0 || this.spans.length > 0 || this.awaiting.length > 0;
+  }
+  /** Any ordinal whose span depends on the current cuts. */
+  get unresolved(): boolean {
+    return this.size > 0 || this.awaiting.length > 0;
   }
 }
 
@@ -270,7 +281,15 @@ export async function tombstonedSegments(
   const tombs = new RunTombs();
   for (const r of rows.slice(0, MAX_TOMBSTONES_READ)) {
     if (r.sessionKey !== ANY_SESSION && r.sessionKey !== sessionKey) continue;
+    if (r.awaitsCut === true) tombs.awaitedCut = true;
     if (r.fromSeq !== undefined) tombs.spans.push({ from: r.fromSeq, ...(r.messageId !== undefined ? { messageId: r.messageId } : {}) });
+    else if (r.awaitsCut === true) {
+      tombs.awaiting.push({
+        k: r.segment,
+        ...(r.cutSendId !== undefined ? { send: r.cutSendId } : {}),
+        ...(r.messageId !== undefined ? { messageId: r.messageId } : {}),
+      });
+    }
     else tombs.set(r.segment, r.messageId);
   }
   // Past the bound nothing is guessed: every segment counts as deleted.
@@ -286,6 +305,18 @@ export function boundaryOfOrdinal(k: number, cuts: RunCuts | null): number {
   return cuts.seqs[Math.min(k, cuts.seqs.length) - 1]!;
 }
 
+/** The boundary of a tombstone that awaits its cut (`awaitsCut`): the cut of the send that
+ *  opened its segment (`cutSendId`) once the cuts show it, null before — then nothing is
+ *  known deleted by it. By that send, never by the k-th cut: the run's cuts count steers sent
+ *  from elsewhere too, and Atrium splits only on its own (codex 0.105.2 pass 7). Without
+ *  the send (a segment opened before 0.105.2), never told. */
+export function awaitedBoundary(k: number, cuts: RunCuts | null, send: string | undefined): number | null {
+  if (k <= 0) return RUN_START;
+  if (cuts === null || !cuts.complete || send === undefined) return null;
+  const i = cuts.sends.indexOf(send);
+  return i === -1 ? null : cuts.seqs[i]!;
+}
+
 /** Where the run's deleted part begins (rows with a greater `seq` are deleted), with the
  *  bubble the most specific span names; null when nothing of the run is deleted. */
 export function deletedFromOf(
@@ -293,7 +324,13 @@ export function deletedFromOf(
   cuts: RunCuts | null,
 ): Array<{ from: number; messageId?: Id<"messages"> }> {
   const spans: Array<{ from: number; messageId?: Id<"messages"> }> = [];
-  if (tombs instanceof RunTombs) spans.push(...tombs.spans);
+  if (tombs instanceof RunTombs) {
+    spans.push(...tombs.spans);
+    for (const a of tombs.awaiting) {
+      const from = awaitedBoundary(a.k, cuts, a.send);
+      if (from !== null) spans.push({ from, ...(a.messageId !== undefined ? { messageId: a.messageId } : {}) });
+    }
+  }
   for (const [k, messageId] of tombs) {
     const from = k === ALL_SEGMENTS ? RUN_START : boundaryOfOrdinal(k, cuts);
     spans.push({ from, ...(messageId !== undefined ? { messageId } : {}) });
@@ -401,6 +438,9 @@ export type DeletedBubbleRef = {
   user?: boolean;
   /** An answer's own tombstone, still an ordinal: resolved by the follow-up. */
   segment?: number;
+  /** The execution run a late link gave the answer (`messages.transcriptRunId`, OpenClaw
+   *  2026.10.33): its rows carry that name, so its segment is tombstoned under it too. */
+  transcriptRunId?: string;
   sends?: string[];
   steerIndex?: number;
   sendsAfter?: number;
@@ -525,24 +565,41 @@ export function deletionTombstones(
         return;
       }
       if (message.role !== "assistant") return;
+      // A late-linked answer (OpenClaw 2026.10.33) is written under its client run while its
+      // rows carry the execution run: its segment is tombstoned under BOTH names, or the
+      // rows read after the deletion find no tombstone and make the answer again.
+      const linkedRun =
+        message.transcriptRunId !== undefined && message.transcriptRunId !== message.runId
+          ? message.transcriptRunId
+          : undefined;
+      // A later segment of such an answer AWAITS its cut under both names (schema
+      // `awaitsCut`): its rows, read after the deletion and a batch at a time, would
+      // otherwise be judged against no cut — the run's start — and the kept segment's row
+      // purged for good. The client run carries no cut at all: its own row (the input's)
+      // is no row of the answer either.
+      const awaitsCut = linkedRun !== undefined && (message.runSegment ?? 0) > 0;
       if (message.turnSessionKey !== undefined && message.runId !== undefined) {
-        await ctx.db.insert("transcriptTombstones", {
-          chatId: chat._id,
-          sessionKey: message.turnSessionKey,
-          runId: message.runId,
-          segment: message.runSegment ?? 0,
-          messageId: message._id,
-          createdAt: Date.now(),
-        });
+        for (const runId of linkedRun !== undefined ? [message.runId, linkedRun] : [message.runId]) {
+          await ctx.db.insert("transcriptTombstones", {
+            chatId: chat._id,
+            sessionKey: message.turnSessionKey,
+            runId,
+            segment: message.runSegment ?? 0,
+            ...(awaitsCut ? { awaitsCut: true as const } : {}),
+            ...(awaitsCut && message.segmentSendId !== undefined ? { cutSendId: message.segmentSendId } : {}),
+            messageId: message._id,
+            createdAt: Date.now(),
+          });
+        }
       }
       deleted.push({
         id: message._id,
         ...(message.turnSessionKey !== undefined ? { sessionKey: message.turnSessionKey } : {}),
         ...(message.runId !== undefined ? { runId: message.runId } : {}),
-        // Its tombstone is written as an ORDINAL here (no read); the follow-up resolves it
-        // to the stable boundary (codex phase 4 pass 27).
+        // Its tombstones are written as ORDINALS here (no read); the follow-up resolves
+        // each to the stable boundary of its run (codex phase 4 pass 27).
         ...(message.turnSessionKey !== undefined && message.runId !== undefined
-          ? { segment: message.runSegment ?? 0 }
+          ? { segment: message.runSegment ?? 0, ...(linkedRun !== undefined ? { transcriptRunId: linkedRun } : {}) }
           : {}),
       });
     },
@@ -661,7 +718,13 @@ export async function deletedRunSegment(
     // makes stale: a steered segment (k ≥ 1) may really start at any later cut, so it is
     // deleted as soon as any span of the run is (spans are open-ended). The run's first
     // segment ends at the first cut known now (never later than its real end).
-    if (segment === 0 ? segmentDeleted(tombs, cuts, 0) !== null : tombstoneHit(tombs, cuts, Number.MAX_SAFE_INTEGER) !== null) {
+    // A tombstone still awaiting its cut is a later segment's: it refuses every steered
+    // segment, as soon as it exists, and never the first.
+    if (
+      segment === 0
+        ? segmentDeleted(tombs, cuts, 0) !== null
+        : tombs.awaiting.length > 0 || tombstoneHit(tombs, cuts, Number.MAX_SAFE_INTEGER) !== null
+    ) {
       return true;
     }
   }

@@ -39,26 +39,34 @@ export function YouTubeVideoPart({ data }: YouTubeVideoPartProps) {
     [data?.videoId, data?.startSeconds],
   );
   const title = data?.title?.trim() || m.youtube_default_title();
-  const [playing, setPlaying] = useState(false);
-  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+  // A click authorizes ONE video, so the state is that video's identity, not a flag:
+  // assistant-ui keeps a part by its index and may hand this card another video while it
+  // plays, and a flag reset by an effect let that other video's frame — autoplaying — reach
+  // the DOM for one commit (codex). The frame exists only when the identity matches the
+  // video rendered now, decided during render.
+  const watchUrl = video?.watchUrl ?? null;
+  const [playingUrl, setPlayingUrl] = useState<string | null>(null);
+  const [failedThumbnail, setFailedThumbnail] = useState<string | null>(null);
+  const playing = watchUrl !== null && playingUrl === watchUrl;
+  const thumbnailFailed = video !== null && failedThumbnail === video.thumbnailUrl;
+  // Another video forgets the previous click, so returning to it does not play it again
+  // unasked (React's "adjust state when a prop changes", in render).
+  const [shownUrl, setShownUrl] = useState(watchUrl);
+  if (shownUrl !== watchUrl) {
+    setShownUrl(watchUrl);
+    setPlayingUrl(null);
+  }
   const [wideEnough, setWideEnough] = useState(true);
   const cardRef = useRef<HTMLElement | null>(null);
   const playRef = useRef<HTMLButtonElement | null>(null);
   const refocusPlay = useRef(false);
 
-  const stop = useCallback(() => setPlaying(false), []);
+  const stop = useCallback(() => setPlayingUrl(null), []);
   const release = useCallback(() => {
     if (stopActivePlayer === stop) stopActivePlayer = null;
   }, [stop]);
-  useEffect(() => release, [release]);
-
-  // Another video (the same part re-used for a different shortcode) starts unplayed.
-  const watchUrl = video?.watchUrl;
-  useEffect(() => {
-    release();
-    setPlaying(false);
-    setThumbnailFailed(false);
-  }, [watchUrl, release]);
+  // Released on unmount and when the card is handed another video.
+  useEffect(() => release, [watchUrl, release]);
 
   useEffect(() => {
     const card = cardRef.current;
@@ -91,14 +99,14 @@ export function YouTubeVideoPart({ data }: YouTubeVideoPartProps) {
       onPlay={() => {
         stopActivePlayer?.();
         stopActivePlayer = stop;
-        setPlaying(true);
+        setPlayingUrl(video.watchUrl);
       }}
       onClose={() => {
         refocusPlay.current = true;
         release();
-        setPlaying(false);
+        setPlayingUrl(null);
       }}
-      onThumbnailError={() => setThumbnailFailed(true)}
+      onThumbnailError={() => setFailedThumbnail(video.thumbnailUrl)}
     />
   );
 }

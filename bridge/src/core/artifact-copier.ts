@@ -77,7 +77,13 @@ export type CopyOutcome =
   | { kind: "refused"; reason: string }
   | { kind: "retry"; reason: string };
 
-/** The fetcher reasons that will not change on a retry: the source is gone or refused. */
+/** The fetcher reasons that will not change on a retry: the source is gone or refused.
+ *  Not `route_absent`: every supported gateway serves the media route, and it answers 404
+ *  PER REQUEST — the session's policy unresolved, the client's authority or the session's
+ *  placement changed during the read (src/gateway/control-ui.ts
+ *  `handleControlUiAssistantMediaRequest`, `assertAssistantMediaPolicyCurrent`). 2026.10.33
+ *  moves that authority often; the next read is answered. A 404 that lasts ends as
+ *  `attempts_exhausted`. */
 const FETCH_GONE: ReadonlySet<MediaSkipReason> = new Set(["not_found"]);
 const FETCH_REFUSED: ReadonlySet<MediaSkipReason> = new Set([
   "too_large",
@@ -86,7 +92,6 @@ const FETCH_REFUSED: ReadonlySet<MediaSkipReason> = new Set([
   "not_a_file",
   "invalid_filename",
   "not_in_this_mount",
-  "route_absent",
 ]);
 
 class TooLargeError extends Error {

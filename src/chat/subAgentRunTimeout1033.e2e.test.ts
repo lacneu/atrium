@@ -378,3 +378,50 @@ describe("the other order 2026.10.33 can take (the registry after the run): the 
     expect(seen.card.statusLabel).toBe("délai dépassé");
   });
 });
+
+describe("the run of an interaction cut off by its limit (« Interagir » on an ended child)", () => {
+  /** The child's own run ended with its answer; the reader then asked it something. The
+   *  interaction's run is the captured one: its `chat` error carries the gateway's class,
+   *  and the row it leaves reads `interrupted` for it. */
+  async function interacted(t: T, chatId: Id<"chats">, order: "identity-first" | "row-first") {
+    await post(t, {
+      op: "upsertSubAgent",
+      chatId,
+      childSessionKey: CHILD,
+      taskName: "Seconde tâche silencieuse",
+      status: "done",
+      childRunId: "the-child-own-run",
+      resultText: "The original answer.",
+    });
+    await writeRow(t, chatId, { status: "done", hasActiveRun: false, runId: "the-child-own-run", snapshotAt: 10 });
+    const observer = new SubAgentObserver(PARENT, chatId);
+    observer.armInteraction(CHILD, "ix", 1);
+    const records = observer.observe(at(1645), 2, null, null);
+    // As session.ts flushes them: an interaction reply goes to the interaction store
+    // (not modelled here), every other record to the child's row.
+    const toRow = records.filter((r) => r.interactionReply === undefined);
+    const row = { status: "interrupted", hasActiveRun: false, runId: RUN, snapshotAt: 20 };
+    if (order === "row-first") await writeRow(t, chatId, row);
+    for (const record of toRow) {
+      await post(t, { op: "upsertSubAgent", ...JSON.parse(JSON.stringify(record)) });
+    }
+    if (order === "identity-first") await writeRow(t, chatId, row);
+  }
+
+  for (const order of ["identity-first", "row-first"] as const) {
+    test(`${order}: « délai dépassé », and the panel keeps the child's original answer`, async () => {
+      const t = convexTest(schema, modules);
+      const { userId, chatId } = await seed(t);
+      await interacted(t, chatId, order);
+      const seen = await card(t, userId, chatId);
+      expect(seen.rows[0]).toMatchObject({
+        status: "error",
+        providerStatus: "timeout",
+        errorCode: "timeout",
+        timedOutRunId: RUN,
+        resultText: "The original answer.",
+      });
+      expect([seen.card.statusLabel, seen.card.tone]).toEqual(["délai dépassé", "failed"]);
+    });
+  }
+});

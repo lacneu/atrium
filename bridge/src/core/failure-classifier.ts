@@ -1041,6 +1041,58 @@ const MODEL_NOT_FOUND_COPY_RE =
 const RATE_LIMIT_COPY_RE =
   /\bapi rate limit reached\b|\bthe model request was rate-limited\b|\bthe ai service needs a short break\b/i;
 
+/** The FIXED gateway words that open a template embedding an operator value the double-quote
+ *  blanking cannot isolate. Each one is followed by that value, then by more fixed words:
+ *    - `MCP server "<name>" … Run openclaw mcp login <name>.` — the name quoted, then REPEATED
+ *      BARE (src/agents/mcp-oauth.ts:77,175,184,236, src/agents/mcp-oauth-provider.ts:165);
+ *    - `Agent harness runtime "<runtime>" is unavailable. …` (src/agents/harness/runtime-
+ *      plugin.ts:223), the runtime an operator value that may hold quotes (codex 0.105.2
+ *      pass 3: `x" econnreset "z` read as a transient class) — then
+ *      `(reason=owner-plugin-degraded, ownerPluginId=<id>)` and `(reason=owner-plugin-not-
+ *      activatable, ownerPluginIds=<a>,<b>)`, the plugin id bare (src/agents/harness/
+ *      runtime-plugin.ts:85,119), also met without that opening;
+ *    - `Re-authenticate with: openclaw models auth login --provider '<provider>' --force`
+ *      (src/agents/failover-error.ts:541-564), the provider in shell quotes (the code-span form
+ *      "`openclaw models auth login …`", src/agents/auth-profiles/oauth-refresh-failure.ts:
+ *      455-506, is the last opening below);
+ *    - "Model login expired on the gateway for <provider>. Re-auth with `openclaw models auth
+ *      login --provider <provider> …` …" and its "Model login failed …" / "re-auth with `…`"
+ *      siblings (src/auto-reply/reply/agent-runner-failure-reply.ts:286-305), the provider bare
+ *      — sanitized to one token, and `enospc` is one;
+ *    - "Run `openclaw models list --refresh --provider <provider>` …" (src/agents/
+ *      embedded-agent-runner/model.ts:363,391), the provider bare in a code span;
+ *    - `openclaw --profile <name>` / `openclaw --container <name>`: `formatCliCommand` puts
+ *      one of them right after `openclaw` in EVERY command it prints, before the subcommand
+ *      and code span or not (src/cli/command-format.ts:10-35), so an opening that waits for
+ *      the subcommand lets the name through (codex, pass 8). Each name is one token
+ *      (src/cli/profile-utils.ts:5, command-format.ts:8), and `econnreset` is one. A name the
+ *      240-character cap cut is still behind its complete option word; an option word the cap
+ *      cut has no name behind it.
+ *  A name, a provider or a plugin id may hold quotes, periods and these very fixed words
+ *  (an MCP name: src/config/zod-schema.root-support.ts:261; a plugin id the loader accepts),
+ *  so no reading of where the value ENDS is safe: two review passes found a way past each
+ *  one (codex, passes 6 and 7). */
+const OPERATOR_VALUE_OPENING_RE =
+  /\bMCP server "|\bAgent harness runtime "|\(reason=owner-plugin-(?:degraded|not-activatable), ownerPluginIds?=|\bre-authenticate with:\s+openclaw\b|\bmodel login (?:expired|failed) on the gateway for |`+openclaw models (?:list --refresh --provider |auth login\b)|\bopenclaw --(?:profile|container)\b/i;
+
+/** The text CUT right after the first template opening: nothing from the start of the
+ *  operator value to the end is read. A partial redaction of a string someone else chose is
+ *  not winnable; a cut is.
+ *
+ *  What precedes the opening is the gateway's own and still classifies, and so do the
+ *  opening's fixed words (`Re-authenticate with:` is the re-authentication class).
+ *
+ *  ACCEPTED CONSEQUENCE, deliberate: a diagnostic the gateway writes AFTER such a value — a
+ *  cause appended behind an MCP refusal, the wording of a sentence whose quoted value happens
+ *  to hold an opening — is not read either, and the failure stays unclassified (null), as it
+ *  was before 10.33 support (0.104.4). It is never a wrong class, and never `provider_internal`,
+ *  which is retried on its own. An opening is searched in the raw text, quotes included: which
+ *  quote closes which value is exactly what an operator value can shift. */
+function cutAtOperatorValue(raw: string): string {
+  const opening = OPERATOR_VALUE_OPENING_RE.exec(raw);
+  return opening === null ? raw : `${raw.slice(0, opening.index + opening[0].length)}…`;
+}
+
 /** The text with every operator-chosen segment removed, leaving only what the GATEWAY
  *  itself wrote — which is the only thing any rule below may read.
  *
@@ -1053,8 +1105,12 @@ const RATE_LIMIT_COPY_RE =
  *  The cooldown sentence is the exception, and only because its FIXED words continue
  *  after the id: it keeps `Auth profile "…" is temporarily unavailable for …`, anchored
  *  on `for`, the word upstream always emits next. */
-export function withoutOperatorData(raw: string): string {
-  if (!namesACredential(raw)) return blankQuotedValues(exposeProviderErrorBodies(raw));
+export function withoutOperatorData(input: string): string {
+  const raw = cutAtOperatorValue(input);
+  // Whether a credential is named is read on the WHOLE text (codex 0.105.2 pass 5): the cut
+  // can remove the marker (`profile "`) a value placed after an opening, and blanking alone
+  // would then read what the value put before it.
+  if (!namesACredential(input)) return blankQuotedValues(exposeProviderErrorBodies(raw));
   // The cooldown exception applies ONLY when the first quote in the text is the
   // cooldown's OWN — i.e. the prose before it ends with `auth profile `. Testing the
   // raw text let an EARLIER operator segment carry the phrase: an MCP server named

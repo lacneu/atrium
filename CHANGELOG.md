@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.105.2] — OpenClaw 2026.10.33 corrections
+
+Corrective release for instances on OpenClaw 2026.10.33; nothing changes on 2026.9.36. No
+breaking changes. Deploy the Convex functions before the bridge, as usual: the schema gains
+optional fields on messages and on deletion records. No data migration is needed. How a
+reply streams while it is written is unchanged from 0.105.1.
+
+- **The answer to a message sent while the agent is working lands after that message.** On
+  2026.10.33 the gateway publishes such a message twice, and only the second copy says that
+  it redirects the running turn. Atrium could miss that second copy and show the answer in
+  the bubble before the message, sometimes split over two bubbles. It now keeps the second
+  copy, and a message once marked that way stays marked.
+- **Deleting part of the reply to a message sent during a turn deletes that part only.** On
+  2026.10.33 such a reply streams under one run while its transcript is recorded under
+  another. Atrium now reads the bubble under the run its transcript carries: deleting one of
+  its parts no longer brings that part back or takes the part that was kept with it, and the
+  bubble shows its recorded lines and their reasoning while it is still running. While the
+  gateway has not said where a deleted part starts, Atrium places none of the ambiguous
+  lines. If the gateway never says it (2026.10.33 does not guarantee it), or the deleted part
+  began before this release, the deleted text is not shown again and the kept part keeps the
+  text it ended with.
+- **A failure message that quotes a name you chose no longer decides how Atrium reacts.**
+  2026.10.33 failure messages repeat operator-chosen values, such as an MCP server name, an
+  agent harness runtime, a profile or container name, a plugin id or a model login command.
+  A value like "econnreset" could make a failure look temporary and get it retried
+  automatically. Atrium now stops reading at the start of any such value: the failure is
+  shown unclassified, never under a wrong, automatically retried class.
+- **A file the gateway refuses for a moment is fetched again.** 2026.10.33 answers "not
+  found" for a media file whenever the session's permissions change during the read, which
+  its autonomous skill review does often. Atrium took that as a gateway without the media
+  route and refused the file for good. It now asks again a bounded number of times, and the
+  warning no longer tells a supported gateway to switch to a shared folder.
+- **A child agent that runs out of time while asking a question is shown as timed out**, not
+  interrupted.
+- **A YouTube card plays only the video that was clicked.** If the reply changes while a
+  video plays and the card is reused for another video, that other video no longer starts
+  playing on its own, even for a moment. It waits for its own click.
+
+Validated on the live bench on OpenClaw 2026.10.33, with Hermes 0.21.7, in token
+authentication: the full catalogue passed on 2026-11-26 (GO 32/32) on this release's code, and
+so did the send-while-busy family (GO 12/12), which covers a message sent while the agent is
+working.
+
 ## [0.105.1] — OpenClaw 2026.10.33 is supported
 
 The tag 0.105.0 was pushed but its release stopped at the type check (a test outside the

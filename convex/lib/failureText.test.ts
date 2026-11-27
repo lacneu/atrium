@@ -61,6 +61,54 @@ describe("lockstep — the mirror's patterns ARE the bridge's", () => {
   });
 });
 
+const NESTED_MCP = ["ECONNRESET", "database or disk is full"].map((suffix) => {
+  const n = `x" requires OAuth authorization. Run openclaw mcp login x. ${suffix}`;
+  return `MCP server "${n}" requires OAuth authorization. Run openclaw mcp login ${n}.`;
+});
+// The bare copy cut by the 240-character cap, so that no reading pairs the two (codex, pass 7).
+const TRUNCATED_MCP = ["ECONNRESET", "database or disk is full"].map((suffix) => {
+  const n = `x" requires OAuth authorization. Run openclaw mcp login y. ${suffix} ${".".repeat(250)}`;
+  return `${`MCP server "${n}" requires OAuth authorization. Run openclaw mcp login ${n}.`.slice(0, 240)}...`;
+});
+// A plugin id with quotes in the whole harness refusal (codex, pass 7).
+const QUOTED_PLUGIN_ID = ['a"b" ECONNRESET', 'a"b" database or disk is full'].map(
+  (id) =>
+    `Agent harness runtime "codex" is unavailable. (reason=owner-plugin-degraded, ownerPluginId=${id}). Run "openclaw plugins inspect ${id} --runtime --json". Owner plugin "${id}" failed during load. Repair the reported plugin failure, restart the Gateway, then retry or select a model that does not require this runtime.`,
+);
+// The harness runtime itself, quotes and all, read before the plugin id (codex 0.105.2
+// pass 3; src/agents/harness/runtime-plugin.ts:223 at v2026.10.33) — whole and capped.
+const QUOTED_RUNTIME = [
+  'Agent harness runtime "x" econnreset "z" is unavailable. (reason=owner-plugin-degraded, ownerPluginId=billing). Run "openclaw plugins inspect billing --runtime --json". Owner plugin "billing" failed during load.',
+  'Agent harness runtime "x" database or disk is full "z" is unavailable.',
+].flatMap((t) => [t, t.slice(0, 240)]);
+// A credential marker placed after an opening, which the cut removes (codex 0.105.2 pass 5).
+const MARKER_PAST_THE_CUT = [
+  'Unknown model: acme/"x" econnreset openclaw --profile p profile "z". Run `openclaw models list --refresh --provider acme` to inspect this provider\'s model choices.',
+];
+const inSessionAndProfile = (value: string) => [
+  `Session "${value}" changed while starting work. Retry.`,
+  `Auth profile "openai:${value}" is temporarily unavailable for openai/gpt-x.`,
+];
+// Values that are NOT a template opening: the gateway's class after them stands.
+const NOT_AN_OPENING = ["foo --provider '", "foo `openclaw", "ownerPluginId=", "x openclaw mcp login"].flatMap(
+  inSessionAndProfile,
+);
+// Values that HOLD a template opening: cut there, unclassified (the deliberate trade-off).
+const HOLDS_AN_OPENING = [
+  "Re-authenticate with: openclaw models auth login --provider '",
+  "(reason=owner-plugin-degraded, ownerPluginId=",
+  'MCP server "x',
+  'Agent harness runtime "x',
+  "foo `openclaw --profile",
+].flatMap(inSessionAndProfile);
+// A root option's value in a printed command (codex, pass 8).
+const ROOT_OPTION = ["--profile", "--container"].flatMap((option) =>
+  ["econnreset", "enospc"].flatMap((name) => {
+    const text = `Model login failed on the gateway. Please try again. If this keeps happening, re-auth with \`openclaw ${option} ${name} models auth login\` in a terminal.`;
+    return [text, `${text.slice(0, text.indexOf(name) + 3)}...`, `Run openclaw ${option} ${name} doctor --fix, then retry.`];
+  }),
+);
+
 const EXTRA_TEXTS = [
   "maximum context length exceeded",
   "HTTP 401: Unauthorized",
@@ -92,8 +140,95 @@ const EXTRA_TEXTS = [
   'Session "OpenClaw is busy saving your conversation" is archived. Restore it before starting new work.',
   "All models failed (2): openai/a: The AI service needs a short break. Please try again in a few minutes. (rate_limit) | openai/b: OpenClaw couldn't save your conversation because the disk is full. (unknown)",
   "Queued input was dropped (queue-cap).",
+  // An operator value repeated BARE in a remediation command (v2026.10.33 MCP OAuth refusal,
+  // the re-authentication command, a code span, the harness owner field).
+  'MCP server "The AI service is busy. Please try again in a moment" requires OAuth authorization. Run openclaw mcp login The AI service is busy. Please try again in a moment.',
+  'MCP server "x" is fine. ECONNRESET" has expired OAuth credentials. Run openclaw mcp login x" is fine. ECONN',
+  'MCP server "x" requires OAuth authorization. Run openclaw mcp login x. ENOSPC: no space left on device',
+  "Re-authenticate with: openclaw models auth login --provider 'database or disk is full' --force",
+  "Unknown model: acme/m1. Run `openclaw models list --refresh --provider fetch failed` to inspect this provider's model choices.",
+  'Agent harness runtime "codex" is unavailable. (reason=owner-plugin-degraded, ownerPluginId=econnreset). Run "openclaw doctor --fix".',
+  // Ambiguous remediations (codex, pass 6): a name holding the whole template, and values
+  // holding only a command's opening.
+  ...NESTED_MCP,
+  ...TRUNCATED_MCP,
+  ...QUOTED_PLUGIN_ID,
+  ...QUOTED_RUNTIME,
+  ...MARKER_PAST_THE_CUT,
+  ...NOT_AN_OPENING,
+  ...HOLDS_AN_OPENING,
+  ...ROOT_OPTION,
+  "⚠️ Model login expired on the gateway. Re-auth with `openclaw --profile enospc models auth login` in a terminal, then try again.",
+  'ENOSPC: no space left on device <- MCP server "x" requires OAuth authorization. Run openclaw mcp login x.',
+  "⚠️ Model login expired on the gateway for enospc. Re-auth with `openclaw models auth login --provider enospc` in a terminal, then try again.",
+  "⚠️ Model login failed on the gateway for enospc. Please try again. If this keeps happening, re-auth with `openclaw models auth login --provider enospc` in a terminal.",
+  "Sign in again from Settings. You can also re-auth with `openclaw models auth login --provider enospc` on the gateway.",
+  'MCP server "x openclaw mcp login" failed to start. ENOSPC: no space left on device',
+  "Re-authenticate with: openclaw models auth login --provider 'a\"b\"c ENOSPC' --force",
+  "Re-authenticate with: openclaw models auth login --provider 'ENOSPC...",
+  `Session "Re-authenticate with: openclaw models auth login --provider '" changed while starting work for "' --force". Retry.`,
+  'Auth profile "openai:`openclaw" is temporarily unavailable for openai/`gpt`.',
+  "All models failed (1): acme/`openclaw: ENOSPC: no space left on device (unknown)",
+  "Unknown model: acme/`openclaw. ENOSPC: no space left on device",
   "",
 ];
+
+describe("a templated operator value is cut, not redacted — the mirror too", () => {
+  it("a root option's value decides nothing", () => {
+    for (const t of ROOT_OPTION) expect(classifyStoredFailureText(t), t).toBeNull();
+    expect(
+      classifyStoredFailureText(
+        "⚠️ Model login expired on the gateway. Re-auth with `openclaw --profile enospc models auth login` in a terminal, then try again.",
+      ),
+    ).toBe("provider_auth_revoked");
+  });
+
+  it("an MCP name or a plugin id decides nothing, however it is built", () => {
+    for (const t of [...NESTED_MCP, ...TRUNCATED_MCP, ...QUOTED_PLUGIN_ID, ...QUOTED_RUNTIME, ...MARKER_PAST_THE_CUT]) {
+      expect(classifyStoredFailureText(t), t).toBeNull();
+    }
+    for (const t of [
+      'MCP server "The AI service is busy. Please try again in a moment" requires OAuth authorization. Run openclaw mcp login The AI service is busy. Please try again in a moment.',
+      'MCP server "fetch failed" could not refresh OAuth credentials. Run openclaw mcp login fetch fai',
+      "Unknown model: acme/m1. Run `openclaw models list --refresh --provider fetch failed` to inspect this provider's model choices.",
+      'Agent harness runtime "codex" is unavailable. (reason=owner-plugin-degraded, ownerPluginId=econnreset). Run "openclaw doctor --fix".',
+    ]) {
+      expect(classifyStoredFailureText(t), t).toBeNull();
+    }
+    expect(
+      classifyStoredFailureText(
+        "Re-authenticate with: openclaw models auth login --provider 'database or disk is full' --force",
+      ),
+    ).toBe("provider_auth_failed");
+    expect(
+      classifyStoredFailureText(
+        "⚠️ Model login expired on the gateway for enospc. Re-auth with `openclaw models auth login --provider enospc` in a terminal, then try again.",
+      ),
+    ).toBe("provider_auth_revoked");
+  });
+
+  it("the gateway's words before the opening classify; after it, deliberately, nothing does", () => {
+    expect(
+      classifyStoredFailureText(
+        'ENOSPC: no space left on device <- MCP server "x" requires OAuth authorization. Run openclaw mcp login x.',
+      ),
+    ).toBe("gateway_storage_unavailable");
+    expect(
+      classifyStoredFailureText(
+        'MCP server "x" requires OAuth authorization. Run openclaw mcp login x. ENOSPC: no space left on device',
+      ),
+    ).toBeNull();
+  });
+
+  it("a value that is not an opening keeps the gateway's class; one holding an opening yields none", () => {
+    for (const t of NOT_AN_OPENING) {
+      expect(classifyStoredFailureText(t), t).toBe(
+        t.startsWith("Session") ? "session_init_conflict" : "auth_profile_cooldown",
+      );
+    }
+    for (const t of HOLDS_AN_OPENING) expect(classifyStoredFailureText(t), t).toBeNull();
+  });
+});
 
 describe("parity — the two classifiers agree on every text", () => {
   for (const c of CASES) {
